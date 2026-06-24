@@ -1,0 +1,96 @@
+{
+  "version": "5.1",
+  "routing_model": {
+    "BOOKING": ["BOOKING"]
+  },
+  "screens": [
+    {
+      "id": "BOOKING",
+      "title": "Book Consultation",
+      "terminal": true,
+      "data": {
+        "min_date": {
+          "type": "string",
+          "__example__": "2026-06-13"
+        },
+        "max_date": {
+          "type": "string",
+          "__example__": "2026-07-13"
+        },
+        "available_times": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" }
+            }
+          },
+          "__example__": [
+            { "id": "time:1", "title": "10:00 AM" },
+            { "id": "time:2", "title": "2:00 PM" }
+          ]
+        },
+        "selected_date_label": {
+          "type": "string",
+          "__example__": "Mon, Jun 16, 2026"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "booking_form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "Schedule your advisor call"
+              },
+              {
+                "type": "TextBody",
+                "text": "Pick a date from the calendar, then choose an available time."
+              },
+              {
+                "type": "CalendarPicker",
+                "name": "selected_date",
+                "label": "Consultation date",
+                "required": true,
+                "min-date": "${data.min_date}",
+                "max-date": "${data.max_date}",
+                "on-select-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "selected_date": "${form.selected_date}"
+                  }
+                }
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.selected_date_label}"
+              },
+              {
+                "type": "Dropdown",
+                "name": "selected_time",
+                "label": "Available time",
+                "required": true,
+                "data-source": "${data.available_times}"
+              },
+              {
+                "type": "Footer",
+                "label": "Confirm booking",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "selected_date": "${form.selected_date}",
+                    "selected_time": "${form.selected_time}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

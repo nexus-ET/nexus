@@ -1,0 +1,11 @@
+# Copy to config.yml after running scripts/setup_cloudflare_tunnel.ps1
+# (or create manually). Do not commit config.yml or *.json credentials.
+
+tunnel: nexus-dev
+credentials-file: credentials/nexus-dev.json
+
+ingress:
+  # Hostname must match PUBLIC_TUNNEL_BASE in backend/.env (no https:// prefix).
+  - hostname: nexus-dev.yourdomain.com
+    service: http://127.0.0.1:8002
+  - service: http_status:404

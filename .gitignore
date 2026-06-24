@@ -1,0 +1,31 @@
+# Secrets — never commit
+**/.env
+**/.env.*
+!**/.env.example
+!**/env.production.example
+
+# Python
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/*.egg-info/
+.mypy_cache/
+
+# Node / frontend build
+**/node_modules/
+frontend/dist/
+
+# Dev / local
+backend/.dev-stack.lock
+backend/cloudflared/config.yml
+backend/cloudflared/credentials/
+**/.DS_Store
+.idea/
+.vscode/
+
+# Logs & databases
+**/*.log
+**/*.db
+**/*.sqlite3

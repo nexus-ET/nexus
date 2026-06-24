@@ -1,0 +1,577 @@
+.prospects-page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #f8fafc;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.prospects-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #ffffff;
+  flex-shrink: 0;
+}
+
+.prospects-toolbar__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.prospects-toolbar__title h2 {
+  margin: 0;
+  font-size: 18px;
+  color: #0f172a;
+}
+
+.prospects-toolbar__count {
+  background: #dbeafe;
+  color: #1d4ed8;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.prospects-toolbar__controls {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.prospects-toolbar__search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 240px;
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.prospects-toolbar__search input {
+  border: none;
+  outline: none;
+  background: transparent;
+  width: 100%;
+  font-size: 13px;
+}
+
+.prospects-toolbar__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.prospects-toolbar__field select,
+.prospects-toolbar__date {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  background: #fff;
+  min-width: 140px;
+}
+
+.prospects-page__panels {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.prospects-page--focus .prospects-list-panel {
+  display: none;
+}
+
+.prospects-page--focus .prospects-detail-panel {
+  width: 100%;
+}
+
+.prospects-list-panel--hidden {
+  display: none;
+}
+
+.prospects-list-panel__scroll {
+  overflow: auto;
+  flex: 1;
+}
+
+.prospects-list-item {
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-bottom: 1px solid #f1f5f9;
+  background: #ffffff;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.prospects-list-item:hover {
+  background: #f8fafc;
+}
+
+.prospects-list-item.is-active {
+  background: #eff6ff;
+  box-shadow: inset 3px 0 0 #2563eb;
+}
+
+.prospects-list-item__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.prospects-list-item__name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.prospects-list-panel {
+  width: 30%;
+  min-width: 300px;
+  max-width: 420px;
+  border-right: 1px solid #e2e8f0;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.prospects-list-item__badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.prospects-list-item__badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+.prospects-list-item__stage {
+  font-size: 10px;
+  font-weight: 600;
+  color: #64748b;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+
+.prospects-list-item__meta {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.prospects-list-item__campaign {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.prospects-list-panel__sentinel {
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.prospects-detail-panel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  min-height: 0;
+}
+
+.prospects-detail-panel--focus {
+  width: 100%;
+}
+
+.prospects-detail-panel__sticky {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.prospects-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #334155;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
+.prospects-action-btn--icon {
+  padding: 8px;
+}
+
+.prospects-tab-pane {
+  display: none;
+}
+
+.prospects-tab-pane.is-active {
+  display: block;
+}
+
+.prospects-tab-pane.prospects-history.is-active {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.prospects-detail-panel--empty {
+  align-items: center;
+  justify-content: center;
+}
+
+.prospects-detail-panel__action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px 12px;
+}
+
+.prospects-detail-panel__identity h3 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  color: #0f172a;
+}
+
+.prospects-detail-panel__chips {
+  display: flex;
+  gap: 6px;
+}
+
+.prospects-chip {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.prospects-chip--muted {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+
+.prospects-detail-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prospects-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #334155;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.prospects-action-btn:hover {
+  background: #f8fafc;
+}
+
+.prospects-action-btn--primary {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+.prospects-action-dropdown {
+  position: relative;
+}
+
+.prospects-action-dropdown > span {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  cursor: default;
+  background: #fff;
+}
+
+.prospects-action-dropdown__menu {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 160px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  z-index: 5;
+}
+
+.prospects-action-dropdown:hover .prospects-action-dropdown__menu {
+  display: flex;
+  flex-direction: column;
+}
+
+.prospects-action-dropdown__menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.prospects-action-dropdown__menu button:hover {
+  background: #f8fafc;
+}
+
+.prospects-detail-panel__tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 20px;
+}
+
+.prospects-detail-panel__tabs button {
+  border: none;
+  background: transparent;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748b;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.prospects-detail-panel__tabs button.is-active {
+  color: #2563eb;
+  border-bottom-color: #2563eb;
+}
+
+.prospects-detail-panel__body {
+  flex: 1;
+  overflow: auto;
+  padding: 20px;
+}
+
+.prospects-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.prospects-profile-grid span {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.prospects-profile-grid strong,
+.prospects-profile-grid p {
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.prospects-profile-grid__wide {
+  grid-column: 1 / -1;
+}
+
+.prospects-profile-grid__wide p {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.prospects-history--chat {
+  background: #ece5dd;
+  padding: 16px;
+  border-radius: 12px;
+  min-height: 420px;
+  overflow: auto;
+}
+
+.prospects-history__divider {
+  display: flex;
+  justify-content: center;
+  margin: 12px 0;
+}
+
+.prospects-history__divider span {
+  background: rgba(255, 255, 255, 0.92);
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.08);
+}
+
+.prospects-history__bubble-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 8px;
+}
+
+.prospects-history__bubble-row.is-outbound {
+  justify-content: flex-end;
+}
+
+.prospects-history__bubble {
+  max-width: 70%;
+  padding: 10px 12px;
+  border-radius: 10px;
+}
+
+.prospects-history__bubble span {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.prospects-history__bubble p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.prospects-history__bubble small {
+  display: block;
+  margin-top: 4px;
+  opacity: 0.75;
+}
+
+.prospects-notes textarea {
+  width: 100%;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 14px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.prospects-notes__hint {
+  margin: 0 0 10px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.prospects-welcome {
+  text-align: center;
+  max-width: 520px;
+  padding: 24px;
+}
+
+.prospects-welcome__icon {
+  font-size: 48px;
+  margin-bottom: 8px;
+}
+
+.prospects-welcome h3 {
+  margin: 0 0 8px;
+  color: #334155;
+}
+
+.prospects-welcome p {
+  margin: 0;
+  color: #64748b;
+}
+
+.prospects-welcome__stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.prospects-welcome__stats div {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.prospects-welcome__stats strong {
+  display: block;
+  font-size: 24px;
+  color: #0f172a;
+}
+
+.prospects-welcome__stats span {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.prospects-empty {
+  padding: 24px;
+  text-align: center;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.custom-scroll-region::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-scroll-region::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 20px;
+}
+
+@media (max-width: 1100px) {
+  .prospects-page__panels {
+    flex-direction: column;
+  }
+
+  .prospects-list-panel {
+    width: 100%;
+    max-width: none;
+    max-height: 40%;
+  }
+}

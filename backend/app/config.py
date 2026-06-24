@@ -1,0 +1,66 @@
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    PROJECT_NAME: str = "NEXUS"
+    PROJECT_TAGLINE: str = "AI-Powered Client Growth Tool"
+    VERSION: str = "1.0.0"
+    API_V1_STR: str = "/api/v1"
+
+    # Database connection string
+    DATABASE_URL: str = "sqlite:///./nexus.db"
+
+    # WARNING: In production, these should be loaded from environment variables
+    SECRET_KEY: str = "YOUR_SUPER_SECRET_KEY_CHANGE_ME"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 8 days
+
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = 587
+    SMTP_USER: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_FROM_EMAIL: str | None = None
+    SMTP_USE_TLS: bool = True
+
+    WHATSAPP_ACCESS_TOKEN: str | None = None
+    WHATSAPP_PHONE_NUMBER_ID: str | None = None
+    WHATSAPP_VERIFY_TOKEN: str | None = None
+    # Meta template sent before business-initiated outreach (opens the 24h window). Default: hello_world
+    WHATSAPP_OUTREACH_TEMPLATE: str | None = "hello_world"
+    WEBHOOK_VERIFY_TOKEN: str | None = None
+    # Meta Graph API token for Lead Ads retrieval (falls back to WHATSAPP_ACCESS_TOKEN)
+    META_GRAPH_ACCESS_TOKEN: str | None = None
+    # Facebook Page ID for historical Meta Lead Ads backfill (Page Access Token required)
+    META_PAGE_ID: str | None = None
+    # Automated Meta lead sync scheduler (interval from Settings, not .env)
+    META_LEAD_SYNC_ENABLED: bool = True
+    # Outbound/inbound messaging provider: TWILIO (default) or WHATSAPP (Meta Cloud API)
+    PROVIDER: str = "TWILIO"
+    OPENAI_API_KEY: str | None = None
+
+    WHATSAPP_FLOW_ID: str | None = None
+    WHATSAPP_FLOW_PRIVATE_KEY: str | None = None
+    WHATSAPP_FLOW_PRIVATE_KEY_PATH: str | None = None
+    FRONTEND_URL: str | None = None
+
+    REDIS_URL: str | None = None
+    RATE_LIMIT_GLOBAL: str = "60/minute"
+    RATE_LIMIT_STRICT: str = "5/minute"
+
+    FIREBASE_CREDENTIALS_PATH: str | None = None
+    FIREBASE_CREDENTIALS_JSON: str | None = None
+    FIREBASE_PROJECT_ID: str | None = None
+
+    APP_TIMEZONE: str = "UTC"
+
+    SECURITY_AUDIT_ENABLED: bool = True
+    SECURITY_AUDIT_CRON_HOUR: int = 2
+
+    # Max pending + scheduled counselling appointments allowed at the same time slot
+    MAX_COUNSELLING_BOOKINGS_PER_SLOT: int = 5
+
+    # Max characters per chat message (team chat + internal messaging)
+    CHAT_MAX_CHARS: int = 500
+
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
+
+settings = Settings()

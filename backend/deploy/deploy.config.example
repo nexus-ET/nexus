@@ -1,0 +1,9 @@
+# Copy to deploy.config on the VPS (not committed):
+#   cp backend/deploy/deploy.config.example backend/deploy/deploy.config
+#
+# Used by install.sh and deploy.sh
+
+APP_ROOT=/var/www/nexus
+GIT_BRANCH=main
+NEXUS_DOMAIN=nexus.YOUR_DOMAIN.com
+RUN_CERTBOT=0
