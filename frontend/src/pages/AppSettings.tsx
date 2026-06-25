@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Building2, CheckCircle2, CloudDownload, Loader2, RefreshCw, Save, Settings } from 'lucide-react';
+import { Building2, CheckCircle2, Loader2, RefreshCw, Save, Settings } from 'lucide-react';
 import PublicHolidayCalendar from '../components/PublicHolidayCalendar';
-import { apiFetch, API_SYNC_TIMEOUT_MS } from '../utils/api';
+import { apiFetch } from '../utils/api';
 import { clearBusinessTimezoneCache } from '../utils/timezone';
 
 type SettingValueType = 'text' | 'number' | 'boolean' | 'time' | 'working_days' | 'timezone';
@@ -26,40 +26,6 @@ interface DynamicSetting {
 interface SettingsResponse {
   settings: DynamicSetting[];
 }
-
-type LeadSyncMode = 'automated' | 'manual';
-type LeadSyncIntervalUnit = 'minutes' | 'hours' | 'days' | 'weeks';
-
-interface LeadSyncLastRunSummary {
-  forms_processed?: number;
-  leads_seen?: number;
-  leads_created?: number;
-  leads_skipped?: number;
-  errors?: string[];
-}
-
-interface LeadSyncConfig {
-  mode: LeadSyncMode;
-  interval_value: number;
-  interval_unit: LeadSyncIntervalUnit;
-  interval_unit_label: string;
-  last_run_at: string | null;
-  last_run_summary: LeadSyncLastRunSummary | null;
-  scheduler_enabled?: boolean;
-  scheduler_active?: boolean;
-  scheduler_is_leader?: boolean;
-  configured_interval?: string | null;
-  configured_schedule?: string | null;
-  active_job_interval?: string | null;
-  next_scheduled_run_at?: string | null;
-}
-
-const LEAD_SYNC_INTERVAL_OPTIONS: Array<{ value: LeadSyncIntervalUnit; label: string }> = [
-  { value: 'minutes', label: 'Minutes' },
-  { value: 'hours', label: 'Hours' },
-  { value: 'days', label: 'Days' },
-  { value: 'weeks', label: 'Weeks' },
-];
 
 interface BusinessProfile {
   business_id: number;
@@ -237,50 +203,6 @@ const AppSettings: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [accessDenied, setAccessDenied] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [leadSyncConfig, setLeadSyncConfig] = useState<LeadSyncConfig | null>(null);
-  const [leadSyncDraft, setLeadSyncDraft] = useState<{
-    mode: LeadSyncMode;
-    interval_value: number;
-    interval_unit: LeadSyncIntervalUnit;
-  }>({ mode: 'automated', interval_value: 1, interval_unit: 'hours' });
-  const [leadSyncLoading, setLeadSyncLoading] = useState(true);
-  const [leadSyncSaving, setLeadSyncSaving] = useState(false);
-  const [leadSyncRunning, setLeadSyncRunning] = useState(false);
-  const [leadSyncMessage, setLeadSyncMessage] = useState<string | null>(null);
-  const [leadSyncError, setLeadSyncError] = useState<string | null>(null);
-  const [leadSyncUnavailable, setLeadSyncUnavailable] = useState<string | null>(null);
-
-  const loadLeadSyncSettings = useCallback(async (options?: { silent?: boolean }) => {
-    if (!options?.silent) {
-      setLeadSyncLoading(true);
-    }
-    setLeadSyncUnavailable(null);
-
-    try {
-      const leadSyncData = (await apiFetch('settings/lead-sync')) as LeadSyncConfig;
-      setLeadSyncConfig(leadSyncData);
-      setLeadSyncDraft({
-        mode: leadSyncData.mode,
-        interval_value: leadSyncData.interval_value,
-        interval_unit: leadSyncData.interval_unit,
-      });
-      setLeadSyncError(null);
-    } catch (err: unknown) {
-      setLeadSyncConfig(null);
-      const message = err instanceof Error ? err.message : 'Failed to load lead sync settings.';
-      if (/not found/i.test(message)) {
-        setLeadSyncUnavailable(
-          'Meta lead sync is not available on this server. Restart the NEXUS backend to load the latest routes.'
-        );
-      } else {
-        setLeadSyncUnavailable(message);
-      }
-    } finally {
-      if (!options?.silent) {
-        setLeadSyncLoading(false);
-      }
-    }
-  }, []);
 
   const loadSettings = useCallback(async () => {
     try {
@@ -310,55 +232,11 @@ const AppSettings: React.FC = () => {
     } finally {
       setLoading(false);
     }
-
-    void loadLeadSyncSettings();
-  }, [loadLeadSyncSettings]);
+  }, []);
 
   useEffect(() => {
     loadSettings();
   }, [loadSettings]);
-
-  useEffect(() => {
-    if (leadSyncDraft.mode !== 'automated' || leadSyncUnavailable) {
-      return;
-    }
-
-    const timer = window.setInterval(() => {
-      void loadLeadSyncSettings({ silent: true });
-    }, 30_000);
-
-    return () => window.clearInterval(timer);
-  }, [leadSyncDraft.mode, leadSyncUnavailable, loadLeadSyncSettings]);
-
-  const leadSyncScheduleHint = useMemo(() => {
-    if (leadSyncDraft.mode !== 'automated' || !leadSyncConfig) {
-      return null;
-    }
-
-    if (leadSyncConfig.scheduler_enabled === false) {
-      return 'Automatic scheduling is disabled on the server (META_LEAD_SYNC_ENABLED=false).';
-    }
-
-    if (leadSyncConfig.scheduler_is_leader === false) {
-      return 'This backend is not the scheduler leader — another NEXUS process is running automated sync. Stop duplicate backends and keep only one server on port 8002.';
-    }
-
-    if (leadSyncConfig.scheduler_active === false) {
-      return 'Scheduler is not running. Keep the NEXUS backend process running and save the schedule again.';
-    }
-
-    const intervalNote = leadSyncConfig.configured_interval
-      ? ` Saved: every ${leadSyncConfig.configured_interval}.`
-      : leadSyncConfig.active_job_interval
-        ? ` Active job: every ${leadSyncConfig.active_job_interval}.`
-        : '';
-
-    if (leadSyncConfig.next_scheduled_run_at) {
-      return `Next automatic sync: ${new Date(leadSyncConfig.next_scheduled_run_at).toLocaleString()}.${intervalNote} Activity appears in Reports.`;
-    }
-
-    return `Automatic sync is armed.${intervalNote} Keep one backend running — activity appears in Reports.`;
-  }, [leadSyncConfig, leadSyncDraft.mode]);
 
   const dirtyKeys = useMemo(
     () =>
@@ -379,86 +257,6 @@ const AppSettings: React.FC = () => {
   );
 
   const hasUnsavedChanges = dirtyKeys.length > 0 || isBusinessProfileDirty;
-
-  const isLeadSyncDirty = useMemo(() => {
-    if (!leadSyncConfig) return false;
-    return (
-      leadSyncDraft.mode !== leadSyncConfig.mode ||
-      leadSyncDraft.interval_value !== leadSyncConfig.interval_value ||
-      leadSyncDraft.interval_unit !== leadSyncConfig.interval_unit
-    );
-  }, [leadSyncConfig, leadSyncDraft]);
-
-  const handleSaveLeadSyncSettings = async () => {
-    setLeadSyncSaving(true);
-    setLeadSyncError(null);
-    setLeadSyncMessage(null);
-    try {
-      const updated = (await apiFetch('settings/lead-sync', {
-        method: 'PUT',
-        body: JSON.stringify(leadSyncDraft),
-      })) as LeadSyncConfig;
-      setLeadSyncConfig(updated);
-      setLeadSyncDraft({
-        mode: updated.mode,
-        interval_value: updated.interval_value,
-        interval_unit: updated.interval_unit,
-      });
-      setLeadSyncMessage(
-        updated.mode === 'automated'
-          ? `Automated sync enabled every ${updated.interval_value} ${updated.interval_unit}.`
-          : 'Manual sync mode enabled. Use Sync Now to fetch leads.'
-      );
-    } catch (err: unknown) {
-      setLeadSyncError(err instanceof Error ? err.message : 'Failed to save lead sync settings.');
-    } finally {
-      setLeadSyncSaving(false);
-    }
-  };
-
-  const handleRunLeadSync = async () => {
-    setLeadSyncRunning(true);
-    setLeadSyncError(null);
-    setLeadSyncMessage(null);
-    try {
-      const result = (await apiFetch('settings/lead-sync/run', {
-        method: 'POST',
-        timeoutMs: API_SYNC_TIMEOUT_MS,
-      })) as LeadSyncLastRunSummary & {
-        run_at: string;
-        delta_since_label?: string | null;
-        delta_is_initial_backfill?: boolean;
-      };
-      setLeadSyncConfig(prev =>
-        prev
-          ? {
-              ...prev,
-              last_run_at: result.run_at,
-              last_run_summary: {
-                forms_processed: result.forms_processed,
-                leads_seen: result.leads_seen,
-                leads_created: result.leads_created,
-                leads_skipped: result.leads_skipped,
-                errors: result.errors,
-              },
-            }
-          : prev
-      );
-      const deltaHint =
-        result.delta_since_label && result.delta_is_initial_backfill
-          ? ` (initial window from ${result.delta_since_label})`
-          : result.delta_since_label
-            ? ` (delta since ${result.delta_since_label})`
-            : '';
-      setLeadSyncMessage(
-        `Sync complete${deltaHint}: ${result.leads_created ?? 0} new, ${result.leads_skipped ?? 0} already in Nexus.`
-      );
-    } catch (err: unknown) {
-      setLeadSyncError(err instanceof Error ? err.message : 'Lead sync failed.');
-    } finally {
-      setLeadSyncRunning(false);
-    }
-  };
 
   const handleDraftChange = (key: string, value: string) => {
     setDraftValues(prev => ({ ...prev, [key]: value }));
@@ -807,7 +605,7 @@ const AppSettings: React.FC = () => {
             Application Settings
           </h1>
           <p className="text-sm text-text-muted mt-1">
-            Manage business profile, Meta lead synchronization, counselling, bookings, office hours, business timezone, working days, and public holidays.
+            Manage business profile, counselling, bookings, office hours, business timezone, working days, and public holidays.
           </p>
         </div>
         <div className="flex items-center gap-2 self-start">
@@ -938,198 +736,6 @@ const AppSettings: React.FC = () => {
                 {renderBusinessProfileField('zip-code', 'Zip / Postal Code', 'zip_code')}
               </div>
             </div>
-          )}
-        </div>
-      </div>
-
-      <div className="rounded-2xl border border-border-subtle bg-card overflow-hidden">
-        <div className="border-b border-border-subtle bg-surface-bg px-4 py-3 md:px-5">
-          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-            <div>
-              <h2 className="text-base font-semibold text-text-main flex items-center gap-2">
-                <CloudDownload size={18} />
-                Meta Lead Sync
-              </h2>
-              <p className="text-xs text-text-muted mt-1 max-w-2xl">
-                Pull Facebook and Instagram Lead Ads into Nexus. Use automated scheduling or run a manual sync to
-                fetch leads since the last download.
-              </p>
-            </div>
-            {leadSyncConfig?.last_run_at ? (
-              <p className="text-[11px] text-text-muted md:text-right">
-                Last sync: {new Date(leadSyncConfig.last_run_at).toLocaleString()}
-              </p>
-            ) : null}
-          </div>
-          {leadSyncScheduleHint ? (
-            <p className="mt-2 text-[11px] text-text-muted border-t border-border-subtle pt-2">
-              {leadSyncScheduleHint}
-            </p>
-          ) : null}
-        </div>
-
-        <div className="p-4 md:p-5 space-y-5">
-          {leadSyncLoading ? (
-            <div className="flex items-center justify-center py-6 text-text-muted text-sm">
-              <Loader2 size={18} className="animate-spin mr-2" />
-              Loading lead sync settings...
-            </div>
-          ) : leadSyncUnavailable ? (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              {leadSyncUnavailable}
-            </div>
-          ) : (
-            <>
-              <div>
-                <p className="text-sm font-medium text-text-main mb-2">Sync mode</p>
-                <div className="inline-flex rounded-lg border border-border-subtle bg-surface-bg p-1">
-                  {(['automated', 'manual'] as LeadSyncMode[]).map(mode => (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => {
-                        setLeadSyncDraft(prev => ({ ...prev, mode }));
-                        setLeadSyncMessage(null);
-                      }}
-                      className={`px-4 py-2 text-sm font-semibold rounded-md transition-colors ${
-                        leadSyncDraft.mode === mode
-                          ? 'bg-accent text-text-dark-bg shadow-sm'
-                          : 'text-text-muted hover:text-text-main'
-                      }`}
-                    >
-                      {mode === 'automated' ? 'Automated' : 'Manual'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {leadSyncDraft.mode === 'automated' ? (
-                <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,140px)_minmax(0,180px)_auto] gap-3 items-end">
-                  <div>
-                    <label htmlFor="lead-sync-interval" className="block text-sm font-medium text-text-main">
-                      Run every
-                    </label>
-                    <input
-                      id="lead-sync-interval"
-                      type="number"
-                      min={1}
-                      value={leadSyncDraft.interval_value}
-                      onChange={event =>
-                        setLeadSyncDraft(prev => ({
-                          ...prev,
-                          interval_value: Math.max(1, Number(event.target.value) || 1),
-                        }))
-                      }
-                      className="mt-1.5 w-full rounded-lg border border-border-subtle bg-surface-bg px-3 py-2 text-sm text-text-main focus:outline-none focus:border-accent focus:ring-4 focus:ring-accent/10"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="lead-sync-unit" className="block text-sm font-medium text-text-main">
-                      Interval
-                    </label>
-                    <select
-                      id="lead-sync-unit"
-                      value={leadSyncDraft.interval_unit}
-                      onChange={event =>
-                        setLeadSyncDraft(prev => ({
-                          ...prev,
-                          interval_unit: event.target.value as LeadSyncIntervalUnit,
-                        }))
-                      }
-                      className="mt-1.5 w-full rounded-lg border border-border-subtle bg-surface-bg px-3 py-2 text-sm text-text-main focus:outline-none focus:border-accent focus:ring-4 focus:ring-accent/10"
-                    >
-                      {LEAD_SYNC_INTERVAL_OPTIONS.map(option => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleSaveLeadSyncSettings}
-                    disabled={leadSyncSaving || !isLeadSyncDirty}
-                    className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-accent text-text-dark-bg text-sm font-semibold hover:opacity-90 disabled:opacity-50"
-                  >
-                    {leadSyncSaving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-                    Save Sync Schedule
-                  </button>
-                </div>
-              ) : (
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={handleRunLeadSync}
-                    disabled={leadSyncRunning}
-                    className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-accent text-text-dark-bg text-sm font-semibold hover:opacity-90 disabled:opacity-50"
-                  >
-                    {leadSyncRunning ? (
-                      <Loader2 size={16} className="animate-spin" />
-                    ) : (
-                      <CloudDownload size={16} />
-                    )}
-                    Sync Now
-                  </button>
-                  <p className="text-xs text-text-muted">
-                    Delta sync: fetches only leads newer than your latest imported Meta lead (or the last 30
-                    days on first run). First sync after setup may take a few minutes.
-                  </p>
-                  {isLeadSyncDirty ? (
-                    <button
-                      type="button"
-                      onClick={handleSaveLeadSyncSettings}
-                      disabled={leadSyncSaving}
-                      className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-border-subtle bg-card text-sm font-semibold hover:bg-surface-bg disabled:opacity-50"
-                    >
-                      {leadSyncSaving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-                      Save Manual Mode
-                    </button>
-                  ) : null}
-                </div>
-              )}
-
-              {leadSyncConfig?.last_run_summary ? (
-                <div className="rounded-lg border border-border-subtle bg-surface-bg px-4 py-3 text-sm">
-                  <p className="font-medium text-text-main mb-2">Last download summary</p>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                    <div>
-                      <span className="text-text-muted block">Forms checked</span>
-                      <strong>{leadSyncConfig.last_run_summary.forms_processed ?? 0}</strong>
-                    </div>
-                    <div>
-                      <span className="text-text-muted block">Leads seen</span>
-                      <strong>{leadSyncConfig.last_run_summary.leads_seen ?? 0}</strong>
-                    </div>
-                    <div>
-                      <span className="text-text-muted block">New saved</span>
-                      <strong>{leadSyncConfig.last_run_summary.leads_created ?? 0}</strong>
-                    </div>
-                    <div>
-                      <span className="text-text-muted block">Already in Nexus</span>
-                      <strong>{leadSyncConfig.last_run_summary.leads_skipped ?? 0}</strong>
-                    </div>
-                  </div>
-                  {(leadSyncConfig.last_run_summary.errors?.length ?? 0) > 0 ? (
-                    <p className="mt-2 text-xs text-amber-700">
-                      {leadSyncConfig.last_run_summary.errors?.length} warning(s) during the last sync.
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {leadSyncMessage ? (
-                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 flex items-center gap-2">
-                  <CheckCircle2 size={16} />
-                  {leadSyncMessage}
-                </div>
-              ) : null}
-
-              {leadSyncError ? (
-                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                  {leadSyncError}
-                </div>
-              ) : null}
-            </>
           )}
         </div>
       </div>

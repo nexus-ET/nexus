@@ -4,6 +4,6 @@
 # Used by install.sh and deploy.sh
 
 APP_ROOT=/var/www/nexus
-GIT_BRANCH=main
-NEXUS_DOMAIN=nexus.YOUR_DOMAIN.com
+GIT_BRANCH=staging
+NEXUS_DOMAIN=nexus-dev.edutrust.in
 RUN_CERTBOT=0

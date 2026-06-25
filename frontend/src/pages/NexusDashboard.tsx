@@ -19,6 +19,7 @@ import Sidebar from '../components/Sidebar';
 import UserProfileMenu from '../components/UserProfileMenu';
 import NotificationBell from '../components/NotificationBell';
 import { usePushNotifications } from '../hooks/usePushNotifications';
+import MetaLeadSyncPanel from '../components/dashboard/MetaLeadSyncPanel';
 
 // --- SCHEMA & DATA LAYER INTERFACES ---
 interface DashboardMetric {
@@ -328,6 +329,8 @@ const NexusDashboard: React.FC = () => {
                   Sync Pipeline
                 </button>
               </div>
+
+              <MetaLeadSyncPanel />
 
               {/* --- 4-CARD DATA HERO ROW --- */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">

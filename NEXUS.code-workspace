@@ -1,0 +1,18 @@
+{
+  "folders": [
+    {
+      "name": "NEXUS Dev (develop)",
+      "path": "."
+    },
+    {
+      "name": "NEXUS Staging Local (staging)",
+      "path": "E:\\NEXUS-staging"
+    }
+  ],
+  "settings": {
+    "files.exclude": {
+      "**/.venv": true,
+      "**/node_modules": true
+    }
+  }
+}
