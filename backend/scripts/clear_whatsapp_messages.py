@@ -1,4 +1,18 @@
-"""Clear WhatsApp message history for a phone number and reset intake for a fresh start."""
+"""
+Clear WhatsApp message history for a lead and reset intake for a fresh AI session.
+
+Local:
+  python scripts/clear_whatsapp_messages.py +918754545407 --dry-run
+  python scripts/clear_whatsapp_messages.py +918754545407 --yes
+
+Hostinger VPS:
+  sudo bash /var/www/nexus/backend/deploy/clear-whatsapp-messages.sh +918754545407 --dry-run
+  sudo bash /var/www/nexus/backend/deploy/clear-whatsapp-messages.sh +918754545407 --yes
+
+Or directly:
+  cd /var/www/nexus/backend && source .venv/bin/activate
+  python scripts/clear_whatsapp_messages.py +918754545407 --yes
+"""
 from __future__ import annotations
 
 import argparse
@@ -24,68 +38,146 @@ def _pg_conninfo(url: str) -> str:
     return raw.replace("postgresql://", "postgres://")
 
 
-def clear_whatsapp_data(phone: str) -> int:
+def _normalize_phone(phone: str) -> tuple[str, str]:
     digits = re.sub(r"\D", "", phone)
     normalized = f"+{digits}" if digits else phone.strip()
+    return normalized, digits
 
+
+def _find_leads(cur, *, phone: str | None, lead_id: int | None) -> list[tuple]:
+    if lead_id is not None:
+        cur.execute(
+            """
+            SELECT id, full_name, phone_number, intake_step, stage::text
+            FROM leads
+            WHERE id = %s
+            """,
+            (lead_id,),
+        )
+        row = cur.fetchone()
+        return [row] if row else []
+
+    if not phone:
+        return []
+
+    normalized, digits = _normalize_phone(phone)
+    suffix = digits[-10:] if len(digits) >= 10 else digits
+    cur.execute(
+        """
+        SELECT id, full_name, phone_number, intake_step, stage::text
+        FROM leads
+        WHERE phone_number = %s OR phone_number = %s OR phone_number LIKE %s
+        ORDER BY id DESC
+        LIMIT 5
+        """,
+        (normalized, digits, f"%{suffix}%"),
+    )
+    return cur.fetchall()
+
+
+def clear_whatsapp_data(
+    *,
+    phone: str | None,
+    lead_id: int | None,
+    dry_run: bool,
+) -> int:
     database_url = os.getenv("DATABASE_URL", "")
     if not database_url:
         raise SystemExit("DATABASE_URL is not set in .env")
 
+    if not phone and lead_id is None:
+        raise SystemExit("Provide a phone number or --lead-id")
+
     with psycopg.connect(_pg_conninfo(database_url)) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, full_name, phone_number, intake_step
-                FROM leads
-                WHERE phone_number = %s OR phone_number = %s OR phone_number LIKE %s
-                ORDER BY id DESC
-                LIMIT 5
-                """,
-                (normalized, digits, f"%{digits[-10:] if len(digits) >= 10 else digits}%"),
-            )
-            leads = cur.fetchall()
+            leads = _find_leads(cur, phone=phone, lead_id=lead_id)
             if not leads:
-                print(f"No lead found for {normalized}")
+                target = f"lead id={lead_id}" if lead_id is not None else phone
+                print(f"No lead found for {target}")
                 return 1
 
-            for lead_id, name, lead_phone, intake_step in leads:
+            normalized, digits = _normalize_phone(phone or leads[0][2] or "")
+
+            for row in leads:
+                lead_pk, name, lead_phone, intake_step, stage = row
                 print(
-                    f"Lead id={lead_id} name={name!r} phone={lead_phone!r} intake_step={intake_step!r}"
+                    f"Lead id={lead_pk} name={name!r} phone={lead_phone!r} "
+                    f"intake_step={intake_step!r} stage={stage!r}"
                 )
 
                 cur.execute(
-                    "SELECT wa_message_id FROM message_history WHERE lead_id = %s AND wa_message_id IS NOT NULL",
-                    (lead_id,),
+                    """
+                    SELECT wa_message_id FROM message_history
+                    WHERE lead_id = %s AND wa_message_id IS NOT NULL
+                    """,
+                    (lead_pk,),
                 )
-                wa_ids = [row[0] for row in cur.fetchall()]
+                wa_ids = [item[0] for item in cur.fetchall()]
 
-                cur.execute("DELETE FROM messages WHERE lead_id = %s", (lead_id,))
-                deleted_messages = cur.rowcount
+                cur.execute("SELECT COUNT(*) FROM messages WHERE lead_id = %s", (lead_pk,))
+                message_count = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT COUNT(*) FROM message_history WHERE lead_id = %s",
+                    (lead_pk,),
+                )
+                history_lead_count = cur.fetchone()[0]
+                cur.execute(
+                    """
+                    SELECT COUNT(*) FROM message_history
+                    WHERE sender_phone IN (%s, %s, %s)
+                    """,
+                    (normalized, digits, f"+{digits}"),
+                )
+                history_phone_count = cur.fetchone()[0]
+                if wa_ids:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM processed_messages WHERE message_id = ANY(%s)",
+                        (wa_ids,),
+                    )
+                    processed_count = cur.fetchone()[0]
+                else:
+                    processed_count = 0
+                cur.execute(
+                    "SELECT COUNT(*) FROM conversation_audit_logs WHERE lead_id = %s",
+                    (lead_pk,),
+                )
+                audit_count = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT COUNT(*) FROM consultation_slots WHERE lead_id = %s",
+                    (lead_pk,),
+                )
+                slot_count = cur.fetchone()[0]
 
-                cur.execute("DELETE FROM message_history WHERE lead_id = %s", (lead_id,))
-                deleted_hist_lead = cur.rowcount
+                print(f"  would delete messages: {message_count}")
+                print(f"  would delete message_history (lead): {history_lead_count}")
+                print(f"  would delete message_history (phone): {history_phone_count}")
+                print(f"  would delete processed_messages: {processed_count}")
+                print(f"  would delete conversation_audit_logs: {audit_count}")
+                print(f"  would release consultation slots: {slot_count}")
+                print("  would reset intake/profile/handoff fields for fresh start")
 
+                if dry_run:
+                    continue
+
+                cur.execute("DELETE FROM messages WHERE lead_id = %s", (lead_pk,))
+                cur.execute("DELETE FROM message_history WHERE lead_id = %s", (lead_pk,))
                 cur.execute(
                     "DELETE FROM message_history WHERE sender_phone IN (%s, %s, %s)",
                     (normalized, digits, f"+{digits}"),
                 )
-                deleted_hist_phone = cur.rowcount
-
-                deleted_proc = 0
                 if wa_ids:
                     cur.execute(
                         "DELETE FROM processed_messages WHERE message_id = ANY(%s)",
                         (wa_ids,),
                     )
-                    deleted_proc = cur.rowcount
-
+                cur.execute(
+                    "DELETE FROM conversation_audit_logs WHERE lead_id = %s",
+                    (lead_pk,),
+                )
                 cur.execute(
                     "UPDATE consultation_slots SET lead_id = NULL WHERE lead_id = %s",
-                    (lead_id,),
+                    (lead_pk,),
                 )
-                released_slots = cur.rowcount
-
                 cur.execute(
                     """
                     UPDATE leads SET
@@ -101,31 +193,64 @@ def clear_whatsapp_data(phone: str) -> int:
                         gre_score = NULL,
                         gmat_score = NULL,
                         test_scores = NULL,
+                        handoff_ai_confidence = NULL,
+                        handoff_reason = NULL,
                         stage = 'AI_ACTIVE',
                         is_human_locked = FALSE
                     WHERE id = %s
                     """,
-                    (lead_id,),
+                    (lead_pk,),
                 )
 
-                print(f"  deleted messages: {deleted_messages}")
-                print(f"  deleted message_history (lead): {deleted_hist_lead}")
-                print(f"  deleted message_history (phone): {deleted_hist_phone}")
-                print(f"  deleted processed_messages: {deleted_proc}")
-                print(f"  released consultation slots: {released_slots}")
-                print("  reset intake/profile fields for fresh start")
+        if dry_run:
+            print("Dry run only — no changes made.")
+        else:
+            conn.commit()
+            print("Done.")
 
-        conn.commit()
-
-    print("Done.")
     return 0
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Clear WhatsApp messages for a phone number")
-    parser.add_argument("phone", nargs="?", default="+918754545407", help="E.164 phone number")
+    parser = argparse.ArgumentParser(
+        description="Clear WhatsApp messages for a phone number or lead id"
+    )
+    parser.add_argument(
+        "phone",
+        nargs="?",
+        help="E.164 phone number, e.g. +918754545407",
+    )
+    parser.add_argument(
+        "--lead-id",
+        type=int,
+        help="Clear by lead id instead of phone number",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be deleted without changing the database",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Required to apply changes (omit for dry-run preview only)",
+    )
     args = parser.parse_args()
-    return clear_whatsapp_data(args.phone)
+
+    if not args.dry_run and not args.yes:
+        print(
+            "Refusing to modify the database without --yes.\n"
+            "Preview first:  python scripts/clear_whatsapp_messages.py <phone> --dry-run\n"
+            "Then apply:     python scripts/clear_whatsapp_messages.py <phone> --yes",
+            file=sys.stderr,
+        )
+        return 2
+
+    return clear_whatsapp_data(
+        phone=args.phone,
+        lead_id=args.lead_id,
+        dry_run=args.dry_run,
+    )
 
 
 if __name__ == "__main__":
