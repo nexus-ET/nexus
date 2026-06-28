@@ -34,6 +34,61 @@ INTAKE_STEP_COMPLETE = "COMPLETE"
 DEFAULT_SLOT_TIMES = ("10:00", "14:00", "16:00")
 BRAND_NAME = "Edutrust"
 
+_COUNTRY_ALIASES: dict[str, str] = {
+    "usa": "USA",
+    "us": "USA",
+    "u.s.": "USA",
+    "u.s.a": "USA",
+    "u.s.a.": "USA",
+    "america": "USA",
+    "uk": "UK",
+    "u.k.": "UK",
+    "britain": "UK",
+    "england": "UK",
+    "uae": "UAE",
+    "canada": "Canada",
+    "australia": "Australia",
+    "germany": "Germany",
+    "france": "France",
+    "ireland": "Ireland",
+    "netherlands": "Netherlands",
+    "holland": "Netherlands",
+    "spain": "Spain",
+    "italy": "Italy",
+    "india": "India",
+    "singapore": "Singapore",
+    "new zealand": "New Zealand",
+    "nz": "New Zealand",
+    "sweden": "Sweden",
+    "norway": "Norway",
+    "finland": "Finland",
+    "denmark": "Denmark",
+    "switzerland": "Switzerland",
+    "japan": "Japan",
+    "china": "China",
+    "south korea": "South Korea",
+    "korea": "South Korea",
+}
+
+
+def _normalize_country_name(raw: str) -> str | None:
+    token = (raw or "").strip()
+    if not token:
+        return None
+    key = re.sub(r"[^\w\s.]", "", token).lower().strip()
+    key = re.sub(r"\s+", " ", key)
+    if key in _COUNTRY_ALIASES:
+        return _COUNTRY_ALIASES[key]
+    canonical_by_lower = {value.lower(): value for value in _COUNTRY_ALIASES.values()}
+    if key in canonical_by_lower:
+        return canonical_by_lower[key]
+    return None
+
+
+def _strip_booking_markdown(text: str) -> str:
+    return re.sub(r"[*_]", "", (text or "").strip())
+
+
 RESCHEDULE_PATTERN = re.compile(
     r"(reschedule|change|move|update|switch|pick another|different|new)\s+"
     r"(slot|appointment|booking|call|time|date|schedule)|"
@@ -52,7 +107,7 @@ THANKS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 CANCEL_PATTERN = re.compile(
-    r"^cancel(?:\s+(?:appointment|booking|my appointment))?$",
+    r"^\*?cancel\*?(?:\s+(?:appointment|booking|my appointment))?\*?$",
     re.IGNORECASE,
 )
 
@@ -441,7 +496,7 @@ async def process_intake_message(
                 task="INTAKE_STEP=TARGET; Country noted but course/program missing. Ask for both country and course.",
                 incoming_text=text,
             )
-        lead.preferred_country = country.title()
+        lead.preferred_country = _normalize_country_name(country) or country.title()
         context = _load_context(lead)
         context["preferred_course"] = program
         lead.academic_summary = f"Course: {program}"
@@ -720,15 +775,27 @@ def _extract_study_interest(text: str) -> dict[str, str]:
         return {}
 
     interest: dict[str, str] = {}
+
+    leading_match = re.match(r"^(\S+)\s+(.+)$", cleaned)
+    if leading_match:
+        leading_country = _normalize_country_name(leading_match.group(1))
+        if leading_country:
+            interest["country"] = leading_country
+            interest["program"] = leading_match.group(2).strip(" .")
+            return interest
+
     in_country_match = re.search(
         r"^(.{3,80}?)\s+in\s+([A-Za-z][A-Za-z\s\-]{2,40})$",
         cleaned,
         re.IGNORECASE,
     )
     if in_country_match:
-        interest["program"] = in_country_match.group(1).strip(" .")
-        interest["country"] = in_country_match.group(2).strip(" .")
-        return interest
+        tail = in_country_match.group(2).strip(" .")
+        tail_country = _normalize_country_name(tail)
+        if tail_country:
+            interest["program"] = in_country_match.group(1).strip(" .")
+            interest["country"] = tail_country
+            return interest
 
     study_match = re.search(
         r"study(?:\s+abroad)?\s+(.+?)\s+(?:in|at|to)\s+([A-Za-z][A-Za-z\s\-]{1,40})",
@@ -736,9 +803,11 @@ def _extract_study_interest(text: str) -> dict[str, str]:
         re.IGNORECASE,
     )
     if study_match:
-        interest["program"] = study_match.group(1).strip(" .")
-        interest["country"] = study_match.group(2).strip(" .")
-        return interest
+        tail_country = _normalize_country_name(study_match.group(2).strip(" ."))
+        if tail_country:
+            interest["program"] = study_match.group(1).strip(" .")
+            interest["country"] = tail_country
+            return interest
 
     country_match = re.search(
         r"\b(?:in|to|for)\s+([A-Za-z][A-Za-z\s\-]{2,40})\b",
@@ -746,7 +815,9 @@ def _extract_study_interest(text: str) -> dict[str, str]:
         re.IGNORECASE,
     )
     if country_match:
-        interest["country"] = country_match.group(1).strip(" .")
+        normalized = _normalize_country_name(country_match.group(1).strip(" ."))
+        if normalized:
+            interest["country"] = normalized
     if re.search(r"\b(study|course|program|degree|design|fashion|mba|ms|bachelor)\b", cleaned, re.I):
         interest["program"] = cleaned
     return interest
@@ -852,7 +923,8 @@ def handle_post_intake_booking_message(db: Session, lead: Lead, incoming_text: s
         return None
 
     text = (incoming_text or "").strip()
-    lowered = text.lower()
+    command_text = _strip_booking_markdown(text)
+    lowered = command_text.lower()
     first = (lead.full_name or "there").split()[0]
 
     if THANKS_PATTERN.match(text):
@@ -868,7 +940,7 @@ def handle_post_intake_booking_message(db: Session, lead: Lead, incoming_text: s
             text=f"You're welcome, {first}! Feel free to message anytime if you have questions."
         )
 
-    if CANCEL_PATTERN.match(text) or (
+    if CANCEL_PATTERN.match(command_text) or (
         "cancel" in lowered and "appointment" in lowered
     ):
         had_booking = bool(lead.consultation_scheduled_at)
@@ -888,7 +960,7 @@ def handle_post_intake_booking_message(db: Session, lead: Lead, incoming_text: s
             text=f"{first}, you don't have an active appointment to cancel. Reply *reschedule* to book one."
         )
 
-    if RESCHEDULE_PATTERN.search(text) or lowered in {
+    if RESCHEDULE_PATTERN.search(command_text) or lowered in {
         "reschedule",
         "change slot",
         "change appointment",
@@ -904,7 +976,7 @@ def handle_post_intake_booking_message(db: Session, lead: Lead, incoming_text: s
         lead.is_human_locked = False
         lead.wants_consultation_call = True
         db.commit()
-        return _booking_step_reply(
+        return _booking_step_reply_sync(
             db,
             lead,
             (
@@ -1077,7 +1149,11 @@ def _finalize_consultation_booking(
     lead.intake_step = INTAKE_STEP_COMPLETE
     lead.stage = LeadStage.AI_ACTIVE
     lead.is_human_locked = False
-    lead.intake_context = None
+    preserved_context = _load_context(lead)
+    preferred_course = preserved_context.get("preferred_course")
+    lead.intake_context = (
+        json.dumps({"preferred_course": preferred_course}) if preferred_course else None
+    )
 
     from app.services.counselling_service import upsert_pending_booking_for_lead
 
