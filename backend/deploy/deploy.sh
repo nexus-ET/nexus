@@ -39,7 +39,7 @@ pip install 'psycopg[binary]' -q
 
 echo "==> Database migrations (alembic upgrade head)..."
 cd "$BACKEND"
-alembic upgrade head
+python -m alembic upgrade head
 
 echo "==> Frontend build..."
 cd "$FRONTEND"
