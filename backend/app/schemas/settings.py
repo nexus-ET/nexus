@@ -28,6 +28,14 @@ class BusinessTimezoneResponse(BaseModel):
     label: str
 
 
+class WhatsAppOutreachConfigResponse(BaseModel):
+    provider: str | None = None
+    business_phone_number: str | None = None
+    phone_number_id: str | None = None
+    outreach_template: str | None = None
+    ready: bool = False
+
+
 class BusinessEmailDomainResponse(BaseModel):
     business_id: int
     email_domain: str | None = None

@@ -68,6 +68,11 @@ SETTING_DEFINITIONS: dict[str, dict[str, str]] = {
         "value_type": "timezone",
         "description": "Office timezone used for counselling schedules, slot times, and date boundaries.",
     },
+    "AUDIT_LOG_RETENTION_DAYS": {
+        "label": "Audit log retention (days)",
+        "value_type": "number",
+        "description": "Audit log entries older than this are permanently removed by the daily cleanup job.",
+    },
 }
 
 DEFAULT_SETTING_VALUES: dict[str, str] = {
@@ -78,6 +83,7 @@ DEFAULT_SETTING_VALUES: dict[str, str] = {
     "WORKING_DAYS": DEFAULT_WORKING_DAYS,
     "MAX_BOOKINGS_PER_SLOT": "5",
     "BUSINESS_TIMEZONE": "UTC",
+    "AUDIT_LOG_RETENTION_DAYS": "90",
 }
 
 _cache: dict[str, str] = {}

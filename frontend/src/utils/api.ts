@@ -107,6 +107,8 @@ export const API_SYNC_TIMEOUT_MS = 10 * 60_000;
 export type ApiFetchOptions = RequestInit & {
   /** Override the default 60s client timeout (e.g. long-running Meta sync). */
   timeoutMs?: number;
+  /** Optional label for audit log when this request loads data (control + value). */
+  auditContext?: { label: string; value?: string };
 };
 
 function mergeAbortSignals(...signals: AbortSignal[]): AbortSignal {
@@ -125,7 +127,7 @@ function mergeAbortSignals(...signals: AbortSignal[]): AbortSignal {
 }
 
 export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
-  const { timeoutMs = API_FETCH_TIMEOUT_MS, ...requestInit } = options ?? {};
+  const { timeoutMs = API_FETCH_TIMEOUT_MS, auditContext, ...requestInit } = options ?? {};
   const token = getStoredToken();
 
   if (token && isTokenExpired(token)) {
@@ -144,6 +146,7 @@ export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'ngrok-skip-browser-warning': 'true',
+    'X-Nexus-Page': window.location.pathname,
     ...((options?.headers as Record<string, string>) || {}),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
@@ -197,6 +200,12 @@ export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
   const text = await response.text();
   const json = text ? JSON.parse(text) : {};
 
+  if ((requestInit.method || 'GET').toUpperCase() === 'GET') {
+    void import('./auditTracker').then(({ trackApiRead }) => {
+      trackApiRead(cleanEndpoint, requestInit.method || 'GET', response.status, { auditContext });
+    });
+  }
+
   // Handle dynamic shape normalization for dictionary-wrapped array responses
   if (json && !Array.isArray(json)) {
     const keys = Object.keys(json);
@@ -210,7 +219,7 @@ export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
 
 /** Fetch a binary response (e.g. PDF export) with the same auth/session handling as apiFetch. */
 export async function apiFetchBlob(endpoint: string, options?: ApiFetchOptions): Promise<Blob> {
-  const { timeoutMs = API_FETCH_TIMEOUT_MS, ...requestInit } = options ?? {};
+  const { timeoutMs = API_FETCH_TIMEOUT_MS, auditContext, ...requestInit } = options ?? {};
   const token = getStoredToken();
 
   if (token && isTokenExpired(token)) {
@@ -227,6 +236,7 @@ export async function apiFetchBlob(endpoint: string, options?: ApiFetchOptions):
 
   const headers: Record<string, string> = {
     'ngrok-skip-browser-warning': 'true',
+    'X-Nexus-Page': window.location.pathname,
     ...((options?.headers as Record<string, string>) || {}),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
@@ -275,6 +285,12 @@ export async function apiFetchBlob(endpoint: string, options?: ApiFetchOptions):
     throw new Error(detail);
   }
 
+  if ((requestInit.method || 'GET').toUpperCase() === 'GET') {
+    void import('./auditTracker').then(({ trackApiRead }) => {
+      trackApiRead(cleanEndpoint, requestInit.method || 'GET', response.status, { auditContext });
+    });
+  }
+
   return response.blob();
 }
 
@@ -288,6 +304,7 @@ export async function apiUpload(endpoint: string, formData: FormData) {
 
   const headers: Record<string, string> = {
     'ngrok-skip-browser-warning': 'true',
+    'X-Nexus-Page': window.location.pathname,
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 

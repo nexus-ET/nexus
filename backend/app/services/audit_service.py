@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from functools import wraps
 from typing import Any
@@ -8,54 +7,14 @@ from typing import Any
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-from app.models.audit_log import AuditLog
 from app.models.user import User
+from app.services.audit_context import build_audit_details
+from app.services.audit_logger import write_audit_log
 
 
-def _client_ip(request: Request | None) -> str | None:
-    if request is None:
-        return None
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()[:64]
-    if request.client:
-        return request.client.host[:64]
-    return None
+def log_action(action_type: str, target_resource: str, resource_id_key: str | None = None) -> Callable:
+    """Decorator for explicit audit entries on router handlers."""
 
-
-def write_audit_log(
-    db: Session,
-    *,
-    user_id: int | None,
-    action: str,
-    resource: str,
-    resource_id: str | None = None,
-    request: Request | None = None,
-    status: str = "success",
-    detail: dict[str, Any] | str | None = None,
-) -> None:
-    detail_text: str | None
-    if isinstance(detail, dict):
-        detail_text = json.dumps(detail, default=str)[:4000]
-    else:
-        detail_text = (detail or "")[:4000] or None
-
-    db.add(
-        AuditLog(
-            user_id=user_id,
-            action=action,
-            resource=resource,
-            resource_id=resource_id,
-            ip_address=_client_ip(request),
-            user_agent=(request.headers.get("user-agent") or "")[:512] if request else None,
-            status=status,
-            detail=detail_text,
-        )
-    )
-    db.commit()
-
-
-def log_action(action: str, resource: str, resource_id_key: str | None = None) -> Callable:
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -73,31 +32,37 @@ def log_action(action: str, resource: str, resource_id_key: str | None = None) -
             elif "payload" in kwargs and hasattr(kwargs["payload"], "key"):
                 resource_id = str(kwargs["payload"].key)
 
+            api_path = request.url.path if request else ""
+            method = request.method if request else "POST"
+
+            def _write(status: str, extra: dict[str, Any] | None = None) -> None:
+                if db is None:
+                    return
+                write_audit_log(
+                    db,
+                    user_id=current_user.id if current_user else None,
+                    action_type=action_type,
+                    target_resource=target_resource,
+                    resource_id=resource_id,
+                    request=request,
+                    status=status,
+                    details=build_audit_details(
+                        method=method,
+                        api_path=api_path,
+                        status_code=200 if status == "success" else 500,
+                        action_type=action_type,
+                        referer=request.headers.get("referer") if request else None,
+                        ui_page_header=request.headers.get("x-nexus-page") if request else None,
+                        extra=extra,
+                    ),
+                )
+
             try:
                 result = func(*args, **kwargs)
-                if db is not None:
-                    write_audit_log(
-                        db,
-                        user_id=current_user.id if current_user else None,
-                        action=action,
-                        resource=resource,
-                        resource_id=resource_id,
-                        request=request,
-                        status="success",
-                    )
+                _write("success")
                 return result
             except Exception as exc:
-                if db is not None:
-                    write_audit_log(
-                        db,
-                        user_id=current_user.id if current_user else None,
-                        action=action,
-                        resource=resource,
-                        resource_id=resource_id,
-                        request=request,
-                        status="failed",
-                        detail={"error": str(exc)},
-                    )
+                _write("failed", {"error": str(exc)})
                 raise
 
         return wrapper

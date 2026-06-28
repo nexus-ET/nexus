@@ -2,6 +2,8 @@
 **/.env
 **/.env.*
 !**/.env.example
+!**/.env.development.example
+!**/.env.staging.local.example
 !**/env.production.example
 
 # Python
@@ -24,6 +26,8 @@ backend/cloudflared/credentials/
 **/.DS_Store
 .idea/
 .vscode/
+Hostinger Setup.txt
+**/Hostinger Setup.txt
 
 # Logs & databases
 **/*.log

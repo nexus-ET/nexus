@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.database import SessionLocal
 from app.models.security_audit_run import SecurityAuditRun
 from app.schemas.security_audit import SecurityAuditRunOut, SecurityCheckResult as SecurityCheckResultSchema
-from app.services.audit_service import write_audit_log
+from app.services.audit_logger import write_audit_log
 from app.services.notification_service import NotificationService
 from app.services.security_audit import SecurityCheckResult, run_all_security_checks
 
@@ -80,14 +80,15 @@ def _handle_red_flags(
     write_audit_log(
         db,
         user_id=triggered_by_user_id,
-        action="SECURITY_CRITICAL",
-        resource="security_audit",
+        action_type="SECURITY_CRITICAL",
+        target_resource="security_audit",
         resource_id=str(run.id),
         status="failed",
-        detail={
+        details={
             "failed_checks": [check.to_dict() for check in failed_checks],
             "summary": failure_summary,
         },
+        sync_mode="AUTOMATED",
     )
 
     title = "NEXUS Security Fortress Alert"

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import io
+import json
 import time
 from datetime import datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -14,7 +16,9 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 from sqlalchemy.orm import Session
 
 from app.schemas.sync_log import SyncLogOut
+from app.services.audit_context import format_audit_details_for_display
 from app.services.business_profile_service import DEFAULT_BUSINESS_ID, get_business_profile
+from app.services.settings_service import get_setting
 
 _BUSINESS_NAME_CACHE: tuple[str, float] | None = None
 _BUSINESS_NAME_CACHE_TTL_SECONDS = 300
@@ -81,10 +85,60 @@ def _format_range_label(start_date: datetime | None, end_date: datetime | None) 
     return "All available records"
 
 
-def _format_timestamp(value: datetime | None) -> str:
+def _business_timezone_name(db: Session) -> str:
+    return (get_setting("BUSINESS_TIMEZONE", "UTC", db=db) or "UTC").strip() or "UTC"
+
+
+def _format_timestamp(value: datetime | None, db: Session | None = None) -> str:
     if value is None:
         return "—"
-    return value.strftime("%Y-%m-%d %H:%M:%S UTC")
+    tz_name = _business_timezone_name(db) if db is not None else "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo("UTC")
+        tz_name = "UTC"
+    aware = value.replace(tzinfo=ZoneInfo("UTC")) if value.tzinfo is None else value.astimezone(ZoneInfo("UTC"))
+    return aware.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S") + f" ({tz_name})"
+
+
+def _format_audit_timestamp(value: datetime | None, db: Session | None = None) -> str:
+    """Audit rows store wall-clock time in the business timezone (naive datetime)."""
+    if value is None:
+        return "—"
+    tz_name = _business_timezone_name(db) if db is not None else "UTC"
+    fraction = f"{value.microsecond:06d}"
+    return value.strftime("%Y-%m-%d %H:%M:%S") + f".{fraction} ({tz_name})"
+
+
+def _escape_pdf_text(value: str) -> str:
+    return (value or "—").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _pdf_paragraph(text: str, style: ParagraphStyle) -> Paragraph:
+    return Paragraph(_escape_pdf_text(text), style)
+
+
+def _pdf_table_cell_style(base: ParagraphStyle) -> ParagraphStyle:
+    return ParagraphStyle(
+        "PdfTableCell",
+        parent=base,
+        fontName="Helvetica",
+        fontSize=7,
+        leading=9,
+        wordWrap="CJK",
+    )
+
+
+def _pdf_table_header_style(base: ParagraphStyle) -> ParagraphStyle:
+    return ParagraphStyle(
+        "PdfTableHeader",
+        parent=base,
+        fontName="Helvetica-Bold",
+        fontSize=7,
+        leading=9,
+        textColor=colors.white,
+    )
 
 
 def _format_sync_mode(mode: str) -> str:
@@ -114,12 +168,12 @@ def _truncate(text: str | None, *, max_len: int = 120) -> str:
     return value[: max_len - 1] + "…"
 
 
-def _build_table_rows(logs: list[SyncLogOut]) -> list[list[str]]:
+def _build_table_rows(logs: list[SyncLogOut], db: Session) -> list[list[str]]:
     rows: list[list[str]] = []
     for log in logs:
         rows.append(
             [
-                _format_timestamp(log.attempt_timestamp),
+                _format_timestamp(log.attempt_timestamp, db),
                 _format_sync_mode(log.sync_mode),
                 _format_source(log.source),
                 _truncate(log.triggered_by_user, max_len=28),
@@ -200,7 +254,7 @@ def generate_sync_logs_pdf(
         Paragraph("Meta Lead Sync Logs — Full Report", title_style),
         Paragraph(f"Report period: {range_label}", subtitle_style),
         Paragraph(
-            f"Generated {generated.strftime('%Y-%m-%d %H:%M:%S UTC')} · "
+            f"Generated {_format_timestamp(generated, db)} · "
             f"{len(logs):,} record{'s' if len(logs) != 1 else ''} · "
             f"Sorted by {sort_label}",
             meta_style,
@@ -218,7 +272,7 @@ def generate_sync_logs_pdf(
         "Seen",
         "Message",
     ]
-    table_data = [headers] + _build_table_rows(logs)
+    table_data = [headers] + _build_table_rows(logs, db)
 
     col_widths = [
         1.05 * inch,
@@ -250,6 +304,158 @@ def generate_sync_logs_pdf(
                 ("RIGHTPADDING", (0, 0), (-1, -1), 5),
                 ("TOPPADDING", (0, 0), (-1, -1), 4),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.append(table)
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
+def _format_details_cell(details: dict | None) -> str:
+    return format_audit_details_for_display(details)
+
+
+def _build_audit_table_rows(logs: list, db: Session) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for log in logs:
+        rows.append(
+            [
+                _format_audit_timestamp(log.timestamp, db),
+                log.user_email or "—",
+                log.action_type or "—",
+                log.target_resource or "—",
+                log.resource_id or "—",
+                (log.sync_mode or "—").upper(),
+                (log.status or "—").upper(),
+                log.ip_address or "—",
+                _format_details_cell(log.details),
+            ]
+        )
+    return rows
+
+
+def generate_audit_logs_pdf(
+    db: Session,
+    *,
+    logs: list,
+    start_date: datetime | None,
+    end_date: datetime | None,
+    sort_by: str,
+    sort_order: Literal["asc", "desc"],
+    generated_at: datetime | None = None,
+) -> bytes:
+    business_name = _cached_business_name(db)
+    generated = generated_at or datetime.utcnow()
+    range_label = _format_range_label(start_date, end_date)
+    sort_label = f"{sort_by.replace('_', ' ')} ({sort_order.upper()})"
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=_PAGE_SIZE,
+        leftMargin=_MARGIN,
+        rightMargin=_MARGIN,
+        topMargin=_MARGIN,
+        bottomMargin=0.75 * inch,
+        title="Audit Logs",
+        author=business_name,
+        canvasmaker=_NumberedCanvas,
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "AuditReportTitle",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=16,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=4,
+    )
+    subtitle_style = ParagraphStyle(
+        "AuditReportSubtitle",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=10,
+        textColor=colors.HexColor("#475569"),
+        leading=14,
+        spaceAfter=6,
+    )
+    meta_style = ParagraphStyle(
+        "AuditReportMeta",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9,
+        textColor=colors.HexColor("#64748b"),
+        leading=12,
+    )
+
+    story = [
+        Paragraph(business_name, ParagraphStyle(
+            "AuditBusinessName",
+            parent=styles["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=11,
+            textColor=colors.HexColor("#334155"),
+            spaceAfter=8,
+        )),
+        Paragraph("NEXUS Audit Log Report", title_style),
+        Paragraph(f"Report period: {range_label}", subtitle_style),
+        Paragraph(
+            f"Generated {_format_timestamp(generated, db)} · "
+            f"{len(logs):,} record{'s' if len(logs) != 1 else ''} · "
+            f"Sorted by {sort_label}",
+            meta_style,
+        ),
+        Spacer(1, 0.18 * inch),
+    ]
+
+    headers = [
+        "Timestamp",
+        "User",
+        "Action",
+        "Resource",
+        "Resource ID",
+        "Mode",
+        "Status",
+        "IP",
+        "Details",
+    ]
+    cell_style = _pdf_table_cell_style(styles["Normal"])
+    header_style = _pdf_table_header_style(styles["Normal"])
+    raw_rows = _build_audit_table_rows(logs, db)
+    table_data: list[list[Paragraph]] = [[_pdf_paragraph(header, header_style) for header in headers]]
+    for row in raw_rows:
+        table_data.append([_pdf_paragraph(cell, cell_style) for cell in row])
+    col_widths = [
+        1.45 * inch,
+        1.05 * inch,
+        0.85 * inch,
+        0.85 * inch,
+        0.75 * inch,
+        0.6 * inch,
+        0.6 * inch,
+        0.8 * inch,
+        2.0 * inch,
+    ]
+
+    table = Table(table_data, colWidths=col_widths, repeatRows=1)
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#18181b")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e2e8f0")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("WORDWRAP", (0, 0), (-1, -1), True),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
             ]
         )
     )

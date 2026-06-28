@@ -5,6 +5,7 @@ import logging
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.config import settings
+from app.services.audit_logger import cleanup_old_audit_logs
 from app.services.audit_runner import run_scheduled_security_audit
 from app.services.pipeline_service import process_stalled_document_reminders
 
@@ -38,6 +39,16 @@ def start_security_scheduler() -> BackgroundScheduler | None:
         hour=9,
         minute=0,
         id="nexus_daily_document_reminders",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
+        cleanup_old_audit_logs,
+        trigger="cron",
+        hour=3,
+        minute=15,
+        id="nexus_daily_audit_log_cleanup",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

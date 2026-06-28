@@ -1,6 +1,7 @@
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+import asyncio
 
 from app.core.security import decode_access_token
 from app.db.database import SessionLocal
@@ -11,6 +12,30 @@ from app.services.navigation_rbac import (
     check_page_access,
     resolve_page_routes_for_api_path,
 )
+
+
+def _authorize_request(token: str, page_routes: list[str]) -> JSONResponse | None:
+    user_id = decode_access_token(token)
+    if user_id is None:
+        return JSONResponse(status_code=401, content={"detail": "Could not validate credentials"})
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return JSONResponse(status_code=401, content={"detail": "User not found"})
+        if not user.is_active:
+            return JSONResponse(status_code=403, content={"detail": "Inactive user account"})
+
+        if not any(check_page_access(db, user, page_route) for page_route in page_routes):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": f"Access denied for route '{page_routes[0]}'."},
+            )
+    finally:
+        db.close()
+
+    return None
 
 
 class NavigationRBACMiddleware(BaseHTTPMiddleware):
@@ -40,24 +65,9 @@ class NavigationRBACMiddleware(BaseHTTPMiddleware):
         token = auth_header.split(" ", 1)[1].strip()
         if not token:
             return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
-        user_id = decode_access_token(token)
-        if user_id is None:
-            return JSONResponse(status_code=401, content={"detail": "Could not validate credentials"})
 
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.id == user_id).first()
-            if not user:
-                return JSONResponse(status_code=401, content={"detail": "User not found"})
-            if not user.is_active:
-                return JSONResponse(status_code=403, content={"detail": "Inactive user account"})
-
-            if not any(check_page_access(db, user, page_route) for page_route in page_routes):
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": f"Access denied for route '{page_routes[0]}'."},
-                )
-        finally:
-            db.close()
+        denied = await asyncio.to_thread(_authorize_request, token, page_routes)
+        if denied is not None:
+            return denied
 
         return await call_next(request)

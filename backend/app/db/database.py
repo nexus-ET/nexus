@@ -441,11 +441,9 @@ def sync_schema_columns() -> None:
                 )
                 conn.execute(text("UPDATE users SET business_id = 1 WHERE business_id IS NULL"))
 
-    if not inspector.has_table("audit_logs"):
-        from app.models.audit_log import AuditLog
+    migrate_audit_logs_schema()
 
-        AuditLog.__table__.create(bind=engine, checkfirst=True)
-
+    inspector = inspect(engine)
     if not inspector.has_table("security_audit_runs"):
         from app.models.security_audit_run import SecurityAuditRun
 
@@ -606,6 +604,44 @@ def sync_schema_columns() -> None:
         from app.models.message_reaction import MessageReaction
 
         MessageReaction.__table__.create(bind=engine, checkfirst=True)
+
+
+def migrate_audit_logs_schema() -> None:
+    """Bring audit_logs in line with the current AuditLog model (idempotent)."""
+    from app.models.audit_log import AuditLog
+
+    inspector = inspect(engine)
+    if not inspector.has_table("audit_logs"):
+        AuditLog.__table__.create(bind=engine, checkfirst=True)
+        return
+
+    audit_columns = {column["name"] for column in inspector.get_columns("audit_logs")}
+    with engine.begin() as conn:
+        if "action" in audit_columns and "action_type" not in audit_columns:
+            conn.execute(text("ALTER TABLE audit_logs RENAME COLUMN action TO action_type"))
+            audit_columns.remove("action")
+            audit_columns.add("action_type")
+        if "resource" in audit_columns and "target_resource" not in audit_columns:
+            conn.execute(text("ALTER TABLE audit_logs RENAME COLUMN resource TO target_resource"))
+            audit_columns.remove("resource")
+            audit_columns.add("target_resource")
+        if "details" not in audit_columns:
+            if engine.dialect.name == "postgresql":
+                conn.execute(text("ALTER TABLE audit_logs ADD COLUMN details JSONB"))
+            else:
+                conn.execute(text("ALTER TABLE audit_logs ADD COLUMN details JSON"))
+            audit_columns.add("details")
+            if "detail" in audit_columns and engine.dialect.name == "postgresql":
+                conn.execute(
+                    text(
+                        "UPDATE audit_logs SET details = jsonb_build_object('legacy_detail', detail) "
+                        "WHERE detail IS NOT NULL AND detail <> '' AND details IS NULL"
+                    )
+                )
+        if "session_id" not in audit_columns:
+            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN session_id VARCHAR(128)"))
+        if "sync_mode" not in audit_columns:
+            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN sync_mode VARCHAR(20)"))
 
 
 def safe_close_session(db: Session) -> None:

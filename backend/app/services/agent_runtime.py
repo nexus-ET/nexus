@@ -8,13 +8,14 @@ from sqlalchemy.orm import Session
 
 from app.models.agent_config import AgentConfig
 
-
+# Seed values used only when creating the first agent_configs row (not per-message fallbacks).
 DEFAULT_SYSTEM_PROMPT = (
-    "You are Nexus Admissions AI, a helpful and professional university admissions assistant. "
-    "Answer clearly, qualify student intent, and escalate to a human advisor when the student "
-    "requests a person or when the situation requires manual review."
+    "You are Edutrust Admissions AI, the WhatsApp assistant for Edutrust — an education consultancy "
+    "that guides students to study at foreign universities. Edutrust is NOT a university itself. "
+    "Answer clearly about programs abroad, entry requirements, documents, and visas. "
+    "Escalate to a human advisor when the student requests a person or when manual review is required."
 )
-DEFAULT_AI_MODEL = "gpt-4o-mini"
+DEFAULT_AI_MODEL = "ollama:llama3.1"
 DEFAULT_ESCALATION_THRESHOLD = 70
 DEFAULT_KEYWORDS_TRIGGER = "human,advisor,agent,talk to,person"
 
@@ -28,9 +29,6 @@ class RuntimeAgentConfig:
     keywords_trigger: str
     is_active: bool
     updated_at: Optional[datetime] = None
-
-
-_runtime_cache: RuntimeAgentConfig | None = None
 
 
 def _to_runtime(config: AgentConfig) -> RuntimeAgentConfig:
@@ -60,33 +58,13 @@ def get_or_create_agent_config(db: Session) -> AgentConfig:
     db.add(config)
     db.commit()
     db.refresh(config)
-    refresh_runtime_config(config)
     return config
 
 
-def refresh_runtime_config(config: AgentConfig) -> RuntimeAgentConfig:
-    global _runtime_cache
-    _runtime_cache = _to_runtime(config)
-    return _runtime_cache
-
-
-def get_runtime_agent_config(db: Session | None = None) -> RuntimeAgentConfig:
-    global _runtime_cache
-    if _runtime_cache is not None:
-        return _runtime_cache
-
-    if db is None:
-        return RuntimeAgentConfig(
-            id=0,
-            system_prompt=DEFAULT_SYSTEM_PROMPT,
-            ai_model=DEFAULT_AI_MODEL,
-            escalation_threshold=DEFAULT_ESCALATION_THRESHOLD,
-            keywords_trigger=DEFAULT_KEYWORDS_TRIGGER,
-            is_active=True,
-        )
-
+def get_runtime_agent_config(db: Session) -> RuntimeAgentConfig:
+    """Load the latest Agent Console configuration from the database (no process cache)."""
     config = get_or_create_agent_config(db)
-    return refresh_runtime_config(config)
+    return _to_runtime(config)
 
 
 def update_agent_config(db: Session, payload: dict) -> AgentConfig:
@@ -95,7 +73,6 @@ def update_agent_config(db: Session, payload: dict) -> AgentConfig:
         setattr(config, field, value)
     db.commit()
     db.refresh(config)
-    refresh_runtime_config(config)
     return config
 
 
@@ -103,16 +80,44 @@ def parse_trigger_keywords(keywords_trigger: str) -> list[str]:
     return [word.strip().lower() for word in keywords_trigger.split(",") if word.strip()]
 
 
-def should_escalate_message(message: str, config: RuntimeAgentConfig, ml_score: float = 0.0) -> bool:
+def should_escalate_before_llm(message: str, config: RuntimeAgentConfig) -> bool:
+    """Pre-LLM intercept: inactive agent or keyword triggers only."""
     if not config.is_active:
         return True
 
     normalized = (message or "").lower()
     keywords = parse_trigger_keywords(config.keywords_trigger)
-    if any(keyword in normalized for keyword in keywords):
-        return True
+    return any(keyword in normalized for keyword in keywords)
 
-    if ml_score >= config.escalation_threshold:
-        return True
 
-    return False
+def confidence_percent(ai_confidence: float | None) -> float:
+    if ai_confidence is None:
+        return 0.0
+    return max(0.0, min(100.0, float(ai_confidence) * 100.0))
+
+
+def should_escalate_on_ai_confidence(
+    ai_confidence: float | None,
+    config: RuntimeAgentConfig,
+) -> bool:
+    """
+    Post-LLM check: escalate when model confidence is below escalation_threshold (0–100).
+
+    escalation_threshold is an AI reliability floor, not a lead conversion score.
+    """
+    if not config.is_active:
+        return True
+    if ai_confidence is None:
+        return True
+    return confidence_percent(ai_confidence) < float(config.escalation_threshold)
+
+
+def should_escalate_message(
+    message: str,
+    config: RuntimeAgentConfig,
+    ai_confidence: float | None = None,
+) -> bool:
+    """Combined helper for callers that need pre- and post-LLM escalation in one call."""
+    if should_escalate_before_llm(message, config):
+        return True
+    return should_escalate_on_ai_confidence(ai_confidence, config)

@@ -12,6 +12,10 @@
 #   .\scripts\setup_cloudflare_tunnel.ps1
 #   then set NEXUS_TUNNEL_MODE=named in .env and run .\dev.ps1
 #
+# WhatsApp environment isolation:
+#   Local dev claims the shared WABA webhook on start and hands it back to
+#   NEXUS_WHATSAPP_HANDOFF_URL (nexus-dev) on stop. Only one environment
+#   receives inbound messages at a time.
 param(
     [switch]$Reload,
     [switch]$BackendOnly,

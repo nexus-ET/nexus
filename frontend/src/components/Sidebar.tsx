@@ -6,7 +6,6 @@ import {
   LayoutDashboard,
   Users,
   Bot,
-  BarChart3,
   Settings,
   ShieldAlert,
   Calendar,
@@ -14,11 +13,10 @@ import {
   Menu,
   ChevronDown,
   UserCog,
-  CalendarCheck,
   Radio,
   MessagesSquare,
   FileText,
-  AlertTriangle,
+  Gauge,
 } from 'lucide-react';
 
 interface SidebarUser {
@@ -43,8 +41,11 @@ const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const location = useLocation();
   const { unreadMessageCount, messagingHubPulse, setMessagingHubPulse } = useNexusSession();
+  const [isAppointmentsOpen, setIsAppointmentsOpen] = useState(true);
   const [isLeadsOpen, setIsLeadsOpen] = useState(true);
-  const [isUsersOpen, setIsUsersOpen] = useState(true);
+  const [isUsersOpen, setIsUsersOpen] = useState(false);
+  const [isReportsOpen, setIsReportsOpen] = useState(false);
+  const [isCockpitOpen, setIsCockpitOpen] = useState(false);
 
   const currentPath = normalizePath(location.pathname);
   const isRouteAllowed = (path: string) =>
@@ -60,7 +61,9 @@ const Sidebar: React.FC<SidebarProps> = ({
     { path: '/ai-active', label: 'AI Active' },
     { path: '/handoffs', label: 'Handoffs' },
     { path: '/prospects', label: 'All Prospects' },
+    { path: '/offline-leads', label: 'Offline Leads' },
     { path: '/archive', label: 'Archive' },
+    { path: '/quarantine', label: 'Lead Quarantine' },
   ];
 
   const userNavItems = [
@@ -68,28 +71,34 @@ const Sidebar: React.FC<SidebarProps> = ({
     { path: '/access-control', label: 'Access Control' },
   ];
 
+  const reportNavItems = [
+    { path: '/reports/meta-leads', label: 'Meta Leads' },
+    { path: '/reports/audit-logs', label: 'Audit Logs' },
+    { path: '/analytics', label: 'Analytics' },
+  ];
+
+  const appointmentNavItems = [
+    ...(canAccessMyBookings ? [{ path: '/my-bookings', label: 'My Appointments' }] : []),
+    ...(canAccessCounselling ? [{ path: '/counselling', label: 'Manage Appointments' }] : []),
+  ];
+
   const visibleLeadNavItems = leadNavItems.filter(item => isRouteAllowed(item.path));
   const showLeadsSection = visibleLeadNavItems.length > 0;
   const visibleUserNavItems = userNavItems.filter(item => isRouteAllowed(item.path));
   const showUsersSection = visibleUserNavItems.length > 0;
+  const visibleReportNavItems = reportNavItems.filter(item => isRouteAllowed(item.path));
+  const showReportsSection = visibleReportNavItems.length > 0;
+  const showAppointmentsSection = appointmentNavItems.length > 0;
 
-  const navLinks = [
-    { id: 'agents', icon: Bot, label: 'AI Agents', path: '/agents' },
-    { id: 'analytics', icon: BarChart3, label: 'Analytics', path: '/analytics' },
-    { id: 'reports', icon: FileText, label: 'Reports', path: '/reports' },
-    { id: 'quarantine', icon: AlertTriangle, label: 'Lead Quarantine', path: '/quarantine' },
+  const cockpitNavItems = [
     ...(canAccessCounselling
-      ? [
-          { id: 'counselling', icon: Calendar, label: 'Counselling', path: '/counselling' },
-          { id: 'command-center', icon: Radio, label: 'Command Center', path: '/command-center' },
-        ]
+      ? [{ path: '/command-center', label: 'Mission Control', icon: Radio }]
       : []),
-    ...(canAccessMessaging
-      ? [{ id: 'messaging-hub', icon: MessagesSquare, label: 'Messaging Hub', path: '/messaging-hub' }]
-      : []),
-    { id: 'security-audit', icon: ShieldAlert, label: 'Security Audit', path: '/security-audit' },
-    { id: 'settings', icon: Settings, label: 'Settings', path: '/settings' },
-  ].filter(link => isRouteAllowed(link.path));
+    { path: '/agents', label: 'AI Agent Brain', icon: Bot },
+    { path: '/security-audit', label: 'Security Audit', icon: ShieldAlert },
+    { path: '/settings', label: 'Settings', icon: Settings },
+  ].filter(item => isRouteAllowed(item.path));
+  const showCockpitSection = cockpitNavItems.length > 0;
 
   useEffect(() => {
     if (location.pathname.replace(/\/$/, '') === '/messaging-hub') {
@@ -100,11 +109,17 @@ const Sidebar: React.FC<SidebarProps> = ({
   }, [location.pathname, unreadMessageCount, setMessagingHubPulse]);
 
   useEffect(() => {
-    if (['/ai-active', '/handoffs', '/prospects', '/archive'].some(path => isRouteActive(currentPath, path))) {
+    if (['/my-bookings', '/counselling'].some(path => isRouteActive(currentPath, path))) {
+      setIsAppointmentsOpen(true);
+    }
+    if (['/ai-active', '/handoffs', '/prospects', '/offline-leads', '/archive', '/quarantine'].some(path => isRouteActive(currentPath, path))) {
       setIsLeadsOpen(true);
     }
     if (['/users', '/access-control'].some(path => isRouteActive(currentPath, path))) {
       setIsUsersOpen(true);
+    }
+    if (['/reports/meta-leads', '/reports/audit-logs', '/reports', '/analytics'].some(path => isRouteActive(currentPath, path))) {
+      setIsReportsOpen(true);
     }
   }, [currentPath]);
 
@@ -149,44 +164,61 @@ const Sidebar: React.FC<SidebarProps> = ({
               </Link>
             )}
 
-            {canAccessMyBookings && (
+            {canAccessMessaging && (
               <Link
-                to="/my-bookings"
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all group ${
-                  isRouteActive(currentPath, '/my-bookings')
+                to="/messaging-hub"
+                className={`relative flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all group mt-1 ${
+                  messagingHubPulse && unreadMessageCount > 0 ? 'message-hub-nav-unread' : ''
+                } ${
+                  isRouteActive(currentPath, '/messaging-hub')
                     ? 'bg-card/60 text-text-main border-l-2 border-accent'
                     : 'hover:bg-card/40 hover:text-text-dark-bg'
                 }`}
               >
-                <CalendarCheck size={20} className="text-text-dark-bg" />
-                {isSidebarOpen && <span className="text-sm font-medium tracking-wide">My Bookings</span>}
+                <MessagesSquare
+                  size={20}
+                  className={messagingHubPulse && unreadMessageCount > 0 ? 'text-primary' : 'text-text-dark-bg'}
+                />
+                {isSidebarOpen && (
+                  <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                    <span className="text-sm font-medium tracking-wide">Chat</span>
+                    {unreadMessageCount > 0 && (
+                      <span className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                        {unreadMessageCount > 99 ? '99+' : unreadMessageCount}
+                      </span>
+                    )}
+                  </span>
+                )}
+                {!isSidebarOpen && unreadMessageCount > 0 && (
+                  <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-red-500" aria-hidden />
+                )}
               </Link>
             )}
 
-            {showUsersSection && (
+            {showAppointmentsSection && (
               <div className="pt-2">
                 <button
                   type="button"
-                  onClick={() => isSidebarOpen && setIsUsersOpen(!isUsersOpen)}
+                  onClick={() => isSidebarOpen && setIsAppointmentsOpen(!isAppointmentsOpen)}
                   className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all group hover:bg-card/40 hover:text-text-dark-bg mt-1 ${
                     !isSidebarOpen ? 'justify-center' : ''
                   }`}
                 >
                   <div className="flex items-center gap-3">
-                    <UserCog size={20} className="text-text-dark-bg" />
-                    {isSidebarOpen && <span className="text-sm font-medium">Users</span>}
+                    <Calendar size={20} className="text-text-dark-bg" />
+                    {isSidebarOpen && <span className="text-sm font-medium">Appointments</span>}
                   </div>
                   {isSidebarOpen && (
                     <ChevronDown
                       size={14}
-                      className={`transition-transform duration-200 ${isUsersOpen ? 'rotate-180' : ''}`}
+                      className={`transition-transform duration-200 ${isAppointmentsOpen ? 'rotate-180' : ''}`}
                     />
                   )}
                 </button>
 
-                {isSidebarOpen && isUsersOpen && (
+                {isSidebarOpen && isAppointmentsOpen && (
                   <div className="mt-1 ml-4 pl-4 border-l border-border-subtle space-y-1">
-                    {visibleUserNavItems.map(item => (
+                    {appointmentNavItems.map(item => (
                       <Link
                         key={item.path}
                         to={item.path}
@@ -245,40 +277,130 @@ const Sidebar: React.FC<SidebarProps> = ({
               </div>
             )}
 
-            {navLinks.map(link => {
-              const isMessagingHub = link.id === 'messaging-hub';
-              const showUnreadBadge = isMessagingHub && unreadMessageCount > 0;
-              const pulseNav = isMessagingHub && messagingHubPulse && unreadMessageCount > 0;
+            {showUsersSection && (
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => isSidebarOpen && setIsUsersOpen(!isUsersOpen)}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all group hover:bg-card/40 hover:text-text-dark-bg mt-1 ${
+                    !isSidebarOpen ? 'justify-center' : ''
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <UserCog size={20} className="text-text-dark-bg" />
+                    {isSidebarOpen && <span className="text-sm font-medium">Users</span>}
+                  </div>
+                  {isSidebarOpen && (
+                    <ChevronDown
+                      size={14}
+                      className={`transition-transform duration-200 ${isUsersOpen ? 'rotate-180' : ''}`}
+                    />
+                  )}
+                </button>
 
-              return (
-              <Link
-                key={link.id}
-                to={link.path}
-                className={`relative flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all group ${
-                  pulseNav ? 'message-hub-nav-unread' : ''
-                } ${
-                  isRouteActive(currentPath, link.path)
-                    ? 'bg-card/60 text-text-main border-l-2 border-accent'
-                    : 'hover:bg-card/40 hover:text-text-dark-bg'
-                }`}
-              >
-                <link.icon size={20} className={pulseNav ? 'text-primary' : 'text-text-dark-bg'} />
-                {isSidebarOpen && (
-                  <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
-                    <span className="text-sm font-medium tracking-wide">{link.label}</span>
-                    {showUnreadBadge && (
-                      <span className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
-                        {unreadMessageCount > 99 ? '99+' : unreadMessageCount}
-                      </span>
-                    )}
-                  </span>
+                {isSidebarOpen && isUsersOpen && (
+                  <div className="mt-1 ml-4 pl-4 border-l border-border-subtle space-y-1">
+                    {visibleUserNavItems.map(item => (
+                      <Link
+                        key={item.path}
+                        to={item.path}
+                        className={`flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-all ${
+                          isRouteActive(currentPath, item.path)
+                            ? 'bg-card/60 text-text-main border-l-2 border-accent'
+                            : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
+                        }`}
+                      >
+                        <span>{item.label}</span>
+                      </Link>
+                    ))}
+                  </div>
                 )}
-                {!isSidebarOpen && showUnreadBadge && (
-                  <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-red-500" aria-hidden />
+              </div>
+            )}
+
+            {showReportsSection && (
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => isSidebarOpen && setIsReportsOpen(!isReportsOpen)}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all group hover:bg-card/40 hover:text-text-dark-bg ${
+                    !isSidebarOpen ? 'justify-center' : ''
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <FileText size={20} className="text-text-dark-bg" />
+                    {isSidebarOpen && <span className="text-sm font-medium">Reports</span>}
+                  </div>
+                  {isSidebarOpen && (
+                    <ChevronDown
+                      size={14}
+                      className={`transition-transform duration-200 ${isReportsOpen ? 'rotate-180' : ''}`}
+                    />
+                  )}
+                </button>
+
+                {isSidebarOpen && isReportsOpen && (
+                  <div className="mt-1 ml-4 pl-4 border-l border-border-subtle space-y-1">
+                    {visibleReportNavItems.map(item => (
+                      <Link
+                        key={item.path}
+                        to={item.path}
+                        className={`flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-all ${
+                          isRouteActive(currentPath, item.path)
+                            ? 'bg-card/60 text-text-main border-l-2 border-accent'
+                            : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
+                        }`}
+                      >
+                        <span>{item.label}</span>
+                      </Link>
+                    ))}
+                  </div>
                 )}
-              </Link>
-            );
-            })}
+              </div>
+            )}
+
+            {showCockpitSection && (
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => isSidebarOpen && setIsCockpitOpen(!isCockpitOpen)}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all group hover:bg-card/40 hover:text-text-dark-bg mt-1 ${
+                    !isSidebarOpen ? 'justify-center' : ''
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Gauge size={20} className="text-text-dark-bg" />
+                    {isSidebarOpen && <span className="text-sm font-medium">Cockpit</span>}
+                  </div>
+                  {isSidebarOpen && (
+                    <ChevronDown
+                      size={14}
+                      className={`transition-transform duration-200 ${isCockpitOpen ? 'rotate-180' : ''}`}
+                    />
+                  )}
+                </button>
+
+                {isSidebarOpen && isCockpitOpen && (
+                  <div className="mt-1 ml-4 pl-4 border-l border-border-subtle space-y-1">
+                    {cockpitNavItems.map(item => (
+                      <Link
+                        key={item.path}
+                        to={item.path}
+                        className={`flex items-center gap-2 px-3 py-2 rounded-md text-xs font-medium transition-all ${
+                          isRouteActive(currentPath, item.path)
+                            ? 'bg-card/60 text-text-main border-l-2 border-accent'
+                            : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
+                        }`}
+                      >
+                        <item.icon size={14} />
+                        <span>{item.label}</span>
+                      </Link>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
           </>
         )}
       </nav>

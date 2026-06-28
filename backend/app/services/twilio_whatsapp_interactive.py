@@ -195,7 +195,7 @@ def _build_types_payload(payload: InteractivePayload) -> dict | None:
     return None
 
 
-def _build_text_fallback(payload: InteractivePayload) -> str:
+def build_text_fallback(payload: InteractivePayload) -> str:
     lines = [payload.body, "Reply with the number of your choice:\n"]
 
     if isinstance(payload, ListPickerPayload):
@@ -209,3 +209,7 @@ def _build_text_fallback(payload: InteractivePayload) -> str:
 
     lines.append("\nExample: reply *1* for the first option.")
     return "\n".join(lines)
+
+
+def _build_text_fallback(payload: InteractivePayload) -> str:
+    return build_text_fallback(payload)

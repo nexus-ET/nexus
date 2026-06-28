@@ -13,6 +13,7 @@ def register_all_models() -> None:
     from app.models.candidate_task import CandidateTask  # noqa: F401
     from app.models.client import Client  # noqa: F401
     from app.models.consultation_slot import ConsultationSlot  # noqa: F401
+    from app.models.conversation_audit_log import ConversationAuditLog  # noqa: F401
     from app.models.conversation import Conversation  # noqa: F401
     from app.models.conversation_participant import ConversationParticipant  # noqa: F401
     from app.models.counselling_booking import CounsellingBooking  # noqa: F401

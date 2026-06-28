@@ -722,7 +722,7 @@ const CounsellingDashboard: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold text-text-main flex items-center gap-2">
             <Calendar size={24} />
-            Counselling Dashboard
+            Manage Appointments
           </h1>
           <p className="text-sm text-text-muted mt-1">
             Queue columns show the first 3 candidates per slot (FIFO). Up to{' '}

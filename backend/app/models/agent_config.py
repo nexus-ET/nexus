@@ -10,7 +10,7 @@ class AgentConfig(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     system_prompt = Column(Text, nullable=False)
-    ai_model = Column(String(100), nullable=False, default="gpt-4o-mini")
+    ai_model = Column(String(100), nullable=False, default="ollama:llama3.1")
     escalation_threshold = Column(Integer, nullable=False, default=70)
     keywords_trigger = Column(String(500), nullable=False, default="human,advisor,agent,talk to,person")
     is_active = Column(Boolean, default=True, nullable=False)

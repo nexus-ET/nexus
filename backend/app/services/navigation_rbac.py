@@ -9,23 +9,25 @@ from app.models.user import User
 
 DEFAULT_NAVIGATION_PAGES: list[dict[str, str | int | bool]] = [
     {"name": "Dashboard", "route": "/", "icon": "LayoutDashboard", "sort_order": 1},
-    {"name": "My Bookings", "route": "/my-bookings", "icon": "CalendarCheck", "sort_order": 2},
-    {"name": "Manage Users", "route": "/users", "icon": "UserCog", "sort_order": 3},
-    {"name": "AI Active", "route": "/ai-active", "icon": "Bot", "sort_order": 4},
-    {"name": "Handoffs", "route": "/handoffs", "icon": "Users", "sort_order": 5},
-    {"name": "All Prospects", "route": "/prospects", "icon": "Users", "sort_order": 6},
-    {"name": "Archive", "route": "/archive", "icon": "Archive", "sort_order": 7},
-    {"name": "AI Agents", "route": "/agents", "icon": "Bot", "sort_order": 8},
-    {"name": "Analytics", "route": "/analytics", "icon": "BarChart3", "sort_order": 9},
-    {"name": "Counselling", "route": "/counselling", "icon": "Calendar", "sort_order": 10},
-    {"name": "Command Center", "route": "/command-center", "icon": "Radio", "sort_order": 11},
-    {"name": "Messaging Hub", "route": "/messaging-hub", "icon": "MessagesSquare", "sort_order": 12},
+    {"name": "Chat", "route": "/messaging-hub", "icon": "MessagesSquare", "sort_order": 2},
+    {"name": "My Appointments", "route": "/my-bookings", "icon": "CalendarCheck", "sort_order": 3},
+    {"name": "Manage Appointments", "route": "/counselling", "icon": "Calendar", "sort_order": 4},
+    {"name": "Manage Users", "route": "/users", "icon": "UserCog", "sort_order": 5},
+    {"name": "AI Active", "route": "/ai-active", "icon": "Bot", "sort_order": 6},
+    {"name": "Handoffs", "route": "/handoffs", "icon": "Users", "sort_order": 7},
+    {"name": "All Prospects", "route": "/prospects", "icon": "Users", "sort_order": 8},
+    {"name": "Offline Leads", "route": "/offline-leads", "icon": "UserPlus", "sort_order": 9},
+    {"name": "Archive", "route": "/archive", "icon": "Archive", "sort_order": 10},
+    {"name": "AI Agent Brain", "route": "/agents", "icon": "Bot", "sort_order": 11},
+    {"name": "Mission Control", "route": "/command-center", "icon": "Radio", "sort_order": 12},
     {"name": "My Profile", "route": "/my-profile", "icon": "UserCircle", "sort_order": 13},
     {"name": "Settings", "route": "/settings", "icon": "Settings", "sort_order": 14},
     {"name": "Access Control", "route": "/access-control", "icon": "ShieldCheck", "sort_order": 15},
     {"name": "Security Audit", "route": "/security-audit", "icon": "ShieldAlert", "sort_order": 16},
-    {"name": "Reports", "route": "/reports", "icon": "FileText", "sort_order": 17},
-    {"name": "Lead Quarantine", "route": "/quarantine", "icon": "ShieldAlert", "sort_order": 18},
+    {"name": "Meta Leads", "route": "/reports/meta-leads", "icon": "FileText", "sort_order": 17},
+    {"name": "Analytics", "route": "/analytics", "icon": "BarChart3", "sort_order": 18},
+    {"name": "Audit Logs", "route": "/reports/audit-logs", "icon": "ScrollText", "sort_order": 19},
+    {"name": "Lead Quarantine", "route": "/quarantine", "icon": "ShieldAlert", "sort_order": 20},
 ]
 
 DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
@@ -36,6 +38,7 @@ DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
         "/ai-active",
         "/handoffs",
         "/prospects",
+        "/offline-leads",
         "/archive",
         "/agents",
         "/analytics",
@@ -50,6 +53,7 @@ DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
         "/ai-active",
         "/handoffs",
         "/prospects",
+        "/offline-leads",
         "/archive",
         "/analytics",
         "/messaging-hub",
@@ -61,6 +65,7 @@ DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
         "/ai-active",
         "/handoffs",
         "/prospects",
+        "/offline-leads",
         "/archive",
         "/messaging-hub",
         "/my-bookings",
@@ -72,6 +77,7 @@ API_ROUTE_TO_PAGE: list[tuple[str, str]] = [
     ("/api/v1/dashboard", "/"),
     ("/api/v1/users", "/users"),
     ("/api/v1/agents", "/agents"),
+    ("/api/v1/audit", "/agents"),
     ("/api/v1/analytics", "/analytics"),
     ("/api/v1/bookings/mine", "/my-bookings"),
     ("/api/v1/admins/available", "/counselling"),
@@ -85,6 +91,7 @@ API_ROUTE_TO_PAGE: list[tuple[str, str]] = [
     ("/api/v1/leads/queue", "/handoffs"),
     ("/api/v1/leads/all", "/prospects"),
     ("/api/v1/leads/prospects", "/prospects"),
+    ("/api/v1/leads/offline", "/offline-leads"),
     ("/api/v1/leads/archive", "/archive"),
     ("/api/v1/leads/pipeline", "/"),
     ("/api/v1/leads", "/ai-active"),
@@ -95,17 +102,19 @@ API_ROUTE_TO_PAGE: list[tuple[str, str]] = [
     ("/api/v1/settings/business-timezone", "/"),
     ("/api/v1/settings/business-email-domain", "/users"),
     ("/api/v1/security-audit", "/security-audit"),
-    ("/api/v1/reports", "/reports"),
+    ("/api/v1/reports", "/reports/meta-leads"),
     ("/api/v1/admin/quarantine", "/quarantine"),
+    ("/api/v1/admin/audit-logs", "/reports/audit-logs"),
     ("/api/v1/pages", "/access-control"),
     ("/api/v1/permissions", "/access-control"),
     ("/api/v1/command-center", "/command-center"),
 ]
 
-LEAD_MUTATION_PAGE_ROUTES = ["/ai-active", "/handoffs", "/prospects", "/archive"]
+LEAD_MUTATION_PAGE_ROUTES = ["/ai-active", "/handoffs", "/prospects", "/offline-leads", "/archive"]
 
 RBAC_EXEMPT_PREFIXES = (
     "/api/v1/login",
+    "/api/v1/logout",
     "/api/v1/webhooks",
     "/api/v1/leads/webhook",
     "/api/v1/ws",
@@ -118,6 +127,12 @@ RBAC_PUBLIC_AUTH_PREFIXES = (
     "/api/v1/permissions/my-role",
     "/api/v1/users/me",
     "/api/v1/settings/business-timezone",
+    "/api/v1/settings/whatsapp-outreach",
+    "/api/v1/countries",
+    "/api/v1/education-degrees",
+    "/api/v1/gpa-cgpa-scores",
+    "/api/v1/target-programs",
+    "/api/v1/audit-events",
 )
 
 
@@ -151,6 +166,14 @@ def seed_navigation_pages(db: Session) -> None:
     )
     if old_roster_page:
         old_roster_page.is_active = False
+    for legacy_route in ("/reports", "/audit-logs"):
+        legacy_page = (
+            db.query(NavigationPage)
+            .filter(NavigationPage.route == legacy_route)
+            .first()
+        )
+        if legacy_page:
+            legacy_page.is_active = False
     db.commit()
 
 
@@ -224,6 +247,9 @@ def resolve_page_route_for_api_path(path: str) -> str | None:
 
 
 def resolve_page_routes_for_api_path(path: str) -> list[str]:
+    if re.search(r"^/api/v1/leads/offline/\d+", path):
+        return ["/offline-leads"]
+
     if re.search(r"^/api/v1/leads/\d+/status", path):
         return LEAD_MUTATION_PAGE_ROUTES
 

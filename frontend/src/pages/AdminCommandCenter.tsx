@@ -80,7 +80,7 @@ const CommandCenterLayout: React.FC = () => {
   return (
     <div className="space-y-4 p-4 md:p-6">
       <div>
-        <h1 className="text-2xl font-bold text-[#03045e]">Nexus Command Center</h1>
+        <h1 className="text-2xl font-bold text-[#03045e]">Mission Control</h1>
         <p className="text-sm text-[#386fa4]">
           Real-time operational hub for counselling, pipeline execution, and team collaboration.
         </p>

@@ -97,12 +97,72 @@ class DevConfig:
     tunnel_name: str
     tunnel_config_path: Path | None
     public_tunnel_base: str | None
+    tunnel_edge_ip_version: str | None
 
 
 def _parse_env_bool(value: str | None, default: bool) -> bool:
     if value is None or value.strip() == "":
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _whatsapp_auto_sync_enabled(env: dict[str, str]) -> bool:
+    raw = os.getenv("NEXUS_WHATSAPP_AUTO_SYNC") or env.get("NEXUS_WHATSAPP_AUTO_SYNC")
+    return _parse_env_bool(raw, default=True)
+
+
+def _sync_whatsapp_webhook_for_dev(tunnel_url: str | None = None) -> None:
+    python = sys.executable
+    script = BACKEND_ROOT / "scripts" / "sync_whatsapp_webhook.py"
+    if not script.is_file():
+        return
+    base = (tunnel_url or "").strip().rstrip("/")
+    cmd = [python, str(script)]
+    if base:
+        cmd.extend(["--callback-url", f"{base}/api/webhook"])
+    print("[whatsapp] Registering inbound webhook for this development environment...")
+    result = subprocess.run(
+        cmd,
+        cwd=str(BACKEND_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print("[whatsapp] Webhook registered for local development.")
+        if result.stdout.strip():
+            print(result.stdout.strip())
+    else:
+        print("[whatsapp] WARNING: webhook sync failed.", file=sys.stderr)
+        if result.stderr.strip():
+            print(result.stderr.strip(), file=sys.stderr)
+        if result.stdout.strip():
+            print(result.stdout.strip(), file=sys.stderr)
+
+
+def _schedule_whatsapp_webhook_sync(tunnel_url: str) -> None:
+    """Wait for the quick tunnel to become reachable, then register with Meta."""
+
+    def _worker() -> None:
+        time.sleep(3)
+        _sync_whatsapp_webhook_for_dev(tunnel_url)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _release_whatsapp_webhook_handoff(env: dict[str, str]) -> None:
+    handoff = (os.getenv("NEXUS_WHATSAPP_HANDOFF_URL") or env.get("NEXUS_WHATSAPP_HANDOFF_URL") or "").strip()
+    if not handoff:
+        return
+    python = sys.executable
+    script = BACKEND_ROOT / "scripts" / "sync_whatsapp_webhook.py"
+    if not script.is_file():
+        return
+    print(f"[whatsapp] Handing webhook back to {handoff.rstrip('/')}/api/webhook ...")
+    subprocess.run(
+        [python, str(script), "--release"],
+        cwd=str(BACKEND_ROOT),
+        check=False,
+    )
 
 
 def _load_env_file() -> dict[str, str]:
@@ -149,6 +209,18 @@ def load_dev_config(args: argparse.Namespace) -> DevConfig:
     config_raw = _env_str(env, "NEXUS_CLOUDFLARE_CONFIG", "")
     tunnel_config_path = Path(config_raw) if config_raw else BACKEND_ROOT / "cloudflared" / "config.yml"
     public_base = (os.getenv("PUBLIC_TUNNEL_BASE") or env.get("PUBLIC_TUNNEL_BASE") or "").strip() or None
+    edge_raw = (
+        os.getenv("NEXUS_TUNNEL_EDGE_IP_VERSION")
+        or env.get("NEXUS_TUNNEL_EDGE_IP_VERSION")
+        or ""
+    ).strip().lower()
+    if edge_raw in {"4", "6", "auto"}:
+        tunnel_edge_ip_version: str | None = edge_raw
+    elif tunnel_mode == "quick" and sys.platform == "win32":
+        # Quick tunnels often fail over IPv6 on Windows ("control stream encountered a failure").
+        tunnel_edge_ip_version = "4"
+    else:
+        tunnel_edge_ip_version = None
     return DevConfig(
         host=host,
         backend_port=backend_port,
@@ -158,6 +230,7 @@ def load_dev_config(args: argparse.Namespace) -> DevConfig:
         tunnel_name=tunnel_name,
         tunnel_config_path=tunnel_config_path,
         public_tunnel_base=public_base,
+        tunnel_edge_ip_version=tunnel_edge_ip_version,
     )
 
 
@@ -449,19 +522,23 @@ def build_tunnel_cmd(config: DevConfig) -> list[str]:
         raise RuntimeError("cloudflared not found in PATH — install it or use --no-tunnel.")
     if config.tunnel_mode == "named":
         _validate_named_tunnel(config)
-        return [
+        cmd = [
             cloudflared,
             "tunnel",
             "--config",
             str(config.tunnel_config_path),
             "run",
         ]
-    return [
-        cloudflared,
-        "tunnel",
-        "--url",
-        f"http://{config.host}:{config.backend_port}",
-    ]
+    else:
+        cmd = [
+            cloudflared,
+            "tunnel",
+            "--url",
+            f"http://{config.host}:{config.backend_port}",
+        ]
+    if config.tunnel_edge_ip_version:
+        cmd.extend(["--edge-ip-version", config.tunnel_edge_ip_version])
+    return cmd
 
 
 def _popen(cmd: list[str], *, cwd: Path, name: str) -> subprocess.Popen[str]:
@@ -578,6 +655,7 @@ def run_stack(args: argparse.Namespace) -> int:
 
 def _run_stack_inner(args: argparse.Namespace) -> int:
     config = load_dev_config(args)
+    env = _load_env_file()
     backend_only = args.backend_only
     start_frontend = not backend_only and not args.no_frontend
     start_tunnel = config.tunnel_enabled
@@ -606,6 +684,8 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
             if config.tunnel_mode == "named"
             else ", quick tunnel"
         )
+        if config.tunnel_edge_ip_version:
+            tunnel_label += f", edge IPv{config.tunnel_edge_ip_version}"
     print(
         "NEXUS dev stack:"
         f" backend http://{config.host}:{config.backend_port}"
@@ -623,10 +703,10 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
             tunnel_url = match.group(0)
             _update_env_key("PUBLIC_TUNNEL_BASE", tunnel_url)
             print(f"[tunnel] PUBLIC_TUNNEL_BASE updated in .env → {tunnel_url}")
-            print("[tunnel] Meta WhatsApp webhook callback URL (paste in Meta Developer Console):")
-            print(f"[tunnel]   {tunnel_url}/api/webhook")
-            print("[tunnel] Verify token must match WEBHOOK_VERIFY_TOKEN in backend/.env")
-            print("[tunnel] Subscribe to the 'messages' field on your WhatsApp Business Account.")
+            if _whatsapp_auto_sync_enabled(env):
+                _schedule_whatsapp_webhook_sync(tunnel_url)
+            else:
+                _print_meta_webhook_hint(tunnel_url)
 
     try:
         backend_proc = _popen(
@@ -671,7 +751,10 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
                     return 1
                 assert config.public_tunnel_base
                 print(f"[tunnel] Stable URL: {config.public_tunnel_base.rstrip('/')}")
-                _print_meta_webhook_hint(config.public_tunnel_base)
+                if _whatsapp_auto_sync_enabled(env):
+                    _sync_whatsapp_webhook_for_dev(config.public_tunnel_base.rstrip("/"))
+                else:
+                    _print_meta_webhook_hint(config.public_tunnel_base)
             tunnel_proc = _popen(
                 build_tunnel_cmd(config),
                 cwd=BACKEND_ROOT,
@@ -701,6 +784,8 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
             if proc.poll() is None:
                 print(f"[{name}] stopping...")
                 _stop_pid(proc.pid)
+        if start_tunnel and _whatsapp_auto_sync_enabled(env):
+            _release_whatsapp_webhook_handoff(env)
 
 
 def main() -> int:

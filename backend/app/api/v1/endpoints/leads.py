@@ -31,10 +31,24 @@ from app.services.phone_utils import (
     extract_inbound_whatsapp_text,
     find_lead_by_phone,
 )
-from app.services.admissions_intake_flow import build_intake_profile_summary, is_booking_management_message
+from app.services.admissions_intake_flow import build_intake_profile_summary
 from app.services.prospects_service import get_prospects_summary, list_prospects_keyset, resolve_platform_badge
+from app.schemas.offline_lead import (
+    OfflineLeadCreate,
+    OfflineLeadDuplicateCheckResponse,
+    OfflineLeadUpdate,
+    SortDirection,
+    SortField,
+)
+from app.services.offline_leads_service import (
+    build_offline_lead_list_item,
+    check_offline_lead_duplicates,
+    create_offline_lead,
+    list_offline_leads,
+    update_offline_lead,
+)
 from app.services.messaging import WhatsAppDeliveryError
-from app.services.twilio_ai_conversation import handle_ai_active_inbound, initiate_ai_outreach
+from app.services.twilio_ai_conversation import initiate_ai_outreach
 from app.services.twilio_outbound import dispatch_live_whatsapp_message
 
 router = APIRouter()
@@ -117,12 +131,15 @@ def normalize_lead_stage(stage) -> str:
 
 
 def build_universal_lead_payload(lead: Lead, db: Session) -> dict:
-    all_msgs = (
-        db.query(Message)
-        .filter(Message.lead_id == lead.id)
-        .order_by(Message.created_at.asc())
-        .all()
-    )
+    if "messages" in lead.__dict__ and lead.__dict__["messages"] is not None:
+        all_msgs = sorted(lead.messages, key=lambda message: message.created_at or datetime.min)
+    else:
+        all_msgs = (
+            db.query(Message)
+            .filter(Message.lead_id == lead.id)
+            .order_by(Message.created_at.asc())
+            .all()
+        )
     
     unread_count = sum(1 for m in all_msgs if m.sender in ["student", "candidate"] and not m.is_read)
     total_received = sum(1 for m in all_msgs if m.sender in ["student", "candidate"])
@@ -279,8 +296,16 @@ def build_active_queue_item(lead: Lead, stats: dict | None = None) -> dict:
         "created_at": base_time,
         "last_message": fallback_text,
         "messages": [],
-        "intake_step": getattr(lead, "intake_step", None),
-        "intake_complete": getattr(lead, "intake_step", None) == "COMPLETE",
+        **{
+            key: value
+            for key, value in build_intake_profile_summary(lead, db=None).items()
+            if key
+            not in {
+                "available_consultation_dates",
+                "available_consultation_times",
+                "selected_consultation_date",
+            }
+        },
     }
 
 
@@ -322,6 +347,8 @@ def build_handoff_queue_item(lead: Lead, stats: dict | None = None) -> dict:
         "last_message": fallback_text,
         "academic_summary": summary or None,
         "last_interaction_summary": summary or None,
+        "handoff_ai_confidence": getattr(lead, "handoff_ai_confidence", None),
+        "handoff_reason": getattr(lead, "handoff_reason", None),
         "messages": [],
     }
 
@@ -441,20 +468,13 @@ async def handle_inbound_whatsapp_reply(request: Request, db: Session = Depends(
 
         db.refresh(lead)
 
-        if (lead.is_human_locked or normalize_lead_stage(lead.stage) == "HANDOFF") and not (
-            is_booking_management_message(incoming_msg_raw, lead, str(flow_data_raw) if flow_data_raw else None)
-        ):
-            ensure_handoff_for_inbound(db, lead)
-            touch_lead_activity(db, lead)
-            db.commit()
-            twiml = MessagingResponse()
-            return Response(content=str(twiml), media_type="application/xml")
+        from app.services.messaging import dispatch_inbound_whatsapp_ai
 
-        await handle_ai_active_inbound(
+        await dispatch_inbound_whatsapp_ai(
             db,
             lead,
-            incoming_msg_raw,
             sender_phone_clean,
+            incoming_msg_raw,
             flow_data=str(flow_data_raw) if flow_data_raw else None,
         )
 
@@ -610,7 +630,7 @@ async def handle_external_social_webhook(request: Request, db: Session = Depends
 @router.get("/active/")
 @router.get("/active-stream")
 @router.get("/active-stream/")
-async def get_active_leads_queue(db: Session = Depends(get_db)):
+def get_active_leads_queue(db: Session = Depends(get_db)):
     """Returns leads currently managed by the AI agent (not in handoff)."""
     try:
         active_leads = (
@@ -674,6 +694,85 @@ async def get_prospects_paginated(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+@router.get("/offline")
+@router.get("/offline/")
+def get_offline_leads(
+    db: Session = Depends(get_db),
+    page: int = 1,
+    page_size: int = 25,
+    q: str | None = None,
+    status: str | None = None,
+    sort_by: SortField = "created_at",
+    sort_dir: SortDirection = "desc",
+):
+    """Server-side paginated list of offline-sourced leads."""
+    try:
+        return list_offline_leads(
+            db,
+            page=page,
+            page_size=page_size,
+            q=q,
+            status=status,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/offline/check-duplicates", response_model=OfflineLeadDuplicateCheckResponse)
+@router.get("/offline/check-duplicates/", response_model=OfflineLeadDuplicateCheckResponse)
+def get_offline_lead_duplicate_check(
+    db: Session = Depends(get_db),
+    email: str = "",
+    phone_country_iso2: str = "",
+    phone_local: str = "",
+    exclude_lead_id: int | None = None,
+):
+    """Check whether email or phone is already registered before saving an offline lead."""
+    try:
+        return check_offline_lead_duplicates(
+            db,
+            email=email,
+            phone_country_iso2=phone_country_iso2,
+            phone_local=phone_local,
+            exclude_lead_id=exclude_lead_id,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/offline", status_code=status.HTTP_201_CREATED)
+@router.post("/offline/", status_code=status.HTTP_201_CREATED)
+def post_offline_lead(payload: OfflineLeadCreate, db: Session = Depends(get_db)):
+    """Create a manually entered offline lead (defaults: source=Offline, stage=AI Active)."""
+    try:
+        lead = create_offline_lead(db, payload)
+
+        return build_offline_lead_list_item(lead, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.patch("/offline/{lead_id}")
+@router.patch("/offline/{lead_id}/")
+def patch_offline_lead(lead_id: int, payload: OfflineLeadUpdate, db: Session = Depends(get_db)):
+    """Update a manually entered offline lead."""
+    try:
+        lead = update_offline_lead(db, lead_id, payload)
+        return build_offline_lead_list_item(lead, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
 @router.get("/all")
 @router.get("")
 @router.get("/")
@@ -715,7 +814,7 @@ async def serve_whatsapp_attachment(file_name: str):
 
 @router.get("/{lead_id}")
 @router.get("/{lead_id}/")
-async def get_lead_detail(lead_id: int, db: Session = Depends(get_db)):
+def get_lead_detail(lead_id: int, db: Session = Depends(get_db)):
     lead = (
         db.query(Lead)
         .options(joinedload(Lead.messages))

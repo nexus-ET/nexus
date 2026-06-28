@@ -76,9 +76,11 @@ def _extract_message_text(message: dict[str, Any]) -> str:
     if message_type == "interactive":
         interactive = message.get("interactive") or {}
         if "button_reply" in interactive:
-            return (interactive.get("button_reply") or {}).get("title") or ""
+            reply = interactive.get("button_reply") or {}
+            return (reply.get("id") or reply.get("title") or "").strip()
         if "list_reply" in interactive:
-            return (interactive.get("list_reply") or {}).get("title") or ""
+            reply = interactive.get("list_reply") or {}
+            return (reply.get("id") or reply.get("title") or "").strip()
     return ""
 
 

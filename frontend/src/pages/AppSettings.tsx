@@ -3,6 +3,8 @@ import { Building2, CheckCircle2, Loader2, RefreshCw, Save, Settings } from 'luc
 import PublicHolidayCalendar from '../components/PublicHolidayCalendar';
 import { apiFetch } from '../utils/api';
 import { clearBusinessTimezoneCache } from '../utils/timezone';
+import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
+import { useCountries } from '../hooks/useCountries';
 
 type SettingValueType = 'text' | 'number' | 'boolean' | 'time' | 'working_days' | 'timezone';
 
@@ -81,18 +83,6 @@ const EMPTY_BUSINESS_PROFILE_DRAFT: BusinessProfileDraft = {
 
 const DOMAIN_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
 const OFFICE_PHONE_PATTERN = /^\+?[0-9()\-\s.]{7,50}$/;
-
-const DEFAULT_COUNTRY_OPTIONS = [
-  { value: 'India', label: 'India' },
-  { value: 'United States', label: 'United States' },
-  { value: 'United Kingdom', label: 'United Kingdom' },
-  { value: 'Canada', label: 'Canada' },
-  { value: 'Australia', label: 'Australia' },
-  { value: 'United Arab Emirates', label: 'United Arab Emirates' },
-  { value: 'Singapore', label: 'Singapore' },
-  { value: 'Germany', label: 'Germany' },
-  { value: 'France', label: 'France' },
-] as const;
 
 const isValidWebUrl = (value: string): boolean => {
   try {
@@ -191,6 +181,8 @@ const formatModifiedBy = (setting: DynamicSetting): string => {
 };
 
 const AppSettings: React.FC = () => {
+  const { formatDateTime, refreshTimezone } = useBusinessTimezone();
+  const { countries } = useCountries();
   const [settings, setSettings] = useState<DynamicSetting[]>([]);
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
   const [businessProfile, setBusinessProfile] = useState<BusinessProfile | null>(null);
@@ -369,6 +361,7 @@ const AppSettings: React.FC = () => {
       setSuccessMessage('Settings saved successfully.');
       if (dirtyKeys.includes('BUSINESS_TIMEZONE')) {
         clearBusinessTimezoneCache();
+        void refreshTimezone();
       }
     } catch (err: unknown) {
       setSettings(previousSettings);
@@ -450,7 +443,7 @@ const AppSettings: React.FC = () => {
   };
 
   const countrySelectOptions = useMemo(() => {
-    const options = DEFAULT_COUNTRY_OPTIONS.map(option => ({ ...option }));
+    const options = countries.map(country => ({ value: country.name, label: country.name }));
     const savedCountry = businessProfileDraft.country.trim();
     if (
       savedCountry &&
@@ -459,7 +452,7 @@ const AppSettings: React.FC = () => {
       options.push({ value: savedCountry, label: savedCountry });
     }
     return options;
-  }, [businessProfileDraft.country]);
+  }, [countries, businessProfileDraft.country]);
 
   const renderValueInput = (setting: DynamicSetting) => {
     const value = draftValues[setting.key] ?? '';
@@ -665,7 +658,7 @@ const AppSettings: React.FC = () => {
               <p>
                 Last updated:{' '}
                 {businessProfile?.updated_at
-                  ? new Date(businessProfile.updated_at).toLocaleString()
+                  ? formatDateTime(businessProfile.updated_at)
                   : 'Not saved yet'}
               </p>
             </div>
@@ -777,7 +770,7 @@ const AppSettings: React.FC = () => {
                       <td className="px-4 py-4 align-top">{renderValueInput(setting)}</td>
                       <td className="px-4 py-4 align-top text-xs text-text-muted hidden lg:table-cell">
                         {setting.updated_at
-                          ? new Date(setting.updated_at).toLocaleString()
+                          ? formatDateTime(setting.updated_at)
                           : 'Not saved yet'}
                       </td>
                       <td className="px-4 py-4 align-top text-xs text-text-muted hidden lg:table-cell">

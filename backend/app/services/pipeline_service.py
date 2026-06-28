@@ -385,7 +385,7 @@ def process_stalled_document_reminders(db: Session) -> int:
 
         first_name = (lead.full_name or "there").split()[0]
         message = (
-            f"Hi {first_name}, friendly reminder from Nexus Admissions — "
+            f"Hi {first_name}, friendly reminder from Edutrust Admissions — "
             "we're still waiting on your documents. Reply here if you need help uploading them."
         )
         import asyncio

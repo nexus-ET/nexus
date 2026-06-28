@@ -1,0 +1,17 @@
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String
+from sqlalchemy.orm import relationship
+
+from app.db.database import Base
+
+
+class TargetCourse(Base):
+    __tablename__ = "target_courses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    program_id = Column(Integer, ForeignKey("target_programs.id"), nullable=False, index=True)
+    code = Column(String(50), unique=True, nullable=False, index=True)
+    label = Column(String(255), nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    sort_order = Column(Integer, default=0, nullable=False)
+
+    program = relationship("TargetProgram", back_populates="courses")

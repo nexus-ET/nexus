@@ -85,6 +85,54 @@ def get_max_bookings_per_slot(db: Session) -> int:
     return get_int_setting(db, "MAX_BOOKINGS_PER_SLOT", 5)
 
 
+def list_whatsapp_bookable_dates(db: Session, *, limit: int = 8, days_ahead: int = 21) -> list[date]:
+    """Dates that still have at least one open counselling slot in the schedule."""
+    today = office_today(db)
+    dates: list[date] = []
+    for offset in range(1, days_ahead + 1):
+        slot_day = today + timedelta(days=offset)
+        if not is_bookable_day(db, slot_day):
+            continue
+        if get_bookable_slot_starts(db, slot_day):
+            dates.append(slot_day)
+        if len(dates) >= limit:
+            break
+    return dates
+
+
+def get_bookable_slot_starts(db: Session, slot_day: date) -> list[datetime]:
+    """Open counselling slot start times for WhatsApp appointment booking."""
+    if not is_bookable_day(db, slot_day):
+        return []
+
+    now = office_now(db)
+    max_per_slot = get_max_bookings_per_slot(db)
+    range_start = datetime.combine(slot_day, _get_office_start(db))
+    range_end = datetime.combine(slot_day, _get_office_end(db))
+
+    bookings = (
+        db.query(CounsellingBooking)
+        .filter(
+            CounsellingBooking.scheduled_time >= range_start,
+            CounsellingBooking.scheduled_time < range_end,
+            CounsellingBooking.status.in_([PENDING_STATUS, SCHEDULED_STATUS]),
+        )
+        .all()
+    )
+    counts: dict[datetime, int] = {}
+    for booking in bookings:
+        key = _normalize_time(booking.scheduled_time)
+        counts[key] = counts.get(key, 0) + 1
+
+    available: list[datetime] = []
+    for slot_start in _iter_day_slot_times(db, slot_day):
+        if slot_start <= now:
+            continue
+        if counts.get(slot_start, 0) < max_per_slot:
+            available.append(slot_start)
+    return available
+
+
 def _ensure_bookings_enabled(db: Session) -> None:
     if not get_bool_setting(db, "ALLOW_BOOKINGS", True):
         raise HTTPException(

@@ -2,7 +2,7 @@ import traceback
 from datetime import datetime, timezone
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, func
 
@@ -11,6 +11,9 @@ from app.api import deps
 from app.models.user import User as UserModel
 from app.models.status_change_reason import StatusChangeReason
 from app.models.admin_role import AdminRole as AdminRoleModel
+from app.models.lead import Lead
+from app.models.note import Note
+from app.models.client import Client
 from app.schemas.user import (
     User as UserSchema,
     UserCreate,
@@ -175,6 +178,38 @@ def _apply_deactivation(user: UserModel, reason_id: int) -> None:
 def _apply_activation(user: UserModel, reason_id: int) -> None:
     user.activation_reason = reason_id
     user.activation_date = _now_utc_naive()
+
+
+def _remaining_super_admin_count(db: Session, exclude_user_id: int) -> int:
+    super_admin_role_ids = [
+        role.id
+        for role in db.query(AdminRoleModel)
+        .filter(AdminRoleModel.is_superuser.is_(True), AdminRoleModel.is_active.is_(True))
+        .all()
+    ]
+    return (
+        db.query(UserModel)
+        .filter(
+            UserModel.id != exclude_user_id,
+            _admin_user_filter(db),
+            or_(
+                UserModel.is_superuser.is_(True),
+                UserModel.admin_role_id.in_(super_admin_role_ids),
+            ),
+        )
+        .count()
+    )
+
+
+def _delete_admin_user_record(db: Session, user: UserModel) -> None:
+    user_id = user.id
+    db.query(Note).filter(Note.owner_id == user_id).delete(synchronize_session=False)
+    db.query(Client).filter(Client.owner_id == user_id).delete(synchronize_session=False)
+    db.query(Lead).filter(Lead.assigned_advisor_id == user_id).update(
+        {Lead.assigned_advisor_id: None},
+        synchronize_session=False,
+    )
+    db.delete(user)
 
 
 @router.get("/me", response_model=UserSchema)
@@ -434,3 +469,35 @@ def activate_admin_user(
 
     db.commit()
     return _serialize_user(_get_admin_user_or_404(user_id, db))
+
+
+@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_admin_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(deps.require_super_admin),
+):
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+
+    user = _get_admin_user_or_404(user_id, db)
+
+    if user.is_superuser and _remaining_super_admin_count(db, user_id) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete the last Super Admin account.",
+        )
+
+    try:
+        _delete_admin_user_record(db, user)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print("--- DATABASE ERROR TRACEBACK ---")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete admin user: {str(e)}",
+        ) from e
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -95,6 +95,62 @@ Verify token = `WEBHOOK_VERIFY_TOKEN` in `/var/www/nexus/backend/.env`.
 
 ---
 
+## Promote develop → staging (NEXUS → NEXUS-Staging)
+
+Two local folders share one GitHub repo via **worktrees**:
+
+| Folder | Branch | Purpose |
+|--------|--------|---------|
+| `E:\NEXUS` | `develop` | Daily dev + WhatsApp test number |
+| `E:\NEXUS-staging` | `staging` | Staging-local + Hostinger deploy |
+
+**One command (recommended on Windows):**
+
+```powershell
+cd E:\NEXUS
+.\backend\deploy\promote-to-staging.ps1 -Message "Describe your release"
+```
+
+This will:
+
+1. Commit any uncommitted changes on `develop` (if present)
+2. Push `develop` to GitHub
+3. Merge `develop` into `staging` in `E:\NEXUS-staging`
+4. Push `staging` to GitHub
+
+**Push and deploy to Hostinger in one step:**
+
+```powershell
+.\backend\deploy\promote-to-staging.ps1 -Message "Release notes" -VpsHost root@YOUR_VPS_IP
+```
+
+**Options:**
+
+| Flag | Effect |
+|------|--------|
+| `-SkipDevelopPush` | Only merge/push staging (develop already on GitHub) |
+| `-SkipDeploy` | Do not SSH to VPS even if `-VpsHost` is set |
+| `-DryRun` | Show steps without git push/merge |
+| `-StagingRoot E:\NEXUS-staging` | Override staging worktree path |
+
+**From GitHub (no local PC):**
+
+1. Push `develop` first: `git push origin develop`
+2. GitHub → **Actions** → **Promote develop to staging** → **Run workflow**
+3. On VPS: `sudo bash /var/www/nexus/backend/deploy/deploy.sh`
+
+**Git Bash / Linux:**
+
+```bash
+bash backend/deploy/promote-to-staging.sh --message "Release" --vps root@YOUR_VPS_IP
+```
+
+`.env` is gitignored — after promote, verify staging secrets on the server (`/var/www/nexus/backend/.env`).
+
+**Database:** `deploy.sh` runs `alembic upgrade head` automatically. See [STAGING_DATABASE_MIGRATIONS.md](./STAGING_DATABASE_MIGRATIONS.md) for new tables and column changes.
+
+---
+
 ## Part 3 — Deploy updates (every time you change code)
 
 **On your PC:**

@@ -41,6 +41,7 @@ interface ActiveLead {
   intake_complete?: boolean;
   current_location?: string | null;
   preferred_country?: string | null;
+  preferred_course?: string | null;
   english_test_scores?: string | null;
   gre_score?: string | null;
   gmat_score?: string | null;
@@ -86,7 +87,7 @@ const normalizeMessage = (msg: Record<string, unknown>): ChatMessage => {
 const INTAKE_STEPS = [
   { key: 'FULL_NAME', label: 'Full name' },
   { key: 'CURRENT_LOCATION', label: 'Location' },
-  { key: 'TARGET_COUNTRY', label: 'Target country' },
+  { key: 'TARGET_COUNTRY', label: 'Country & course' },
   { key: 'ENGLISH_SCORES', label: 'English scores' },
   { key: 'GRE_SCORE', label: 'GRE' },
   { key: 'GMAT_SCORE', label: 'GMAT' },
@@ -143,6 +144,7 @@ const mapLeadFromApi = (lead: Record<string, unknown>): ActiveLead => {
     intake_complete: Boolean(lead.intake_complete),
     current_location: (lead.current_location as string | null | undefined) ?? null,
     preferred_country: (lead.preferred_country as string | null | undefined) ?? null,
+    preferred_course: (lead.preferred_course as string | null | undefined) ?? null,
     english_test_scores: (lead.english_test_scores as string | null | undefined) ?? null,
     gre_score: (lead.gre_score as string | null | undefined) ?? null,
     gmat_score: (lead.gmat_score as string | null | undefined) ?? null,
@@ -182,6 +184,45 @@ const sortActiveLeads = (a: ActiveLead, b: ActiveLead): number => {
   return getLeadActivityTime(b) - getLeadActivityTime(a);
 };
 
+const mergeLeadSnapshot = (previous: ActiveLead, incoming: ActiveLead): ActiveLead => {
+  const incomingMessages = incoming.messages ?? [];
+  const previousMessages = previous.messages ?? [];
+  const messages =
+    incomingMessages.length > 0 && incomingMessages.length >= previousMessages.length
+      ? incomingMessages
+      : previousMessages;
+
+  return {
+    ...previous,
+    ...incoming,
+    name: incoming.name || previous.name,
+    messages,
+    current_location: incoming.current_location ?? previous.current_location,
+    preferred_country: incoming.preferred_country ?? previous.preferred_country,
+    preferred_course: incoming.preferred_course ?? previous.preferred_course,
+    english_test_scores: incoming.english_test_scores ?? previous.english_test_scores,
+    gre_score: incoming.gre_score ?? previous.gre_score,
+    gmat_score: incoming.gmat_score ?? previous.gmat_score,
+    test_scores: incoming.test_scores ?? previous.test_scores,
+    wants_consultation_call: incoming.wants_consultation_call ?? previous.wants_consultation_call,
+    consultation_scheduled_at: incoming.consultation_scheduled_at ?? previous.consultation_scheduled_at,
+    calendar_booking_id: incoming.calendar_booking_id ?? previous.calendar_booking_id,
+    intake_step: incoming.intake_step ?? previous.intake_step,
+    intake_step_label: incoming.intake_step_label ?? previous.intake_step_label,
+    intake_complete: incoming.intake_complete ?? previous.intake_complete,
+    available_consultation_dates:
+      incoming.available_consultation_dates?.length
+        ? incoming.available_consultation_dates
+        : previous.available_consultation_dates,
+    available_consultation_times:
+      incoming.available_consultation_times?.length
+        ? incoming.available_consultation_times
+        : previous.available_consultation_times,
+    selected_consultation_date:
+      incoming.selected_consultation_date ?? previous.selected_consultation_date,
+  };
+};
+
 const formatTime = (dateStr?: string): string => {
   if (!dateStr) return '';
   try {
@@ -191,6 +232,34 @@ const formatTime = (dateStr?: string): string => {
   } catch {
     return '';
   }
+};
+
+const formatCandidateMessageText = (text: string, lead: ActiveLead | null): string => {
+  const trimmed = (text || '').trim();
+  const dateMatch = trimmed.match(/^date:(\d{4}-\d{2}-\d{2})$/i);
+  if (dateMatch) {
+    const parsed = new Date(`${dateMatch[1]}T12:00:00`);
+    if (!Number.isNaN(parsed.getTime())) {
+      return `Selected ${parsed.toLocaleDateString([], {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      })}`;
+    }
+  }
+
+  const timeMatch = trimmed.match(/^time:(\d+)$/i);
+  if (timeMatch) {
+    if (lead?.consultation_scheduled_at) {
+      const formatted = formatConsultationDateTime(lead.consultation_scheduled_at);
+      const timePart = formatted.split(',').slice(-1)[0]?.trim();
+      if (timePart) return `Selected ${timePart}`;
+    }
+    return 'Selected consultation time';
+  }
+
+  return text;
 };
 
 const getDateGroupLabel = (dateStr?: string): string => {
@@ -230,6 +299,7 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
   const hasProfileData =
     lead.current_location ||
     lead.preferred_country ||
+    lead.preferred_course ||
     lead.english_test_scores ||
     lead.gre_score ||
     lead.gmat_score ||
@@ -290,6 +360,10 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
         <div style={styles.intakeFieldCell}>
           <span style={styles.intakeFieldLabel}>Target country</span>
           <span style={styles.intakeFieldValue}>{lead.preferred_country || '—'}</span>
+        </div>
+        <div style={styles.intakeFieldCell}>
+          <span style={styles.intakeFieldLabel}>Course</span>
+          <span style={styles.intakeFieldValue}>{lead.preferred_course || '—'}</span>
         </div>
         <div style={styles.intakeFieldCell}>
           <span style={styles.intakeFieldLabel}>English scores</span>
@@ -364,11 +438,18 @@ export default function AiActiveView() {
   const [updatingRowId, setUpdatingRowId] = useState<number | null>(null);
   const [startingOutreachId, setStartingOutreachId] = useState<number | null>(null);
   const [outreachSuccess, setOutreachSuccess] = useState<string | null>(null);
+  const [whatsappConfig, setWhatsappConfig] = useState<{
+    business_phone_number?: string | null;
+    outreach_template?: string | null;
+    ready?: boolean;
+  } | null>(null);
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const pollingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const queuePollInFlightRef = useRef(false);
+  const conversationPollInFlightRef = useRef(false);
 
   const filteredLeads = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -409,17 +490,13 @@ export default function AiActiveView() {
       setLoadError(null);
 
       setSelectedLead(prev => {
-        if (prev) {
-          const updatedLead = activeOnly.find(l => l.id === prev.id);
-          if (!updatedLead) return prev;
-
-          const prevCount = prev.messages.length;
-          const nextCount = updatedLead.messages.length;
-          if (nextCount >= prevCount) return updatedLead;
-          return { ...updatedLead, messages: prev.messages };
+        if (!prev) {
+          return activeOnly[0] ?? null;
         }
 
-        return activeOnly[0] ?? null;
+        const updatedLead = activeOnly.find(l => l.id === prev.id);
+        if (!updatedLead) return prev;
+        return mergeLeadSnapshot(prev, updatedLead);
       });
     } catch (error: unknown) {
       if (error instanceof Error && error.name !== 'AbortError') {
@@ -432,20 +509,45 @@ export default function AiActiveView() {
   };
 
   useEffect(() => {
+    void apiFetch('settings/whatsapp-outreach')
+      .then(data =>
+        setWhatsappConfig(
+          data as {
+            business_phone_number?: string | null;
+            outreach_template?: string | null;
+            ready?: boolean;
+          }
+        )
+      )
+      .catch(() => setWhatsappConfig(null));
+  }, []);
+
+  useEffect(() => {
     let isActive = true;
+    abortControllerRef.current = new AbortController();
 
     async function pollQueue() {
-      if (abortControllerRef.current) abortControllerRef.current.abort();
-      abortControllerRef.current = new AbortController();
-      await fetchActiveQueue(abortControllerRef.current.signal);
-      if (isActive) pollingTimerRef.current = setTimeout(pollQueue, 4000);
+      if (!isActive || queuePollInFlightRef.current) {
+        if (isActive) {
+          pollingTimerRef.current = setTimeout(pollQueue, 10000);
+        }
+        return;
+      }
+
+      queuePollInFlightRef.current = true;
+      try {
+        await fetchActiveQueue(abortControllerRef.current?.signal);
+      } finally {
+        queuePollInFlightRef.current = false;
+        if (isActive) pollingTimerRef.current = setTimeout(pollQueue, 10000);
+      }
     }
 
     pollQueue();
     return () => {
       isActive = false;
       if (pollingTimerRef.current) clearTimeout(pollingTimerRef.current);
-      if (abortControllerRef.current) abortControllerRef.current.abort();
+      abortControllerRef.current?.abort();
     };
   }, []);
 
@@ -455,23 +557,28 @@ export default function AiActiveView() {
     let isActive = true;
 
     const refreshSelectedConversation = async () => {
-      if (!hasValidSession()) return;
+      if (!hasValidSession() || conversationPollInFlightRef.current) return;
+      conversationPollInFlightRef.current = true;
       try {
         const data = await apiFetch(`leads/${selectedLead.id}`);
         if (!isActive) return;
 
         const mapped = mapLeadFromApi(data as Record<string, unknown>);
-        setSelectedLead(mapped);
-        setQueue(prev => prev.map(item => (item.id === mapped.id ? { ...item, ...mapped } : item)));
+        setSelectedLead(prev => (prev ? mergeLeadSnapshot(prev, mapped) : mapped));
+        setQueue(prev =>
+          prev.map(item => (item.id === mapped.id ? mergeLeadSnapshot(item, mapped) : item))
+        );
       } catch (error: unknown) {
         if (error instanceof Error && error.name !== 'AbortError') {
           console.error('Failed to refresh AI active conversation:', error);
         }
+      } finally {
+        conversationPollInFlightRef.current = false;
       }
     };
 
     refreshSelectedConversation();
-    const interval = setInterval(refreshSelectedConversation, 3000);
+    const interval = setInterval(refreshSelectedConversation, 8000);
 
     return () => {
       isActive = false;
@@ -540,7 +647,9 @@ export default function AiActiveView() {
       const mapped = mapLeadFromApi(detail as Record<string, unknown>);
       setSelectedLead(mapped);
       setQueue(prev => prev.map(item => (item.id === mapped.id ? { ...item, ...mapped } : item)));
-      setOutreachSuccess(`WhatsApp message sent to ${getLeadPhone(mapped) || 'student'}.`);
+      setOutreachSuccess(
+        `WhatsApp message sent from ${whatsappConfig?.business_phone_number || 'business line'} to ${getLeadPhone(mapped) || 'student'}.`
+      );
     } catch (error) {
       console.error('Failed to start AI conversation:', error);
       const message =
@@ -611,11 +720,33 @@ export default function AiActiveView() {
 
     if (!msg.text) return null;
 
-    return <p style={styles.bubbleTextString}>{msg.text}</p>;
+    const displayText =
+      msg.sender === 'candidate' || msg.sender === 'student'
+        ? formatCandidateMessageText(msg.text, selectedLead)
+        : msg.text;
+
+    return <p style={styles.bubbleTextString}>{displayText}</p>;
   };
 
   return (
-    <div style={styles.workspaceContainer}>
+    <div style={styles.pageShell}>
+      {whatsappConfig?.business_phone_number ? (
+        <div style={styles.whatsappLineBanner}>
+          <span>
+            WhatsApp business line: <strong>{whatsappConfig.business_phone_number}</strong>
+            {whatsappConfig.outreach_template
+              ? ` · template: ${whatsappConfig.outreach_template}`
+              : ''}
+          </span>
+          {!whatsappConfig.ready ? (
+            <span style={styles.whatsappLineWarning}>
+              Meta WhatsApp is not fully configured — check backend .env and Meta console.
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div style={styles.workspaceContainer}>
       <style>{`
         html, body, #root { overflow: hidden !important; }
         .custom-scroll-region::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -911,17 +1042,47 @@ export default function AiActiveView() {
           </div>
         )}
       </div>
+      </div>
     </div>
   );
 }
 
 const styles = {
-  workspaceContainer: {
+  pageShell: {
     display: 'flex',
+    flexDirection: 'column' as const,
     width: '100%',
     height: '100%',
-    position: 'absolute',
+    position: 'absolute' as const,
     top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#f8fafc',
+  },
+  whatsappLineBanner: {
+    flexShrink: 0,
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    gap: '8px',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '8px 16px',
+    backgroundColor: '#ecfdf5',
+    borderBottom: '1px solid #a7f3d0',
+    color: '#065f46',
+    fontSize: '12px',
+  },
+  whatsappLineWarning: {
+    color: '#b45309',
+    fontWeight: 600,
+  },
+  workspaceContainer: {
+    display: 'flex',
+    flex: 1,
+    minHeight: 0,
+    width: '100%',
+    position: 'relative' as const,
     left: 0,
     right: 0,
     bottom: 0,

@@ -64,7 +64,7 @@ def _build_reports_schedule_help(config: dict) -> str:
 @router.get("/reports/sync-schedule/", response_model=ReportsSyncScheduleOut)
 def read_reports_sync_schedule(
     db: Session = Depends(get_db),
-    _: User = Depends(deps.require_page_access("/reports")),
+    _: User = Depends(deps.require_page_access("/reports/meta-leads")),
 ):
     from app.services.scheduler import reconcile_lead_sync_scheduler_from_settings
 
@@ -95,7 +95,7 @@ def read_sync_logs(
     sort_by: str = Query(default="attempt_timestamp", description="Column to sort by"),
     sort_order: Literal["asc", "desc"] = Query(default="desc", description="Sort direction"),
     db: Session = Depends(get_db),
-    _: User = Depends(deps.require_page_access("/reports")),
+    _: User = Depends(deps.require_page_access("/reports/meta-leads")),
 ):
     if limit not in ALLOWED_SYNC_LOG_LIMITS:
         raise HTTPException(
@@ -194,7 +194,7 @@ def export_sync_logs_pdf(
     sort_by: str = Query(default="attempt_timestamp", description="Column to sort by"),
     sort_order: Literal["asc", "desc"] = Query(default="desc", description="Sort direction"),
     db: Session = Depends(get_db),
-    _: User = Depends(deps.require_page_access("/reports")),
+    _: User = Depends(deps.require_page_access("/reports/meta-leads")),
 ):
     """Export all matching sync logs as PDF (ignores pagination)."""
     return _export_sync_logs_pdf_response(
@@ -213,7 +213,7 @@ def export_sync_logs_pdf(
 def read_sync_log(
     log_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(deps.require_page_access("/reports")),
+    _: User = Depends(deps.require_page_access("/reports/meta-leads")),
 ):
     log = get_sync_log(db, log_id)
     if log is None:
@@ -231,7 +231,7 @@ def read_ingestion_quality(
         description="Filter by sync mode",
     ),
     db: Session = Depends(get_db),
-    _: User = Depends(deps.require_page_access("/reports")),
+    _: User = Depends(deps.require_page_access("/reports/meta-leads")),
 ):
     mode_filter = sync_mode.upper() if sync_mode else None
     if mode_filter and mode_filter not in {"AUTOMATED", "MANUAL"}:

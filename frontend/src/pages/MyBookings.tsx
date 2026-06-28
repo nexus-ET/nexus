@@ -628,7 +628,7 @@ const MyBookings: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold text-text-main flex items-center gap-2">
             <CalendarCheck size={24} />
-            My Bookings
+            My Appointments
           </h1>
           <p className="text-sm text-text-muted mt-1">
             Manage upcoming sessions and review candidates you have previously interviewed.

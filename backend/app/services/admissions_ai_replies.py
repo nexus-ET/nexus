@@ -16,7 +16,7 @@ def generate_contextual_admissions_reply(
     if not text:
         if has_prior_ai_turns:
             return (
-                f"Hi {first}, just checking in from Nexus Admissions. "
+                f"Hi {first}, just checking in from Edutrust Admissions. "
                 "Have you had a chance to think about which program or intake you'd like to apply for?"
             )
         return (
@@ -37,7 +37,7 @@ def generate_contextual_admissions_reply(
 
     if any(word in lower for word in ("course", "program", "programme", "degree", "study", "major")):
         return (
-            f"Great question, {first}. Nexus offers pathways in business, IT, health sciences, and more. "
+            f"Great question, {first}. Edutrust offers pathways in business, IT, health sciences, and more. "
             "Which field interests you most, and are you looking at undergraduate or postgraduate study?"
         )
 

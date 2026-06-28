@@ -21,6 +21,7 @@ from app.schemas.settings import (
     PublicHolidayToggleRequest,
     PublicHolidaysResponse,
     BusinessTimezoneResponse,
+    WhatsAppOutreachConfigResponse,
 )
 from app.services import public_holiday_service, settings_service
 from app.services.business_profile_service import (
@@ -50,6 +51,30 @@ def read_business_timezone(
     _: User = Depends(deps.get_current_active_user),
 ):
     return BusinessTimezoneResponse(**settings_service.get_business_timezone_payload(db))
+
+
+@router.get("/settings/whatsapp-outreach", response_model=WhatsAppOutreachConfigResponse)
+@router.get("/settings/whatsapp-outreach/", response_model=WhatsAppOutreachConfigResponse)
+def read_whatsapp_outreach_config(
+    _: User = Depends(deps.get_current_active_user),
+):
+    from app.config import settings as app_settings
+    from app.services.whatsapp_config import (
+        resolve_whatsapp_display_phone,
+        resolve_whatsapp_phone_number_id,
+    )
+
+    provider = (app_settings.PROVIDER or "").strip().upper()
+    phone_id = resolve_whatsapp_phone_number_id()
+    business_phone = resolve_whatsapp_display_phone()
+    template = (app_settings.WHATSAPP_OUTREACH_TEMPLATE or "").strip()
+    return WhatsAppOutreachConfigResponse(
+        provider=provider or None,
+        business_phone_number=business_phone or None,
+        phone_number_id=phone_id or None,
+        outreach_template=template or None,
+        ready=provider == "WHATSAPP" and bool(phone_id and app_settings.WHATSAPP_ACCESS_TOKEN),
+    )
 
 
 @router.get("/settings/business-email-domain", response_model=BusinessEmailDomainResponse)

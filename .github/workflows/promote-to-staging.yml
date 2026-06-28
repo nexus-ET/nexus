@@ -1,0 +1,47 @@
+# Manually promote the latest develop branch to staging on GitHub.
+#
+# GitHub: Actions -> "Promote develop to staging" -> Run workflow
+#
+# This merges origin/develop into staging and pushes. It does NOT deploy the VPS;
+# after the workflow completes, SSH to Hostinger and run deploy.sh (or use promote-to-staging.ps1 -VpsHost).
+
+name: Promote develop to staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      merge_message:
+        description: Merge commit message
+        required: false
+        default: Promote develop to staging (GitHub Actions)
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge develop into staging
+        run: |
+          git fetch origin develop staging
+          git checkout staging
+          git merge origin/develop -m "${{ github.event.inputs.merge_message }}"
+          git push origin staging
+
+      - name: Summary
+        run: |
+          echo "staging is now at:"
+          git log -1 --oneline
+          echo ""
+          echo "Deploy on VPS: sudo bash /var/www/nexus/backend/deploy/deploy.sh"

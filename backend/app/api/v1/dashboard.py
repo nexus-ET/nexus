@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.models.lead import Lead, get_dashboard_metrics
+from app.services.conversation_audit_service import get_pending_advisor_questions
 
 router = APIRouter()
 
@@ -59,4 +60,5 @@ async def get_dashboard_summary(limit: int = 5, db: Session = Depends(get_db)):
         "missing_audit_count": metrics["missing_post_audit"],
         "notifications": notifications,
         "leads": [_map_lead_for_dashboard(lead) for lead in pipeline_leads],
+        "pending_advisor_questions": get_pending_advisor_questions(db, limit=10),
     }

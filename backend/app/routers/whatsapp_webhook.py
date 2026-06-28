@@ -16,6 +16,10 @@ from app.models.processed_message import ProcessedMessage
 from app.services.messaging import dispatch_inbound_whatsapp_ai
 from app.services.lead_conversation import ensure_handoff_for_inbound, is_human_handoff_lead
 from app.services.whatsapp_helpers import extract_inbound_messages, get_or_create_lead_for_phone
+from app.services.whatsapp_webhook_env import (
+    extract_webhook_phone_number_id,
+    should_process_inbound_phone_number_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +68,10 @@ async def receive_whatsapp_webhook(
         logger.exception("Invalid WhatsApp webhook payload.")
         return {"status": "ignored", "reason": "invalid_json"}
 
+    inbound_phone_id = extract_webhook_phone_number_id(payload)
+    if not should_process_inbound_phone_number_id(inbound_phone_id):
+        return {"status": "ignored", "reason": "foreign_phone_number_id"}
+
     inbound_messages = extract_inbound_messages(payload)
     if not inbound_messages:
         return {"status": "ignored", "reason": "no_messages"}
@@ -111,14 +119,13 @@ async def receive_whatsapp_webhook(
             db.add(ProcessedMessage(message_id=inbound.message_id))
             db.commit()
 
-            if not is_human_handoff_lead(lead):
-                background_tasks.add_task(
-                    _run_inbound_whatsapp_ai,
-                    inbound.sender_phone,
-                    inbound.message_text,
-                    inbound.wa_id,
-                    lead.id,
-                )
+            background_tasks.add_task(
+                _run_inbound_whatsapp_ai,
+                inbound.sender_phone,
+                inbound.message_text,
+                inbound.wa_id,
+                lead.id,
+            )
             processed_count += 1
         except IntegrityError:
             db.rollback()

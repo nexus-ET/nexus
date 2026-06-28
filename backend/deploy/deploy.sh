@@ -37,6 +37,10 @@ source .venv/bin/activate
 pip install -r requirements.txt -q
 pip install 'psycopg[binary]' -q
 
+echo "==> Database migrations (alembic upgrade head)..."
+cd "$BACKEND"
+alembic upgrade head
+
 echo "==> Frontend build..."
 cd "$FRONTEND"
 npm ci
@@ -47,6 +51,16 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl restart nexus-backend
   nginx -t
   systemctl reload nginx
+fi
+
+echo "==> Register WhatsApp webhook for this server..."
+cd "$BACKEND"
+# shellcheck disable=SC1091
+source .venv/bin/activate
+if python scripts/sync_whatsapp_webhook.py; then
+  echo "    WhatsApp webhook: registered to this environment"
+else
+  echo "    WhatsApp webhook: sync failed (check WHATSAPP_* and PUBLIC_TUNNEL_BASE in .env)" >&2
 fi
 
 chown -R www-data:www-data "$FRONTEND/dist" 2>/dev/null || true

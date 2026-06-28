@@ -22,11 +22,30 @@ class Settings(BaseSettings):
     SMTP_USE_TLS: bool = True
 
     WHATSAPP_ACCESS_TOKEN: str | None = None
+    # Optional explicit override; otherwise chosen from test/business IDs below.
     WHATSAPP_PHONE_NUMBER_ID: str | None = None
+    WHATSAPP_BUSINESS_ACCOUNT_ID: str | None = None
+    # Meta test sandbox line (+1 555-665-6397) — local development only
+    WHATSAPP_TEST_PHONE_NUMBER: str | None = None
+    WHATSAPP_TEST_PHONE_NUMBER_ID: str | None = None
+    WHATSAPP_TEST_WABA_ID: str | None = None
+    # Edutrust business line (+91 74119 52525) — staging / nexus-dev server
+    WHATSAPP_BUSINESS_PHONE_NUMBER: str | None = None
+    WHATSAPP_BUSINESS_PHONE_NUMBER_ID: str | None = None
+    WHATSAPP_BUSINESS_WABA_ID: str | None = None
     WHATSAPP_VERIFY_TOKEN: str | None = None
     # Meta template sent before business-initiated outreach (opens the 24h window). Default: hello_world
     WHATSAPP_OUTREACH_TEMPLATE: str | None = "hello_world"
     WEBHOOK_VERIFY_TOKEN: str | None = None
+    # Public base URL for this deployment (local quick tunnel or https://nexus-dev.edutrust.in)
+    PUBLIC_TUNNEL_BASE: str | None = None
+    # Instance label: development | nexus-dev | production
+    NEXUS_INSTANCE: str | None = None
+    ENVIRONMENT: str | None = None
+    # Auto-register Meta WABA webhook to PUBLIC_TUNNEL_BASE on dev start / deploy
+    NEXUS_WHATSAPP_AUTO_SYNC: bool = True
+    # When local dev stops, hand webhook back to this base URL (e.g. nexus-dev server)
+    NEXUS_WHATSAPP_HANDOFF_URL: str | None = None
     # Meta Graph API token for Lead Ads retrieval (falls back to WHATSAPP_ACCESS_TOKEN)
     META_GRAPH_ACCESS_TOKEN: str | None = None
     # Facebook Page ID for historical Meta Lead Ads backfill (Page Access Token required)
@@ -36,6 +55,9 @@ class Settings(BaseSettings):
     # Outbound/inbound messaging provider: TWILIO (default) or WHATSAPP (Meta Cloud API)
     PROVIDER: str = "TWILIO"
     OPENAI_API_KEY: str | None = None
+    GROQ_API_KEY: str | None = None
+    OLLAMA_BASE_URL: str = "http://127.0.0.1:11434/v1"
+    OLLAMA_TIMEOUT_SECONDS: int = 120
 
     WHATSAPP_FLOW_ID: str | None = None
     WHATSAPP_FLOW_PRIVATE_KEY: str | None = None

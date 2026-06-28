@@ -71,7 +71,9 @@ class Lead(Base):
 
     # Machine Learning Core Outputs
     ml_conversion_score: Mapped[float] = mapped_column(Float, default=0.0) 
-    ai_post_mortem: Mapped[str] = mapped_column(Text, nullable=True) 
+    ai_post_mortem: Mapped[str] = mapped_column(Text, nullable=True)
+    handoff_ai_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    handoff_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Operations & Documents
     calendar_booking_id: Mapped[str] = mapped_column(String(255), nullable=True) 

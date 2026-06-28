@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Bell, Loader2 } from 'lucide-react';
 import { apiFetch, hasValidSession } from '../utils/api';
+import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 
 interface NotificationInboxItem {
   id: number;
@@ -38,6 +39,7 @@ const priorityLabel: Record<string, string> = {
 };
 
 const NotificationBell: React.FC = () => {
+  const { formatDateTime } = useBusinessTimezone();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<NotificationInboxItem[]>([]);
@@ -132,7 +134,7 @@ const NotificationBell: React.FC = () => {
                   </div>
                   <p className="text-xs text-text-muted">{item.message}</p>
                   <p className="text-[10px] text-text-muted mt-1">
-                    {new Date(item.sent_at).toLocaleString()} · {channelLabels[item.channel] || item.channel}
+                    {formatDateTime(item.sent_at)} · {channelLabels[item.channel] || item.channel}
                   </p>
                 </div>
               ))

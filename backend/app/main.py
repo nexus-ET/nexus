@@ -2,7 +2,7 @@ import os
 import logging
 import asyncio
 import mimetypes
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.database import Base, engine, sync_schema_columns
@@ -29,15 +29,21 @@ from app.models.sync_log import SyncLog
 from app.models.raw_incoming_lead import RawIncomingLead
 from app.models.lead_quarantine import LeadQuarantine
 from app.models.audit_log import AuditLog
+from app.models.country import Country
+from app.models.education_degree import EducationDegree
+from app.models.gpa_cgpa_score import GpaCgpaScore
+from app.models.target_program import TargetProgram
+from app.models.target_course import TargetCourse
 from app.models.security_audit_run import SecurityAuditRun
 from app.models.admission_history import AdmissionHistory
 from app.models.candidate_task import CandidateTask
 from app.models.team_chat_message import TeamChatMessage
 from app.models.conversation import Conversation
+from app.models.conversation_audit_log import ConversationAuditLog
 from app.models.conversation_participant import ConversationParticipant
 from app.models.internal_message import InternalMessage
 from app.api.v1.endpoints import leads
-from app.api.v1 import analytics, notifications, dashboard, users, login, agents, rbac
+from app.api.v1 import analytics, notifications, dashboard, users, login, agents, rbac, countries, education_degrees, gpa_cgpa_scores, target_programs, conversation_audit
 from app.routers import (
     counselling,
     whatsapp_flow_webhook,
@@ -52,6 +58,7 @@ from app.routers import (
     nexus_ws,
     reports,
     admin,
+    audit_events,
 )
 from app.db.database import SessionLocal
 from app.services.agent_runtime import get_or_create_agent_config
@@ -65,6 +72,11 @@ from app.services.settings_service import seed_default_settings
 from app.services.lead_sync_settings import seed_lead_sync_settings
 from app.services.sync_log_service import seed_sync_logs_from_legacy_settings, recover_stale_sync_logs
 from app.services.business_profile_service import ensure_default_business
+from app.services.countries import seed_countries
+from app.services.education_degrees import seed_education_degrees
+from app.services.gpa_cgpa_scores import seed_gpa_cgpa_scores
+from app.services.target_programs import seed_target_programs
+from app.middleware.audit_middleware import audit_middleware
 from app.middleware.rbac_middleware import NavigationRBACMiddleware
 from app.middleware.security_middleware import SecurityHeadersMiddleware
 from app.core.rate_limit import RateLimitExceeded, _rate_limit_exceeded_handler, limiter
@@ -112,6 +124,10 @@ def bootstrap_application() -> None:
             if recovered:
                 bootstrap_logger.info("Recovered %s stale in-progress sync log(s).", recovered)
             ensure_default_business(bootstrap_db)
+            seed_countries(bootstrap_db)
+            seed_education_degrees(bootstrap_db)
+            seed_gpa_cgpa_scores(bootstrap_db)
+            seed_target_programs(bootstrap_db)
             migrate_holidays_from_dynamic_settings(bootstrap_db)
             bootstrap_logger.info("Dynamic settings initialized.")
             dedupe_consultation_slots(bootstrap_db)
@@ -136,13 +152,10 @@ def bootstrap_application() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    async def run_bootstrap() -> None:
-        try:
-            await asyncio.to_thread(bootstrap_application)
-        except Exception:
-            bootstrap_logger.exception("Background bootstrap failed")
-
-    bootstrap_task = asyncio.create_task(run_bootstrap())
+    try:
+        await asyncio.to_thread(bootstrap_application)
+    except Exception:
+        bootstrap_logger.exception("Bootstrap failed — server starting with degraded initialization")
 
     try:
         start_security_scheduler()
@@ -162,9 +175,6 @@ async def lifespan(_: FastAPI):
     shutdown_raw_lead_processor_scheduler()
     shutdown_lead_sync_scheduler()
     shutdown_security_scheduler()
-    bootstrap_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await bootstrap_task
 
 
 app = FastAPI(
@@ -178,6 +188,7 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+app.middleware("http")(audit_middleware)
 
 # 🌐 DYNAMIC SECURITY LAYER: CROSS-ORIGIN RESOURCE SHARING (CORS)
 frontend_url = os.getenv("FRONTEND_URL")
@@ -255,7 +266,12 @@ app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["
 app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
 app.include_router(users.router, prefix="/api/v1/users", tags=["Users"])
 app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
+app.include_router(conversation_audit.router, prefix="/api/v1", tags=["Agent Audit"])
 app.include_router(rbac.router, prefix="/api/v1", tags=["RBAC"])
+app.include_router(countries.router, prefix="/api/v1", tags=["Countries"])
+app.include_router(education_degrees.router, prefix="/api/v1", tags=["Education"])
+app.include_router(gpa_cgpa_scores.router, prefix="/api/v1", tags=["Education"])
+app.include_router(target_programs.router, prefix="/api/v1", tags=["Study Interest"])
 app.include_router(login.router, prefix="/api/v1", tags=["Auth"])
 app.include_router(counselling.router, prefix="/api/v1", tags=["Counselling"])
 app.include_router(command_center.router, prefix="/api/v1", tags=["Command Center"])
@@ -265,6 +281,7 @@ app.include_router(settings_router.router, prefix="/api/v1", tags=["Settings"])
 app.include_router(lead_sync.router, prefix="/api/v1", tags=["Settings"])
 app.include_router(reports.router, prefix="/api/v1", tags=["Reports"])
 app.include_router(admin.router, prefix="/api/v1", tags=["Admin"])
+app.include_router(audit_events.router, prefix="/api/v1", tags=["Audit"])
 app.include_router(meta_leads.router, prefix="/api/v1", tags=["Meta Leads"])
 app.include_router(security_admin.router, prefix="/api/v1", tags=["Security"])
 app.include_router(whatsapp_webhook.router, prefix="/api/v1/webhooks", tags=["Webhooks"])

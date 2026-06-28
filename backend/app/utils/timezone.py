@@ -64,6 +64,11 @@ def office_now(db: Session | None = None) -> datetime:
     return aware.replace(second=0, microsecond=0, tzinfo=None)
 
 
+def business_now(db: Session | None = None) -> datetime:
+    """Current wall-clock time in the business timezone (naive, for audit timestamps)."""
+    return datetime.now(get_business_zoneinfo(db)).replace(tzinfo=None)
+
+
 def office_today(db: Session | None = None) -> date:
     return datetime.now(get_business_zoneinfo(db)).date()
 

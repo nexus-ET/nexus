@@ -10,6 +10,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { apiFetch } from '../utils/api';
+import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 
 interface SecurityCheckResult {
   name: string;
@@ -55,6 +56,7 @@ const categoryLabels: Record<string, string> = {
 };
 
 const SecurityAuditDashboard: React.FC = () => {
+  const { formatDateTime } = useBusinessTimezone();
   const [runs, setRuns] = useState<SecurityAuditRun[]>([]);
   const [latestStatus, setLatestStatus] = useState<SecurityAuditStatusResponse | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
@@ -252,7 +254,7 @@ const SecurityAuditDashboard: React.FC = () => {
                     )}
                   </div>
                   <p className="text-xs text-text-muted mt-1">
-                    {new Date(run.started_at).toLocaleString()} · {run.triggered_by}
+                    {formatDateTime(run.started_at)} · {run.triggered_by}
                   </p>
                   <p className="text-xs text-text-muted">
                     {run.passed_checks}/{run.total_checks} passed

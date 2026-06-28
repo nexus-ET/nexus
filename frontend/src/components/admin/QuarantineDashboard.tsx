@@ -11,13 +11,10 @@ import {
   Wrench,
 } from 'lucide-react';
 import { type QuarantineRecord, useQuarantineMutations, useQuarantineRecords } from '../../hooks/useQuarantine';
-
-const formatTimestamp = (value?: string | null): string => {
-  if (!value) return '—';
-  return new Date(value).toLocaleString();
-};
+import { useBusinessTimezone } from '../../context/BusinessTimezoneContext';
 
 const QuarantineDashboard: React.FC = () => {
+  const { formatDateTime } = useBusinessTimezone();
   const [page, setPage] = useState(1);
   const [limit] = useState(25);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -137,7 +134,7 @@ const QuarantineDashboard: React.FC = () => {
                     </div>
                     <div className="text-xs text-text-muted mt-1 truncate">{record.error_reason}</div>
                     <div className="text-[11px] text-text-muted mt-1">
-                      {record.sync_mode} · {record.source} · {formatTimestamp(record.created_at)}
+                      {record.sync_mode} · {record.source} · {formatDateTime(record.created_at)}
                     </div>
                   </button>
                 </li>
@@ -197,7 +194,7 @@ const QuarantineDashboard: React.FC = () => {
                 </div>
                 <div>
                   <span className="text-text-muted">Received</span>
-                  <div className="mt-1">{formatTimestamp(selected.created_at)}</div>
+                  <div className="mt-1">{formatDateTime(selected.created_at)}</div>
                 </div>
               </div>
 

@@ -8,10 +8,11 @@ from app.db.database import get_db
 from app.models.agent_config import AgentConfig
 from app.models.lead import Lead
 from app.models.user import User
-from app.schemas.agent import AgentConfigRead, AgentConfigUpdate, StaffMemberRead
+from app.schemas.agent import AgentConfigRead, AgentConfigUpdate, AiModelOptionRead, StaffMemberRead
 from app.schemas.user import StatusChangeReasonRead
 from app.services.admin_roles import get_active_admin_role_ids
 from app.services.agent_runtime import get_or_create_agent_config, update_agent_config
+from app.services.ai_providers import list_ai_model_options
 
 router = APIRouter()
 
@@ -35,6 +36,12 @@ def _active_lead_filter():
 @router.get("/config/", response_model=AgentConfigRead)
 def get_agent_config(db: Session = Depends(get_db)):
     return get_or_create_agent_config(db)
+
+
+@router.get("/models", response_model=list[AiModelOptionRead])
+@router.get("/models/", response_model=list[AiModelOptionRead])
+def get_agent_model_options():
+    return list_ai_model_options()
 
 
 @router.post("/config", response_model=AgentConfigRead)

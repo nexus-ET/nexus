@@ -10,17 +10,45 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.services.whatsapp_config import resolve_whatsapp_phone_number_id
 from app.db.database import SessionLocal
 from app.models.lead import Lead
 from app.models.message import Message
 from app.models.message_history import MessageHistory
 from app.models.processed_message import ProcessedMessage
+from app.services.conversation_audit_service import log_ai_interaction
+from app.services.handoff_notifications import notify_advisors_of_handoff
 from app.services.lead_conversation import ensure_handoff_for_inbound, is_human_handoff_lead
 from app.services.phone_utils import clean_phone_number
 from app.services.twilio_outbound import dispatch_live_whatsapp_message
 from app.services.whatsapp_helpers import extract_inbound_messages, get_or_create_lead_for_phone
 
 logger = logging.getLogger(__name__)
+
+
+def record_ai_conversation_audit(
+    db: Session,
+    *,
+    lead_id: int,
+    student_message: str,
+    ai_reply: str,
+    ai_model: str,
+    confidence_score: float | None,
+    escalated: bool,
+    commit: bool = True,
+):
+    """Capture one AI interaction turn for the Agent Console audit dashboard."""
+    return log_ai_interaction(
+        db,
+        lead_id=lead_id,
+        student_message=student_message,
+        ai_reply=ai_reply,
+        ai_model=ai_model,
+        confidence_score=confidence_score,
+        escalated=escalated,
+        commit=commit,
+    )
+
 
 PROVIDER_WHATSAPP = "WHATSAPP"
 PROVIDER_TWILIO = "TWILIO"
@@ -51,38 +79,113 @@ def get_active_provider() -> str:
     return provider
 
 
-async def dispatch_inbound_whatsapp_ai(
+def _lead_has_recent_handoff_notice(db: Session, lead_id: int, *, within_minutes: int = 240) -> bool:
+    from datetime import datetime, timedelta
+
+    from app.services.ai_service import HANDOFF_NOTICE_MARKERS
+
+    cutoff = datetime.utcnow() - timedelta(minutes=within_minutes)
+    recent = (
+        db.query(Message)
+        .filter(
+            Message.lead_id == lead_id,
+            Message.sender.in_(["advisor", "system"]),
+            Message.created_at >= cutoff,
+        )
+        .order_by(Message.id.desc())
+        .limit(8)
+        .all()
+    )
+    for msg in recent:
+        text = msg.text or ""
+        if any(marker in text for marker in HANDOFF_NOTICE_MARKERS):
+            return True
+    return False
+
+
+def _recent_identical_outbound(
+    db: Session,
+    lead_id: int,
+    text: str,
+    *,
+    within_minutes: int = 2,
+) -> bool:
+    from datetime import datetime, timedelta
+
+    cutoff = datetime.utcnow() - timedelta(minutes=within_minutes)
+    recent = (
+        db.query(Message)
+        .filter(
+            Message.lead_id == lead_id,
+            Message.sender.in_(["advisor", "system"]),
+            Message.created_at >= cutoff,
+        )
+        .order_by(Message.id.desc())
+        .limit(3)
+        .all()
+    )
+    target = (text or "").strip()
+    return any((msg.text or "").strip() == target for msg in recent)
+
+
+async def acknowledge_handoff_inbound(
     db: Session,
     lead: Lead,
     sender_phone: str,
     message_text: str,
 ) -> None:
-    """
-    Route inbound WhatsApp text to the correct AI pipeline.
+    """Keep the student informed while a human advisor owns the thread."""
+    from app.services.ai_service import build_handoff_followup_notice, build_handoff_student_notice
+    from app.services.twilio_ai_conversation import persist_and_send_ai_message
 
-    Meta Cloud API (PROVIDER=WHATSAPP): full AI Active intake/booking flow.
-    Twilio fallback: legacy ai_service chat handler.
-    """
-    if is_human_handoff_lead(lead):
-        ensure_handoff_for_inbound(db, lead)
+    ensure_handoff_for_inbound(db, lead)
+    notify_advisors_of_handoff(
+        db,
+        lead,
+        reason=lead.handoff_reason or "follow-up message during handoff",
+        message_preview=message_text,
+        ai_confidence=lead.handoff_ai_confidence,
+    )
+
+    if _lead_has_recent_handoff_notice(db, lead.id, within_minutes=240):
+        notice = build_handoff_followup_notice(lead, message_text)
+    else:
+        notice = build_handoff_student_notice(lead)
+
+    if _recent_identical_outbound(db, lead.id, notice.text, within_minutes=2):
         db.commit()
         return
 
-    if get_active_provider() == PROVIDER_WHATSAPP:
-        from app.services.twilio_ai_conversation import handle_ai_active_inbound
+    await persist_and_send_ai_message(db, lead, sender_phone, notice.text, ai_confidence=notice.confidence)
 
-        await handle_ai_active_inbound(db, lead, message_text, sender_phone)
-        return
 
-    from app.services import ai_service
-
-    await ai_service._process_message_with_session(
-        db=db,
-        sender_phone=sender_phone,
-        message_text=message_text,
-        wa_id=sender_phone,
-        lead_id=lead.id,
+async def dispatch_inbound_whatsapp_ai(
+    db: Session,
+    lead: Lead,
+    sender_phone: str,
+    message_text: str,
+    *,
+    flow_data: str | None = None,
+) -> None:
+    """
+    Route inbound WhatsApp text through the unified AI Active interceptor pipeline.
+    """
+    from app.services.lead_conversation import (
+        release_ai_handoff,
+        should_retry_ai_after_handoff,
     )
+
+    if is_human_handoff_lead(lead):
+        if should_retry_ai_after_handoff(lead):
+            release_ai_handoff(db, lead)
+            db.commit()
+        else:
+            await acknowledge_handoff_inbound(db, lead, sender_phone, message_text)
+            return
+
+    from app.services.twilio_ai_conversation import handle_ai_active_inbound
+
+    await handle_ai_active_inbound(db, lead, message_text, sender_phone, flow_data=flow_data)
 
 
 def parse_whatsapp_payload(data: dict[str, Any]) -> ParsedWhatsAppPayload | None:
@@ -179,7 +282,7 @@ async def send_whatsapp_template(
 ) -> bool:
     """Send an approved Meta WhatsApp template (required to open business-initiated chats)."""
     access_token = (settings.WHATSAPP_ACCESS_TOKEN or "").strip()
-    phone_number_id = (settings.WHATSAPP_PHONE_NUMBER_ID or "").strip()
+    phone_number_id = resolve_whatsapp_phone_number_id()
 
     if not access_token or not phone_number_id:
         raise WhatsAppDeliveryError(
@@ -220,17 +323,26 @@ async def send_whatsapp_template(
         return True
 
 
-async def open_whatsapp_conversation_window(to_number: str) -> None:
+async def open_whatsapp_conversation_window(
+    to_number: str,
+    *,
+    raise_on_failure: bool = False,
+) -> None:
     """
     Open the Meta messaging window with an approved template before session messages.
 
     Skipped when PROVIDER is not WHATSAPP or WHATSAPP_OUTREACH_TEMPLATE is unset.
+    When raise_on_failure is True, template delivery errors propagate to the caller.
     """
     if get_active_provider() != PROVIDER_WHATSAPP:
         return
 
     template_name = (settings.WHATSAPP_OUTREACH_TEMPLATE or "").strip()
     if not template_name:
+        if raise_on_failure:
+            raise WhatsAppDeliveryError(
+                "WHATSAPP_OUTREACH_TEMPLATE is not configured for business-initiated outreach."
+            )
         return
 
     try:
@@ -247,11 +359,13 @@ async def open_whatsapp_conversation_window(to_number: str) -> None:
             clean_phone_number(to_number),
             exc,
         )
+        if raise_on_failure:
+            raise
 
 
 async def _send_via_whatsapp_graph(to_number: str, body: str) -> bool:
     access_token = (settings.WHATSAPP_ACCESS_TOKEN or "").strip()
-    phone_number_id = (settings.WHATSAPP_PHONE_NUMBER_ID or "").strip()
+    phone_number_id = resolve_whatsapp_phone_number_id()
 
     if not access_token or not phone_number_id:
         raise WhatsAppDeliveryError(
@@ -305,6 +419,15 @@ async def process_meta_webhook_payload(payload: dict[str, Any]) -> None:
 
     Meta Lead Ads leadgen payloads are handled by process_leadgen_webhook_payload().
     """
+    from app.services.whatsapp_webhook_env import (
+        extract_webhook_phone_number_id,
+        should_process_inbound_phone_number_id,
+    )
+
+    inbound_phone_id = extract_webhook_phone_number_id(payload)
+    if not should_process_inbound_phone_number_id(inbound_phone_id):
+        return
+
     parsed_preview = parse_whatsapp_payload(payload)
     if parsed_preview:
         logger.info(
@@ -362,13 +485,21 @@ async def _persist_inbound_messages(db: Session, inbound_messages) -> int:
             if is_human_handoff_lead(lead):
                 ensure_handoff_for_inbound(db, lead)
 
+            display_text = inbound.message_text
+            try:
+                from app.services.admissions_intake_flow import format_inbound_booking_selection
+
+                display_text = format_inbound_booking_selection(db, inbound.message_text)
+            except Exception:
+                display_text = inbound.message_text
+
             db.add(
                 MessageHistory(
                     lead_id=lead.id,
                     wa_id=inbound.wa_id,
                     sender_phone=inbound.sender_phone,
                     role="user",
-                    message_text=inbound.message_text,
+                    message_text=display_text,
                     wa_message_id=inbound.message_id,
                 )
             )
@@ -376,19 +507,24 @@ async def _persist_inbound_messages(db: Session, inbound_messages) -> int:
                 Message(
                     lead_id=lead.id,
                     sender="candidate",
-                    text=inbound.message_text,
+                    text=display_text,
                     is_read=False,
                 )
             )
             db.add(ProcessedMessage(message_id=inbound.message_id))
             db.commit()
 
-            if not is_human_handoff_lead(lead):
+            try:
                 await dispatch_inbound_whatsapp_ai(
                     db,
                     lead,
                     inbound.sender_phone,
                     inbound.message_text,
+                )
+            except Exception:
+                logger.exception(
+                    "AI reply failed for lead %s after inbound WhatsApp message",
+                    lead.id,
                 )
 
             processed_count += 1

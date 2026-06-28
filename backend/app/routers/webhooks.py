@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -10,8 +11,18 @@ from fastapi import APIRouter, BackgroundTasks, Query, Request
 from fastapi.responses import PlainTextResponse, Response
 
 from app.config import settings
+from app.services.whatsapp_config import (
+    resolve_whatsapp_display_phone,
+    resolve_whatsapp_phone_number_id,
+)
 from app.services.messaging import process_meta_webhook_payload
 from app.services.leads import process_leadgen_webhook_payload
+from app.services.whatsapp_webhook_env import (
+    extract_webhook_phone_number_id,
+    get_webhook_status,
+    resolve_webhook_callback_url,
+    should_process_inbound_phone_number_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +64,32 @@ def _log_handshake(
 
 @router.get("/webhook/info")
 async def meta_webhook_info():
-    """Dev helper: current callback URL Meta must use (from PUBLIC_TUNNEL_BASE in .env)."""
-    tunnel = (os.getenv("PUBLIC_TUNNEL_BASE") or "").strip().rstrip("/")
-    callback = f"{tunnel}/api/webhook" if tunnel else None
+    """Environment helper: expected vs actual Meta WhatsApp webhook routing."""
+    tunnel = (os.getenv("PUBLIC_TUNNEL_BASE") or settings.PUBLIC_TUNNEL_BASE or "").strip().rstrip("/")
+    callback = resolve_webhook_callback_url()
+    whatsapp_callback = f"{tunnel}/api/v1/webhooks/whatsapp" if tunnel else None
+    status = get_webhook_status()
     return {
+        "nexus_instance": status.nexus_instance,
+        "environment": status.environment,
         "callback_url": callback,
-        "verify_token_configured": bool(_resolve_verify_token()),
-        "whatsapp_phone_number_id": (settings.WHATSAPP_PHONE_NUMBER_ID or "").strip() or None,
-        "note": "Update Meta Developer Console whenever dev.ps1 prints a new tunnel URL.",
+        "whatsapp_webhook_url": whatsapp_callback,
+        "verify_token_configured": status.verify_token_configured,
+        "owned_by_this_environment": status.owned_by_this_environment,
+        "meta_override_callback_url": status.meta_override_callback_url,
+        "meta_application_callback_url": status.meta_application_callback_url,
+        "provider": (settings.PROVIDER or "").strip().upper() or None,
+        "whatsapp_line": status.whatsapp_line,
+        "whatsapp_phone_number_id": status.whatsapp_phone_number_id or resolve_whatsapp_phone_number_id() or None,
+        "whatsapp_business_account_id": status.whatsapp_business_account_id,
+        "whatsapp_display_phone": status.whatsapp_display_phone or resolve_whatsapp_display_phone() or None,
+        "whatsapp_business_phone_number": resolve_whatsapp_display_phone() or None,
+        "whatsapp_outreach_template": (settings.WHATSAPP_OUTREACH_TEMPLATE or "").strip() or None,
+        "handoff_url": (settings.NEXUS_WHATSAPP_HANDOFF_URL or "").strip() or None,
+        "note": (
+            "Development uses the Meta test number; staging uses the Edutrust business line. "
+            "Both share one webhook URL; each environment ignores inbound events for the other line."
+        ),
     }
 
 
@@ -207,11 +236,15 @@ async def receive_meta_webhook(
     if payload is None:
         return Response(status_code=200)
 
+    inbound_phone_id = extract_webhook_phone_number_id(payload)
+    if not should_process_inbound_phone_number_id(inbound_phone_id):
+        return Response(status_code=200)
+
     logger.info("Meta webhook raw JSON payload: %s", payload)
     print(f"[Meta Webhook] raw JSON payload: {payload}")
 
     # Leadgen: extract leadgen_id(s), fetch Graph details async, persist via save_lead().
     background_tasks.add_task(process_leadgen_webhook_payload, payload)
-    # WhatsApp messaging and other Meta object types.
-    background_tasks.add_task(process_meta_webhook_payload, payload)
+    # WhatsApp messaging and other Meta object types — fire-and-forget so Meta gets 200 immediately.
+    asyncio.create_task(process_meta_webhook_payload(payload))
     return Response(status_code=200)

@@ -6,6 +6,7 @@ import Dashboard from './pages/NexusDashboard';
 import AiActiveView from './pages/AiActiveView'; 
 import HandoffsView from './pages/HandoffsView';
 import ProspectsPage from './pages/ProspectsPage';
+import OfflineLeadsPage from './pages/OfflineLeadsPage';
 import ArchiveView from './pages/ArchiveView';
 import UsersView from './pages/UsersView';
 import Analytics from './pages/Analytics';
@@ -15,9 +16,11 @@ import CounsellingDashboard from './pages/CounsellingDashboard';
 import MyBookings from './pages/MyBookings';
 import MyProfile from './pages/MyProfile';
 import AppSettings from './pages/AppSettings';
-import ReportsPage from './pages/ReportsPage';
+import ReportsLayout from './pages/ReportsLayout';
+import MetaLeadsReportPage from './pages/MetaLeadsReportPage';
 import QuarantinePage from './pages/QuarantinePage';
 import SecurityAuditDashboard from './pages/SecurityAuditDashboard';
+import AuditLogsPage from './pages/AuditLogsPage';
 import AdminCommandCenter from './pages/AdminCommandCenter';
 import MessagingHub from './pages/MessagingHub';
 import Login from './pages/Login';
@@ -46,6 +49,7 @@ function App() {
           <Route path="handoffs" element={<HandoffsView />} />
           <Route path="prospects" element={<ProspectsPage />} />
           <Route path="prospects/:leadId" element={<ProspectsPage />} />
+          <Route path="offline-leads" element={<OfflineLeadsPage />} />
           <Route path="archive" element={<ArchiveView />} />
           <Route path="users" element={<UsersView />} />
           <Route path="analytics" element={<Analytics />} />
@@ -56,7 +60,12 @@ function App() {
           <Route path="my-bookings" element={<MyBookings />} />
           <Route path="my-profile" element={<MyProfile />} />
           <Route path="settings" element={<AppSettings />} />
-          <Route path="reports" element={<ReportsPage />} />
+          <Route path="reports" element={<ReportsLayout />}>
+            <Route index element={<Navigate to="meta-leads" replace />} />
+            <Route path="meta-leads" element={<MetaLeadsReportPage />} />
+            <Route path="audit-logs" element={<AuditLogsPage />} />
+          </Route>
+          <Route path="audit-logs" element={<Navigate to="/reports/audit-logs" replace />} />
           <Route path="quarantine" element={<QuarantinePage />} />
           <Route path="security-audit" element={<SecurityAuditDashboard />} />
           <Route path="access-control" element={<AccessControl />} />

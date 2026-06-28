@@ -45,6 +45,46 @@ def ensure_handoff_for_inbound(db: Session, lead: Lead) -> None:
     lead.updated_at = datetime.utcnow()
 
 
+AI_AUTO_HANDOFF_REASON_PREFIXES = (
+    "AI confidence below escalation threshold",
+    "AI could not generate a reliable answer",
+)
+
+
+def is_human_requested_handoff(lead: Lead) -> bool:
+    """Handoff explicitly requested by the student or because the agent is inactive."""
+    reason = (lead.handoff_reason or "").strip().lower()
+    if not reason:
+        return False
+    if reason in {"keyword trigger", "agent inactive"}:
+        return True
+    return reason.startswith("keyword") or reason.startswith("agent inactive")
+
+
+def should_retry_ai_after_handoff(lead: Lead) -> bool:
+    """
+    Allow Ollama to answer follow-up questions when the previous handoff was caused
+    by an empty AI response, not when the student asked for a human advisor.
+    """
+    if not is_human_handoff_lead(lead):
+        return False
+    if is_human_requested_handoff(lead):
+        return False
+    reason = (lead.handoff_reason or "").strip()
+    if not reason:
+        return True
+    return any(reason.startswith(prefix) for prefix in AI_AUTO_HANDOFF_REASON_PREFIXES)
+
+
+def release_ai_handoff(db: Session, lead: Lead) -> None:
+    """Return an AI-auto-handoff lead to the automated assistant."""
+    lead.stage = LeadStage.AI_ACTIVE
+    lead.is_human_locked = False
+    lead.handoff_reason = None
+    lead.handoff_ai_confidence = None
+    lead.updated_at = datetime.utcnow()
+
+
 def touch_lead_activity(db: Session, lead: Lead) -> None:
     lead.updated_at = datetime.utcnow()
 

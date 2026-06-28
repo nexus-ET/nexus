@@ -14,7 +14,7 @@ const MessagingHubHeader: React.FC = () => {
     <div className="shrink-0 rounded-xl border border-border bg-white p-4 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-text-primary">Nexus Messaging Hub</h1>
+          <h1 className="text-2xl font-bold text-text-primary">Chat</h1>
           <p className="text-sm text-text-primary/70">
             Use the search bar above the chat to find messages, then use the arrows to step through
             each match.

@@ -17,6 +17,7 @@ import {
 import ReportTable, { type ReportColumn } from './ReportTable';
 import IngestionQualityPanel from './IngestionQualityPanel';
 import { apiFetchBlob } from '../../utils/api';
+import { useBusinessTimezone } from '../../context/BusinessTimezoneContext';
 
 const toIsoDate = (value: Date | null): string | undefined => {
   if (!value) return undefined;
@@ -30,11 +31,6 @@ const parseIsoDate = (value: string): Date | null => {
   if (!value) return null;
   const parsed = new Date(`${value}T00:00:00`);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
-};
-
-const formatTimestamp = (value?: string | null): string => {
-  if (!value) return '—';
-  return new Date(value).toLocaleString();
 };
 
 const formatSyncMode = (mode: string): string => {
@@ -62,13 +58,15 @@ const statusClassName = (status: string): string => {
   return 'text-text-muted bg-surface-bg border-border-subtle';
 };
 
-const buildSyncLogColumns = (): ReportColumn<SyncLogRecord>[] => [
+const buildSyncLogColumns = (
+  formatDateTime: (value: string | Date | null | undefined) => string
+): ReportColumn<SyncLogRecord>[] => [
   {
     id: 'attempt_timestamp',
     header: 'Attempted',
     sortable: true,
-    pdfValue: row => formatTimestamp(row.attempt_timestamp),
-    render: row => <span className="whitespace-nowrap">{formatTimestamp(row.attempt_timestamp)}</span>,
+    pdfValue: row => formatDateTime(row.attempt_timestamp),
+    render: row => <span className="whitespace-nowrap">{formatDateTime(row.attempt_timestamp)}</span>,
   },
   {
     id: 'sync_mode',
@@ -132,6 +130,7 @@ const buildSyncLogColumns = (): ReportColumn<SyncLogRecord>[] => [
 ];
 
 const SyncLogs: React.FC = () => {
+  const { formatDateTime } = useBusinessTimezone();
   const [searchParams, setSearchParams] = useSearchParams();
   const queryState = useMemo(() => readSyncLogsQuery(searchParams), [searchParams]);
 
@@ -167,12 +166,12 @@ const SyncLogs: React.FC = () => {
     }
   }, [error]);
 
-  const columns = useMemo(() => buildSyncLogColumns(), []);
+  const columns = useMemo(() => buildSyncLogColumns(formatDateTime), [formatDateTime]);
   const logs = data?.logs ?? [];
   const totalCount = data?.total_count ?? 0;
-  const page = data?.page ?? queryState.page;
-  const limit = data?.limit ?? queryState.limit;
-  const pages = data?.total_pages ?? totalPages(totalCount, limit);
+  const page = queryState.page;
+  const limit = queryState.limit;
+  const pages = totalPages(totalCount, limit);
 
   const updateQuery = (patch: Parameters<typeof writeSyncLogsQuery>[1]) => {
     setSearchParams(writeSyncLogsQuery(searchParams, patch), { replace: true });
@@ -322,7 +321,7 @@ const SyncLogs: React.FC = () => {
         {totalCount.toLocaleString()} matching record{totalCount === 1 ? '' : 's'}
         {totalCount > 0 ? ' · Download PDF exports the full filtered dataset' : ''}
         {schedule?.mode === 'automated' && schedule.next_scheduled_run_at
-          ? ` · Next automated sync (Settings): ${new Date(schedule.next_scheduled_run_at).toLocaleString()}`
+          ? ` · Next automated sync (Dashboard): ${formatDateTime(schedule.next_scheduled_run_at)}`
           : schedule?.mode === 'manual'
             ? ' · Manual mode (Settings) — use Sync Now to ingest leads'
             : ''}

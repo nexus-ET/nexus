@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useOutletContext } from 'react-router-dom';
 import {
   ShieldCheck,
   Plus,
@@ -10,18 +11,21 @@ import {
   X,
   Eye,
   EyeOff,
+  Trash2,
 } from 'lucide-react';
 import { apiFetch } from '../utils/api';
+import { isSuperAdmin } from '../utils/adminAccess';
 import BusinessDomainEmailField from '../components/BusinessDomainEmailField';
 import StatusChangeModal from '../components/StatusChangeModal';
 import UserStatusPill from '../components/UserStatusPill';
 import {
-  COUNTRY_DIAL_CODES,
   PHONE_LOCAL_REQUIREMENTS,
   formatFullPhone,
+  formatPhoneCountryLabel,
   parseStoredPhone,
   validatePhoneWithCountry,
 } from '../utils/phoneCountry';
+import { useCountries } from '../hooks/useCountries';
 import {
   buildBusinessEmail,
   splitEmailUsername,
@@ -67,7 +71,7 @@ interface UserFormState {
   first_name: string;
   last_name: string;
   email_username: string;
-  country_code: string;
+  phone_country_iso2: string;
   phone_number: string;
   password: string;
   admin_role_id: number | '';
@@ -77,7 +81,7 @@ const EMPTY_FORM: UserFormState = {
   first_name: '',
   last_name: '',
   email_username: '',
-  country_code: '',
+  phone_country_iso2: '',
   phone_number: '',
   password: '',
   admin_role_id: '',
@@ -144,9 +148,12 @@ const isDuplicateEmail = (
 };
 
 const UsersView: React.FC = () => {
+  const { currentUser } = useOutletContext<{ currentUser?: AdminUser | null }>() ?? {};
+  const viewerIsSuperAdmin = isSuperAdmin(currentUser);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deletingUserId, setDeletingUserId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
@@ -163,6 +170,7 @@ const UsersView: React.FC = () => {
   const [businessEmailDomain, setBusinessEmailDomain] = useState<string | null>(null);
   const [loadingBusinessDomain, setLoadingBusinessDomain] = useState(true);
   const [emailUsernameError, setEmailUsernameError] = useState<string | null>(null);
+  const { countries } = useCountries();
 
   const loadBusinessEmailDomain = useCallback(async () => {
     try {
@@ -239,14 +247,14 @@ const UsersView: React.FC = () => {
   };
 
   const openEditModal = async (user: AdminUser) => {
-    const { countryCode, localNumber } = parseStoredPhone(user.phone_number);
+    const { countryIso2, localNumber } = parseStoredPhone(user.phone_number, countries);
     const domain = businessEmailDomain ?? (await loadBusinessEmailDomain());
     setEditingUser(user);
     setForm({
       first_name: user.first_name || '',
       last_name: user.last_name || '',
       email_username: splitEmailUsername(user.email, domain),
-      country_code: countryCode,
+      phone_country_iso2: countryIso2,
       phone_number: localNumber,
       password: '',
       admin_role_id: resolveAdminRoleId(user.admin_role_id, user.role, adminRoles),
@@ -297,7 +305,11 @@ const UsersView: React.FC = () => {
 
     if (form.admin_role_id === '') return 'Admin role is required.';
 
-    const phoneError = validatePhoneWithCountry(form.country_code, form.phone_number);
+    const phoneError = validatePhoneWithCountry(
+      form.phone_country_iso2,
+      form.phone_number,
+      countries
+    );
     if (phoneError) return phoneError;
 
     if (editingUser) {
@@ -334,7 +346,7 @@ const UsersView: React.FC = () => {
     setEmailUsernameError(null);
 
     try {
-      const fullPhone = formatFullPhone(form.country_code, form.phone_number);
+      const fullPhone = formatFullPhone(form.phone_country_iso2, form.phone_number, countries);
       const fullEmail = buildBusinessEmail(form.email_username, businessEmailDomain as string);
 
       if (editingUser) {
@@ -415,6 +427,30 @@ const UsersView: React.FC = () => {
       );
     } finally {
       setStatusChanging(false);
+    }
+  };
+
+  const handleDeleteUser = async (user: AdminUser) => {
+    if (!viewerIsSuperAdmin) return;
+    if (currentUser?.id === user.id) {
+      setError('You cannot delete your own account.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete ${formatAdminName(user)} permanently?\n\nThis removes their admin account from the system. This action cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    try {
+      setDeletingUserId(user.id);
+      setError(null);
+      await apiFetch(`users/${user.id}`, { method: 'DELETE' });
+      await loadUsers();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to delete admin user.');
+    } finally {
+      setDeletingUserId(null);
     }
   };
 
@@ -549,6 +585,21 @@ const UsersView: React.FC = () => {
                           <UserCheck size={14} />
                           Activate
                         </button>
+                        {viewerIsSuperAdmin && currentUser?.id !== user.id && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteUser(user)}
+                            disabled={deletingUserId === user.id}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-alert/30 text-xs font-semibold text-alert hover:bg-alert/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            {deletingUserId === user.id ? (
+                              <Loader2 size={14} className="animate-spin" />
+                            ) : (
+                              <Trash2 size={14} />
+                            )}
+                            Delete
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -642,19 +693,19 @@ const UsersView: React.FC = () => {
                 <div className="flex gap-2">
                   <select
                     required
-                    value={form.country_code}
+                    value={form.phone_country_iso2}
                     onChange={e =>
                       setForm(prev => ({
                         ...prev,
-                        country_code: e.target.value,
+                        phone_country_iso2: e.target.value,
                       }))
                     }
                     className="w-[11.5rem] shrink-0 px-3 py-2 bg-surface-bg border border-border-subtle rounded-xl text-sm text-text-main focus:outline-none focus:border-accent focus:ring-4 focus:ring-accent/10"
                   >
                     <option value="">Country code</option>
-                    {COUNTRY_DIAL_CODES.map(country => (
-                      <option key={country.code} value={country.code}>
-                        {country.label}
+                    {countries.map(country => (
+                      <option key={country.iso2} value={country.iso2}>
+                        {formatPhoneCountryLabel(country)}
                       </option>
                     ))}
                   </select>

@@ -20,6 +20,8 @@ import UserProfileMenu from '../components/UserProfileMenu';
 import NotificationBell from '../components/NotificationBell';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import MetaLeadSyncPanel from '../components/dashboard/MetaLeadSyncPanel';
+import PendingAdvisorQuestionsPanel, { PendingAdvisorQuestion } from '../components/dashboard/PendingAdvisorQuestionsPanel';
+import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 
 // --- SCHEMA & DATA LAYER INTERFACES ---
 interface DashboardMetric {
@@ -87,6 +89,7 @@ interface DashboardSummary {
   active_ai_chats: number;
   notifications: SystemNotification[];
   leads: StudentLead[];
+  pending_advisor_questions?: PendingAdvisorQuestion[];
 }
 
 const INITIAL_DASHBOARD: DashboardSummary = {
@@ -97,6 +100,7 @@ const INITIAL_DASHBOARD: DashboardSummary = {
   active_ai_chats: 0,
   notifications: [],
   leads: [],
+  pending_advisor_questions: [],
 };
 
 const DASHBOARD_POLL_INTERVAL_MS = 30_000;
@@ -119,6 +123,7 @@ const NexusDashboard: React.FC = () => {
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const userDisplay = parseUserDisplay(currentUser);
+  const { formatDateTime } = useBusinessTimezone();
   usePushNotifications();
 
   const currentPath = normalizePath(location.pathname);
@@ -186,6 +191,7 @@ const NexusDashboard: React.FC = () => {
         active_ai_chats: data.active_ai_chats ?? 0,
         notifications: data.notifications ?? [],
         leads: data.leads ?? [],
+        pending_advisor_questions: data.pending_advisor_questions ?? [],
       });
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') return;
@@ -362,6 +368,12 @@ const NexusDashboard: React.FC = () => {
                 )}
               </div>
 
+              <PendingAdvisorQuestionsPanel
+                items={dashboard.pending_advisor_questions ?? []}
+                loading={loading}
+                formatDateTime={formatDateTime}
+              />
+
               {/* --- ACTION FEED AND QUALIFICATION PIPELINE --- */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 pb-12">
                 
@@ -386,7 +398,7 @@ const NexusDashboard: React.FC = () => {
                           <div className="flex justify-between items-start">
                             <h5 className="text-sm font-bold text-text-main">{n.title}</h5>
                             <span className="text-[10px] text-text-muted font-medium">
-                              {n.created_at ? new Date(n.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Just now'}
+                              {n.created_at ? formatDateTime(n.created_at, { hour: '2-digit', minute: '2-digit' }) : 'Just now'}
                             </span>
                           </div>
                           <p className="text-xs text-text-muted leading-relaxed">{n.message}</p>
@@ -468,7 +480,7 @@ const NexusDashboard: React.FC = () => {
                 isMessagingHub ? 'flex min-h-0 flex-1 flex-col' : 'h-full'
               }`}
             >
-              <Outlet />
+              <Outlet context={{ currentUser }} />
             </div>
           )}
         </main>

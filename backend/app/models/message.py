@@ -1,7 +1,7 @@
 # app/models/message.py
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
-from sqlalchemy import Integer, String, DateTime, ForeignKey, Boolean
+from sqlalchemy import Float, Integer, String, DateTime, ForeignKey, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 # Point directly to your working app/database.py file
@@ -17,6 +17,7 @@ class Message(Base):
     lead_id: Mapped[int] = mapped_column(Integer, ForeignKey("leads.id", ondelete="CASCADE"), nullable=False)
     sender: Mapped[str] = mapped_column(String, nullable=False) 
     text: Mapped[str] = mapped_column(String, nullable=False)
+    ai_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     

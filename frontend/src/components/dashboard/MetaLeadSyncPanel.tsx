@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, CloudDownload, Loader2, Save } from 'lucide-react';
 import { apiFetch, API_SYNC_TIMEOUT_MS } from '../../utils/api';
+import { useBusinessTimezone } from '../../context/BusinessTimezoneContext';
 
 type LeadSyncMode = 'automated' | 'manual';
 type LeadSyncIntervalUnit = 'minutes' | 'hours' | 'days' | 'weeks';
@@ -37,6 +38,7 @@ const LEAD_SYNC_INTERVAL_OPTIONS: Array<{ value: LeadSyncIntervalUnit; label: st
 ];
 
 const MetaLeadSyncPanel: React.FC = () => {
+  const { formatDateTime } = useBusinessTimezone();
   const [leadSyncConfig, setLeadSyncConfig] = useState<LeadSyncConfig | null>(null);
   const [leadSyncDraft, setLeadSyncDraft] = useState<{
     mode: LeadSyncMode;
@@ -122,11 +124,11 @@ const MetaLeadSyncPanel: React.FC = () => {
         : '';
 
     if (leadSyncConfig.next_scheduled_run_at) {
-      return `Next automatic sync: ${new Date(leadSyncConfig.next_scheduled_run_at).toLocaleString()}.${intervalNote} Activity appears in Reports.`;
+      return `Next automatic sync: ${formatDateTime(leadSyncConfig.next_scheduled_run_at)}.${intervalNote} Activity appears in Reports.`;
     }
 
     return `Automatic sync is armed.${intervalNote} Keep one backend running — activity appears in Reports.`;
-  }, [leadSyncConfig, leadSyncDraft.mode]);
+  }, [leadSyncConfig, leadSyncDraft.mode, formatDateTime]);
 
   const isLeadSyncDirty = useMemo(() => {
     if (!leadSyncConfig) return false;
@@ -221,7 +223,7 @@ const MetaLeadSyncPanel: React.FC = () => {
           </div>
           {leadSyncConfig?.last_run_at ? (
             <p className="text-[10px] text-text-muted whitespace-nowrap shrink-0">
-              Last sync: {new Date(leadSyncConfig.last_run_at).toLocaleString()}
+              Last sync: {formatDateTime(leadSyncConfig.last_run_at)}
             </p>
           ) : null}
         </div>

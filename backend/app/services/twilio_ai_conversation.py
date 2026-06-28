@@ -7,16 +7,22 @@ from sqlalchemy.orm import Session
 from app.models.lead import Lead, LeadStage
 from app.models.message import Message
 from app.services.admissions_intake_flow import (
+    BRAND_NAME,
     IntakeReply,
+    begin_whatsapp_intake_session,
     get_current_step_reply,
     handle_post_intake_booking_message,
     is_intake_complete,
     process_flow_completion,
     process_intake_message,
-    start_intake_message,
 )
-from app.services.agent_runtime import get_runtime_agent_config, should_escalate_message
-from app.services.ai_service import _call_llm
+from app.services.agent_runtime import (
+    RuntimeAgentConfig,
+    get_runtime_agent_config,
+    should_escalate_before_llm,
+)
+from app.services.ai_service import LlmResult, compose_agent_message, compose_handoff_acknowledgement
+from app.services.handoff_notifications import notify_advisors_of_handoff
 from app.services.lead_conversation import ensure_handoff_for_inbound, touch_lead_activity
 from app.services.phone_utils import clean_phone_number
 from app.services.messaging import (
@@ -24,12 +30,52 @@ from app.services.messaging import (
     WhatsAppDeliveryError,
     get_active_provider,
     open_whatsapp_conversation_window,
+    record_ai_conversation_audit,
     send_message,
 )
 
 logger = logging.getLogger(__name__)
 
 RECENT_HISTORY_LIMIT = 20
+OUTREACH_SESSION_MARKER = f"{BRAND_NAME} Admissions AI Assistant on WhatsApp"
+INTAKE_SESSION_MARKER = f"{BRAND_NAME} Admissions AI Assistant"
+
+
+def _session_start_index(rows: list[Message]) -> int:
+    """Ignore stale test messages before the latest outreach/intake welcome."""
+    start_idx = 0
+    for i, row in enumerate(rows):
+        text = (row.text or "").strip()
+        if row.sender not in ("advisor", "system") or not text:
+            continue
+        if OUTREACH_SESSION_MARKER in text or INTAKE_SESSION_MARKER in text:
+            start_idx = i
+    return start_idx
+
+
+def load_conversation_history(db: Session, lead_id: int) -> list[tuple[str, str]]:
+    rows = (
+        db.query(Message)
+        .filter(Message.lead_id == lead_id)
+        .order_by(Message.created_at.desc())
+        .limit(max(RECENT_HISTORY_LIMIT * 3, 50))
+        .all()
+    )
+    rows = list(reversed(rows))
+    rows = rows[_session_start_index(rows) :]
+    if len(rows) > RECENT_HISTORY_LIMIT:
+        rows = rows[-RECENT_HISTORY_LIMIT:]
+
+    history: list[tuple[str, str]] = []
+    for row in rows:
+        text = (row.text or "").strip()
+        if not text:
+            continue
+        if row.sender in ("student", "candidate"):
+            history.append(("user", text))
+        elif row.sender in ("advisor", "system"):
+            history.append(("assistant", text))
+    return history
 
 
 def first_name_from_lead(lead: Lead) -> str:
@@ -48,63 +94,32 @@ def lead_has_ai_outbound_messages(db: Session, lead_id: int) -> bool:
     )
 
 
-def load_conversation_history(db: Session, lead_id: int) -> list[tuple[str, str]]:
-    rows = (
-        db.query(Message)
-        .filter(Message.lead_id == lead_id)
-        .order_by(Message.created_at.asc())
-        .limit(RECENT_HISTORY_LIMIT)
-        .all()
-    )
-
-    history: list[tuple[str, str]] = []
-    for row in rows:
-        text = (row.text or "").strip()
-        if not text:
-            continue
-        if row.sender in ("student", "candidate"):
-            history.append(("user", text))
-        elif row.sender in ("advisor", "system"):
-            history.append(("assistant", text))
-    return history
-
-
-def build_llm_messages(system_prompt: str, history: list[tuple[str, str]]) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
-    for role, text in history:
-        messages.append({"role": role, "content": text})
-    return messages
-
-
-async def generate_ai_reply(db: Session, lead: Lead) -> str:
-    runtime_config = get_runtime_agent_config(db)
+async def generate_ai_reply(
+    db: Session,
+    lead: Lead,
+    runtime_config: RuntimeAgentConfig,
+    incoming_text: str | None = None,
+) -> LlmResult:
     history = load_conversation_history(db, lead.id)
-    student_name = first_name_from_lead(lead)
-    has_prior_ai_turns = any(role == "assistant" for role, _ in history)
+    latest_user = (incoming_text or "").strip()
+    if latest_user and (not history or history[-1] != ("user", latest_user)):
+        history = [*history, ("user", latest_user)]
 
-    booking_note = ""
+    extra_context = "Intake is complete. Continue helping on WhatsApp with concise admissions guidance."
     if lead.consultation_scheduled_at:
-        booking_note = (
-            f"Consultation booked at: {lead.consultation_scheduled_at.isoformat()}. "
-            "If they ask to change it, tell them to reply *change slot* or *reschedule*."
+        extra_context += (
+            f" Consultation booked at {lead.consultation_scheduled_at.isoformat()}. "
+            "If they ask to change it, explain they can reply with reschedule or cancel."
         )
 
-    enriched_prompt = (
-        f"{runtime_config.system_prompt}\n\n"
-        f"Student name: {lead.full_name or student_name}.\n"
-        f"Location: {getattr(lead, 'current_location', None) or 'unknown'}.\n"
-        f"Target country: {lead.preferred_country or 'unknown'}.\n"
-        f"Test scores: {lead.test_scores or 'unknown'}.\n"
-        f"{booking_note}\n"
-        "Intake is complete. Continue helping on WhatsApp with concise, helpful admissions guidance."
-    )
-
-    llm_messages = build_llm_messages(enriched_prompt, history)
-    return await _call_llm(
-        runtime_config.ai_model,
-        llm_messages,
-        student_name=student_name,
-        has_prior_ai_turns=has_prior_ai_turns,
+    return await compose_agent_message(
+        db,
+        runtime_config,
+        lead,
+        task="Post-intake Q&A: answer the student's admissions question on WhatsApp.",
+        incoming_text=latest_user,
+        conversation_history=history,
+        extra_context=extra_context,
     )
 
 
@@ -134,8 +149,9 @@ async def persist_and_send_intake_reply(
     if target_phone:
         use_meta = get_active_provider() == PROVIDER_WHATSAPP
         if use_meta:
-            body = reply.text or "Please reply to continue."
-            await _deliver_whatsapp_text(target_phone, body)
+            from app.services.meta_whatsapp_interactive import deliver_meta_intake_reply
+
+            stored_text = await deliver_meta_intake_reply(target_phone, reply)
         elif reply.whatsapp_flow:
             sent, delivered_text = dispatch_whatsapp_flow(target_phone, reply.whatsapp_flow)
             if sent:
@@ -168,6 +184,7 @@ async def persist_and_send_intake_reply(
         lead_id=lead.id,
         sender="advisor",
         text=stored_text,
+        ai_confidence=reply.confidence,
         is_read=True,
     )
     db.add(outbound)
@@ -182,22 +199,83 @@ async def persist_and_send_ai_message(
     lead: Lead,
     phone: str,
     message_body: str,
+    *,
+    ai_confidence: float | None = None,
 ) -> Message:
+    target_phone = clean_phone_number(phone or lead.phone_number or "")
+    if target_phone:
+        await _deliver_whatsapp_text(target_phone, message_body)
+
     outbound = Message(
         lead_id=lead.id,
         sender="advisor",
         text=message_body,
+        ai_confidence=ai_confidence,
         is_read=True,
     )
     db.add(outbound)
     touch_lead_activity(db, lead)
     db.commit()
     db.refresh(outbound)
-
-    target_phone = clean_phone_number(phone or lead.phone_number or "")
-    if target_phone:
-        await _deliver_whatsapp_text(target_phone, message_body)
     return outbound
+
+
+async def _execute_escalation_handoff(
+    db: Session,
+    lead: Lead,
+    phone: str,
+    runtime_config: RuntimeAgentConfig,
+    incoming_text: str,
+    *,
+    reason: str,
+    ai_confidence: float | None = None,
+) -> list[str]:
+    ensure_handoff_for_inbound(db, lead)
+    lead.handoff_reason = reason
+    lead.handoff_ai_confidence = ai_confidence
+    notify_advisors_of_handoff(
+        db,
+        lead,
+        reason=reason,
+        message_preview=incoming_text,
+        ai_confidence=ai_confidence,
+    )
+    ack = await compose_handoff_acknowledgement(db, runtime_config, lead, incoming_text)
+    await persist_and_send_ai_message(db, lead, phone, ack.text, ai_confidence=ack.confidence)
+    record_ai_conversation_audit(
+        db,
+        lead_id=lead.id,
+        student_message=incoming_text,
+        ai_reply=ack.text,
+        ai_model=runtime_config.ai_model,
+        confidence_score=ai_confidence if ai_confidence is not None else ack.confidence,
+        escalated=True,
+        commit=False,
+    )
+    db.commit()
+    return [ack.text]
+
+
+def _audit_ai_turn(
+    db: Session,
+    *,
+    lead: Lead,
+    runtime_config: RuntimeAgentConfig,
+    student_message: str,
+    ai_reply: str,
+    confidence_score: float | None,
+    escalated: bool,
+) -> None:
+    record_ai_conversation_audit(
+        db,
+        lead_id=lead.id,
+        student_message=student_message,
+        ai_reply=ai_reply,
+        ai_model=runtime_config.ai_model,
+        confidence_score=confidence_score,
+        escalated=escalated,
+        commit=False,
+    )
 
 
 async def handle_ai_active_inbound(
@@ -208,38 +286,112 @@ async def handle_ai_active_inbound(
     flow_data: str | None = None,
 ) -> list[str]:
     runtime_config = get_runtime_agent_config(db)
+    cleaned_incoming = (incoming_text or "").strip()
 
     if flow_data:
         flow_reply = process_flow_completion(db, lead, flow_data)
         if flow_reply:
             await persist_and_send_intake_reply(db, lead, phone, flow_reply)
+            _audit_ai_turn(
+                db,
+                lead=lead,
+                runtime_config=runtime_config,
+                student_message=cleaned_incoming or "[flow completion]",
+                ai_reply=flow_reply.text,
+                confidence_score=getattr(flow_reply, "confidence", None),
+                escalated=False,
+            )
+            db.commit()
             return [flow_reply.text]
 
-    if should_escalate_message(incoming_text, runtime_config, lead.ml_conversion_score or 0.0):
-        ensure_handoff_for_inbound(db, lead)
-        escalation = (
-            f"Understood, {first_name_from_lead(lead)}. 🤝 I'm connecting you with a human "
-            "admissions advisor now. They'll continue on this WhatsApp thread shortly."
+    if should_escalate_before_llm(cleaned_incoming, runtime_config):
+        reason = "agent inactive" if not runtime_config.is_active else "keyword trigger"
+        return await _execute_escalation_handoff(
+            db,
+            lead,
+            phone,
+            runtime_config,
+            cleaned_incoming,
+            reason=reason,
+            ai_confidence=None,
         )
-        await persist_and_send_ai_message(db, lead, phone, escalation)
-        return [escalation]
-
-    lead.stage = LeadStage.AI_ACTIVE
-    lead.is_human_locked = False
 
     if not is_intake_complete(lead):
-        reply = process_intake_message(db, lead, incoming_text)
+        reply = await process_intake_message(db, lead, cleaned_incoming, runtime_config)
+        if not reply.text.strip():
+            return await _execute_escalation_handoff(
+                db,
+                lead,
+                phone,
+                runtime_config,
+                cleaned_incoming,
+                reason="AI could not generate a reliable answer during intake",
+                ai_confidence=reply.confidence,
+            )
         await persist_and_send_intake_reply(db, lead, phone, reply)
+        lead.stage = LeadStage.AI_ACTIVE
+        lead.is_human_locked = False
+        _audit_ai_turn(
+            db,
+            lead=lead,
+            runtime_config=runtime_config,
+            student_message=cleaned_incoming,
+            ai_reply=reply.text,
+            confidence_score=reply.confidence,
+            escalated=False,
+        )
+        db.commit()
         return [reply.text]
 
-    booking_reply = handle_post_intake_booking_message(db, lead, incoming_text)
+    booking_reply = handle_post_intake_booking_message(db, lead, cleaned_incoming)
     if booking_reply:
         await persist_and_send_intake_reply(db, lead, phone, booking_reply)
+        lead.stage = LeadStage.AI_ACTIVE
+        lead.is_human_locked = False
+        _audit_ai_turn(
+            db,
+            lead=lead,
+            runtime_config=runtime_config,
+            student_message=cleaned_incoming,
+            ai_reply=booking_reply.text,
+            confidence_score=getattr(booking_reply, "confidence", 1.0),
+            escalated=False,
+        )
+        db.commit()
         return [booking_reply.text]
 
-    ai_response = await generate_ai_reply(db, lead)
-    await persist_and_send_ai_message(db, lead, phone, ai_response)
-    return [ai_response]
+    llm_result = await generate_ai_reply(db, lead, runtime_config, cleaned_incoming)
+    if not llm_result.text.strip():
+        return await _execute_escalation_handoff(
+            db,
+            lead,
+            phone,
+            runtime_config,
+            cleaned_incoming,
+            reason="AI could not generate a reliable answer",
+            ai_confidence=llm_result.confidence if llm_result.confidence is not None else 0.0,
+        )
+
+    await persist_and_send_ai_message(
+        db,
+        lead,
+        phone,
+        llm_result.text,
+        ai_confidence=llm_result.confidence,
+    )
+    lead.stage = LeadStage.AI_ACTIVE
+    lead.is_human_locked = False
+    _audit_ai_turn(
+        db,
+        lead=lead,
+        runtime_config=runtime_config,
+        student_message=cleaned_incoming,
+        ai_reply=llm_result.text,
+        confidence_score=llm_result.confidence,
+        escalated=False,
+    )
+    db.commit()
+    return [llm_result.text]
 
 
 async def initiate_ai_outreach(db: Session, lead: Lead) -> list[str]:
@@ -247,32 +399,20 @@ async def initiate_ai_outreach(db: Session, lead: Lead) -> list[str]:
     if not phone:
         raise ValueError("Lead does not have a phone number for WhatsApp outreach.")
 
+    runtime_config = get_runtime_agent_config(db)
     lead.stage = LeadStage.AI_ACTIVE
     lead.is_human_locked = False
 
-    has_prior_outbound = lead_has_ai_outbound_messages(db, lead.id)
-
-    if is_intake_complete(lead):
-        if has_prior_outbound:
-            outreach_text = await generate_ai_reply(db, lead)
-        else:
-            name = first_name_from_lead(lead)
-            outreach_text = (
-                f"Hi {name}! 👋 This is the Nexus Admissions AI Assistant on WhatsApp.\n\n"
-                "How can I help you with your study abroad plans today?"
-            )
-    elif has_prior_outbound:
-        if not getattr(lead, "intake_step", None):
-            lead.intake_step = "FULL_NAME"
-        reply = get_current_step_reply(db, lead)
-        await open_whatsapp_conversation_window(phone)
+    if is_intake_complete(lead) or not getattr(lead, "intake_step", None):
+        begin_whatsapp_intake_session(db, lead, force_full_restart=True)
+    elif lead_has_ai_outbound_messages(db, lead.id):
+        reply = await get_current_step_reply(db, lead, runtime_config)
+        await open_whatsapp_conversation_window(phone, raise_on_failure=True)
         await persist_and_send_intake_reply(db, lead, phone, reply)
         return [reply.text]
-    else:
-        if not getattr(lead, "intake_step", None):
-            lead.intake_step = "FULL_NAME"
-        outreach_text = start_intake_message()
 
-    await open_whatsapp_conversation_window(phone)
-    await persist_and_send_ai_message(db, lead, phone, outreach_text)
-    return [outreach_text]
+    begin_whatsapp_intake_session(db, lead, force_full_restart=True)
+    reply = await get_current_step_reply(db, lead, runtime_config)
+    await open_whatsapp_conversation_window(phone, raise_on_failure=True)
+    await persist_and_send_intake_reply(db, lead, phone, reply)
+    return [reply.text]
