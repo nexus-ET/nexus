@@ -108,30 +108,45 @@ Two local folders share one GitHub repo via **worktrees**:
 
 ```powershell
 cd E:\NEXUS
+python backend/scripts/promote_to_staging.py --message "Describe your release"
+```
+
+Or use the launcher:
+
+```powershell
+.\backend\deploy\promote-to-staging.py.ps1 -Message "Describe your release"
+```
+
+Legacy PowerShell script (no auto migration docs):
+
+```powershell
 .\backend\deploy\promote-to-staging.ps1 -Message "Describe your release"
 ```
 
-This will:
+The Python script will:
 
-1. Commit any uncommitted changes on `develop` (if present)
-2. Push `develop` to GitHub
-3. Merge `develop` into `staging` in `E:\NEXUS-staging`
-4. Push `staging` to GitHub
+1. Detect new Alembic migrations since `origin/staging` and refresh `STAGING_DATABASE_MIGRATIONS.md`
+2. Write a timestamped file under `backend/deploy/releases/` when migrations are included
+3. Commit any uncommitted changes on `develop` (if present)
+4. Push `develop` to GitHub
+5. Merge `develop` into `staging` in `E:\NEXUS-staging`
+6. Push `staging` to GitHub
 
 **Push and deploy to Hostinger in one step:**
 
 ```powershell
-.\backend\deploy\promote-to-staging.ps1 -Message "Release notes" -VpsHost root@YOUR_VPS_IP
+python backend/scripts/promote_to_staging.py --message "Release notes" --vps root@YOUR_VPS_IP
 ```
 
-**Options:**
+**Options (`python backend/scripts/promote_to_staging.py --help`):**
 
 | Flag | Effect |
 |------|--------|
-| `-SkipDevelopPush` | Only merge/push staging (develop already on GitHub) |
-| `-SkipDeploy` | Do not SSH to VPS even if `-VpsHost` is set |
-| `-DryRun` | Show steps without git push/merge |
-| `-StagingRoot E:\NEXUS-staging` | Override staging worktree path |
+| `--dry-run` | Show steps without git push/merge/write |
+| `--skip-develop-push` | Only merge/push staging (develop already on GitHub) |
+| `--skip-deploy` | Do not SSH to VPS even if `--vps` is set |
+| `--skip-migration-doc` | Do not refresh migration markdown |
+| `--staging-root PATH` | Override `E:\NEXUS-staging` worktree path |
 
 **From GitHub (no local PC):**
 
