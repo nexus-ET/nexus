@@ -18,6 +18,29 @@ fi
 
 BACKEND="${APP_ROOT}/backend"
 FRONTEND="${APP_ROOT}/frontend"
+BACKEND_HEALTH_URL="http://127.0.0.1:8002/"
+BACKEND_STARTUP_WAIT_SECONDS="${BACKEND_STARTUP_WAIT_SECONDS:-120}"
+
+wait_for_backend() {
+  local attempt=1
+  local max_attempts=$((BACKEND_STARTUP_WAIT_SECONDS / 2))
+  if (( max_attempts < 1 )); then
+    max_attempts=1
+  fi
+
+  echo "==> Waiting for backend (up to ${BACKEND_STARTUP_WAIT_SECONDS}s)..."
+  while (( attempt <= max_attempts )); do
+    if curl -sf "$BACKEND_HEALTH_URL" >/dev/null 2>&1; then
+      echo "    Backend ready (~$((attempt * 2))s)."
+      return 0
+    fi
+    sleep 2
+    attempt=$((attempt + 1))
+  done
+
+  echo "    WARNING: Backend not responding at ${BACKEND_HEALTH_URL}" >&2
+  return 1
+}
 
 if [[ ! -d "${APP_ROOT}/.git" ]]; then
   echo "ERROR: ${APP_ROOT} is not a git repository. Run install.sh first." >&2
@@ -51,6 +74,7 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl restart nexus-backend
   nginx -t
   systemctl reload nginx
+  wait_for_backend || true
 fi
 
 echo "==> Register WhatsApp webhook for this server..."
@@ -66,4 +90,8 @@ fi
 chown -R www-data:www-data "$FRONTEND/dist" 2>/dev/null || true
 
 echo "==> Deploy complete at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-curl -sf "http://127.0.0.1:8002/" >/dev/null && echo "    Backend health: OK" || echo "    Backend health: check logs"
+if curl -sf "$BACKEND_HEALTH_URL" >/dev/null; then
+  echo "    Backend health: OK"
+else
+  echo "    Backend health: check logs (journalctl -u nexus-backend -n 50)" >&2
+fi
