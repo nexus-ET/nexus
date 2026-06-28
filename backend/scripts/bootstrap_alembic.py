@@ -7,9 +7,8 @@ and sync_schema_columns(), so alembic_version may be empty while tables already
 exist. Running `alembic upgrade head` from scratch then fails with duplicate
 column/table errors.
 
-This script:
-  1. If alembic_version is empty and core tables exist -> stamp baseline revision
-  2. Run `alembic upgrade head` for any migrations after the baseline (e1..j6)
+This script inspects the live schema, stamps Alembic to the highest revision
+already reflected in the database, then runs only the remaining migrations.
 
 Used automatically from deploy.sh; can also be run manually on the VPS.
 """
@@ -18,13 +17,25 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect
+from sqlalchemy.engine import Inspector
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-BASELINE_REVISION = "d9a4b2c81f0e"  # last revision before countries/audit migrations
+LEGACY_BASELINE_REVISION = "d9a4b2c81f0e"
 HEAD_REVISION = "j6f9g4h58i0d"
+
+ORDERED_REVISIONS: list[str] = [
+    "d9a4b2c81f0e",
+    "e1f3a8b92c4d",
+    "f2a4b9c03d5e",
+    "g3c6d1e25f7a",
+    "h4d7e2f36g8b",
+    "i5e8f3g47h9c",
+    "j6f9g4h58i0d",
+]
 
 
 def _load_database_url() -> str:
@@ -32,6 +43,58 @@ def _load_database_url() -> str:
     from app.config import settings
 
     return settings.DATABASE_URL
+
+
+def _revision_index(revision: str) -> int:
+    return ORDERED_REVISIONS.index(revision)
+
+
+def _next_revision(revision: str) -> str | None:
+    index = _revision_index(revision)
+    if index + 1 >= len(ORDERED_REVISIONS):
+        return None
+    return ORDERED_REVISIONS[index + 1]
+
+
+def _has_table(inspector: Inspector, table_name: str) -> bool:
+    return inspector.has_table(table_name)
+
+
+def _has_column(inspector: Inspector, table_name: str, column_name: str) -> bool:
+    if not _has_table(inspector, table_name):
+        return False
+    return any(column["name"] == column_name for column in inspector.get_columns(table_name))
+
+
+def _revision_checks() -> dict[str, Callable[[Inspector], bool]]:
+    return {
+        "d9a4b2c81f0e": lambda i: _has_table(i, "agent_configs")
+        and _has_column(i, "leads", "assigned_advisor_id"),
+        "e1f3a8b92c4d": lambda i: _has_table(i, "countries"),
+        "f2a4b9c03d5e": lambda i: _has_table(i, "education_degrees"),
+        "g3c6d1e25f7a": lambda i: _has_table(i, "gpa_cgpa_scores"),
+        "h4d7e2f36g8b": lambda i: _has_table(i, "target_programs")
+        and _has_table(i, "target_courses"),
+        "i5e8f3g47h9c": lambda i: _has_column(i, "messages", "ai_confidence")
+        and _has_column(i, "leads", "handoff_ai_confidence")
+        and _has_column(i, "leads", "handoff_reason"),
+        "j6f9g4h58i0d": lambda i: _has_table(i, "conversation_audit_logs"),
+    }
+
+
+def _revision_applied(inspector: Inspector, revision: str) -> bool:
+    return _revision_checks()[revision](inspector)
+
+
+def _detect_sequential_schema_revision(inspector: Inspector) -> str | None:
+    """Highest revision whose chain is fully satisfied from d9 onward."""
+    detected: str | None = None
+    for revision in ORDERED_REVISIONS:
+        if _revision_applied(inspector, revision):
+            detected = revision
+        else:
+            break
+    return detected
 
 
 def _current_alembic_revision() -> str | None:
@@ -54,10 +117,9 @@ def _current_alembic_revision() -> str | None:
     return None
 
 
-def _database_has_legacy_schema(engine) -> bool:
-    inspector = inspect(engine)
+def _database_has_legacy_schema(inspector: Inspector) -> bool:
     required = {"users", "leads", "clients"}
-    present = {t for t in inspector.get_table_names()}
+    present = set(inspector.get_table_names())
     return required.issubset(present)
 
 
@@ -67,32 +129,97 @@ def _run_alembic(*args: str) -> None:
     subprocess.run(cmd, cwd=BACKEND_ROOT, check=True)
 
 
+def _stamp_if_behind_schema(inspector: Inspector, current: str | None) -> str | None:
+    """Stamp forward when create_all() already applied tables/columns."""
+    detected = _detect_sequential_schema_revision(inspector)
+    if detected and (not current or _revision_index(detected) > _revision_index(current)):
+        print(
+            f"Schema already includes changes through {detected}; "
+            f"stamping Alembic from {current or 'empty'}."
+        )
+        _run_alembic("stamp", detected)
+        return detected
+    return current
+
+
+def _stamp_next_applied_revisions(inspector: Inspector) -> bool:
+    """Stamp individual later revisions already present (e.g. create_all tables)."""
+    stamped = False
+    while True:
+        current = _current_alembic_revision()
+        if not current or current == HEAD_REVISION:
+            break
+        next_revision = _next_revision(current)
+        if not next_revision or not _revision_applied(inspector, next_revision):
+            break
+        print(
+            f"Schema already reflects {next_revision}; "
+            "stamping without re-running migration SQL."
+        )
+        _run_alembic("stamp", next_revision)
+        stamped = True
+    return stamped
+
+
+def _migrate_to_head(inspector: Inspector) -> None:
+    current = _current_alembic_revision()
+    current = _stamp_if_behind_schema(inspector, current)
+    _stamp_next_applied_revisions(inspector)
+
+    attempts = len(ORDERED_REVISIONS) + 2
+    for _ in range(attempts):
+        current = _current_alembic_revision()
+        if current == HEAD_REVISION:
+            return
+
+        _stamp_next_applied_revisions(inspector)
+        if _current_alembic_revision() == HEAD_REVISION:
+            return
+
+        try:
+            _run_alembic("upgrade", "head")
+        except subprocess.CalledProcessError:
+            if _stamp_next_applied_revisions(inspector):
+                continue
+            raise
+
+        if _current_alembic_revision() == HEAD_REVISION:
+            return
+
+    final = _current_alembic_revision()
+    if final != HEAD_REVISION:
+        raise RuntimeError(f"Expected Alembic head {HEAD_REVISION}, got {final or 'empty'}")
+
+
 def main() -> int:
     database_url = _load_database_url()
     engine = create_engine(database_url)
+    inspector = inspect(engine)
 
     current = _current_alembic_revision()
-    if current:
-        print(f"Alembic already at revision: {current}")
-        if current == HEAD_REVISION:
-            print("Already at head — nothing to do.")
-            return 0
-        print("Running pending upgrades...")
-        _run_alembic("upgrade", "head")
+    if current == HEAD_REVISION:
+        print(f"Alembic already at head ({HEAD_REVISION}).")
         return 0
 
-    print("No alembic_version recorded.")
-    if not _database_has_legacy_schema(engine):
+    if current:
+        print(f"Alembic revision: {current}")
+        _migrate_to_head(inspector)
+    elif not _database_has_legacy_schema(inspector):
         print("Fresh database detected — running full alembic upgrade head.")
         _run_alembic("upgrade", "head")
-        return 0
-
-    print(
-        "Existing legacy schema detected (create_all / sync_schema). "
-        f"Stamping baseline {BASELINE_REVISION}, then upgrading to head."
-    )
-    _run_alembic("stamp", BASELINE_REVISION)
-    _run_alembic("upgrade", "head")
+    else:
+        print("No alembic_version recorded; legacy schema detected.")
+        detected = _detect_sequential_schema_revision(inspector)
+        start_revision = detected or LEGACY_BASELINE_REVISION
+        if not detected:
+            print(
+                "Core tables exist but post-baseline objects missing; "
+                f"stamping baseline {LEGACY_BASELINE_REVISION}."
+            )
+        else:
+            print(f"Schema matches through {detected}; stamping that revision.")
+        _run_alembic("stamp", start_revision)
+        _migrate_to_head(inspector)
 
     final = _current_alembic_revision()
     print(f"Done. Alembic revision is now: {final or 'unknown'}")
