@@ -14,6 +14,13 @@ class AiModelOption:
 
 AI_MODEL_OPTIONS: list[AiModelOption] = [
     AiModelOption(
+        "none:disabled",
+        "Disabled — appointments & intake templates only",
+        "none",
+        "disabled",
+        "No LLM calls. WhatsApp AI Active runs structured intake and consultation booking only.",
+    ),
+    AiModelOption(
         "ollama:llama3.1",
         "Ollama — Llama 3.1 (local)",
         "ollama",

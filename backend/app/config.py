@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str | None = None
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434/v1"
     OLLAMA_TIMEOUT_SECONDS: int = 120
+    # When true: WhatsApp AI Active uses fixed intake templates + appointment booking only (no LLM/Ollama/API keys).
+    NEXUS_APPOINTMENTS_ONLY: bool = True
 
     WHATSAPP_FLOW_ID: str | None = None
     WHATSAPP_FLOW_PRIVATE_KEY: str | None = None

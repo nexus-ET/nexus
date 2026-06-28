@@ -360,6 +360,30 @@ async def handle_ai_active_inbound(
         db.commit()
         return [booking_reply.text]
 
+    from app.config import settings
+
+    if settings.NEXUS_APPOINTMENTS_ONLY:
+        from app.services.intake_templates import render_appointment_only_reply
+
+        appointment_reply = IntakeReply(
+            text=render_appointment_only_reply(lead, cleaned_incoming),
+            confidence=1.0,
+        )
+        await persist_and_send_intake_reply(db, lead, phone, appointment_reply)
+        lead.stage = LeadStage.AI_ACTIVE
+        lead.is_human_locked = False
+        _audit_ai_turn(
+            db,
+            lead=lead,
+            runtime_config=runtime_config,
+            student_message=cleaned_incoming,
+            ai_reply=appointment_reply.text,
+            confidence_score=1.0,
+            escalated=False,
+        )
+        db.commit()
+        return [appointment_reply.text]
+
     llm_result = await generate_ai_reply(db, lead, runtime_config, cleaned_incoming)
     if not llm_result.text.strip():
         return await _execute_escalation_handoff(

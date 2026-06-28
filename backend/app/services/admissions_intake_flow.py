@@ -76,6 +76,13 @@ async def _agent_intake_reply(
     extra_context: str = "",
     **reply_kwargs,
 ) -> IntakeReply:
+    from app.config import settings
+    from app.services.intake_templates import render_deterministic_intake_text
+
+    if settings.NEXUS_APPOINTMENTS_ONLY:
+        text = render_deterministic_intake_text(lead, task=task, incoming_text=incoming_text)
+        return IntakeReply(text=text, confidence=1.0, **reply_kwargs)
+
     from app.services.ai_service import compose_agent_message
 
     result = await compose_agent_message(

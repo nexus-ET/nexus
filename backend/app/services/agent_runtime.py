@@ -15,7 +15,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "Answer clearly about programs abroad, entry requirements, documents, and visas. "
     "Escalate to a human advisor when the student requests a person or when manual review is required."
 )
-DEFAULT_AI_MODEL = "ollama:llama3.1"
+DEFAULT_AI_MODEL = "none:disabled"
 DEFAULT_ESCALATION_THRESHOLD = 70
 DEFAULT_KEYWORDS_TRIGGER = "human,advisor,agent,talk to,person"
 
