@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from app.models.lead import Lead
 
 BRAND_NAME = "Edutrust"
@@ -55,6 +57,19 @@ def _resolve_step_from_task(task: str, lead: Lead) -> str:
     return _lead_intake_step(lead)
 
 
+def _pending_target_country(lead: Lead) -> str:
+    raw = getattr(lead, "intake_context", None)
+    if not raw:
+        return ""
+    try:
+        context = json.loads(raw)
+    except json.JSONDecodeError:
+        return ""
+    if isinstance(context, dict):
+        return str(context.get("pending_country") or "").strip()
+    return ""
+
+
 def render_deterministic_intake_text(
     lead: Lead,
     *,
@@ -81,9 +96,20 @@ def render_deterministic_intake_text(
         return f"Thanks, {saved}! Which city and country are you in right now?"
 
     if step == INTAKE_STEP_TARGET_COUNTRY:
+        if "country noted" in task_lower or "course/program missing" in task_lower:
+            pending = (lead.preferred_country or "").strip() or _pending_target_country(lead)
+            if pending:
+                return (
+                    f"Thanks, {first}! I've noted *{pending}*. "
+                    "What course or program would you like to study there?"
+                )
+            return (
+                f"Thanks, {first}! Which *course or program* are you interested in?"
+            )
         return (
             f"Great, {first}! Which country would you like to study in, "
-            "and what course or program are you interested in?"
+            "and what course or program are you interested in?\n\n"
+            "_Tip: you can reply in one line, e.g. *MBA in UK* or *UK, MBA*._"
         )
 
     if step == INTAKE_STEP_ENGLISH_SCORES:

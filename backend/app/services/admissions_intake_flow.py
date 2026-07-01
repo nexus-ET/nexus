@@ -475,11 +475,19 @@ async def process_intake_message(
         )
 
     if step == INTAKE_STEP_TARGET_COUNTRY:
+        context = _load_context(lead)
+        pending_country = (context.get("pending_country") or "").strip()
+        pending_program = (context.get("pending_program") or "").strip()
+
         interest = _extract_study_interest(text)
-        country = (interest.get("country") or "").strip()
-        program = (interest.get("program") or "").strip()
+        country = (interest.get("country") or pending_country).strip()
+        program = (interest.get("program") or pending_program).strip()
+
         if not country and len(text.strip()) >= 2 and not program:
-            country = text.strip()
+            country = _normalize_country_name(text.strip()) or text.strip()
+        if not program and len(text.strip()) >= 2 and not country:
+            program = text.strip()
+
         if not country or len(country) < 2:
             return await _agent_intake_reply(
                 db,
@@ -489,16 +497,24 @@ async def process_intake_message(
                 incoming_text=text,
             )
         if not program:
+            context["pending_country"] = _normalize_country_name(country) or country.title()
+            context.pop("pending_program", None)
+            _save_context(db, lead, context)
             return await _agent_intake_reply(
                 db,
                 lead,
                 runtime_config,
-                task="INTAKE_STEP=TARGET; Country noted but course/program missing. Ask for both country and course.",
+                task=(
+                    "INTAKE_STEP=TARGET; Country noted but course/program missing. "
+                    f"Pending country: {context['pending_country']}. Ask only for course/program."
+                ),
                 incoming_text=text,
             )
+
         lead.preferred_country = _normalize_country_name(country) or country.title()
-        context = _load_context(lead)
         context["preferred_course"] = program
+        context.pop("pending_country", None)
+        context.pop("pending_program", None)
         lead.academic_summary = f"Course: {program}"
         _save_context(db, lead, context)
         lead.intake_step = INTAKE_STEP_ENGLISH_SCORES
@@ -785,7 +801,7 @@ def _extract_study_interest(text: str) -> dict[str, str]:
             return interest
 
     in_country_match = re.search(
-        r"^(.{3,80}?)\s+in\s+([A-Za-z][A-Za-z\s\-]{2,40})$",
+        r"^(.{2,80}?)\s+in\s+([A-Za-z][A-Za-z\s\-]{0,40})$",
         cleaned,
         re.IGNORECASE,
     )
@@ -810,7 +826,7 @@ def _extract_study_interest(text: str) -> dict[str, str]:
             return interest
 
     country_match = re.search(
-        r"\b(?:in|to|for)\s+([A-Za-z][A-Za-z\s\-]{2,40})\b",
+        r"\b(?:in|to|for)\s+([A-Za-z][A-Za-z\s\-]{0,40})\b",
         cleaned,
         re.IGNORECASE,
     )

@@ -31,3 +31,14 @@ def test_normalize_country_name_usa_aliases():
 
     assert _normalize_country_name("Usa") == "USA"
     assert _normalize_country_name("u.s.a.") == "USA"
+
+
+def test_extract_study_interest_mba_in_uk():
+    interest = _extract_study_interest("MBA in UK")
+    assert interest.get("country") == "UK"
+    assert interest.get("program") == "MBA"
+
+
+def test_extract_study_interest_interested_in_uk():
+    interest = _extract_study_interest("Interested in UK")
+    assert interest.get("country") == "UK"
