@@ -5,7 +5,7 @@ Auto-maintained by `backend/scripts/promote_to_staging.py`.
 Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
 
 **Current head:** `j6f9g4h58i0d`
-**Doc generated:** 2026-07-01 10:20 UTC
+**Doc generated:** 2026-07-01 10:21 UTC
 
 ## Full migration chain (at head)
 
