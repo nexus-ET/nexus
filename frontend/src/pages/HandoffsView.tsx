@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Bot, Archive } from 'lucide-react';
+import { Bot, Archive, Map } from 'lucide-react';
 import { apiFetch } from '../utils/api';
+import LeadStudyInterestPanel from '../components/LeadStudyInterestPanel';
+import StudentJourneyPanel from '../components/StudentJourneyPanel';
 
 interface MessagePayload {
   id?: number | string;
@@ -24,6 +26,10 @@ interface Lead {
   is_human_locked?: boolean;
   academic_summary?: string;
   last_interaction_summary?: string;
+  preferred_country?: string | null;
+  preferred_course?: string | null;
+  target_program?: string | null;
+  study_interest_complete?: boolean;
   messages?: MessagePayload[];
   updated_at?: string;
   latest_interaction_time?: string;
@@ -88,6 +94,10 @@ const mapLeadFromApi = (lead: Record<string, unknown>): Lead => {
     is_human_locked: Boolean(lead.is_human_locked || lead.human_locked),
     academic_summary: lead.academic_summary as string | undefined,
     last_interaction_summary: lead.last_interaction_summary as string | undefined,
+    preferred_country: (lead.preferred_country as string | null | undefined) ?? null,
+    preferred_course: (lead.preferred_course as string | null | undefined) ?? null,
+    target_program: (lead.target_program as string | null | undefined) ?? null,
+    study_interest_complete: Boolean(lead.study_interest_complete),
     messages: rawMessages.map(normalizeMessage),
     updated_at: lead.updated_at as string | undefined,
     latest_interaction_time: lead.latest_interaction_time as string | undefined,
@@ -157,6 +167,10 @@ export default function HandoffsView() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [updatingRowId, setUpdatingRowId] = useState<number | null>(null);
+  const [journeyModal, setJourneyModal] = useState<{
+    studentId: number;
+    studentName: string;
+  } | null>(null);
   
   const chatTopRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -681,6 +695,7 @@ export default function HandoffsView() {
   };
 
   return (
+    <>
     <div style={styles.workspaceContainer}>
       
       <style>{`
@@ -865,12 +880,30 @@ export default function HandoffsView() {
                 <p style={styles.headerProfileMeta}>📱 {selectedLead.phone || selectedLead.phone_number} | 📧 {selectedLead.email}</p>
               </div>
               
+              <div style={styles.headerActionGroup}>
               {!hasNoMessages && (
                 <button type="button" onClick={handleJumpToNewest} style={styles.jumpToNewestButton}>
                   Jump to newest <span style={styles.arrowIconString}>▼▼</span>
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() =>
+                  setJourneyModal({
+                    studentId: selectedLead.id,
+                    studentName: selectedLead.name || selectedLead.full_name || `Lead #${selectedLead.id}`,
+                  })
+                }
+                style={styles.headerJourneyButton}
+                title="View student journey timeline"
+              >
+                <Map size={14} />
+                Journey
+              </button>
+              </div>
             </div>
+
+            <LeadStudyInterestPanel lead={selectedLead} compact />
 
             <div ref={chatContainerRef} className="custom-scroll-region" style={styles.whatsappChatFeedSurface}>
               <div ref={chatTopRef} style={{ height: '1px', width: '100%', }} />
@@ -1019,6 +1052,13 @@ export default function HandoffsView() {
       </div>
 
     </div>
+    <StudentJourneyPanel
+      open={journeyModal !== null}
+      studentId={journeyModal?.studentId ?? null}
+      studentName={journeyModal?.studentName}
+      onClose={() => setJourneyModal(null)}
+    />
+    </>
   );
 }
 
@@ -1075,6 +1115,26 @@ const styles = {
   headerProfileName: { margin: 0, fontSize: '16px', fontWeight: '600', color: '#111b21' } as React.CSSProperties,
   headerProfileMeta: { margin: '2px 0 0 0', fontSize: '12px', color: '#667781' } as React.CSSProperties,
   jumpToNewestButton: { background: 'none', border: 'none', color: '#0284c7', fontSize: '13px', fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', padding: '6px 12px', borderRadius: '6px', transition: 'background-color 0.15s ease' } as React.CSSProperties,
+  headerActionGroup: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    flexShrink: 0,
+  } as React.CSSProperties,
+  headerJourneyButton: {
+    backgroundColor: '#ffffff',
+    border: '1px solid #cbd5e1',
+    color: '#334155',
+    fontSize: '12px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '6px 12px',
+    borderRadius: '6px',
+    flexShrink: 0,
+  } as React.CSSProperties,
   arrowIconString: { fontSize: '10px', color: '#0284c7' } as React.CSSProperties,
   whatsappChatFeedSurface: { flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '20px 4%', display: 'flex', flexDirection: 'column', gap: '8px', backgroundImage: 'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")', backgroundColor: '#efeae2', backgroundRepeat: 'repeat' } as React.CSSProperties,
   timelineDividerCenter: { display: 'flex', justifyContent: 'center', width: '100%', margin: '14px 0' } as React.CSSProperties,

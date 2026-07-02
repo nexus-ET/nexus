@@ -9,7 +9,12 @@ import httpx
 
 from app.config import settings
 from app.services.admissions_intake_flow import IntakeReply
-from app.services.messaging import WHATSAPP_GRAPH_API_BASE, WhatsAppDeliveryError
+from app.services.messaging import (
+    WHATSAPP_GRAPH_API_BASE,
+    WhatsAppDeliveryError,
+    extract_meta_message_id,
+    format_meta_graph_error,
+)
 from app.services.phone_utils import clean_phone_number
 from app.services.twilio_whatsapp_interactive import (
     InteractivePayload,
@@ -101,17 +106,14 @@ async def _post_message(payload: dict[str, Any]) -> None:
     if not token:
         raise WhatsAppDeliveryError("WHATSAPP_ACCESS_TOKEN is not configured.")
 
+    to_number = str(payload.get("to") or "")
     async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.post(_messages_url(), json=payload, headers=_graph_headers())
         if response.status_code >= 400:
-            detail = response.text
-            try:
-                err = response.json().get("error", {})
-                detail = err.get("message") or detail
-            except Exception:
-                pass
+            detail = format_meta_graph_error(response, to_number=to_number or None)
             logger.error("Meta interactive send failed: status=%s body=%s", response.status_code, response.text)
             raise WhatsAppDeliveryError(detail, status_code=response.status_code)
+        extract_meta_message_id(response)
 
 
 async def _send_plain_text(to_number: str, body: str) -> None:

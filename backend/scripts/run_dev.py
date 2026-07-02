@@ -158,11 +158,26 @@ def _release_whatsapp_webhook_handoff(env: dict[str, str]) -> None:
     if not script.is_file():
         return
     print(f"[whatsapp] Handing webhook back to {handoff.rstrip('/')}/api/webhook ...")
-    subprocess.run(
+    result = subprocess.run(
         [python, str(script), "--release"],
         cwd=str(BACKEND_ROOT),
+        capture_output=True,
+        text=True,
         check=False,
     )
+    if result.returncode == 0:
+        if result.stdout.strip():
+            print(result.stdout.strip())
+        return
+    print(
+        "[whatsapp] WARNING: webhook handoff failed — nexus-dev may still be unreachable to Meta. "
+        "Ensure the handoff server is running or set NEXUS_WHATSAPP_AUTO_SYNC=false for local-only work.",
+        file=sys.stderr,
+    )
+    if result.stderr.strip():
+        print(result.stderr.strip(), file=sys.stderr)
+    if result.stdout.strip():
+        print(result.stdout.strip(), file=sys.stderr)
 
 
 def _load_env_file() -> dict[str, str]:
@@ -695,9 +710,10 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
 
     procs: list[tuple[str, subprocess.Popen[str]]] = []
     tunnel_url: str | None = None
+    webhook_synced_locally = False
 
     def on_tunnel_line(line: str) -> None:
-        nonlocal tunnel_url
+        nonlocal tunnel_url, webhook_synced_locally
         match = TUNNEL_URL_RE.search(line)
         if match and tunnel_url != match.group(0):
             tunnel_url = match.group(0)
@@ -705,6 +721,7 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
             print(f"[tunnel] PUBLIC_TUNNEL_BASE updated in .env → {tunnel_url}")
             if _whatsapp_auto_sync_enabled(env):
                 _schedule_whatsapp_webhook_sync(tunnel_url)
+                webhook_synced_locally = True
             else:
                 _print_meta_webhook_hint(tunnel_url)
 
@@ -753,6 +770,7 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
                 print(f"[tunnel] Stable URL: {config.public_tunnel_base.rstrip('/')}")
                 if _whatsapp_auto_sync_enabled(env):
                     _sync_whatsapp_webhook_for_dev(config.public_tunnel_base.rstrip("/"))
+                    webhook_synced_locally = True
                 else:
                     _print_meta_webhook_hint(config.public_tunnel_base)
             tunnel_proc = _popen(
@@ -769,11 +787,29 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
             ).start()
 
         while True:
+            tunnel_exited = False
             for name, proc in procs:
                 code = proc.poll()
-                if code is not None:
-                    print(f"[{name}] exited with code {code}", file=sys.stderr)
-                    return code
+                if code is None:
+                    continue
+                if name == "tunnel":
+                    print(
+                        f"[tunnel] WARNING: tunnel exited with code {code}. "
+                        "Backend and frontend will keep running without a public URL.",
+                        file=sys.stderr,
+                    )
+                    print(
+                        "[tunnel] Tip: retry dev.ps1, use .\\dev.ps1 -NoTunnel for local UI work, "
+                        "or set NEXUS_TUNNEL_MODE=named after setup_cloudflare_tunnel.ps1.",
+                        file=sys.stderr,
+                    )
+                    procs.remove((name, proc))
+                    tunnel_exited = True
+                    break
+                print(f"[{name}] exited with code {code}", file=sys.stderr)
+                return code
+            if tunnel_exited:
+                continue
             time.sleep(0.5)
 
     except KeyboardInterrupt:
@@ -784,7 +820,7 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
             if proc.poll() is None:
                 print(f"[{name}] stopping...")
                 _stop_pid(proc.pid)
-        if start_tunnel and _whatsapp_auto_sync_enabled(env):
+        if start_tunnel and _whatsapp_auto_sync_enabled(env) and webhook_synced_locally:
             _release_whatsapp_webhook_handoff(env)
 
 

@@ -304,6 +304,9 @@ def create_offline_lead(db: Session, payload: OfflineLeadCreate) -> Lead:
     db.add(lead)
     db.commit()
     db.refresh(lead)
+    from app.services.student_status_service import on_lead_created
+
+    on_lead_created(db, lead, source="Offline Leads")
     return lead
 
 

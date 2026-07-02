@@ -17,9 +17,13 @@ def register_all_models() -> None:
     from app.models.conversation import Conversation  # noqa: F401
     from app.models.conversation_participant import ConversationParticipant  # noqa: F401
     from app.models.counselling_booking import CounsellingBooking  # noqa: F401
+    from app.models.counselling_note import CounsellingNote  # noqa: F401
     from app.models.dynamic_setting import DynamicSetting  # noqa: F401
     from app.models.internal_message import InternalMessage  # noqa: F401
+    from app.models.status_history import StatusHistory  # noqa: F401
+    from app.models.system_log import SystemLog  # noqa: F401
     from app.models.lead import Lead  # noqa: F401
+    from app.models.status_definition import StatusDefinition  # noqa: F401
     from app.models.lead_quarantine import LeadQuarantine  # noqa: F401
     from app.models.raw_incoming_lead import RawIncomingLead  # noqa: F401
     from app.models.message import Message  # noqa: F401

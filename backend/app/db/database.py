@@ -567,6 +567,34 @@ def sync_schema_columns() -> None:
 
         InternalMessage.__table__.create(bind=engine, checkfirst=True)
 
+    if not inspector.has_table("counselling_notes"):
+        from app.models.counselling_note import CounsellingNote
+
+        CounsellingNote.__table__.create(bind=engine, checkfirst=True)
+
+    if not inspector.has_table("status_definitions"):
+        from app.models.status_definition import StatusDefinition
+
+        StatusDefinition.__table__.create(bind=engine, checkfirst=True)
+
+    if not inspector.has_table("status_history"):
+        from app.models.status_history import StatusHistory
+
+        StatusHistory.__table__.create(bind=engine, checkfirst=True)
+
+    if not inspector.has_table("system_logs"):
+        from app.models.system_log import SystemLog
+
+        SystemLog.__table__.create(bind=engine, checkfirst=True)
+
+    if inspector.has_table("leads"):
+        lead_columns = {column["name"] for column in inspector.get_columns("leads")}
+        with engine.begin() as conn:
+            if "status_definition_id" not in lead_columns:
+                conn.execute(text("ALTER TABLE leads ADD COLUMN status_definition_id INTEGER"))
+            if "status_entered_at" not in lead_columns:
+                conn.execute(text("ALTER TABLE leads ADD COLUMN status_entered_at TIMESTAMP"))
+
     if inspector.has_table("internal_messages"):
         message_columns = {column["name"] for column in inspector.get_columns("internal_messages")}
         with engine.begin() as conn:

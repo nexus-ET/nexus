@@ -46,6 +46,8 @@ FRESHEN_ON_CONFLICT = (
     "meta_ad_id",
     "academic_summary",
     "additional_data",
+    "preferred_country",
+    "intake_context",
 )
 
 # Normalized keys reserved for top-level contact columns (excluded from additional_data).
@@ -278,6 +280,12 @@ def normalize_lead_row(lead_data: dict[str, Any]) -> dict[str, Any]:
     additional_data = lead_data.get("additional_data")
     if isinstance(additional_data, dict) and additional_data:
         row["additional_data"] = additional_data
+    preferred_country = _optional_str(lead_data.get("preferred_country"))
+    if preferred_country:
+        row["preferred_country"] = preferred_country
+    intake_context = lead_data.get("intake_context")
+    if isinstance(intake_context, str) and intake_context.strip():
+        row["intake_context"] = intake_context.strip()
     created_at = lead_data.get("created_at")
     if isinstance(created_at, datetime):
         row["created_at"] = _as_utc_datetime(created_at).replace(tzinfo=None)
@@ -365,6 +373,9 @@ def _merge_existing_lead(
 ) -> SaveLeadResult:
     _maybe_attach_leadgen_id(lead, leadgen_id, db)
     _freshen_lead(lead, row, db)
+    from app.services.lead_study_interest import hydrate_lead_study_interest
+
+    hydrate_lead_study_interest(db, lead, commit=False)
     db.commit()
     db.refresh(lead)
     logger.info(
@@ -393,8 +404,9 @@ def save_lead(db: Session, lead_data: dict[str, Any]) -> SaveLeadResult:
     existing_by_leadgen = db.query(Lead).filter(Lead.meta_leadgen_id == leadgen_id).first()
     if existing_by_leadgen:
         _freshen_lead(existing_by_leadgen, row, db)
-        db.commit()
-        db.refresh(existing_by_leadgen)
+        from app.services.lead_study_interest import hydrate_lead_study_interest
+
+        hydrate_lead_study_interest(db, existing_by_leadgen, commit=True)
         logger.info("save_lead updated leadgen_id=%s lead_id=%s", leadgen_id, existing_by_leadgen.id)
         return SaveLeadResult(lead=existing_by_leadgen, created=False)
 
@@ -419,6 +431,12 @@ def save_lead(db: Session, lead_data: dict[str, Any]) -> SaveLeadResult:
         db.add(lead)
         db.commit()
         db.refresh(lead)
+        from app.services.lead_study_interest import hydrate_lead_study_interest
+
+        hydrate_lead_study_interest(db, lead, commit=True)
+        from app.services.student_status_service import on_lead_created
+
+        on_lead_created(db, lead, source="Meta")
         logger.info("save_lead inserted leadgen_id=%s lead_id=%s", leadgen_id, lead.id)
         return SaveLeadResult(lead=lead, created=True)
     except IntegrityError:
@@ -496,7 +514,10 @@ def build_lead_data_from_meta(
     }
     if meta_created_at is not None:
         payload["created_at"] = meta_created_at
-    return payload
+
+    from app.services.lead_study_interest import enrich_lead_payload_from_meta_fields
+
+    return enrich_lead_payload_from_meta_fields(payload)
 
 
 def ingest_meta_leadgen_event(

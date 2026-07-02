@@ -89,6 +89,24 @@ def touch_lead_activity(db: Session, lead: Lead) -> None:
     lead.updated_at = datetime.utcnow()
 
 
+def _inbound_lead_rank(db: Session, lead: Lead) -> tuple[int, int, int, int, datetime]:
+    """Prefer non-handoff leads with an active intake session, then AI-Active outreach threads."""
+    from app.services.admissions_intake_flow import INTAKE_STEP_COMPLETE, get_intake_step
+
+    stage = str(lead.stage or "").upper()
+    is_handoff = int(
+        lead.is_human_locked or "HANDOFF" in stage or "HUMAN" in stage
+    )
+    step = get_intake_step(lead)
+    intake_active = int(
+        bool(getattr(lead, "intake_step", None)) and step != INTAKE_STEP_COMPLETE
+    )
+    is_ai_active = int("AI_ACTIVE" in stage)
+    has_advisor = int(lead_has_advisor_messages(db, lead.id))
+    updated = lead.updated_at or datetime.min
+    return (-is_handoff, intake_active, is_ai_active, has_advisor, updated)
+
+
 def find_lead_for_inbound_whatsapp(db: Session, raw_phone: str | None) -> Lead | None:
     keys = phone_match_keys(raw_phone)
     if not keys:
@@ -104,13 +122,4 @@ def find_lead_for_inbound_whatsapp(db: Session, raw_phone: str | None) -> Lead |
     if len(candidates) == 1:
         return candidates[0]
 
-    def rank(lead: Lead) -> tuple[int, int, datetime]:
-        stage = str(lead.stage or "").upper()
-        is_handoff = int(
-            lead.is_human_locked or "HANDOFF" in stage or "HUMAN" in stage
-        )
-        has_advisor = int(lead_has_advisor_messages(db, lead.id))
-        updated = lead.updated_at or datetime.min
-        return (is_handoff, has_advisor, updated)
-
-    return max(candidates, key=rank)
+    return max(candidates, key=lambda lead: _inbound_lead_rank(db, lead))

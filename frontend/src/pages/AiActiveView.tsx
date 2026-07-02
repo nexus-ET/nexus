@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Archive, Users, Calendar, CheckCircle2, Circle } from 'lucide-react';
+import { Bot, Archive, Users, Calendar, CheckCircle2, Circle, Map } from 'lucide-react';
 import { apiFetch, hasValidSession } from '../utils/api';
+import StudentJourneyPanel from '../components/StudentJourneyPanel';
 
 interface ConsultationDateOption {
   date: string;
@@ -42,6 +43,8 @@ interface ActiveLead {
   current_location?: string | null;
   preferred_country?: string | null;
   preferred_course?: string | null;
+  target_program?: string | null;
+  study_interest_complete?: boolean;
   english_test_scores?: string | null;
   gre_score?: string | null;
   gmat_score?: string | null;
@@ -145,6 +148,8 @@ const mapLeadFromApi = (lead: Record<string, unknown>): ActiveLead => {
     current_location: (lead.current_location as string | null | undefined) ?? null,
     preferred_country: (lead.preferred_country as string | null | undefined) ?? null,
     preferred_course: (lead.preferred_course as string | null | undefined) ?? null,
+    target_program: (lead.target_program as string | null | undefined) ?? null,
+    study_interest_complete: Boolean(lead.study_interest_complete),
     english_test_scores: (lead.english_test_scores as string | null | undefined) ?? null,
     gre_score: (lead.gre_score as string | null | undefined) ?? null,
     gmat_score: (lead.gmat_score as string | null | undefined) ?? null,
@@ -200,6 +205,9 @@ const mergeLeadSnapshot = (previous: ActiveLead, incoming: ActiveLead): ActiveLe
     current_location: incoming.current_location ?? previous.current_location,
     preferred_country: incoming.preferred_country ?? previous.preferred_country,
     preferred_course: incoming.preferred_course ?? previous.preferred_course,
+    target_program: incoming.target_program ?? previous.target_program,
+    study_interest_complete:
+      incoming.study_interest_complete ?? previous.study_interest_complete,
     english_test_scores: incoming.english_test_scores ?? previous.english_test_scores,
     gre_score: incoming.gre_score ?? previous.gre_score,
     gmat_score: incoming.gmat_score ?? previous.gmat_score,
@@ -290,8 +298,16 @@ const TRANSITION_OPTIONS = [
   { key: 'archive', label: 'ARCHIVE', icon: Archive },
 ] as const;
 
+const getCourseOrProgramValue = (lead: Pick<ActiveLead, 'preferred_course' | 'target_program'>): string =>
+  (lead.preferred_course || lead.target_program || '').trim();
+
 function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
   const currentStepIndex = getIntakeStepIndex(lead.intake_step);
+  const courseOrProgram = getCourseOrProgramValue(lead);
+  const studyPrefilled = Boolean(
+    lead.study_interest_complete ||
+      (lead.preferred_country && courseOrProgram)
+  );
   const showCalendar =
     lead.intake_step === 'PICK_DATE' && (lead.available_consultation_dates?.length ?? 0) > 0;
   const showTimes =
@@ -299,7 +315,7 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
   const hasProfileData =
     lead.current_location ||
     lead.preferred_country ||
-    lead.preferred_course ||
+    courseOrProgram ||
     lead.english_test_scores ||
     lead.gre_score ||
     lead.gmat_score ||
@@ -327,8 +343,11 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
       {!lead.intake_complete && (
         <div style={styles.intakeProgressRow}>
           {INTAKE_STEPS.map((step, index) => {
-            const isDone = currentStepIndex > index;
-            const isCurrent = currentStepIndex === index;
+            const isDone =
+              currentStepIndex > index ||
+              (step.key === 'TARGET_COUNTRY' && studyPrefilled);
+            const isCurrent =
+              currentStepIndex === index && !(step.key === 'TARGET_COUNTRY' && studyPrefilled);
             return (
               <div
                 key={step.key}
@@ -362,8 +381,8 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
           <span style={styles.intakeFieldValue}>{lead.preferred_country || '—'}</span>
         </div>
         <div style={styles.intakeFieldCell}>
-          <span style={styles.intakeFieldLabel}>Course</span>
-          <span style={styles.intakeFieldValue}>{lead.preferred_course || '—'}</span>
+          <span style={styles.intakeFieldLabel}>Course/Programs</span>
+          <span style={styles.intakeFieldValue}>{courseOrProgram || '—'}</span>
         </div>
         <div style={styles.intakeFieldCell}>
           <span style={styles.intakeFieldLabel}>English scores</span>
@@ -443,6 +462,10 @@ export default function AiActiveView() {
     outreach_template?: string | null;
     ready?: boolean;
   } | null>(null);
+  const [journeyModal, setJourneyModal] = useState<{
+    studentId: number;
+    studentName: string;
+  } | null>(null);
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -472,6 +495,12 @@ export default function AiActiveView() {
       if (!groups[label]) groups[label] = [];
       groups[label].push(msg);
     });
+    Object.values(groups).forEach(messages =>
+      messages.sort(
+        (a, b) =>
+          new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+      )
+    );
     return groups;
   }, [selectedLead]);
 
@@ -634,6 +663,10 @@ export default function AiActiveView() {
       return;
     }
 
+    if (leadHasAiMessages(target)) {
+      return;
+    }
+
     setStartingOutreachId(target.id);
     setOutreachSuccess(null);
     if (leadOverride) setSelectedLead(target);
@@ -729,6 +762,7 @@ export default function AiActiveView() {
   };
 
   return (
+    <>
     <div style={styles.pageShell}>
       {whatsappConfig?.business_phone_number ? (
         <div style={styles.whatsappLineBanner}>
@@ -859,33 +893,28 @@ export default function AiActiveView() {
                       <Bot size={12} />
                       AI Active
                     </span>
-                    <button
-                      type="button"
-                      style={{
-                        ...styles.cardStartButton,
-                        ...(leadHasAiMessages(lead)
-                          ? { backgroundColor: '#047857', opacity: 0.95 }
-                          : {}),
-                      }}
-                      disabled={startingOutreachId === lead.id || !getLeadPhone(lead)}
-                      title={
-                        !getLeadPhone(lead)
-                          ? 'Add a phone number to start WhatsApp outreach'
-                          : leadHasAiMessages(lead)
-                            ? 'Send another AI message to this candidate'
+                    {leadHasAiMessages(lead) ? (
+                      <span style={styles.cardConversationActiveBadge} title="WhatsApp conversation in progress">
+                        Conversation active
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        style={styles.cardStartButton}
+                        disabled={startingOutreachId === lead.id || !getLeadPhone(lead)}
+                        title={
+                          !getLeadPhone(lead)
+                            ? 'Add a phone number to start WhatsApp outreach'
                             : 'Send the standard AI welcome on WhatsApp'
-                      }
-                      onClick={event => {
-                        event.stopPropagation();
-                        void handleStartAiConversation(lead);
-                      }}
-                    >
-                      {startingOutreachId === lead.id
-                        ? 'Sending...'
-                        : leadHasAiMessages(lead)
-                          ? 'Send AI Message'
-                          : 'Start AI Conversation'}
-                    </button>
+                        }
+                        onClick={event => {
+                          event.stopPropagation();
+                          void handleStartAiConversation(lead);
+                        }}
+                      >
+                        {startingOutreachId === lead.id ? 'Sending...' : 'Start AI Conversation'}
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -903,32 +932,43 @@ export default function AiActiveView() {
                 <p style={styles.headerProfileMeta}>
                   📱 {getLeadPhone(selectedLead) || 'No phone'} | 📧 {selectedLead.email || 'No email'}
                 </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setJourneyModal({
+                      studentId: selectedLead.id,
+                      studentName: selectedLead.name,
+                    })
+                  }
+                  style={styles.headerJourneyLink}
+                  title="View student journey timeline"
+                >
+                  <Map size={13} />
+                  View Journey
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => void handleStartAiConversation()}
-                disabled={startingOutreachId === selectedLead.id || !getLeadPhone(selectedLead)}
-                style={styles.headerStartButton}
-                title={
-                  !getLeadPhone(selectedLead)
-                    ? 'Add a phone number to start WhatsApp outreach'
-                    : leadHasAiMessages(selectedLead)
-                      ? 'Send another AI message to this candidate'
+              <div style={styles.headerActionGroup}>
+              {!leadHasAiMessages(selectedLead) ? (
+                <button
+                  type="button"
+                  onClick={() => void handleStartAiConversation()}
+                  disabled={startingOutreachId === selectedLead.id || !getLeadPhone(selectedLead)}
+                  style={styles.headerStartButton}
+                  title={
+                    !getLeadPhone(selectedLead)
+                      ? 'Add a phone number to start WhatsApp outreach'
                       : 'Send the standard AI welcome on WhatsApp'
-                }
-              >
-                {startingOutreachId === selectedLead.id
-                  ? 'Sending...'
-                  : leadHasAiMessages(selectedLead)
-                    ? 'Send AI Message'
-                    : 'Start AI Conversation'}
-              </button>
-              {leadHasAiMessages(selectedLead) && (
+                  }
+                >
+                  {startingOutreachId === selectedLead.id ? 'Sending...' : 'Start AI Conversation'}
+                </button>
+              ) : (
                 <div style={styles.aiAgentBadge}>
                   <Bot size={14} />
                   AI Agent Active
                 </div>
               )}
+              </div>
             </div>
 
             <IntakeProfilePanel lead={selectedLead} />
@@ -950,11 +990,7 @@ export default function AiActiveView() {
                     disabled={startingOutreachId === selectedLead.id || !getLeadPhone(selectedLead)}
                     style={styles.startConversationButton}
                   >
-                    {startingOutreachId === selectedLead.id
-                      ? 'Sending...'
-                      : leadHasAiMessages(selectedLead)
-                        ? 'Send AI Message'
-                        : 'Start AI Conversation'}
+                    {startingOutreachId === selectedLead.id ? 'Sending...' : 'Start AI Conversation'}
                   </button>
                 </div>
               ) : (
@@ -1013,21 +1049,19 @@ export default function AiActiveView() {
                 {outreachSuccess ? (
                   <span style={{ color: '#15803d' }}>{outreachSuccess}</span>
                 ) : leadHasAiMessages(selectedLead)
-                  ? 'AI Agent is active. Use Send AI Message to continue the WhatsApp conversation.'
+                  ? 'AI Agent is active on WhatsApp. The student can continue the conversation there — outreach cannot be started again from this screen.'
                   : 'Click Start AI Conversation to send the standard welcome message to this student on WhatsApp.'}
               </span>
-              <button
-                type="button"
-                onClick={() => void handleStartAiConversation()}
-                disabled={startingOutreachId === selectedLead.id || !getLeadPhone(selectedLead)}
-                style={styles.footerActionButton}
-              >
-                {startingOutreachId === selectedLead.id
-                  ? 'Sending...'
-                  : leadHasAiMessages(selectedLead)
-                    ? 'Send AI Message'
-                    : 'Start AI Conversation'}
-              </button>
+              {!leadHasAiMessages(selectedLead) ? (
+                <button
+                  type="button"
+                  onClick={() => void handleStartAiConversation()}
+                  disabled={startingOutreachId === selectedLead.id || !getLeadPhone(selectedLead)}
+                  style={styles.footerActionButton}
+                >
+                  {startingOutreachId === selectedLead.id ? 'Sending...' : 'Start AI Conversation'}
+                </button>
+              ) : null}
             </div>
           </div>
         ) : (
@@ -1044,6 +1078,13 @@ export default function AiActiveView() {
       </div>
       </div>
     </div>
+    <StudentJourneyPanel
+      open={journeyModal !== null}
+      studentId={journeyModal?.studentId ?? null}
+      studentName={journeyModal?.studentName}
+      onClose={() => setJourneyModal(null)}
+    />
+    </>
   );
 }
 
@@ -1246,6 +1287,36 @@ const styles = {
     fontWeight: '700',
     cursor: 'pointer',
     flexShrink: 0,
+  } as React.CSSProperties,
+  cardConversationActiveBadge: {
+    flexShrink: 0,
+    fontSize: '10px',
+    fontWeight: '700',
+    color: '#047857',
+    backgroundColor: '#ecfdf5',
+    border: '1px solid #bbf7d0',
+    borderRadius: '6px',
+    padding: '5px 8px',
+  } as React.CSSProperties,
+  headerActionGroup: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    flexShrink: 0,
+    marginLeft: '16px',
+  } as React.CSSProperties,
+  headerJourneyLink: {
+    marginTop: '6px',
+    border: 'none',
+    background: 'none',
+    color: '#0284c7',
+    padding: 0,
+    fontSize: '12px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '5px',
   } as React.CSSProperties,
   headerStartButton: {
     border: 'none',

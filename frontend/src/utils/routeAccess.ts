@@ -2,8 +2,19 @@ export function normalizePath(path: string): string {
   return path.replace(/\/$/, '') || '/';
 }
 
+const JOURNEY_ROUTE_PARENTS = ['/my-bookings', '/prospects', '/counselling'];
+
+export function isJourneyRoute(path: string): boolean {
+  return /^\/journey\/\d+$/.test(normalizePath(path));
+}
+
 export function isAllowedRoute(currentPath: string, allowedRoutes: string[]): boolean {
   const path = normalizePath(currentPath);
+
+  if (isJourneyRoute(path)) {
+    return JOURNEY_ROUTE_PARENTS.some(route => isAllowedRoute(route, allowedRoutes));
+  }
+
   if (allowedRoutes.includes(path)) return true;
 
   return allowedRoutes.some(route => {

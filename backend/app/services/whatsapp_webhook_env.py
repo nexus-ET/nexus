@@ -277,3 +277,71 @@ def extract_webhook_phone_number_id(payload: dict[str, Any]) -> str | None:
             if phone_number_id:
                 return str(phone_number_id)
     return None
+
+
+def audit_whatsapp_webhook_routing() -> None:
+    """
+    Warn loudly when Meta inbound webhooks are not routed to a reachable callback.
+
+    Outbound WhatsApp (templates, intake replies) uses the Graph API directly and
+    does not need the webhook. A stale Cloudflare quick-tunnel URL is the usual cause
+    of “outreach works but replies do nothing”.
+    """
+    if (settings.PROVIDER or "").strip().upper() != "WHATSAPP":
+        return
+
+    status = get_webhook_status()
+    meta_url = status.meta_override_callback_url or status.meta_application_callback_url
+    expected = resolve_webhook_callback_url()
+
+    if not meta_url:
+        logger.error(
+            "WhatsApp inbound webhooks are not registered with Meta. "
+            "Student replies will not reach this backend until you run dev.ps1 or "
+            "python scripts/sync_whatsapp_webhook.py"
+        )
+        print(
+            "[WhatsApp] ERROR: Meta webhook callback is not configured. "
+            "Inbound student messages will be ignored."
+        )
+        return
+
+    verify_token = resolve_verify_token()
+    challenge = "nexus-webhook-health"
+    reachable = False
+    try:
+        with httpx.Client(timeout=12, follow_redirects=True) as client:
+            response = client.get(
+                meta_url,
+                params={
+                    "hub.mode": "subscribe",
+                    "hub.verify_token": verify_token,
+                    "hub.challenge": challenge,
+                },
+            )
+            reachable = response.status_code == 200 and response.text.strip() == challenge
+    except httpx.HTTPError as exc:
+        logger.error("WhatsApp webhook health check failed for %s: %s", meta_url, exc)
+
+    if reachable:
+        if expected and not status.owned_by_this_environment:
+            logger.warning(
+                "WhatsApp webhook Meta URL %s is reachable but does not match PUBLIC_TUNNEL_BASE %s",
+                meta_url,
+                expected,
+            )
+        return
+
+    logger.error(
+        "WhatsApp inbound webhook %s is NOT reachable. "
+        "Meta is configured to deliver student messages there, but this backend cannot receive them. "
+        "Restart .\\dev.ps1 (tunnel + auto webhook sync) or run: "
+        "python scripts/sync_whatsapp_webhook.py --callback-url <your-tunnel>/api/webhook",
+        meta_url,
+    )
+    print(
+        "[WhatsApp] ERROR: Inbound webhook is unreachable — student WhatsApp replies will not advance intake.\n"
+        f"[WhatsApp]   Meta callback: {meta_url}\n"
+        f"[WhatsApp]   Expected local: {expected or '(PUBLIC_TUNNEL_BASE not set)'}\n"
+        "[WhatsApp]   Fix: restart dev.ps1 with Cloudflare tunnel, or sync_whatsapp_webhook.py"
+    )

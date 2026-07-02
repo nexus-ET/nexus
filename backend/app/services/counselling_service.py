@@ -7,11 +7,23 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models.counselling_booking import CounsellingBooking
+from app.models.counselling_note import CounsellingNote
 from app.models.consultation_slot import ConsultationSlot
 from app.models.lead import Lead
 from app.models.message import Message
 from app.models.message_history import MessageHistory
+from app.models.status_definition import StatusDefinition
 from app.models.user import User
+from app.services.lead_study_interest import resolve_lead_study_interest
+from app.services.pipeline_service import OUTCOME_CONFIG
+from app.services.status_definition_service import (
+    STATUS_COUNSELLING_SCHEDULED,
+    apply_lead_status,
+    get_lead_status_history,
+    get_status_definition,
+    list_status_definitions,
+    resolve_lead_status_meta,
+)
 from app.services.admin_roles import get_active_admin_role_ids
 from app.services.public_holiday_service import is_bookable_day, is_public_holiday
 from app.services.security_service import input_sanitizer
@@ -662,27 +674,195 @@ def get_available_admins(
     }
 
 
+def _booking_session_status_label(status: str) -> str:
+    normalized = (status or "").strip().upper()
+    if normalized == COMPLETED_STATUS:
+        return "Counselling: Finished"
+    if normalized == CANCELLED_STATUS:
+        return "Counselling: Cancelled"
+    return "Counselling: Scheduled"
+
+
+def _resolve_lead_jump_path(lead: Lead | None) -> str | None:
+    if not lead:
+        return None
+    admission_stage = (getattr(lead, "admission_stage", None) or "").strip()
+    if admission_stage:
+        return f"/prospects/{lead.id}"
+    stage_value = lead.stage.value if hasattr(lead.stage, "value") else str(lead.stage or "")
+    if stage_value == "AI_ACTIVE":
+        return "/ai-active"
+    if stage_value == "HANDOFF":
+        return "/handoffs"
+    if stage_value == "ARCHIVE":
+        return "/archive"
+    return f"/prospects/{lead.id}"
+
+
+def _is_audio_media(media_url: str | None, file_name: str | None) -> bool:
+    token = f"{media_url or ''} {file_name or ''}".lower()
+    return any(ext in token for ext in (".mp3", ".wav", ".ogg", ".m4a", ".aac", ".webm", "audio"))
+
+
 def _serialize_my_booking(
     db: Session,
     booking: CounsellingBooking,
     admin: User | None,
     section: str,
+    lead: Lead | None = None,
 ) -> dict:
     payload = _serialize_booking(booking, admin)
     scheduled = booking.scheduled_time
-    lead = None
-    if booking.lead_id:
+    if lead is None and booking.lead_id:
         lead = db.query(Lead).filter(Lead.id == booking.lead_id).first()
     candidate_stage, candidate_stage_label = _resolve_candidate_stage(lead)
+    study = resolve_lead_study_interest(lead) if lead else {}
+    status_id, status_name, status_category = resolve_lead_status_meta(
+        db,
+        lead,
+        booking_status=booking.status,
+    )
+    outcome_key = booking.outcome_key
+    outcome_label = OUTCOME_CONFIG.get(outcome_key or "", {}).get("label") if outcome_key else None
     return {
         **payload,
         "lead_id": booking.lead_id,
         "candidate_stage": candidate_stage,
         "candidate_stage_label": candidate_stage_label,
+        "current_location": getattr(lead, "current_location", None) if lead else None,
+        "preferred_country": study.get("country") or getattr(lead, "preferred_country", None) if lead else None,
+        "course_interest": study.get("course") or study.get("program") if lead else None,
+        "status_definition_id": status_id,
+        "status_stage_name": status_name,
+        "status_category": status_category,
+        "admission_stage": str(status_id) if status_id else None,
+        "admission_stage_label": status_name,
+        "admission_stage_category": status_category,
+        "session_status_label": _booking_session_status_label(booking.status),
+        "outcome_key": outcome_key,
+        "outcome_label": outcome_label,
         "time_label": _format_slot_range(db, scheduled),
         "date_label": _format_day_label(scheduled.date()),
         "section": section,
     }
+
+
+def _booking_section_for_date(booking_date: date, calendar_today: date) -> str:
+    if booking_date < calendar_today:
+        return "past"
+    if booking_date > calendar_today:
+        return "upcoming"
+    return "today"
+
+
+def _get_owned_booking(db: Session, user_id: int, booking_id: int) -> CounsellingBooking:
+    booking = (
+        db.query(CounsellingBooking)
+        .filter(CounsellingBooking.id == booking_id, CounsellingBooking.admin_id == user_id)
+        .first()
+    )
+    if not booking:
+        raise HTTPException(
+            status_code=404,
+            detail="Booking not found or not assigned to you.",
+        )
+    return booking
+
+
+def _build_counselling_note_timeline_items(note: CounsellingNote) -> list[dict]:
+    items: list[dict] = []
+    timestamp = note.updated_at or note.created_at or datetime.utcnow()
+
+    if note.ai_transcription and note.ai_transcription.strip():
+        items.append(
+            {
+                "id": f"note-audio-{note.id}",
+                "kind": "audio",
+                "participant": "admin",
+                "participant_label": "Session Recording",
+                "text": note.ai_transcription.strip(),
+                "created_at": timestamp,
+                "media_url": None,
+                "file_name": "Session transcription",
+            }
+        )
+
+    note_sections: list[tuple[str, str | None]] = [
+        ("Session notes", note.officer_recommendations),
+        ("Preferred universities", note.preferred_universities),
+        ("Scholarship interests", note.scholarship_interests),
+        ("Career goals", note.career_goals),
+    ]
+    for title, value in note_sections:
+        clean = (value or "").strip()
+        if not clean:
+            continue
+        items.append(
+            {
+                "id": f"note-{title.lower().replace(' ', '-')}-{note.id}",
+                "kind": "session_note",
+                "participant": "admin",
+                "participant_label": title,
+                "text": clean,
+                "created_at": timestamp,
+                "media_url": None,
+                "file_name": None,
+            }
+        )
+    return items
+
+
+def _communications_to_timeline(messages: list[dict]) -> list[dict]:
+    timeline: list[dict] = []
+    for message in messages:
+        participant = message.get("participant") or "system"
+        media_url = message.get("media_url")
+        file_name = message.get("file_name")
+        kind = "whatsapp"
+        if participant == "system":
+            kind = "system"
+        elif _is_audio_media(media_url, file_name):
+            kind = "audio"
+        timeline.append(
+            {
+                "id": f"msg-{message.get('id')}",
+                "kind": kind,
+                "participant": participant,
+                "participant_label": message.get("participant_label") or participant.title(),
+                "text": message.get("text") or "",
+                "created_at": message.get("created_at"),
+                "media_url": media_url,
+                "file_name": file_name,
+            }
+        )
+    return timeline
+
+
+def _build_data_exchange(messages: list[dict]) -> tuple[list[dict], list[dict]]:
+    shared_by_student: list[dict] = []
+    shared_by_admin: list[dict] = []
+
+    for message in messages:
+        media_url = (message.get("media_url") or "").strip()
+        if not media_url:
+            continue
+        participant = message.get("participant") or "system"
+        created_at = message.get("created_at") or datetime.utcnow()
+        file_name = message.get("file_name")
+        text = (message.get("text") or "").strip()
+        title = file_name or (text[:80] + "…" if len(text) > 80 else text) or "Shared file"
+        item = {
+            "id": f"exchange-{message.get('id')}",
+            "title": title,
+            "url": media_url,
+            "created_at": created_at,
+            "file_name": file_name,
+        }
+        if participant == "candidate":
+            shared_by_student.append({**item, "shared_by": "student"})
+        else:
+            shared_by_admin.append({**item, "shared_by": "admin"})
+    return shared_by_student, shared_by_admin
 
 
 def get_my_bookings(db: Session, user_id: int) -> dict:
@@ -735,6 +915,170 @@ def get_my_bookings(db: Session, user_id: int) -> dict:
         "calendar_today": calendar_today,
         "total_count": len(bookings),
     }
+
+
+def get_my_bookings_for_date(db: Session, user_id: int, selected_date: date) -> dict:
+    calendar_today = office_today(db)
+    bookings = (
+        db.query(CounsellingBooking)
+        .filter(
+            CounsellingBooking.admin_id == user_id,
+            CounsellingBooking.status.in_([SCHEDULED_STATUS, COMPLETED_STATUS]),
+        )
+        .order_by(CounsellingBooking.scheduled_time.asc())
+        .all()
+    )
+
+    admin_cache: dict[int, User | None] = {}
+    day_bookings: list[dict] = []
+
+    for booking in bookings:
+        if booking.scheduled_time.date() != selected_date:
+            continue
+        if booking.admin_id not in admin_cache:
+            admin_cache[booking.admin_id] = (
+                db.query(User).filter(User.id == booking.admin_id).first()
+                if booking.admin_id
+                else None
+            )
+        admin = admin_cache.get(booking.admin_id)
+        section = _booking_section_for_date(booking.scheduled_time.date(), calendar_today)
+        lead = None
+        if booking.lead_id:
+            lead = db.query(Lead).filter(Lead.id == booking.lead_id).first()
+        day_bookings.append(_serialize_my_booking(db, booking, admin, section, lead=lead))
+
+    return {
+        "date": selected_date,
+        "calendar_today": calendar_today,
+        "bookings": day_bookings,
+    }
+
+
+def _build_booking_interaction_timeline(db: Session, booking_id: int) -> list[dict]:
+    communications = get_booking_communications(db, booking_id)
+    timeline = _communications_to_timeline(communications.get("messages", []))
+
+    note = (
+        db.query(CounsellingNote)
+        .filter(CounsellingNote.booking_id == booking_id)
+        .first()
+    )
+    if note:
+        timeline.extend(_build_counselling_note_timeline_items(note))
+
+    timeline.sort(key=lambda item: (item["created_at"], str(item["id"])))
+    return timeline
+
+
+def _serialize_booking_activity_context(
+    db: Session,
+    booking: CounsellingBooking,
+    admin: User | None,
+    lead: Lead | None,
+) -> dict:
+    calendar_today = office_today(db)
+    section = _booking_section_for_date(booking.scheduled_time.date(), calendar_today)
+    serialized_booking = _serialize_my_booking(db, booking, admin, section, lead=lead)
+
+    communications = get_booking_communications(db, booking.id)
+    shared_by_student, shared_by_admin = _build_data_exchange(communications.get("messages", []))
+
+    status_history = get_lead_status_history(db, lead.id) if lead else []
+    if lead and not status_history and lead.status_definition_id:
+        definition = get_status_definition(db, lead.status_definition_id)
+        status_history = [
+            {
+                "id": 0,
+                "status_definition_id": definition.id,
+                "status_id": definition.id,
+                "stage_name": definition.stage_name,
+                "category": definition.category,
+                "entered_at": lead.status_entered_at or lead.created_at,
+                "notes": None,
+                "comments": None,
+                "changed_by_type": "system",
+                "changed_by_label": "System",
+            }
+        ]
+
+    current_status_id = lead.status_definition_id if lead else None
+    suggested_next = None
+    if current_status_id:
+        current_definition = db.query(StatusDefinition).filter(StatusDefinition.id == current_status_id).first()
+        if current_definition:
+            suggested_next = current_definition.next_stage_id
+
+    return {
+        "booking": serialized_booking,
+        "status_history": status_history,
+        "shared_by_student": shared_by_student,
+        "shared_by_admin": shared_by_admin,
+        "status_definitions": list_status_definitions(db),
+        "current_status_definition_id": current_status_id,
+        "suggested_next_status_definition_id": suggested_next,
+        "lead_jump_path": _resolve_lead_jump_path(lead),
+        "can_update_status": bool(lead) and booking.status == SCHEDULED_STATUS,
+    }
+
+
+def get_booking_activity_log(db: Session, user_id: int, booking_id: int) -> dict:
+    booking = _get_owned_booking(db, user_id, booking_id)
+    admin = db.query(User).filter(User.id == booking.admin_id).first() if booking.admin_id else None
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return _serialize_booking_activity_context(db, booking, admin, lead)
+
+
+def get_booking_interaction_log(db: Session, user_id: int, booking_id: int) -> dict:
+    booking = _get_owned_booking(db, user_id, booking_id)
+    admin = db.query(User).filter(User.id == booking.admin_id).first() if booking.admin_id else None
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    calendar_today = office_today(db)
+    section = _booking_section_for_date(booking.scheduled_time.date(), calendar_today)
+    return {
+        "booking": _serialize_my_booking(db, booking, admin, section, lead=lead),
+        "timeline": _build_booking_interaction_timeline(db, booking.id),
+    }
+
+
+def get_booking_view_detail(db: Session, user_id: int, booking_id: int) -> dict:
+    activity = get_booking_activity_log(db, user_id, booking_id)
+    interaction = get_booking_interaction_log(db, user_id, booking_id)
+    return {
+        **activity,
+        "timeline": interaction["timeline"],
+        "can_complete_session": activity["can_update_status"],
+        "session_outcomes": [],
+        "pipeline_stages": [],
+    }
+
+
+def update_my_booking_status(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    status_definition_id: int,
+    notes: str | None = None,
+) -> dict:
+    booking = _get_owned_booking(db, user_id, booking_id)
+    if booking.status != SCHEDULED_STATUS:
+        raise HTTPException(status_code=400, detail="Only scheduled bookings can be updated.")
+    if not booking.lead_id:
+        raise HTTPException(status_code=400, detail="Booking is not linked to a lead.")
+
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found.")
+
+    return apply_lead_status(
+        db,
+        lead=lead,
+        status_definition_id=status_definition_id,
+        counsellor_id=user_id,
+        booking_id=booking.id,
+        notes=notes,
+        booking=booking,
+    )
 
 
 def reassign_my_booking(
@@ -812,9 +1156,20 @@ def assign_booking(db: Session, booking_id: int, admin_id: int) -> CounsellingBo
         booking.updated_at = datetime.utcnow()
         if booking.lead_id:
             lead = db.query(Lead).filter(Lead.id == booking.lead_id).first()
-            if lead and not lead.admission_stage:
-                lead.admission_stage = "COUNSELLING"
-                lead.admission_stage_entered_at = datetime.utcnow()
+            if lead:
+                now = datetime.utcnow()
+                if not lead.admission_stage:
+                    lead.admission_stage = "COUNSELLING"
+                    lead.admission_stage_entered_at = now
+                from app.services.student_status_service import on_counselling_scheduled
+
+                on_counselling_scheduled(
+                    db,
+                    lead,
+                    booking_id=booking.id,
+                    counsellor_id=admin.id,
+                    changed_by_type="admin",
+                )
         db.commit()
         db.refresh(booking)
         return booking
@@ -843,6 +1198,14 @@ def cancel_booking(db: Session, booking_id: int) -> CounsellingBooking:
                 slot.lead_id = None
             lead.consultation_scheduled_at = None
             lead.calendar_booking_id = None
+            from app.services.student_status_service import on_session_cancelled
+
+            on_session_cancelled(
+                db,
+                lead,
+                source="admin_booking_cancel",
+                had_active_booking=True,
+            )
 
     booking.status = CANCELLED_STATUS
     booking.admin_id = None
@@ -1110,14 +1473,5 @@ def get_booking_communications(db: Session, booking_id: int) -> dict:
 
 
 def get_my_booking_communications(db: Session, user_id: int, booking_id: int) -> dict:
-    booking = (
-        db.query(CounsellingBooking)
-        .filter(CounsellingBooking.id == booking_id, CounsellingBooking.admin_id == user_id)
-        .first()
-    )
-    if not booking:
-        raise HTTPException(
-            status_code=404,
-            detail="Booking not found or not assigned to you.",
-        )
+    _get_owned_booking(db, user_id, booking_id)
     return get_booking_communications(db, booking_id)

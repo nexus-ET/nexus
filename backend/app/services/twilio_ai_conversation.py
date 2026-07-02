@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from sqlalchemy.orm import Session
@@ -10,12 +11,12 @@ from app.services.admissions_intake_flow import (
     BRAND_NAME,
     IntakeReply,
     begin_whatsapp_intake_session,
-    get_current_step_reply,
     handle_post_intake_booking_message,
     is_intake_complete,
     process_flow_completion,
     process_intake_message,
 )
+from app.services.intake_templates import render_outreach_intake_followup
 from app.services.agent_runtime import (
     RuntimeAgentConfig,
     get_runtime_agent_config,
@@ -25,18 +26,41 @@ from app.services.ai_service import LlmResult, compose_agent_message, compose_ha
 from app.services.handoff_notifications import notify_advisors_of_handoff
 from app.services.lead_conversation import ensure_handoff_for_inbound, touch_lead_activity
 from app.services.phone_utils import clean_phone_number
+from app.config import settings
 from app.services.messaging import (
+    OUTREACH_TEMPLATE_FOLLOWUP_DELAY_SECONDS,
     PROVIDER_WHATSAPP,
     WhatsAppDeliveryError,
+    assert_whatsapp_business_outreach_allowed,
     get_active_provider,
-    open_whatsapp_conversation_window,
+    outreach_template_is_configured,
     record_ai_conversation_audit,
     send_message,
+    send_whatsapp_outreach_template,
 )
+from app.services.whatsapp_outreach_delivery import wait_for_whatsapp_outbound_status
 
 logger = logging.getLogger(__name__)
 
 RECENT_HISTORY_LIMIT = 20
+
+
+def lead_has_prior_ai_outreach(db: Session, lead_id: int) -> bool:
+    """True when the AI agent has already sent at least one WhatsApp message."""
+    return (
+        db.query(Message.id)
+        .filter(Message.lead_id == lead_id, Message.sender == "advisor")
+        .first()
+        is not None
+    )
+
+
+def assert_ai_outreach_allowed(db: Session, lead: Lead, *, force_restart: bool = False) -> None:
+    if lead_has_prior_ai_outreach(db, lead.id) and not force_restart:
+        raise ValueError(
+            "An AI WhatsApp conversation is already in progress for this student. "
+            "Duplicate outreach is blocked to avoid restarting the intake flow."
+        )
 OUTREACH_SESSION_MARKER = f"{BRAND_NAME} Admissions AI Assistant on WhatsApp"
 INTAKE_SESSION_MARKER = f"{BRAND_NAME} Admissions AI Assistant"
 
@@ -194,6 +218,28 @@ async def persist_and_send_intake_reply(
     return outbound
 
 
+async def persist_advisor_message(
+    db: Session,
+    lead: Lead,
+    message_body: str,
+    *,
+    ai_confidence: float | None = None,
+) -> Message:
+    """Save an advisor message to chat history without sending to WhatsApp."""
+    outbound = Message(
+        lead_id=lead.id,
+        sender="advisor",
+        text=message_body,
+        ai_confidence=ai_confidence,
+        is_read=True,
+    )
+    db.add(outbound)
+    touch_lead_activity(db, lead)
+    db.commit()
+    db.refresh(outbound)
+    return outbound
+
+
 async def persist_and_send_ai_message(
     db: Session,
     lead: Lead,
@@ -304,20 +350,13 @@ async def handle_ai_active_inbound(
             db.commit()
             return [flow_reply.text]
 
-    if should_escalate_before_llm(cleaned_incoming, runtime_config):
-        reason = "agent inactive" if not runtime_config.is_active else "keyword trigger"
-        return await _execute_escalation_handoff(
-            db,
-            lead,
-            phone,
-            runtime_config,
-            cleaned_incoming,
-            reason=reason,
-            ai_confidence=None,
-        )
+    db.refresh(lead)
 
     if not is_intake_complete(lead):
         reply = await process_intake_message(db, lead, cleaned_incoming, runtime_config)
+        if getattr(reply, "suppress_outbound", False):
+            db.commit()
+            return []
         if not reply.text.strip():
             return await _execute_escalation_handoff(
                 db,
@@ -343,8 +382,23 @@ async def handle_ai_active_inbound(
         db.commit()
         return [reply.text]
 
+    if should_escalate_before_llm(cleaned_incoming, runtime_config):
+        reason = "agent inactive" if not runtime_config.is_active else "keyword trigger"
+        return await _execute_escalation_handoff(
+            db,
+            lead,
+            phone,
+            runtime_config,
+            cleaned_incoming,
+            reason=reason,
+            ai_confidence=None,
+        )
+
     booking_reply = handle_post_intake_booking_message(db, lead, cleaned_incoming)
     if booking_reply:
+        if getattr(booking_reply, "suppress_outbound", False):
+            db.commit()
+            return []
         await persist_and_send_intake_reply(db, lead, phone, booking_reply)
         lead.stage = LeadStage.AI_ACTIVE
         lead.is_human_locked = False
@@ -359,6 +413,10 @@ async def handle_ai_active_inbound(
         )
         db.commit()
         return [booking_reply.text]
+
+    if is_intake_complete(lead) and lead.consultation_scheduled_at:
+        db.commit()
+        return []
 
     from app.config import settings
 
@@ -418,25 +476,64 @@ async def handle_ai_active_inbound(
     return [llm_result.text]
 
 
-async def initiate_ai_outreach(db: Session, lead: Lead) -> list[str]:
+async def initiate_ai_outreach(
+    db: Session,
+    lead: Lead,
+    *,
+    force_restart: bool = False,
+) -> list[str]:
     phone = clean_phone_number(lead.phone_number or "")
     if not phone:
         raise ValueError("Lead does not have a phone number for WhatsApp outreach.")
 
-    runtime_config = get_runtime_agent_config(db)
+    assert_ai_outreach_allowed(db, lead, force_restart=force_restart)
+
+    if get_active_provider() == PROVIDER_WHATSAPP:
+        assert_whatsapp_business_outreach_allowed(db, lead.id)
+
     lead.stage = LeadStage.AI_ACTIVE
     lead.is_human_locked = False
-
-    if is_intake_complete(lead) or not getattr(lead, "intake_step", None):
-        begin_whatsapp_intake_session(db, lead, force_full_restart=True)
-    elif lead_has_ai_outbound_messages(db, lead.id):
-        reply = await get_current_step_reply(db, lead, runtime_config)
-        await open_whatsapp_conversation_window(phone, raise_on_failure=True)
-        await persist_and_send_intake_reply(db, lead, phone, reply)
-        return [reply.text]
-
     begin_whatsapp_intake_session(db, lead, force_full_restart=True)
-    reply = await get_current_step_reply(db, lead, runtime_config)
-    await open_whatsapp_conversation_window(phone, raise_on_failure=True)
-    await persist_and_send_intake_reply(db, lead, phone, reply)
-    return [reply.text]
+
+    sent_messages: list[str] = []
+
+    if get_active_provider() == PROVIDER_WHATSAPP and outreach_template_is_configured():
+        template_send = await send_whatsapp_outreach_template(
+            phone,
+            lead=lead,
+            raise_on_failure=True,
+        )
+        if template_send is None:
+            raise WhatsAppDeliveryError(
+                "WhatsApp outreach template was not sent. Check WHATSAPP_OUTREACH_TEMPLATE and Meta approval."
+            )
+        await persist_advisor_message(db, lead, template_send.display_text)
+        sent_messages.append(template_send.display_text)
+
+        delivery_confirmed = await wait_for_whatsapp_outbound_status(
+            template_send.message_id,
+            timeout_seconds=float(settings.WHATSAPP_OUTREACH_DELIVERY_WAIT_SECONDS or 3.0),
+        )
+        if delivery_confirmed:
+            await asyncio.sleep(0.5)
+        else:
+            fallback_delay = float(
+                settings.WHATSAPP_OUTREACH_FOLLOWUP_DELAY_SECONDS
+                or OUTREACH_TEMPLATE_FOLLOWUP_DELAY_SECONDS
+            )
+            logger.warning(
+                "Template delivery webhook not received for %s; waiting %.1fs before follow-up",
+                template_send.message_id,
+                fallback_delay,
+            )
+            await asyncio.sleep(fallback_delay)
+
+    followup = IntakeReply(text=render_outreach_intake_followup(), confidence=1.0)
+    await persist_and_send_intake_reply(db, lead, phone, followup)
+    sent_messages.append(followup.text)
+
+    from app.services.student_status_service import on_whatsapp_outreach
+
+    on_whatsapp_outreach(db, lead, source="AI outreach")
+    db.refresh(lead)
+    return sent_messages

@@ -90,7 +90,11 @@ def main() -> int:
             handoff = (settings.NEXUS_WHATSAPP_HANDOFF_URL or "").strip().rstrip("/")
             print(f"Would hand off webhook to {handoff}/api/webhook")
             return 0
-        release_webhook_to_handoff_url()
+        try:
+            release_webhook_to_handoff_url()
+        except Exception as exc:
+            print(f"Warning: webhook handoff failed: {exc}", file=sys.stderr)
+            return 1
         status = get_webhook_status()
         print("Webhook handed off.")
         print(json.dumps(status.__dict__, indent=2))

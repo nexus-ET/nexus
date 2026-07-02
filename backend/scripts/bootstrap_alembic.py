@@ -25,7 +25,7 @@ from sqlalchemy.engine import Inspector
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 LEGACY_BASELINE_REVISION = "d9a4b2c81f0e"
-HEAD_REVISION = "j6f9g4h58i0d"
+HEAD_REVISION = "p2l5m0n14o6j"
 
 ORDERED_REVISIONS: list[str] = [
     "d9a4b2c81f0e",
@@ -35,6 +35,12 @@ ORDERED_REVISIONS: list[str] = [
     "h4d7e2f36g8b",
     "i5e8f3g47h9c",
     "j6f9g4h58i0d",
+    "k7g0h5i69j1e",
+    "l8h1i6j70k2f",
+    "m9i2j7k81l3g",
+    "n0j3k8l92m4h",
+    "o1k4l9m03n5i",
+    "p2l5m0n14o6j",
 ]
 
 
@@ -79,6 +85,16 @@ def _revision_checks() -> dict[str, Callable[[Inspector], bool]]:
         and _has_column(i, "leads", "handoff_ai_confidence")
         and _has_column(i, "leads", "handoff_reason"),
         "j6f9g4h58i0d": lambda i: _has_table(i, "conversation_audit_logs"),
+        "k7g0h5i69j1e": lambda i: _has_table(i, "counselling_notes"),
+        "l8h1i6j70k2f": lambda i: _has_table(i, "status_definitions")
+        and _has_table(i, "lead_status_history")
+        and _has_column(i, "leads", "status_definition_id"),
+        "m9i2j7k81l3g": lambda i: _has_column(i, "leads", "status_definition_id"),
+        "n0j3k8l92m4h": lambda i: _has_table(i, "status_definitions")
+        and not _has_column(i, "status_definitions", "sort_order"),
+        "o1k4l9m03n5i": lambda i: _has_table(i, "status_history")
+        and _has_column(i, "status_history", "changed_by_type"),
+        "p2l5m0n14o6j": lambda i: _has_table(i, "system_logs"),
     }
 
 

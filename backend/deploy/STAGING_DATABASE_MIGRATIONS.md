@@ -4,8 +4,20 @@ Auto-maintained by `backend/scripts/promote_to_staging.py`.
 
 Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
 
-**Current head:** `j6f9g4h58i0d`
-**Doc generated:** 2026-06-28 11:50 UTC
+**Current head:** `q3m6n1o25p7k`
+**Doc generated:** 2026-07-02 23:51 UTC
+
+## Migrations in this release
+
+| Revision | Migration | Changes |
+|----------|-----------|---------|
+| `k7g0h5i69j1e` | k7g0h5i69j1e_add_counselling_notes_table | New table(s): `counselling_notes` |
+| `l8h1i6j70k2f` | l8h1i6j70k2f_add_status_definitions_table | New table(s): `status_definitions`, `lead_status_history`; Alter: `leads.status_definition_id`; `leads.status_entered_at` |
+| `m9i2j7k81l3g` | m9i2j7k81l3g_add_lead_status_definition_id | Alter: `leads.status_definition_id`; `leads.status_entered_at` |
+| `n0j3k8l92m4h` | n0j3k8l92m4h_reseed_status_definitions_v2 | SQL data migration |
+| `o1k4l9m03n5i` | o1k4l9m03n5i_add_status_history_table | New table(s): `status_history`; Alter: `status_history.changed_by_type` |
+| `p2l5m0n14o6j` | p2l5m0n14o6j_add_system_logs_table | New table(s): `system_logs` |
+| `q3m6n1o25p7k` | q3m6n1o25p7k_unblock_session_cancelled_status | SQL data migration |
 
 ## Full migration chain (at head)
 
@@ -25,6 +37,13 @@ Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
 | `h4d7e2f36g8b` | h4d7e2f36g8b_add_target_programs_courses_tables | New table(s): `target_programs`, `target_courses` |
 | `i5e8f3g47h9c` | i5e8f3g47h9c_add_ai_confidence_fields | Alter: `messages.ai_confidence`; `leads.handoff_ai_confidence`; `leads.handoff_reason` |
 | `j6f9g4h58i0d` | j6f9g4h58i0d_add_conversation_audit_logs | New table(s): `conversation_audit_logs` |
+| `k7g0h5i69j1e` | k7g0h5i69j1e_add_counselling_notes_table | New table(s): `counselling_notes` |
+| `l8h1i6j70k2f` | l8h1i6j70k2f_add_status_definitions_table | New table(s): `status_definitions`, `lead_status_history`; Alter: `leads.status_definition_id`; `leads.status_entered_at` |
+| `m9i2j7k81l3g` | m9i2j7k81l3g_add_lead_status_definition_id | Alter: `leads.status_definition_id`; `leads.status_entered_at` |
+| `n0j3k8l92m4h` | n0j3k8l92m4h_reseed_status_definitions_v2 | SQL data migration |
+| `o1k4l9m03n5i` | o1k4l9m03n5i_add_status_history_table | New table(s): `status_history`; Alter: `status_history.changed_by_type` |
+| `p2l5m0n14o6j` | p2l5m0n14o6j_add_system_logs_table | New table(s): `system_logs` |
+| `q3m6n1o25p7k` | q3m6n1o25p7k_unblock_session_cancelled_status | SQL data migration |
 
 ## Manual run (VPS or local)
 
@@ -39,5 +58,5 @@ alembic upgrade head
 
 ```bash
 alembic current
-# Expected: j6f9g4h58i0d (head)
+# Expected: q3m6n1o25p7k (head)
 ```

@@ -46,6 +46,10 @@ export type ProspectDetail = {
   updated_at?: string;
   created_at?: string;
   is_human_locked?: boolean;
+  status_definition_id?: number | null;
+  status_stage_name?: string | null;
+  status_category?: string | null;
+  status_description?: string | null;
 };
 
 export type ProspectMessage = {

@@ -82,6 +82,13 @@ class Lead(Base):
 
     admission_stage: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     admission_stage_entered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status_definition_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("status_definitions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    status_entered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     documents_submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Live Messaging Relationship Engine

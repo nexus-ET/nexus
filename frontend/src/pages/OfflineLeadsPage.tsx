@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowUp, ArrowUpDown, Pencil, Plus, Search, X } from 'lucide-react';
 import { useCreateOfflineLead, useOfflineLeadDuplicateCheck, useOfflineLeads, useUpdateOfflineLead } from '../hooks/useOfflineLeads';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
@@ -654,7 +655,8 @@ export default function OfflineLeadsPage() {
         </div>
       </div>
 
-      {modalOpen && (
+      {modalOpen &&
+        createPortal(
         <div className="offline-leads-modal-backdrop">
           <div
             className="offline-leads-modal"
@@ -1016,7 +1018,8 @@ export default function OfflineLeadsPage() {
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

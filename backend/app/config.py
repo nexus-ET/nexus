@@ -34,8 +34,22 @@ class Settings(BaseSettings):
     WHATSAPP_BUSINESS_PHONE_NUMBER_ID: str | None = None
     WHATSAPP_BUSINESS_WABA_ID: str | None = None
     WHATSAPP_VERIFY_TOKEN: str | None = None
-    # Meta template sent before business-initiated outreach (opens the 24h window). Default: hello_world
-    WHATSAPP_OUTREACH_TEMPLATE: str | None = "hello_world"
+    # Meta template sent before business-initiated outreach (opens the 24h window). Leave unset to skip.
+    WHATSAPP_OUTREACH_TEMPLATE: str | None = "et_student_welcome"
+    # Must match the language shown in Meta Business Manager for that template (English = en, English US = en_US).
+    WHATSAPP_OUTREACH_TEMPLATE_LANGUAGE: str = "en"
+    # {{1}} student name and {{2}} company name for Utility outreach templates such as et_student_welcome.
+    WHATSAPP_OUTREACH_COMPANY_NAME: str = "Edutrust"
+    # Brief pause after template delivery if webhook status is unavailable.
+    WHATSAPP_OUTREACH_FOLLOWUP_DELAY_SECONDS: float = 8.0
+    # Max seconds to wait for Meta sent/delivered webhook before fallback delay.
+    WHATSAPP_OUTREACH_DELIVERY_WAIT_SECONDS: float = 3.0
+    # Comma-separated body placeholders to send: student, company. Empty = no parameters (static template).
+    WHATSAPP_OUTREACH_TEMPLATE_PARAMETERS: str = "student,company"
+    # named = Meta {{student_name}} style (requires parameter_name in API); positional = {{1}}, {{2}}.
+    WHATSAPP_OUTREACH_TEMPLATE_PARAMETER_FORMAT: str = "positional"
+    # Meta parameter names matching WHATSAPP_OUTREACH_TEMPLATE_PARAMETERS order (Student Name, Company Name).
+    WHATSAPP_OUTREACH_TEMPLATE_PARAMETER_NAMES: str = "student_name,company_name"
     WEBHOOK_VERIFY_TOKEN: str | None = None
     # Public base URL for this deployment (local quick tunnel or https://nexus-dev.edutrust.in)
     PUBLIC_TUNNEL_BASE: str | None = None

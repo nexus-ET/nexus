@@ -52,16 +52,9 @@ def phone_match_keys(raw_phone: str | None) -> set[str]:
 
 
 def find_lead_by_phone(db: Session, raw_phone: str | None) -> Lead | None:
-    keys = phone_match_keys(raw_phone)
-    if not keys:
-        return None
+    from app.services.lead_conversation import find_lead_for_inbound_whatsapp
 
-    leads = db.query(Lead).filter(Lead.phone_number.isnot(None)).all()
-    for lead in leads:
-        lead_keys = phone_match_keys(lead.phone_number)
-        if keys & lead_keys:
-            return lead
-    return None
+    return find_lead_for_inbound_whatsapp(db, raw_phone)
 
 
 def find_lead_by_phone_query(db: Session, raw_phone: str | None):

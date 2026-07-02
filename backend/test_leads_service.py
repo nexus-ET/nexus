@@ -218,3 +218,5 @@ def test_build_lead_data_from_meta_maps_payload() -> None:
         "preferred_country": "UK",
         "preferred_course_university": "Fashion designer",
     }
+    assert payload["preferred_country"] == "UK"
+    assert "preferred_course" in payload["intake_context"]
