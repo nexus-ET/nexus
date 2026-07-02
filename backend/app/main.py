@@ -20,6 +20,7 @@ from app.models.role_page_permission import RolePagePermission
 from app.models.message_history import MessageHistory
 from app.models.consultation_slot import ConsultationSlot
 from app.models.counselling_booking import CounsellingBooking
+from app.models.counselling_note import CounsellingNote
 from app.models.notification_log import NotificationLog
 from app.models.processed_message import ProcessedMessage
 from app.models.dynamic_setting import DynamicSetting
@@ -36,6 +37,9 @@ from app.models.target_program import TargetProgram
 from app.models.target_course import TargetCourse
 from app.models.security_audit_run import SecurityAuditRun
 from app.models.admission_history import AdmissionHistory
+from app.models.status_history import StatusHistory
+from app.models.system_log import SystemLog
+from app.models.status_definition import StatusDefinition
 from app.models.candidate_task import CandidateTask
 from app.models.team_chat_message import TeamChatMessage
 from app.models.conversation import Conversation
@@ -140,6 +144,9 @@ def bootstrap_application() -> None:
                     "Flow public key ready for Meta upload "
                     "(GET /api/v1/webhooks/whatsapp-flow/public-key)"
                 )
+            from app.services.whatsapp_webhook_env import audit_whatsapp_webhook_routing
+
+            audit_whatsapp_webhook_routing()
             bootstrap_logger.info("Navigation RBAC initialized.")
         finally:
             bootstrap_db.close()

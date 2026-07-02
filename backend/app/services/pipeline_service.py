@@ -22,14 +22,27 @@ COUNSELLING_STAGE = "COUNSELLING"
 APPLIED_STAGE = "APPLIED"
 
 PIPELINE_STAGES: list[dict[str, str]] = [
-    {"key": "COUNSELLING", "label": "Counselling"},
-    {"key": "AWAITING_DOCS", "label": "Awaiting Docs"},
-    {"key": "APPLIED", "label": "Applied"},
-    {"key": "UNDER_REVIEW", "label": "Under Review"},
-    {"key": "OFFERED", "label": "Offered"},
-    {"key": "ENROLLED", "label": "Enrolled"},
-    {"key": "ARCHIVED", "label": "Archived"},
+    {"key": "COUNSELLING", "label": "Counselling", "category": "Acquisition"},
+    {"key": "AWAITING_DOCS", "label": "Awaiting Docs", "category": "Logistics"},
+    {"key": "APPLIED", "label": "Applied", "category": "Closure"},
+    {"key": "UNDER_REVIEW", "label": "Under Review", "category": "Closure"},
+    {"key": "OFFERED", "label": "Offered", "category": "Closure"},
+    {"key": "ENROLLED", "label": "Enrolled", "category": "Closure"},
+    {"key": "ARCHIVED", "label": "Archived", "category": "Archive"},
 ]
+
+STAGE_CATEGORY_BY_KEY = {item["key"]: item["category"] for item in PIPELINE_STAGES}
+STAGE_LABEL_BY_KEY = {item["key"]: item["label"] for item in PIPELINE_STAGES}
+
+
+def resolve_admission_stage_meta(stage_key: str | None) -> tuple[str | None, str | None, str | None]:
+    """Return (stage_key, stage_label, category) for admission pipeline badges."""
+    if not stage_key:
+        return None, None, None
+    normalized = stage_key.strip().upper()
+    label = STAGE_LABEL_BY_KEY.get(normalized, normalized.replace("_", " ").title())
+    category = STAGE_CATEGORY_BY_KEY.get(normalized, "Acquisition")
+    return normalized, label, category
 
 OUTCOME_CONFIG: dict[str, dict] = {
     "PROCEED_TO_APPLICATION": {

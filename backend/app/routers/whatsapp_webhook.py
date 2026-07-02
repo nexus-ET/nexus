@@ -38,8 +38,16 @@ async def _run_inbound_whatsapp_ai(
     try:
         lead = db.query(Lead).filter(Lead.id == lead_id).first()
         if not lead:
+            logger.warning("Inbound WhatsApp AI skipped: lead %s not found", lead_id)
             return
+        db.refresh(lead)
         await dispatch_inbound_whatsapp_ai(db, lead, sender_phone or wa_id, message_text)
+    except Exception:
+        logger.exception(
+            "Inbound WhatsApp AI failed for lead %s (phone=%s)",
+            lead_id,
+            sender_phone or wa_id,
+        )
     finally:
         db.close()
 
@@ -74,6 +82,11 @@ async def receive_whatsapp_webhook(
 
     inbound_messages = extract_inbound_messages(payload)
     if not inbound_messages:
+        from app.services.whatsapp_outreach_delivery import process_whatsapp_status_webhook
+
+        status_count = process_whatsapp_status_webhook(payload)
+        if status_count:
+            return {"status": "ok", "processed_statuses": status_count}
         return {"status": "ignored", "reason": "no_messages"}
 
     processed_count = 0

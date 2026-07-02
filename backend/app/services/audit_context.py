@@ -146,6 +146,7 @@ _ACTION_TYPE_LABELS: dict[str, str] = {
     "assign_booking": "Assigned counselling booking",
     "cancel_booking": "Cancelled counselling booking",
     "complete_session": "Completed counselling session",
+    "save_session_notes": "Saved counselling session notes",
     "save_public_holiday": "Saved public holiday",
     "remove_public_holiday": "Removed public holiday",
     "bulk_save_public_holidays": "Bulk saved public holidays",

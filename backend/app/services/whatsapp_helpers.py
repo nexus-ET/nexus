@@ -9,11 +9,11 @@ from sqlalchemy.orm import Session
 
 from app.models.lead import Lead, LeadChannel, LeadStage
 from app.services.lead_conversation import ensure_handoff_for_inbound, is_human_handoff_lead
+from app.services.lead_conversation import find_lead_for_inbound_whatsapp
 from app.services.phone_utils import (
     build_inbound_whatsapp_lead_name,
     clean_phone_number,
     digits_only,
-    find_lead_by_phone,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ def _extract_message_text(message: dict[str, Any]) -> str:
 
 def get_or_create_lead_for_phone(db: Session, sender_phone: str, wa_id: str) -> Lead:
     phone = clean_phone_number(sender_phone)
-    lead = find_lead_by_phone(db, phone or wa_id)
+    lead = find_lead_for_inbound_whatsapp(db, phone or wa_id)
 
     if lead:
         if is_human_handoff_lead(lead):
@@ -107,4 +107,7 @@ def get_or_create_lead_for_phone(db: Session, sender_phone: str, wa_id: str) -> 
     db.add(lead)
     db.commit()
     db.refresh(lead)
+    from app.services.student_status_service import on_lead_created
+
+    on_lead_created(db, lead, source="WhatsApp inbound")
     return lead

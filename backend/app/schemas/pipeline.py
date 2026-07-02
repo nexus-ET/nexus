@@ -25,6 +25,7 @@ class SessionCompleteResponse(BaseModel):
 class PipelineStageOut(BaseModel):
     key: str
     label: str
+    category: str | None = None
 
 
 class PipelineOutcomeOut(BaseModel):

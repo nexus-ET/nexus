@@ -9,13 +9,72 @@ from sqlalchemy.orm import Session
 
 from app.db.database import SessionLocal
 from app.models.counselling_booking import CounsellingBooking
+from app.models.lead import Lead
+from app.models.message import Message
 from app.models.notification_log import NotificationLog
 from app.models.user import User
 from app.services.email_service import send_email
+from app.services.lead_conversation import touch_lead_activity
+from app.services.messaging import _recent_identical_outbound
+from app.services.phone_utils import find_lead_by_phone
 from app.services.push_service import push_notification_service
 from app.services.messaging import send_message
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_lead_for_booking_notification(
+    db: Session,
+    *,
+    lead_id: int | None,
+    candidate_phone: str | None,
+) -> Lead | None:
+    if lead_id:
+        lead = db.query(Lead).filter(Lead.id == lead_id).first()
+        if lead:
+            return lead
+    return find_lead_by_phone(db, candidate_phone)
+
+
+def persist_booking_confirmation_in_chat(
+    db: Session,
+    *,
+    lead_id: int | None,
+    candidate_phone: str | None,
+    message: str,
+) -> bool:
+    """Mirror consultant assignment WhatsApp confirmations in AI-Active chat history."""
+    lead = _resolve_lead_for_booking_notification(
+        db,
+        lead_id=lead_id,
+        candidate_phone=candidate_phone,
+    )
+    if not lead:
+        logger.info(
+            "Booking confirmation not saved to chat history — no lead matched (lead_id=%s phone=%s)",
+            lead_id,
+            candidate_phone,
+        )
+        return False
+
+    cleaned = (message or "").strip()
+    if not cleaned:
+        return False
+    if _recent_identical_outbound(db, lead.id, cleaned, within_minutes=60):
+        return False
+
+    db.add(
+        Message(
+            lead_id=lead.id,
+            sender="advisor",
+            text=cleaned,
+            ai_confidence=1.0,
+            is_read=True,
+        )
+    )
+    touch_lead_activity(db, lead)
+    db.commit()
+    return True
 
 
 def _format_admin_name(user: User) -> str:
@@ -188,6 +247,8 @@ class NotificationService:
         admin_name: str,
         scheduled_time: datetime,
         candidate_phone: str | None,
+        *,
+        lead_id: int | None = None,
     ) -> str:
         message = _whatsapp_message(candidate_name, admin_name, scheduled_time)
         if not candidate_phone:
@@ -204,6 +265,13 @@ class NotificationService:
 
         sent = await send_message(candidate_phone, message)
         status = "sent" if sent else "failed"
+        if sent:
+            persist_booking_confirmation_in_chat(
+                self.db,
+                lead_id=lead_id,
+                candidate_phone=candidate_phone,
+                message=message,
+            )
         self._log_attempt(
             booking_id=booking_id,
             user_id=None,
@@ -320,6 +388,7 @@ class NotificationService:
             admin_name=admin_name,
             scheduled_time=booking.scheduled_time,
             candidate_phone=booking.candidate_phone,
+            lead_id=booking.lead_id,
         )
         email_status = await self.send_email_confirmation(
             booking_id=booking.id,

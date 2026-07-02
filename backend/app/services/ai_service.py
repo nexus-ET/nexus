@@ -408,6 +408,90 @@ def _finalize_llm_payload(
     return LlmResult(text=fallback_text, confidence=fallback_confidence)
 
 
+async def call_llm_json_content(
+    model: str,
+    messages: list[dict[str, str]],
+) -> str:
+    """Return raw JSON assistant content (not the WhatsApp reply envelope)."""
+    _ensure_env_loaded()
+    provider, model_id = parse_model_ref(model)
+    timeout_seconds = (
+        float(settings.OLLAMA_TIMEOUT_SECONDS)
+        if provider == "ollama"
+        else float(LLM_TIMEOUT_SECONDS)
+    )
+
+    async def _run() -> str:
+        if provider == "ollama":
+            import httpx
+
+            configured_base = settings.OLLAMA_BASE_URL or os.getenv(
+                "OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1"
+            )
+            native_base = configured_base.rstrip("/").removesuffix("/v1")
+            chat_url = f"{native_base}/api/chat"
+            payload = {
+                "model": model_id,
+                "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
+                "format": "json",
+                "stream": False,
+                "options": {"temperature": 0.2, "num_predict": 700},
+            }
+
+            def _invoke() -> str:
+                with httpx.Client(timeout=timeout_seconds) as client:
+                    response = client.post(chat_url, json=payload)
+                    response.raise_for_status()
+                    return (response.json().get("message") or {}).get("content") or ""
+
+            return await asyncio.to_thread(_invoke)
+
+        if provider == "groq":
+            api_key = settings.GROQ_API_KEY or os.getenv("GROQ_API_KEY")
+            if not api_key:
+                return ""
+            from groq import Groq
+
+            client = Groq(api_key=api_key)
+
+            def _invoke() -> str:
+                response = client.chat.completions.create(
+                    model=model_id,
+                    messages=messages,
+                    max_tokens=700,
+                    temperature=0.2,
+                    response_format={"type": "json_object"},
+                )
+                return response.choices[0].message.content or ""
+
+            return await asyncio.to_thread(_invoke)
+
+        api_key = settings.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return ""
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key)
+
+        def _invoke() -> str:
+            response = client.chat.completions.create(
+                model=model_id or os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+                messages=messages,
+                max_tokens=700,
+                temperature=0.2,
+                response_format={"type": "json_object"},
+            )
+            return response.choices[0].message.content or ""
+
+        return await asyncio.to_thread(_invoke)
+
+    try:
+        return await call_with_llm_circuit_breaker(_run, timeout_seconds=timeout_seconds)
+    except Exception:
+        logger.exception("Structured JSON LLM call failed for model=%s.", model)
+        return ""
+
+
 async def _call_llm(
     model: str,
     messages: list[dict[str, str]],

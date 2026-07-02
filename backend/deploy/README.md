@@ -164,6 +164,15 @@ bash backend/deploy/promote-to-staging.sh --message "Release" --vps root@YOUR_VP
 
 **Database:** `deploy.sh` runs `alembic upgrade head` automatically. See [STAGING_DATABASE_MIGRATIONS.md](./STAGING_DATABASE_MIGRATIONS.md) for new tables and column changes.
 
+**Current release (2026-07-03):** [STAGING_RELEASE_2026-07-03.md](./STAGING_RELEASE_2026-07-03.md) — env changes in [STAGING_ENV_CHANGES.md](./STAGING_ENV_CHANGES.md) (apply manually on VPS).
+
+**On VPS after deploy:**
+
+```bash
+sudo bash /var/www/nexus/backend/deploy/deploy-staging.sh
+sudo bash /var/www/nexus/backend/deploy/verify-staging-deploy.sh
+```
+
 ---
 
 ## Part 3 — Deploy updates (every time you change code)

@@ -50,6 +50,16 @@ from app.services.offline_leads_service import (
 from app.services.messaging import WhatsAppDeliveryError
 from app.services.twilio_ai_conversation import initiate_ai_outreach
 from app.services.twilio_outbound import dispatch_live_whatsapp_message
+from app.api import deps
+from app.models.user import User
+from app.schemas.status_definition import (
+    PipelineStatusUpdateRequest,
+    PipelineStatusUpdateResponse,
+    StatusDefinitionsResponse,
+    StudentJourneyResponse,
+)
+from app.services.status_definition_service import list_status_definitions, resolve_lead_status_meta
+from app.services.student_status_service import get_student_journey, update_student_status
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -61,6 +71,10 @@ class StatusUpdate(BaseModel):
 
 class LeadNotesUpdate(BaseModel):
     notes: str = Field(..., max_length=10000)
+
+
+class AiOutreachRequest(BaseModel):
+    force_restart: bool = False
 
 # Global directory where your workspace panel saves files
 UPLOAD_DIRECTORY = "uploads" 
@@ -182,6 +196,15 @@ def build_universal_lead_payload(lead: Lead, db: Session) -> dict:
         } for m in all_msgs
     ]
 
+    status_definition_id, status_stage_name, status_category = resolve_lead_status_meta(db, lead)
+    status_description = None
+    if status_definition_id:
+        from app.models.status_definition import StatusDefinition
+
+        definition = db.query(StatusDefinition).filter(StatusDefinition.id == status_definition_id).first()
+        if definition:
+            status_description = definition.description
+
     return {
         "id": lead.id,
         "full_name": lead.full_name,
@@ -217,6 +240,10 @@ def build_universal_lead_payload(lead: Lead, db: Session) -> dict:
         "chat_history": serialized_messages,
         "history": serialized_messages,
         "logs": serialized_messages,
+        "status_definition_id": status_definition_id,
+        "status_stage_name": status_stage_name,
+        "status_category": status_category,
+        "status_description": status_description,
         **build_intake_profile_summary(lead, db),
     }
 
@@ -350,6 +377,16 @@ def build_handoff_queue_item(lead: Lead, stats: dict | None = None) -> dict:
         "handoff_ai_confidence": getattr(lead, "handoff_ai_confidence", None),
         "handoff_reason": getattr(lead, "handoff_reason", None),
         "messages": [],
+        **{
+            key: value
+            for key, value in build_intake_profile_summary(lead, db=None).items()
+            if key
+            not in {
+                "available_consultation_dates",
+                "available_consultation_times",
+                "selected_consultation_date",
+            }
+        },
     }
 
 
@@ -446,6 +483,9 @@ async def handle_inbound_whatsapp_reply(request: Request, db: Session = Depends(
             db.add(lead)
             db.commit()
             db.refresh(lead)
+            from app.services.student_status_service import on_lead_created
+
+            on_lead_created(db, lead, source="WhatsApp inbound")
         elif sender_phone_clean and lead.phone_number != sender_phone_clean:
             lead.phone_number = sender_phone_clean
 
@@ -459,6 +499,10 @@ async def handle_inbound_whatsapp_reply(request: Request, db: Session = Depends(
         db.add(inbound_db_row)
         touch_lead_activity(db, lead)
         db.commit()
+
+        from app.services.student_status_service import on_whatsapp_inbound
+
+        on_whatsapp_inbound(db, lead)
 
         logger.info(
             "Saved inbound WhatsApp message lead_id=%s message_id=%s",
@@ -487,7 +531,11 @@ async def handle_inbound_whatsapp_reply(request: Request, db: Session = Depends(
 
 @router.post("/{lead_id}/ai-outreach")
 @router.post("/{lead_id}/ai-outreach/")
-async def start_ai_whatsapp_outreach(lead_id: int, db: Session = Depends(get_db)):
+async def start_ai_whatsapp_outreach(
+    lead_id: int,
+    payload: AiOutreachRequest | None = None,
+    db: Session = Depends(get_db),
+):
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead profile not found.")
@@ -495,8 +543,10 @@ async def start_ai_whatsapp_outreach(lead_id: int, db: Session = Depends(get_db)
     if normalize_lead_stage(lead.stage) != "AI_ACTIVE":
         raise HTTPException(status_code=400, detail="Lead is not in AI Active status.")
 
+    force_restart = bool(payload.force_restart) if payload else False
+
     try:
-        sent_messages = await initiate_ai_outreach(db, lead)
+        sent_messages = await initiate_ai_outreach(db, lead, force_restart=force_restart)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except WhatsAppDeliveryError as exc:
@@ -618,6 +668,9 @@ async def handle_external_social_webhook(request: Request, db: Session = Depends
             dispatch_live_whatsapp_message(
                 to_phone=target_phone, message_body=msg_body, media_url=passed_media_url
             )
+            from app.services.student_status_service import on_whatsapp_outreach
+
+            on_whatsapp_outreach(db, lead, source="admin message")
         
         refreshed_lead = db.query(Lead).options(joinedload(Lead.messages)).filter(Lead.id == lead.id).first()
         return build_universal_lead_payload(refreshed_lead, db)
@@ -837,6 +890,62 @@ async def update_lead_notes(lead_id: int, payload: LeadNotesUpdate, db: Session 
     db.commit()
     db.refresh(lead)
     return build_universal_lead_payload(lead, db)
+
+
+@router.get("/status-definitions", response_model=StatusDefinitionsResponse)
+@router.get("/status-definitions/", response_model=StatusDefinitionsResponse)
+async def list_pipeline_status_definitions(
+    _: User = Depends(deps.get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    return {"items": list_status_definitions(db)}
+
+
+@router.get("/{lead_id}/journey", response_model=StudentJourneyResponse)
+@router.get("/{lead_id}/journey/", response_model=StudentJourneyResponse)
+async def get_student_journey_timeline(
+    lead_id: int,
+    _: User = Depends(deps.get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead profile not found.")
+    return {"student_id": lead_id, "items": get_student_journey(db, lead_id)}
+
+
+@router.patch("/{lead_id}/pipeline-status", response_model=PipelineStatusUpdateResponse)
+@router.patch("/{lead_id}/pipeline-status/", response_model=PipelineStatusUpdateResponse)
+async def update_student_pipeline_status(
+    lead_id: int,
+    payload: PipelineStatusUpdateRequest,
+    current_user: User = Depends(deps.get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead profile not found.")
+
+    result = update_student_status(
+        db,
+        student_id=lead_id,
+        status_id=payload.status_definition_id,
+        changed_by_type="admin",
+        changed_by_user_id=current_user.id,
+        comments=payload.comments,
+        skip_if_unchanged=True,
+        allow_override=True,
+        commit=True,
+    )
+    if result.get("blocked"):
+        raise HTTPException(status_code=400, detail=result.get("reason", "Status update blocked."))
+    return {
+        "student_id": lead_id,
+        "status_definition_id": result["status_id"],
+        "stage_name": result.get("stage_name"),
+        "history_id": result.get("history_id"),
+        "changed": result.get("changed", True),
+    }
 
 
 @router.patch("/{lead_id}/status")

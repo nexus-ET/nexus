@@ -20,6 +20,9 @@ import {
   platformBadgeStyle,
 } from '../../utils/prospectMessages';
 import { useUpdateProspectNotes, useUpdateProspectStatus } from '../../hooks/useProspects';
+import { useStatusDefinitions, useUpdateStudentStatus } from '../../hooks/useStudentStatus';
+import StudentJourneyPanel from '../StudentJourneyPanel';
+import { categoryBadgeClass } from '../../utils/statusBadges';
 
 type ProspectDetailPanelProps = {
   leadId: number | null;
@@ -90,9 +93,24 @@ export default function ProspectDetailPanel({
   onToggleFocus,
 }: ProspectDetailPanelProps) {
   const [notesDraft, setNotesDraft] = useState('');
+  const [pipelineStatusId, setPipelineStatusId] = useState('');
+  const [pipelineComments, setPipelineComments] = useState('');
+  const [journeyOpen, setJourneyOpen] = useState(false);
   const historyRef = useRef<HTMLDivElement | null>(null);
   const statusMutation = useUpdateProspectStatus();
   const notesMutation = useUpdateProspectNotes(leadId);
+  const { data: statusDefinitionsData } = useStatusDefinitions();
+  const pipelineStatusMutation = useUpdateStudentStatus(leadId);
+
+  const statusDefinitions = statusDefinitionsData?.items ?? [];
+  const selectedPipelineStatus = useMemo(
+    () => statusDefinitions.find(item => String(item.id) === pipelineStatusId),
+    [pipelineStatusId, statusDefinitions]
+  );
+
+  useEffect(() => {
+    setJourneyOpen(false);
+  }, [leadId]);
 
   useEffect(() => {
     setNotesDraft(detail?.intake_context || '');
@@ -102,6 +120,23 @@ export default function ProspectDetailPanel({
     () => buildInteractionGroups(detail?.messages || detail?.chat_history, detail?.academic_summary),
     [detail]
   );
+
+  const currentPipelineDefinition = useMemo(
+    () => statusDefinitions.find(item => item.id === detail?.status_definition_id),
+    [detail?.status_definition_id, statusDefinitions]
+  );
+  const requiresOverrideComment = useMemo(() => {
+    if (!pipelineStatusId || !detail?.status_definition_id) return false;
+    const selectedId = Number(pipelineStatusId);
+    if (selectedId === detail.status_definition_id) return false;
+    return currentPipelineDefinition?.next_stage_id !== selectedId;
+  }, [pipelineStatusId, detail?.status_definition_id, currentPipelineDefinition, detail]);
+
+  useEffect(() => {
+    if (detail?.status_definition_id) {
+      setPipelineStatusId(String(detail.status_definition_id));
+    }
+  }, [leadId, detail?.status_definition_id]);
 
   useEffect(() => {
     if (activeTab !== 'history' || !historyRef.current) return;
@@ -169,6 +204,18 @@ export default function ProspectDetailPanel({
     notesMutation.mutate(notesDraft);
   };
 
+  const handlePipelineStatusSave = () => {
+    if (!pipelineStatusId || !detail) return;
+    if (requiresOverrideComment && !pipelineComments.trim()) {
+      window.alert('Please add a comment explaining this non-standard status change.');
+      return;
+    }
+    pipelineStatusMutation.mutate({
+      status_definition_id: Number(pipelineStatusId),
+      comments: pipelineComments.trim() || undefined,
+    });
+  };
+
   const handleMessage = () => {
     if (phone && phone !== '—') {
       window.open(`https://wa.me/${phone.replace(/\D/g, '')}`, '_blank', 'noopener,noreferrer');
@@ -180,6 +227,7 @@ export default function ProspectDetailPanel({
   };
 
   return (
+    <>
     <section className={`prospects-detail-panel${isFocusMode ? ' prospects-detail-panel--focus' : ''}`}>
       <div className="prospects-detail-panel__sticky">
         <div className="prospects-detail-panel__action-bar">
@@ -219,6 +267,9 @@ export default function ProspectDetailPanel({
             <button type="button" className="prospects-action-btn" onClick={handleMessage}>
               <MessageCircle size={15} />
               Message
+            </button>
+            <button type="button" className="prospects-action-btn" onClick={() => setJourneyOpen(true)}>
+              View Journey
             </button>
             <button type="button" className="prospects-action-btn" onClick={() => handleStatus('handoff')}>
               <UserPlus size={15} />
@@ -262,6 +313,62 @@ export default function ProspectDetailPanel({
 
       <div className="prospects-detail-panel__body custom-scroll-region">
         <div className={`prospects-tab-pane${activeTab === 'overview' ? ' is-active' : ''}`}>
+          <div className="prospects-pipeline-status">
+            <div className="prospects-pipeline-status__header">
+              <h4>Pipeline status</h4>
+              {detail.status_stage_name ? (
+                <span
+                  className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${categoryBadgeClass(
+                    detail.status_category
+                  )}`}
+                >
+                  {detail.status_stage_name}
+                </span>
+              ) : null}
+            </div>
+            <label className="prospects-pipeline-status__label" htmlFor="pipeline-status-select">
+              Update status
+            </label>
+            <select
+              id="pipeline-status-select"
+              value={pipelineStatusId}
+              onChange={event => setPipelineStatusId(event.target.value)}
+              disabled={pipelineStatusMutation.isPending || statusDefinitions.length === 0}
+            >
+              <option value="">Select pipeline status</option>
+              {statusDefinitions.map(stage => (
+                <option key={stage.id} value={stage.id}>
+                  {stage.stage_name}
+                </option>
+              ))}
+            </select>
+            {selectedPipelineStatus?.description ? (
+              <p className="prospects-pipeline-status__description">{selectedPipelineStatus.description}</p>
+            ) : (
+              <p className="prospects-pipeline-status__description prospects-pipeline-status__description--muted">
+                Select a status to view its guidance.
+              </p>
+            )}
+            <textarea
+              value={pipelineComments}
+              onChange={event => setPipelineComments(event.target.value)}
+              placeholder={
+                requiresOverrideComment
+                  ? 'Required: explain why this status bypasses the standard workflow...'
+                  : 'Optional note for this status change...'
+              }
+              rows={3}
+            />
+            <button
+              type="button"
+              className="prospects-action-btn prospects-action-btn--primary"
+              onClick={handlePipelineStatusSave}
+              disabled={!pipelineStatusId || pipelineStatusMutation.isPending}
+            >
+              {pipelineStatusMutation.isPending ? 'Saving...' : 'Save pipeline status'}
+            </button>
+          </div>
+
           <div className="prospects-profile-grid">
             <div>
               <span>Name</span>
@@ -385,5 +492,13 @@ export default function ProspectDetailPanel({
         </div>
       </div>
     </section>
+
+    <StudentJourneyPanel
+      open={journeyOpen}
+      studentId={leadId}
+      studentName={detail.full_name || detail.name}
+      onClose={() => setJourneyOpen(false)}
+    />
+    </>
   );
 }

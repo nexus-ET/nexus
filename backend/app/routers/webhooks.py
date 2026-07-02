@@ -214,6 +214,13 @@ async def _parse_meta_webhook_payload(request: Request) -> dict[str, Any] | None
     return parsed
 
 
+def _log_meta_webhook_task_result(task: asyncio.Task) -> None:
+    try:
+        task.result()
+    except Exception:
+        logger.exception("Meta webhook background task failed")
+
+
 @router.post("/webhook")
 async def receive_meta_webhook(
     request: Request,
@@ -246,5 +253,6 @@ async def receive_meta_webhook(
     # Leadgen: extract leadgen_id(s), fetch Graph details async, persist via save_lead().
     background_tasks.add_task(process_leadgen_webhook_payload, payload)
     # WhatsApp messaging and other Meta object types — fire-and-forget so Meta gets 200 immediately.
-    asyncio.create_task(process_meta_webhook_payload(payload))
+    task = asyncio.create_task(process_meta_webhook_payload(payload))
+    task.add_done_callback(_log_meta_webhook_task_result)
     return Response(status_code=200)

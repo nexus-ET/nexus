@@ -80,6 +80,7 @@ API_ROUTE_TO_PAGE: list[tuple[str, str]] = [
     ("/api/v1/audit", "/agents"),
     ("/api/v1/analytics", "/analytics"),
     ("/api/v1/bookings/mine", "/my-bookings"),
+    ("/api/v1/counselling/summarize", "/my-bookings"),
     ("/api/v1/admins/available", "/counselling"),
     ("/api/v1/bookings", "/counselling"),
     ("/api/v1/pipeline", "/counselling"),
@@ -264,6 +265,15 @@ def resolve_page_routes_for_api_path(path: str) -> list[str]:
 
     if re.search(r"^/api/v1/leads/\d+/notes", path):
         return LEAD_MUTATION_PAGE_ROUTES
+
+    if re.search(r"^/api/v1/leads/\d+/journey", path):
+        return ["/prospects", "/my-bookings", "/counselling"]
+
+    if re.search(r"^/api/v1/leads/\d+/pipeline-status", path):
+        return ["/prospects", "/my-bookings", "/counselling"]
+
+    if path.startswith("/api/v1/leads/status-definitions"):
+        return ["/prospects", "/my-bookings", "/counselling"]
 
     if re.search(r"^/api/v1/leads/\d+$", path):
         return LEAD_MUTATION_PAGE_ROUTES

@@ -5,6 +5,9 @@ from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field
 
+from app.schemas.pipeline import PipelineOutcomeOut, PipelineStageOut
+from app.schemas.status_definition import LeadStatusHistoryItemOut, StatusDefinitionOut
+
 
 BookingStatus = Literal["PENDING", "SCHEDULED", "CANCELLED", "COMPLETED"]
 AdminCellStatus = Literal["available", "booked", "past", "complete"]
@@ -77,6 +80,19 @@ class MyBookingOut(BookingOut):
     lead_id: int | None = None
     candidate_stage: str | None = None
     candidate_stage_label: str | None = None
+    current_location: str | None = None
+    preferred_country: str | None = None
+    course_interest: str | None = None
+    status_definition_id: int | None = None
+    status_stage_name: str | None = None
+    status_category: str | None = None
+    # Legacy aliases kept for transitional clients
+    admission_stage: str | None = None
+    admission_stage_label: str | None = None
+    admission_stage_category: str | None = None
+    session_status_label: str | None = None
+    outcome_key: str | None = None
+    outcome_label: str | None = None
     time_label: str
     date_label: str
     section: Literal["past", "today", "upcoming"]
@@ -171,6 +187,65 @@ class BookingCommunicationsResponse(BaseModel):
     admin_name: str | None = None
     message_count: int
     messages: list[BookingCommunicationMessageOut]
+
+
+class BookingTimelineItemOut(BaseModel):
+    id: str
+    kind: Literal["whatsapp", "session_note", "audio", "system"]
+    participant: str
+    participant_label: str
+    text: str
+    created_at: datetime
+    media_url: str | None = None
+    file_name: str | None = None
+
+
+class DataExchangeItemOut(BaseModel):
+    id: str
+    title: str
+    url: str
+    shared_by: Literal["student", "admin"]
+    created_at: datetime
+    file_name: str | None = None
+
+
+class MyBookingsDayResponse(BaseModel):
+    date: date
+    calendar_today: date
+    bookings: list[MyBookingOut]
+
+
+class BookingActivityLogResponse(BaseModel):
+    booking: MyBookingOut
+    status_history: list[LeadStatusHistoryItemOut]
+    shared_by_student: list[DataExchangeItemOut]
+    shared_by_admin: list[DataExchangeItemOut]
+    status_definitions: list[StatusDefinitionOut]
+    current_status_definition_id: int | None = None
+    suggested_next_status_definition_id: int | None = None
+    lead_jump_path: str | None = None
+    can_update_status: bool = False
+
+
+class BookingInteractionLogResponse(BaseModel):
+    booking: MyBookingOut
+    timeline: list[BookingTimelineItemOut]
+
+
+class BookingViewDetailResponse(BaseModel):
+    """Deprecated alias — use BookingActivityLogResponse."""
+    booking: MyBookingOut
+    timeline: list[BookingTimelineItemOut] = Field(default_factory=list)
+    shared_by_student: list[DataExchangeItemOut] = Field(default_factory=list)
+    shared_by_admin: list[DataExchangeItemOut] = Field(default_factory=list)
+    lead_jump_path: str | None = None
+    can_complete_session: bool = False
+    session_outcomes: list[PipelineOutcomeOut] = Field(default_factory=list)
+    pipeline_stages: list[PipelineStageOut] = Field(default_factory=list)
+    status_history: list[LeadStatusHistoryItemOut] = Field(default_factory=list)
+    status_definitions: list[StatusDefinitionOut] = Field(default_factory=list)
+    current_status_definition_id: int | None = None
+    can_update_status: bool = False
 
 
 class ScheduleGridResponse(BaseModel):

@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 from app.models.lead import Lead
 
 BRAND_NAME = "Edutrust"
+
+OUTREACH_FULL_NAME_PROMPT = (
+    "To book your free study abroad consultation, simply reply with your full name."
+)
 
 INTAKE_STEP_WELCOME = "WELCOME"
 INTAKE_STEP_FULL_NAME = "FULL_NAME"
@@ -17,6 +23,11 @@ INTAKE_STEP_CALL_CONSENT = "CALL_CONSENT"
 INTAKE_STEP_PICK_DATE = "PICK_DATE"
 INTAKE_STEP_PICK_TIME = "PICK_TIME"
 INTAKE_STEP_COMPLETE = "COMPLETE"
+
+
+def render_outreach_intake_followup() -> str:
+    """Session message sent immediately after the WhatsApp outreach template."""
+    return OUTREACH_FULL_NAME_PROMPT
 
 
 def student_first_name(lead: Lead) -> str:
@@ -55,6 +66,35 @@ def _resolve_step_from_task(task: str, lead: Lead) -> str:
     return _lead_intake_step(lead)
 
 
+def _pending_target_country(lead: Lead) -> str:
+    raw = getattr(lead, "intake_context", None)
+    if not raw:
+        return ""
+    try:
+        context = json.loads(raw)
+    except json.JSONDecodeError:
+        return ""
+    if isinstance(context, dict):
+        return str(context.get("pending_country") or "").strip()
+    return ""
+
+
+def _pending_course_or_program(lead: Lead) -> str:
+    raw = getattr(lead, "intake_context", None)
+    if not raw:
+        return ""
+    try:
+        context = json.loads(raw)
+    except json.JSONDecodeError:
+        return ""
+    if isinstance(context, dict):
+        pending = str(context.get("pending_program") or "").strip()
+        if pending:
+            return pending
+        return str(context.get("preferred_course") or context.get("target_program") or "").strip()
+    return ""
+
+
 def render_deterministic_intake_text(
     lead: Lead,
     *,
@@ -69,10 +109,7 @@ def render_deterministic_intake_text(
     if step in {INTAKE_STEP_WELCOME, INTAKE_STEP_FULL_NAME, ""}:
         if "not a valid full name" in task_lower or "previous answer was not" in task_lower:
             return "Please reply with your full first and last name (for example: Priya Sharma)."
-        return (
-            f"Hi {first}! I'm the {BRAND_NAME} Admissions assistant on WhatsApp. "
-            "To book your free consultation, please reply with your *full name* (first and last)."
-        )
+        return OUTREACH_FULL_NAME_PROMPT
 
     if step == INTAKE_STEP_CURRENT_LOCATION:
         if "too short" in task_lower:
@@ -81,9 +118,34 @@ def render_deterministic_intake_text(
         return f"Thanks, {saved}! Which city and country are you in right now?"
 
     if step == INTAKE_STEP_TARGET_COUNTRY:
+        if "country noted" in task_lower or "course/program missing" in task_lower:
+            pending = (lead.preferred_country or "").strip() or _pending_target_country(lead)
+            if pending:
+                return (
+                    f"Thanks, {first}! I've noted *{pending}*. "
+                    "What course or program would you like to study there?"
+                )
+            return (
+                f"Thanks, {first}! Which *course or program* are you interested in?"
+            )
+        if "destination country missing" in task_lower or "country missing" in task_lower:
+            pending = _pending_course_or_program(lead)
+            if pending:
+                return (
+                    f"Thanks, {first}! I've noted your interest in *{pending}*. "
+                    "Which country would you like to study in?"
+                )
+            return f"Thanks, {first}! Which country would you like to study in?"
+        prefilled_country = (lead.preferred_country or "").strip() or _pending_target_country(lead)
+        if prefilled_country:
+            return (
+                f"Thanks, {first}! I've noted *{prefilled_country}*. "
+                "What course or program would you like to study there?"
+            )
         return (
             f"Great, {first}! Which country would you like to study in, "
-            "and what course or program are you interested in?"
+            "and what course or program are you interested in?\n\n"
+            "_Tip: you can reply in one line, e.g. *MBA in UK* or *UK, MBA*._"
         )
 
     if step == INTAKE_STEP_ENGLISH_SCORES:

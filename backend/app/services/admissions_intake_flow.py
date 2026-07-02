@@ -119,6 +119,7 @@ class IntakeReply:
     quick_reply: QuickReplyPayload | None = None
     whatsapp_flow: FlowPayload | None = None
     confidence: float = 1.0
+    suppress_outbound: bool = False
 
 
 async def _agent_intake_reply(
@@ -171,6 +172,45 @@ def _load_context(lead: Lead) -> dict[str, Any]:
 def _save_context(db: Session, lead: Lead, context: dict[str, Any]) -> None:
     lead.intake_context = json.dumps(context) if context else None
     db.commit()
+
+
+def _persist_resolved_study_interest(
+    db: Session,
+    lead: Lead,
+    study: dict[str, str | None],
+) -> None:
+    if study.get("country"):
+        lead.preferred_country = study["country"]
+    context = _load_context(lead)
+    if study.get("course"):
+        context["preferred_course"] = study["course"]
+    if study.get("program"):
+        context["target_program"] = study["program"]
+    if study.get("course"):
+        lead.academic_summary = f"Course: {study['course']}"
+    context.pop("pending_country", None)
+    context.pop("pending_program", None)
+    _save_context(db, lead, context)
+
+
+def _prepare_target_step_prefill(
+    db: Session,
+    lead: Lead,
+    study: dict[str, str | None],
+) -> None:
+    context = _load_context(lead)
+    country = (study.get("country") or "").strip()
+    course = (study.get("course") or study.get("program") or "").strip()
+    if country:
+        lead.preferred_country = country
+        context["pending_country"] = country
+    if course:
+        context["pending_program"] = course
+        if study.get("course"):
+            context["preferred_course"] = study["course"]
+        elif study.get("program"):
+            context["target_program"] = study["program"]
+    _save_context(db, lead, context)
 
 
 def get_intake_step(lead: Lead) -> str:
@@ -388,12 +428,15 @@ def _is_skip(text: str) -> bool:
 
 
 def _looks_like_full_name(text: str) -> bool:
-    cleaned = text.strip()
+    cleaned = " ".join((text or "").split())
     if len(cleaned) < 3:
         return False
     if cleaned.lower().startswith("whatsapp contact"):
         return False
-    return bool(re.search(r"[a-zA-Z]", cleaned))
+    parts = [part for part in cleaned.split(" ") if part]
+    if len(parts) < 2:
+        return False
+    return all(re.search(r"[a-zA-Z]", part) for part in parts[:2])
 
 
 async def process_intake_message(
@@ -402,6 +445,14 @@ async def process_intake_message(
     incoming_text: str,
     runtime_config,
 ) -> IntakeReply:
+    from app.services.lead_study_interest import (
+        build_target_intake_task,
+        hydrate_lead_study_interest,
+        lead_has_complete_study_interest,
+        resolve_lead_study_interest,
+    )
+
+    hydrate_lead_study_interest(db, lead, commit=False)
     step = get_intake_step(lead)
     text = (incoming_text or "").strip()
     first = (lead.full_name or "there").split()[0]
@@ -464,41 +515,92 @@ async def process_intake_message(
                 incoming_text=text,
             )
         lead.current_location = text
+        study = resolve_lead_study_interest(lead)
+        if lead_has_complete_study_interest(lead):
+            _persist_resolved_study_interest(db, lead, study)
+            lead.intake_step = INTAKE_STEP_ENGLISH_SCORES
+            db.commit()
+            return await _agent_intake_reply(
+                db,
+                lead,
+                runtime_config,
+                task=(
+                    f"INTAKE_STEP=ENGLISH; Location saved as {lead.current_location!r}. "
+                    f"Their target is already {study.get('course') or study.get('program')} "
+                    f"in {lead.preferred_country}. Ask for English test scores or invite them to reply skip."
+                ),
+                incoming_text=text,
+            )
         lead.intake_step = INTAKE_STEP_TARGET_COUNTRY
+        _prepare_target_step_prefill(db, lead, study)
         db.commit()
         return await _agent_intake_reply(
             db,
             lead,
             runtime_config,
-            task="INTAKE_STEP=TARGET; Ask which destination country and course/program they want to study.",
+            task=build_target_intake_task(lead),
             incoming_text=text,
         )
 
     if step == INTAKE_STEP_TARGET_COUNTRY:
+        if lead_has_complete_study_interest(lead):
+            study = resolve_lead_study_interest(lead)
+            _persist_resolved_study_interest(db, lead, study)
+            lead.intake_step = INTAKE_STEP_ENGLISH_SCORES
+            db.commit()
+            return await _agent_intake_reply(
+                db,
+                lead,
+                runtime_config,
+                task=(
+                    f"INTAKE_STEP=ENGLISH; Target saved as {study.get('course') or study.get('program')} "
+                    f"in {lead.preferred_country}. Ask for English test scores or invite them to reply skip."
+                ),
+                incoming_text=text,
+            )
+
+        study = resolve_lead_study_interest(lead)
+        _prepare_target_step_prefill(db, lead, study)
+        context = _load_context(lead)
+        pending_country = (context.get("pending_country") or "").strip()
+        pending_program = (context.get("pending_program") or "").strip()
+
         interest = _extract_study_interest(text)
-        country = (interest.get("country") or "").strip()
-        program = (interest.get("program") or "").strip()
+        country = (interest.get("country") or pending_country).strip()
+        program = (interest.get("program") or pending_program).strip()
+
         if not country and len(text.strip()) >= 2 and not program:
-            country = text.strip()
+            country = _normalize_country_name(text.strip()) or text.strip()
+        if not program and len(text.strip()) >= 2 and not country:
+            program = text.strip()
+
         if not country or len(country) < 2:
             return await _agent_intake_reply(
                 db,
                 lead,
                 runtime_config,
-                task="INTAKE_STEP=TARGET; Ask again for destination country and intended course/program.",
+                task=build_target_intake_task(lead),
                 incoming_text=text,
             )
         if not program:
+            context["pending_country"] = _normalize_country_name(country) or country.title()
+            context.pop("pending_program", None)
+            _save_context(db, lead, context)
             return await _agent_intake_reply(
                 db,
                 lead,
                 runtime_config,
-                task="INTAKE_STEP=TARGET; Country noted but course/program missing. Ask for both country and course.",
+                task=(
+                    "INTAKE_STEP=TARGET; Country noted but course/program missing. "
+                    f"Pending country: {context['pending_country']}. Ask only for course/program."
+                ),
                 incoming_text=text,
             )
+
         lead.preferred_country = _normalize_country_name(country) or country.title()
-        context = _load_context(lead)
         context["preferred_course"] = program
+        context.pop("pending_country", None)
+        context.pop("pending_program", None)
         lead.academic_summary = f"Course: {program}"
         _save_context(db, lead, context)
         lead.intake_step = INTAKE_STEP_ENGLISH_SCORES
@@ -700,7 +802,31 @@ async def _complete_without_call_reply(db: Session, lead: Lead, runtime_config) 
 
 
 async def get_current_step_reply(db: Session, lead: Lead, runtime_config) -> IntakeReply:
+    from app.services.lead_study_interest import (
+        build_target_intake_task,
+        hydrate_lead_study_interest,
+        lead_has_complete_study_interest,
+        resolve_lead_study_interest,
+    )
+
+    hydrate_lead_study_interest(db, lead, commit=False)
     step = get_intake_step(lead)
+    if step == INTAKE_STEP_TARGET_COUNTRY:
+        study = resolve_lead_study_interest(lead)
+        if lead_has_complete_study_interest(lead):
+            _persist_resolved_study_interest(db, lead, study)
+            step = INTAKE_STEP_ENGLISH_SCORES
+            lead.intake_step = INTAKE_STEP_ENGLISH_SCORES
+            db.commit()
+        else:
+            _prepare_target_step_prefill(db, lead, study)
+            db.commit()
+            return await _agent_intake_reply(
+                db,
+                lead,
+                runtime_config,
+                task=build_target_intake_task(lead),
+            )
     if step in {INTAKE_STEP_WELCOME, INTAKE_STEP_FULL_NAME, ""} or not getattr(lead, "intake_step", None):
         return await _agent_intake_reply(
             db,
@@ -737,7 +863,6 @@ async def get_current_step_reply(db: Session, lead: Lead, runtime_config) -> Int
         )
     step_tasks = {
         INTAKE_STEP_CURRENT_LOCATION: "INTAKE_STEP=LOCATION; Ask for current city and country.",
-        INTAKE_STEP_TARGET_COUNTRY: "INTAKE_STEP=TARGET; Ask for destination country and intended course.",
         INTAKE_STEP_ENGLISH_SCORES: "INTAKE_STEP=ENGLISH; Ask for English test scores or skip.",
         INTAKE_STEP_GRE_SCORE: "INTAKE_STEP=GRE; Ask for GRE score or skip.",
         INTAKE_STEP_GMAT_SCORE: "INTAKE_STEP=GMAT; Ask for GMAT score or skip.",
@@ -785,7 +910,7 @@ def _extract_study_interest(text: str) -> dict[str, str]:
             return interest
 
     in_country_match = re.search(
-        r"^(.{3,80}?)\s+in\s+([A-Za-z][A-Za-z\s\-]{2,40})$",
+        r"^(.{2,80}?)\s+in\s+([A-Za-z][A-Za-z\s\-]{0,40})$",
         cleaned,
         re.IGNORECASE,
     )
@@ -810,7 +935,7 @@ def _extract_study_interest(text: str) -> dict[str, str]:
             return interest
 
     country_match = re.search(
-        r"\b(?:in|to|for)\s+([A-Za-z][A-Za-z\s\-]{2,40})\b",
+        r"\b(?:in|to|for)\s+([A-Za-z][A-Za-z\s\-]{0,40})\b",
         cleaned,
         re.IGNORECASE,
     )
@@ -824,13 +949,12 @@ def _extract_study_interest(text: str) -> dict[str, str]:
 
 
 def _resolve_intake_restart_step(lead: Lead, incoming_hint: str | None = None) -> str:
-    interest = _extract_study_interest(incoming_hint or "")
-    if interest.get("country") and _lead_has_real_name(lead):
-        return INTAKE_STEP_TARGET_COUNTRY
+    from app.services.lead_study_interest import lead_has_complete_study_interest
+
     if _lead_has_real_name(lead):
         if not lead.current_location:
             return INTAKE_STEP_CURRENT_LOCATION
-        if not lead.preferred_country:
+        if not lead_has_complete_study_interest(lead):
             return INTAKE_STEP_TARGET_COUNTRY
         return INTAKE_STEP_ENGLISH_SCORES
     return INTAKE_STEP_FULL_NAME
@@ -846,6 +970,9 @@ def begin_whatsapp_intake_session(
     """
     Start (or restart) the structured WhatsApp intake questionnaire.
     """
+    from app.services.lead_study_interest import hydrate_lead_study_interest
+
+    hydrate_lead_study_interest(db, lead, commit=False)
     context = _load_context(lead)
     interest = _extract_study_interest(incoming_hint or "")
     if interest:
@@ -931,9 +1058,7 @@ def handle_post_intake_booking_message(db: Session, lead: Lead, incoming_text: s
         if lead.consultation_scheduled_at:
             return IntakeReply(
                 text=(
-                    f"You're welcome, {first}! ✅\n\n"
-                    f"{format_booking_summary(lead)}\n\n"
-                    f"{_appointment_management_note()}"
+                    f"You're welcome, {first}! We'll speak with you at your scheduled time. 👋"
                 )
             )
         return IntakeReply(
@@ -948,6 +1073,15 @@ def handle_post_intake_booking_message(db: Session, lead: Lead, incoming_text: s
         lead.intake_step = INTAKE_STEP_COMPLETE
         lead.wants_consultation_call = True
         db.commit()
+        db.refresh(lead)
+        from app.services.student_status_service import on_session_cancelled
+
+        on_session_cancelled(
+            db,
+            lead,
+            source="whatsapp_cancel",
+            had_active_booking=had_booking,
+        )
         if had_booking:
             return IntakeReply(
                 text=(
@@ -965,9 +1099,10 @@ def handle_post_intake_booking_message(db: Session, lead: Lead, incoming_text: s
         "change slot",
         "change appointment",
     }:
+        had_booking = bool(lead.consultation_scheduled_at)
         previous_summary = (
             format_booking_summary(lead)
-            if lead.consultation_scheduled_at
+            if had_booking
             else f"{first}, let's schedule your consultation."
         )
         release_lead_consultation_slot(db, lead)
@@ -976,6 +1111,15 @@ def handle_post_intake_booking_message(db: Session, lead: Lead, incoming_text: s
         lead.is_human_locked = False
         lead.wants_consultation_call = True
         db.commit()
+        db.refresh(lead)
+        from app.services.student_status_service import on_session_rescheduled
+
+        on_session_rescheduled(
+            db,
+            lead,
+            source="whatsapp_reschedule",
+            had_active_booking=had_booking,
+        )
         return _booking_step_reply_sync(
             db,
             lead,
@@ -1120,6 +1264,15 @@ def _finalize_consultation_booking(
     slot_id: int,
     first_name: str,
 ) -> IntakeReply:
+    if get_intake_step(lead) == INTAKE_STEP_COMPLETE and lead.consultation_scheduled_at:
+        existing_slot = (
+            db.query(ConsultationSlot)
+            .filter(ConsultationSlot.lead_id == lead.id)
+            .first()
+        )
+        if existing_slot:
+            return IntakeReply(text="", suppress_outbound=True)
+
     release_lead_consultation_slot(db, lead)
 
     slot = (
@@ -1156,6 +1309,10 @@ def _finalize_consultation_booking(
     )
 
     from app.services.counselling_service import upsert_pending_booking_for_lead
+
+    from app.services.student_status_service import on_session_booked
+
+    on_session_booked(db, lead)
 
     try:
         upsert_pending_booking_for_lead(db, lead, scheduled, commit=False)
@@ -1415,15 +1572,20 @@ def format_inbound_booking_selection(db: Session, text: str) -> str:
 
 
 def build_intake_profile_summary(lead: Lead, db: Session | None = None) -> dict[str, Any]:
+    from app.services.lead_study_interest import study_interest_profile_fields
+
     step = get_intake_step(lead)
     context = _load_context(lead)
+    study_fields = study_interest_profile_fields(lead)
     summary: dict[str, Any] = {
         "intake_step": step,
         "intake_step_label": INTAKE_STEP_LABELS.get(step, step.replace("_", " ").title()),
         "intake_complete": is_intake_complete(lead),
         "current_location": getattr(lead, "current_location", None),
-        "preferred_country": lead.preferred_country,
-        "preferred_course": context.get("preferred_course"),
+        "preferred_country": study_fields.get("preferred_country") or lead.preferred_country,
+        "preferred_course": study_fields.get("preferred_course") or context.get("preferred_course"),
+        "target_program": study_fields.get("target_program") or context.get("target_program"),
+        "study_interest_complete": study_fields.get("study_interest_complete"),
         "english_test_scores": getattr(lead, "english_test_scores", None),
         "gre_score": getattr(lead, "gre_score", None),
         "gmat_score": getattr(lead, "gmat_score", None),
