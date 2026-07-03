@@ -20,12 +20,12 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Inspector
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 LEGACY_BASELINE_REVISION = "d9a4b2c81f0e"
-HEAD_REVISION = "p2l5m0n14o6j"
+HEAD_REVISION = "q3m6n1o25p7k"
 
 ORDERED_REVISIONS: list[str] = [
     "d9a4b2c81f0e",
@@ -41,6 +41,7 @@ ORDERED_REVISIONS: list[str] = [
     "n0j3k8l92m4h",
     "o1k4l9m03n5i",
     "p2l5m0n14o6j",
+    "q3m6n1o25p7k",
 ]
 
 
@@ -72,6 +73,19 @@ def _has_column(inspector: Inspector, table_name: str, column_name: str) -> bool
     return any(column["name"] == column_name for column in inspector.get_columns(table_name))
 
 
+def _session_cancelled_allows_rebook(inspector: Inspector) -> bool:
+    if not _has_table(inspector, "status_definitions"):
+        return False
+    bind = inspector.bind
+    if bind is None:
+        return False
+    with bind.connect() as conn:
+        row = conn.execute(
+            text("SELECT next_stage_id FROM status_definitions WHERE id = 6")
+        ).fetchone()
+    return row is not None and row[0] == 4
+
+
 def _revision_checks() -> dict[str, Callable[[Inspector], bool]]:
     return {
         "d9a4b2c81f0e": lambda i: _has_table(i, "agent_configs")
@@ -95,6 +109,7 @@ def _revision_checks() -> dict[str, Callable[[Inspector], bool]]:
         "o1k4l9m03n5i": lambda i: _has_table(i, "status_history")
         and _has_column(i, "status_history", "changed_by_type"),
         "p2l5m0n14o6j": lambda i: _has_table(i, "system_logs"),
+        "q3m6n1o25p7k": _session_cancelled_allows_rebook,
     }
 
 

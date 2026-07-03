@@ -169,6 +169,14 @@ bash backend/deploy/promote-to-staging.sh --message "Release" --vps root@YOUR_VP
 **On VPS after deploy:**
 
 ```bash
+sudo bash /var/www/nexus/backend/deploy/hostinger-staging.sh
+# or from Windows:
+# .\backend\deploy\hostinger-staging.ps1 -VpsHost root@YOUR_VPS_IP
+```
+
+Legacy wrapper:
+
+```bash
 sudo bash /var/www/nexus/backend/deploy/deploy-staging.sh
 sudo bash /var/www/nexus/backend/deploy/verify-staging-deploy.sh
 ```
