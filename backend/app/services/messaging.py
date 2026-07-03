@@ -124,17 +124,59 @@ def outreach_uses_combined_template() -> bool:
     return bool(settings.WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP)
 
 
-def format_outreach_template_display_text(
+def template_body_includes_intake_prompt(body_text: str) -> bool:
+    """Detect combined welcome templates that already ask for the student's full name."""
+    normalized = (body_text or "").strip().lower()
+    if not normalized:
+        return False
+    markers = (
+        "reply with your full name",
+        "simply reply with your full name",
+        "please reply with your full name",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def render_meta_template_body_text(
+    body_text: str,
     body_parameters: list[OutreachTemplateParameter] | None,
     *,
-    template_name: str | None = None,
+    parameter_format: str = "POSITIONAL",
+    named_parameter_names: tuple[str, ...] = (),
 ) -> str:
-    """Human-readable preview of the outreach template for chat history."""
+    """Substitute Meta {{1}} / {{name}} placeholders for chat-history preview."""
+    text = (body_text or "").strip()
+    if not text:
+        return ""
+
+    params = body_parameters or []
+    fmt = (parameter_format or "POSITIONAL").upper()
+
+    if fmt == "NAMED":
+        for index, name in enumerate(named_parameter_names):
+            if index >= len(params) or not name:
+                continue
+            value = str(params[index].text)
+            text = text.replace(f"{{{{{name}}}}}", value)
+        for param in params:
+            if param.parameter_name:
+                text = text.replace(f"{{{{{param.parameter_name}}}}}", str(param.text))
+
+    for index, param in enumerate(params, start=1):
+        text = re.sub(rf"\{{\{{{index}\}}\}}", str(param.text), text)
+
+    return text.strip()
+
+
+def _format_outreach_template_display_fallback(
+    body_parameters: list[OutreachTemplateParameter] | None,
+    *,
+    template_name: str,
+) -> str:
     from app.services.intake_templates import render_outreach_intake_followup
 
-    name = (template_name or settings.WHATSAPP_OUTREACH_TEMPLATE or "").strip() or "template"
     if not body_parameters:
-        text = f"[WhatsApp template: {name}]"
+        text = f"[WhatsApp template: {template_name}]"
     else:
         student = body_parameters[0].text if body_parameters else "there"
         if len(body_parameters) >= 2:
@@ -151,11 +193,62 @@ def format_outreach_template_display_text(
     return text
 
 
+def format_outreach_template_display_text(
+    body_parameters: list[OutreachTemplateParameter] | None,
+    *,
+    template_name: str | None = None,
+    spec: MetaTemplateSendSpec | None = None,
+) -> str:
+    """Human-readable preview of the outreach template for chat history."""
+    from app.services.intake_templates import render_outreach_intake_followup
+
+    name = (template_name or settings.WHATSAPP_OUTREACH_TEMPLATE or "").strip() or "template"
+    if spec and spec.body_text.strip():
+        rendered = render_meta_template_body_text(
+            spec.body_text,
+            body_parameters,
+            parameter_format=spec.parameter_format,
+            named_parameter_names=spec.body_named_parameter_names,
+        )
+        if rendered:
+            if (
+                outreach_uses_combined_template()
+                and not template_body_includes_intake_prompt(rendered)
+            ):
+                rendered = f"{rendered}\n\n{render_outreach_intake_followup()}"
+            return rendered
+
+    return _format_outreach_template_display_fallback(body_parameters, template_name=name)
+
+
+async def resolve_skip_intake_followup(
+    template_name: str,
+    language_code: str,
+) -> bool:
+    """
+    Skip a second WhatsApp send when the welcome template already contains the intake prompt.
+
+    Honors WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP and auto-detects combined templates from Meta.
+    """
+    if outreach_uses_combined_template():
+        return True
+
+    spec = await fetch_meta_outreach_template_spec(template_name, language_code)
+    if spec and spec.body_text and template_body_includes_intake_prompt(spec.body_text):
+        logger.info(
+            "Meta template %r includes intake prompt; skipping second WhatsApp message",
+            template_name,
+        )
+        return True
+    return False
+
+
 @dataclass(frozen=True)
 class MetaTemplateSendSpec:
     parameter_format: str
     body_parameter_count: int
     body_named_parameter_names: tuple[str, ...] = ()
+    body_text: str = ""
 
 
 _TEMPLATE_SPEC_CACHE: dict[str, MetaTemplateSendSpec] = {}
@@ -295,6 +388,7 @@ async def fetch_meta_outreach_template_spec(
                     spec = MetaTemplateSendSpec(
                         parameter_format=str(template.get("parameter_format") or "POSITIONAL").upper(),
                         body_parameter_count=0,
+                        body_text="",
                     )
                 else:
                     count, names = _parse_body_parameter_spec(body_component)
@@ -302,6 +396,7 @@ async def fetch_meta_outreach_template_spec(
                         parameter_format=str(template.get("parameter_format") or "POSITIONAL").upper(),
                         body_parameter_count=count,
                         body_named_parameter_names=names,
+                        body_text=str(body_component.get("text") or ""),
                     )
                 _TEMPLATE_SPEC_CACHE[cache_key] = spec
                 logger.info(
@@ -789,6 +884,7 @@ async def send_whatsapp_outreach_template(
         display_text = format_outreach_template_display_text(
             body_parameters,
             template_name=template_name,
+            spec=spec,
         )
         logger.info(
             "Sent WhatsApp outreach template %r (%s) to %s message_id=%s",

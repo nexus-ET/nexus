@@ -39,6 +39,8 @@ from app.services.messaging import (
     outreach_template_is_configured,
     outreach_uses_combined_template,
     record_ai_conversation_audit,
+    resolve_outreach_template_language,
+    resolve_skip_intake_followup,
     send_message,
     send_whatsapp_outreach_followup_template,
     send_whatsapp_outreach_template,
@@ -664,10 +666,14 @@ async def initiate_ai_outreach(
         or OUTREACH_TEMPLATE_FOLLOWUP_DELAY_SECONDS
     )
     template_wamid: str | None = None
-    skip_followup = outreach_uses_combined_template()
     followup_text = render_outreach_intake_followup()
+    skip_followup = outreach_uses_combined_template()
 
     if get_active_provider() == PROVIDER_WHATSAPP and outreach_template_is_configured():
+        template_name = (settings.WHATSAPP_OUTREACH_TEMPLATE or "").strip()
+        language_code = resolve_outreach_template_language()
+        skip_followup = await resolve_skip_intake_followup(template_name, language_code)
+
         template_send = await send_whatsapp_outreach_template(
             phone,
             lead=lead,
