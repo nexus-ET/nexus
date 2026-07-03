@@ -115,6 +115,10 @@ def outreach_template_is_configured() -> bool:
     return bool((settings.WHATSAPP_OUTREACH_TEMPLATE or "").strip())
 
 
+def outreach_followup_template_is_configured() -> bool:
+    return bool((settings.WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE or "").strip())
+
+
 def format_outreach_template_display_text(
     body_parameters: list[OutreachTemplateParameter] | None,
     *,
@@ -797,6 +801,64 @@ async def send_whatsapp_outreach_template(
         return None
 
 
+async def send_whatsapp_outreach_followup_template(
+    to_number: str,
+    *,
+    lead: Lead | None = None,
+    raise_on_failure: bool = True,
+) -> OutreachTemplateSendResult:
+    """
+    Send the intake prompt as a second approved Meta template.
+
+    Session text after a template often fails to reach the device (especially in India);
+    a Utility follow-up template delivers reliably without a 24-hour window.
+    """
+    if get_active_provider() != PROVIDER_WHATSAPP:
+        raise WhatsAppDeliveryError("WhatsApp provider is not active.")
+
+    template_name = (settings.WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE or "").strip()
+    if not template_name:
+        raise WhatsAppDeliveryError(
+            "WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE is not configured. "
+            "Create a static Utility template in Meta (e.g. et_intake_fullname) "
+            "and set the name in .env."
+        )
+
+    language_code = (
+        (settings.WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE_LANGUAGE or "").strip()
+        or resolve_outreach_template_language()
+    )
+    spec = await fetch_meta_outreach_template_spec(template_name, language_code)
+    body_parameters: list[OutreachTemplateParameter] | None = None
+    if spec and spec.body_parameter_count > 0:
+        student = resolve_outreach_student_name(lead)
+        body_parameters = [
+            OutreachTemplateParameter(text=student),
+        ][: spec.body_parameter_count]
+
+    message_id = await send_whatsapp_template(
+        to_number,
+        template_name,
+        language_code=language_code,
+        body_parameters=body_parameters,
+    )
+    from app.services.intake_templates import render_outreach_intake_followup
+
+    display_text = render_outreach_intake_followup()
+    logger.info(
+        "Sent WhatsApp outreach follow-up template %r (%s) to %s message_id=%s",
+        template_name,
+        language_code,
+        clean_phone_number(to_number),
+        message_id,
+    )
+    return OutreachTemplateSendResult(
+        template_name=template_name,
+        message_id=message_id,
+        display_text=display_text,
+    )
+
+
 async def open_whatsapp_conversation_window(
     to_number: str,
     *,
@@ -811,7 +873,12 @@ async def open_whatsapp_conversation_window(
     )
 
 
-async def send_whatsapp_text_message(to_number: str, body: str) -> str:
+async def send_whatsapp_text_message(
+    to_number: str,
+    body: str,
+    *,
+    context_message_id: str | None = None,
+) -> str:
     """Send a session text message via Meta Graph API; returns the wamid."""
     access_token = (settings.WHATSAPP_ACCESS_TOKEN or "").strip()
     phone_number_id = resolve_whatsapp_phone_number_id()
@@ -821,12 +888,15 @@ async def send_whatsapp_text_message(to_number: str, body: str) -> str:
             "WHATSAPP_ACCESS_TOKEN or WHATSAPP_PHONE_NUMBER_ID is not configured."
         )
 
-    payload = {
+    payload: dict[str, Any] = {
         "messaging_product": "whatsapp",
         "to": clean_phone_number(to_number),
         "type": "text",
         "text": {"body": body[:4096]},
     }
+    context_wamid = (context_message_id or "").strip()
+    if context_wamid:
+        payload["context"] = {"message_id": context_wamid}
     url = f"{WHATSAPP_GRAPH_API_BASE}/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {access_token}",

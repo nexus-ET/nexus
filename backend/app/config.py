@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     WHATSAPP_OUTREACH_UNCONFIRMED_TEMPLATE_DELAY_SECONDS: float = 18.0
     # Max seconds to wait for follow-up message delivery webhook before retry.
     WHATSAPP_OUTREACH_FOLLOWUP_DELIVERY_WAIT_SECONDS: float = 20.0
+    # Second Meta template for the intake prompt (recommended — session text often does not deliver).
+    WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE: str | None = None
+    WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE_LANGUAGE: str | None = None
+    # When true, skip the second WhatsApp send (welcome template body already includes the intake prompt).
+    WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP: bool = False
+    # When true, refuse session-text fallback — require follow-up template or skip flag above.
+    WHATSAPP_OUTREACH_REQUIRE_FOLLOWUP_TEMPLATE: bool = False
     # Comma-separated body placeholders to send: student, company. Empty = no parameters (static template).
     WHATSAPP_OUTREACH_TEMPLATE_PARAMETERS: str = "student,company"
     # named = Meta {{student_name}} style (requires parameter_name in API); positional = {{1}}, {{2}}.

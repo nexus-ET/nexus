@@ -35,9 +35,11 @@ from app.services.messaging import (
     WhatsAppDeliveryError,
     assert_whatsapp_business_outreach_allowed,
     get_active_provider,
+    outreach_followup_template_is_configured,
     outreach_template_is_configured,
     record_ai_conversation_audit,
     send_message,
+    send_whatsapp_outreach_followup_template,
     send_whatsapp_outreach_template,
     send_whatsapp_text_message,
 )
@@ -55,47 +57,152 @@ async def _send_outreach_session_followup(
     phone: str,
     text: str,
     *,
+    context_message_id: str | None = None,
     retry_delay: float,
     delivery_wait_seconds: float,
-    max_attempts: int = 2,
-) -> None:
+    max_attempts: int = 3,
+) -> str:
     """
-    Send the post-template intake prompt and confirm Meta accepted/delivered it.
+    Send the post-template intake prompt as session text (fallback path).
 
-    Retries only when Meta reports failed — not on timeout (avoids duplicate texts).
+    Returns the wamid when Meta reports delivered/read. Retries on failed/timeout.
     """
     last_error: WhatsAppDeliveryError | None = None
     for attempt in range(1, max_attempts + 1):
         if attempt > 1:
             logger.info(
-                "Retrying outreach session follow-up (attempt %s/%s) after Meta failure",
+                "Retrying outreach session follow-up (attempt %s/%s)",
                 attempt,
                 max_attempts,
             )
             await asyncio.sleep(retry_delay)
 
-        message_id = await send_whatsapp_text_message(phone, text)
+        message_id = await send_whatsapp_text_message(
+            phone,
+            text,
+            context_message_id=context_message_id,
+        )
         outcome = await wait_for_outbound_delivery_outcome(
             message_id,
             timeout_seconds=delivery_wait_seconds,
         )
         logger.info(
-            "Outreach session follow-up message_id=%s outcome=%s attempt=%s",
+            "Outreach session follow-up message_id=%s outcome=%s attempt=%s context=%s",
             message_id,
             outcome,
             attempt,
+            bool(context_message_id),
         )
 
-        if outcome in {"delivered", "read", "sent", "timeout"}:
-            return
+        if outcome in {"delivered", "read"}:
+            return message_id
+
+        if outcome == "sent":
+            await asyncio.sleep(min(retry_delay, 8.0))
+            late = await wait_for_outbound_delivery_outcome(
+                message_id,
+                timeout_seconds=delivery_wait_seconds,
+            )
+            if late in {"delivered", "read"}:
+                return message_id
+
+        if outcome == "failed":
+            last_error = WhatsAppDeliveryError(
+                f"WhatsApp reported follow-up delivery failed (message_id={message_id})."
+            )
+            continue
 
         last_error = WhatsAppDeliveryError(
-            f"WhatsApp reported follow-up delivery failed (message_id={message_id})."
+            f"WhatsApp follow-up delivery not confirmed (message_id={message_id}, outcome={outcome})."
         )
 
     if last_error is not None:
         raise last_error
     raise WhatsAppDeliveryError("WhatsApp follow-up could not be delivered.")
+
+
+async def _deliver_outreach_followup(
+    phone: str,
+    followup_text: str,
+    *,
+    lead: Lead,
+    template_context_wamid: str | None,
+    retry_delay: float,
+    delivery_wait_seconds: float,
+) -> str:
+    """Send intake follow-up via template (preferred) or session text (fallback)."""
+    if settings.WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP:
+        logger.info(
+            "Skipping WhatsApp intake follow-up send (WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP); "
+            "welcome template should include the intake prompt."
+        )
+        return template_context_wamid or ""
+
+    if outreach_followup_template_is_configured():
+        last_error: WhatsAppDeliveryError | None = None
+        for attempt in range(1, 4):
+            if attempt > 1:
+                logger.info(
+                    "Retrying outreach follow-up template (attempt %s/3)",
+                    attempt,
+                )
+                await asyncio.sleep(retry_delay)
+
+            template_send = await send_whatsapp_outreach_followup_template(
+                phone,
+                lead=lead,
+                raise_on_failure=True,
+            )
+            outcome = await wait_for_outbound_delivery_outcome(
+                template_send.message_id,
+                timeout_seconds=max(delivery_wait_seconds, 25.0),
+            )
+            logger.info(
+                "Outreach follow-up template message_id=%s outcome=%s attempt=%s",
+                template_send.message_id,
+                outcome,
+                attempt,
+            )
+            if outcome in {"delivered", "read"}:
+                return template_send.message_id
+            if outcome == "failed":
+                last_error = WhatsAppDeliveryError(
+                    f"WhatsApp follow-up template delivery failed (message_id={template_send.message_id})."
+                )
+                continue
+            if outcome == "sent":
+                late = await wait_for_outbound_delivery_outcome(
+                    template_send.message_id,
+                    timeout_seconds=delivery_wait_seconds,
+                )
+                if late in {"delivered", "read"}:
+                    return template_send.message_id
+            last_error = WhatsAppDeliveryError(
+                f"WhatsApp follow-up template not confirmed (message_id={template_send.message_id}, "
+                f"outcome={outcome})."
+            )
+
+        if last_error is not None:
+            raise last_error
+        raise WhatsAppDeliveryError("WhatsApp follow-up template could not be delivered.")
+
+    if settings.WHATSAPP_OUTREACH_REQUIRE_FOLLOWUP_TEMPLATE:
+        raise WhatsAppDeliveryError(
+            "WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE is required on this environment. "
+            "Session text after a template often does not reach the device. "
+            "Create Utility template et_intake_fullname in Meta Business Manager and set "
+            "WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE in .env, or set "
+            "WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP=true if the welcome template already "
+            "includes the intake prompt."
+        )
+
+    return await _send_outreach_session_followup(
+        phone,
+        followup_text,
+        context_message_id=template_context_wamid,
+        retry_delay=retry_delay,
+        delivery_wait_seconds=delivery_wait_seconds,
+    )
 
 
 def lead_has_prior_ai_outreach(db: Session, lead_id: int) -> bool:
@@ -555,6 +662,7 @@ async def initiate_ai_outreach(
         settings.WHATSAPP_OUTREACH_FOLLOWUP_DELAY_SECONDS
         or OUTREACH_TEMPLATE_FOLLOWUP_DELAY_SECONDS
     )
+    template_wamid: str | None = None
 
     if get_active_provider() == PROVIDER_WHATSAPP and outreach_template_is_configured():
         template_send = await send_whatsapp_outreach_template(
@@ -568,6 +676,7 @@ async def initiate_ai_outreach(
             )
         await persist_advisor_message(db, lead, template_send.display_text)
         sent_messages.append(template_send.display_text)
+        template_wamid = template_send.message_id
 
         delivery_confirmed = await wait_for_whatsapp_template_delivered(
             template_send.message_id,
@@ -604,29 +713,29 @@ async def initiate_ai_outreach(
     )
     if get_active_provider() == PROVIDER_WHATSAPP:
         try:
-            await _send_outreach_session_followup(
+            await _deliver_outreach_followup(
                 phone,
                 followup_text,
+                lead=lead,
+                template_context_wamid=template_wamid,
                 retry_delay=followup_delay,
                 delivery_wait_seconds=followup_delivery_wait,
             )
         except WhatsAppDeliveryError as exc:
             detail = str(exc).lower()
-            if "24-hour" in detail or "131047" in detail or "customer care window" in detail:
+            if (
+                not outreach_followup_template_is_configured()
+                and ("24-hour" in detail or "131047" in detail or "customer care window" in detail)
+            ):
                 logger.warning(
-                    "Follow-up rejected outside customer care window; retrying after %.1fs: %s",
-                    followup_delay,
+                    "Session follow-up blocked; configure WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE: %s",
                     exc,
                 )
-                await asyncio.sleep(followup_delay)
-                await _send_outreach_session_followup(
-                    phone,
-                    followup_text,
-                    retry_delay=followup_delay,
-                    delivery_wait_seconds=followup_delivery_wait,
-                )
-            else:
-                raise
+                raise WhatsAppDeliveryError(
+                    f"{exc} Create a Utility template (et_intake_fullname) in Meta Business Manager "
+                    "and set WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE in staging .env."
+                ) from exc
+            raise
         await persist_advisor_message(db, lead, followup_text, ai_confidence=1.0)
     else:
         followup = IntakeReply(text=followup_text, confidence=1.0)
