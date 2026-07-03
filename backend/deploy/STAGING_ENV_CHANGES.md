@@ -61,7 +61,7 @@ WHATSAPP_BUSINESS_PHONE_NUMBER=+917411952525
 WHATSAPP_BUSINESS_PHONE_NUMBER_ID=1097416893464116
 WHATSAPP_BUSINESS_WABA_ID=1312656237246811
 
-# Outreach template (Utility: et_student_welcome)
+# Outreach template (Utility: et_student_welcome — body includes welcome + intake prompt)
 WHATSAPP_OUTREACH_TEMPLATE=et_student_welcome
 WHATSAPP_OUTREACH_TEMPLATE_LANGUAGE=en
 WHATSAPP_OUTREACH_TEMPLATE_PARAMETERS=student,company
@@ -69,15 +69,8 @@ WHATSAPP_OUTREACH_TEMPLATE_PARAMETER_FORMAT=positional
 WHATSAPP_OUTREACH_TEMPLATE_PARAMETER_NAMES=student_name,company_name
 WHATSAPP_OUTREACH_COMPANY_NAME=Edutrust
 WHATSAPP_OUTREACH_DELIVERY_WAIT_SECONDS=15
-WHATSAPP_OUTREACH_FOLLOWUP_DELAY_SECONDS=12
-WHATSAPP_OUTREACH_POST_TEMPLATE_DELAY_SECONDS=5
-WHATSAPP_OUTREACH_UNCONFIRMED_TEMPLATE_DELAY_SECONDS=18
-WHATSAPP_OUTREACH_FOLLOWUP_DELIVERY_WAIT_SECONDS=20
-
-# REQUIRED for reliable 2nd WhatsApp message — create in Meta Business Manager first (see below).
-WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE=et_intake_fullname
-WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE_LANGUAGE=en
-WHATSAPP_OUTREACH_REQUIRE_FOLLOWUP_TEMPLATE=true
+# Single combined template — do not send a second WhatsApp message.
+WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP=true
 
 NEXUS_WHATSAPP_AUTO_SYNC=true
 ```
@@ -92,61 +85,34 @@ Test line vars (`WHATSAPP_TEST_*`) may remain for reference but are **not used**
 
 ---
 
-## WhatsApp second message (intake prompt) — Meta template required
+## WhatsApp outreach — combined welcome template (recommended)
 
-After `et_student_welcome`, Meta often **accepts session text** but **does not deliver it** to the phone (common in India). Nexus now sends a **second Utility template** instead.
+The welcome template (`et_student_welcome`) should include **both** the greeting and the intake line in Meta, for example:
 
-### 1. Create template in Meta Business Manager
+```text
+Hi {{1}}! Thanks for reaching {{2}}. We're excited to help you get started with your study abroad plans.
 
-1. Open [Meta Business Manager](https://business.facebook.com/) → WhatsApp Manager → **Message templates**.
-2. **Create template**:
-   - **Name:** `et_intake_fullname` (must match `WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE`)
-   - **Category:** Utility
-   - **Language:** English
-   - **Body** (no variables):
-
-     ```text
-     To book your free study abroad consultation, simply reply with your full name.
-     ```
-
-3. Submit and wait for **Approved** status.
-
-Or register via API on the VPS (uses credentials from `.env`):
-
-```bash
-cd /var/www/nexus/backend && source .venv/bin/activate
-python scripts/register_whatsapp_followup_template.py
+To book your free study abroad consultation, simply reply with your full name.
 ```
 
-### 2. Staging `.env` (required)
-
-```env
-WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE=et_intake_fullname
-WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE_LANGUAGE=en
-WHATSAPP_OUTREACH_REQUIRE_FOLLOWUP_TEMPLATE=true
-```
-
-### 3. Deploy and restart
-
-```bash
-sudo bash /var/www/nexus/backend/deploy/deploy-staging.sh
-```
-
-### 4. Verify logs after “Start AI Conversation”
-
-```bash
-journalctl -u nexus-backend -n 100 --no-pager | grep -i "follow-up template\|et_intake"
-```
-
-Expect: `Sent WhatsApp outreach follow-up template 'et_intake_fullname'`.
-
-### Alternative (single message, no second template)
-
-Append the intake line to `et_student_welcome` in Meta and set:
+Staging `.env`:
 
 ```env
 WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP=true
 ```
+
+Nexus sends **one** WhatsApp template only (no second message). AI Active chat history shows the welcome + intake lines together.
+
+### Deploy and verify
+
+```bash
+sudo bash /var/www/nexus/backend/deploy/deploy-staging.sh
+journalctl -u nexus-backend -n 50 --no-pager | grep -i "Combined outreach template"
+```
+
+### Optional — separate second template
+
+Only if you keep a short welcome template without the intake line, use `WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE=et_intake_fullname` instead of `WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP=true`.
 
 ---
 
