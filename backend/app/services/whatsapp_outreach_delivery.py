@@ -10,9 +10,12 @@ logger = logging.getLogger(__name__)
 
 ACCEPTABLE_OUTBOUND_STATUSES = frozenset({"sent", "delivered", "read"})
 DELIVERED_OUTBOUND_STATUSES = frozenset({"delivered", "read"})
+FAILED_OUTBOUND_STATUSES = frozenset({"failed"})
+OUTBOUND_OUTCOME_STATUSES = ACCEPTABLE_OUTBOUND_STATUSES | FAILED_OUTBOUND_STATUSES
 
 _events: dict[str, asyncio.Event] = {}
 _delivered_events: dict[str, asyncio.Event] = {}
+_outcome_events: dict[str, asyncio.Event] = {}
 _early_statuses: dict[str, str] = {}
 _latest_statuses: dict[str, str] = {}
 
@@ -35,13 +38,20 @@ def notify_whatsapp_outbound_status(message_id: str, status: str) -> None:
     """Called from webhook handlers when Meta reports outbound message progress."""
     message_id = (message_id or "").strip()
     normalized = (status or "").strip().lower()
-    if not message_id or normalized not in ACCEPTABLE_OUTBOUND_STATUSES:
+    if not message_id or normalized not in OUTBOUND_OUTCOME_STATUSES:
         return
 
     previous = _latest_statuses.get(message_id)
     if previous != normalized:
         _latest_statuses[message_id] = normalized
         logger.info("WhatsApp outbound status %s for message_id=%s", normalized, message_id)
+
+    if normalized in FAILED_OUTBOUND_STATUSES:
+        outcome_event = _outcome_events.get(message_id)
+        if outcome_event is not None:
+            outcome_event.set()
+            _outcome_events.pop(message_id, None)
+        return
 
     event = _events.get(message_id)
     if event is not None:
@@ -54,9 +64,19 @@ def notify_whatsapp_outbound_status(message_id: str, status: str) -> None:
         if delivered_event is not None:
             delivered_event.set()
             _delivered_events.pop(message_id, None)
+        outcome_event = _outcome_events.get(message_id)
+        if outcome_event is not None:
+            outcome_event.set()
+            _outcome_events.pop(message_id, None)
         return
 
-    if event is None:
+    if normalized == "sent":
+        outcome_event = _outcome_events.get(message_id)
+        if outcome_event is not None:
+            outcome_event.set()
+            _outcome_events.pop(message_id, None)
+
+    if event is None and normalized not in DELIVERED_OUTBOUND_STATUSES:
         _early_statuses[message_id] = normalized
         logger.info(
             "WhatsApp outbound status %s arrived before waiter registered for message_id=%s",
@@ -139,6 +159,65 @@ async def wait_for_whatsapp_template_delivered(
         return False
     finally:
         _delivered_events.pop(message_id, None)
+
+
+async def wait_for_outbound_delivery_outcome(
+    message_id: str,
+    *,
+    timeout_seconds: float = 20.0,
+) -> str:
+    """
+    Wait for Meta to report sent, delivered, read, or failed for an outbound wamid.
+
+    Returns one of: delivered, read, sent, failed, timeout.
+    """
+    message_id = (message_id or "").strip()
+    if not message_id:
+        return "timeout"
+
+    latest = _latest_statuses.get(message_id)
+    if latest in DELIVERED_OUTBOUND_STATUSES:
+        return latest
+    if latest == "failed":
+        return "failed"
+    if latest == "sent":
+        return "sent"
+
+    early = _early_statuses.pop(message_id, None)
+    if early in DELIVERED_OUTBOUND_STATUSES:
+        return early
+    if early == "failed":
+        return "failed"
+    if early == "sent":
+        return "sent"
+
+    event = asyncio.Event()
+    _outcome_events[message_id] = event
+    try:
+        latest = _latest_statuses.get(message_id)
+        if latest in DELIVERED_OUTBOUND_STATUSES:
+            return latest
+        if latest == "failed":
+            return "failed"
+        if latest == "sent":
+            return "sent"
+        await asyncio.wait_for(event.wait(), timeout=timeout_seconds)
+        latest = _latest_statuses.get(message_id, "sent")
+        if latest in DELIVERED_OUTBOUND_STATUSES:
+            return latest
+        if latest in FAILED_OUTBOUND_STATUSES:
+            return "failed"
+        return latest or "sent"
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Timed out waiting %.1fs for WhatsApp outcome on message_id=%s (last=%s)",
+            timeout_seconds,
+            message_id,
+            _latest_statuses.get(message_id),
+        )
+        return "timeout"
+    finally:
+        _outcome_events.pop(message_id, None)
 
 
 def process_whatsapp_status_webhook(payload: dict[str, Any]) -> int:

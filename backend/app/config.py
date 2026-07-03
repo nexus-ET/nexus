@@ -41,9 +41,15 @@ class Settings(BaseSettings):
     # {{1}} student name and {{2}} company name for Utility outreach templates such as et_student_welcome.
     WHATSAPP_OUTREACH_COMPANY_NAME: str = "Edutrust"
     # Brief pause after template delivery if webhook status is unavailable.
-    WHATSAPP_OUTREACH_FOLLOWUP_DELAY_SECONDS: float = 8.0
+    WHATSAPP_OUTREACH_FOLLOWUP_DELAY_SECONDS: float = 12.0
     # Max seconds to wait for Meta sent/delivered webhook before fallback delay.
     WHATSAPP_OUTREACH_DELIVERY_WAIT_SECONDS: float = 15.0
+    # Pause after template delivery webhook before sending session follow-up text.
+    WHATSAPP_OUTREACH_POST_TEMPLATE_DELAY_SECONDS: float = 5.0
+    # Pause when template delivery webhook never arrives (needs longer for Meta window).
+    WHATSAPP_OUTREACH_UNCONFIRMED_TEMPLATE_DELAY_SECONDS: float = 18.0
+    # Max seconds to wait for follow-up message delivery webhook before retry.
+    WHATSAPP_OUTREACH_FOLLOWUP_DELIVERY_WAIT_SECONDS: float = 20.0
     # Comma-separated body placeholders to send: student, company. Empty = no parameters (static template).
     WHATSAPP_OUTREACH_TEMPLATE_PARAMETERS: str = "student,company"
     # named = Meta {{student_name}} style (requires parameter_name in API); positional = {{1}}, {{2}}.

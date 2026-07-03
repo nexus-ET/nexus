@@ -106,7 +106,9 @@ class OutreachTemplateSendResult:
 
 
 # Brief pause after Meta accepts the template so WhatsApp usually delivers it before session text.
-OUTREACH_TEMPLATE_FOLLOWUP_DELAY_SECONDS = 8.0
+OUTREACH_TEMPLATE_FOLLOWUP_DELAY_SECONDS = 12.0
+OUTREACH_POST_TEMPLATE_CONFIRMED_DELAY_SECONDS = 5.0
+OUTREACH_POST_TEMPLATE_UNCONFIRMED_DELAY_SECONDS = 18.0
 
 
 def outreach_template_is_configured() -> bool:
@@ -809,7 +811,8 @@ async def open_whatsapp_conversation_window(
     )
 
 
-async def _send_via_whatsapp_graph(to_number: str, body: str) -> bool:
+async def send_whatsapp_text_message(to_number: str, body: str) -> str:
+    """Send a session text message via Meta Graph API; returns the wamid."""
     access_token = (settings.WHATSAPP_ACCESS_TOKEN or "").strip()
     phone_number_id = resolve_whatsapp_phone_number_id()
 
@@ -822,7 +825,7 @@ async def _send_via_whatsapp_graph(to_number: str, body: str) -> bool:
         "messaging_product": "whatsapp",
         "to": clean_phone_number(to_number),
         "type": "text",
-        "text": {"body": body},
+        "text": {"body": body[:4096]},
     }
     url = f"{WHATSAPP_GRAPH_API_BASE}/{phone_number_id}/messages"
     headers = {
@@ -836,18 +839,28 @@ async def _send_via_whatsapp_graph(to_number: str, body: str) -> bool:
             if response.status_code >= 400:
                 detail = format_meta_graph_error(response, to_number=to_number)
                 logger.error(
-                    "WhatsApp Graph API delivery failed: status=%s body=%s",
+                    "WhatsApp Graph API text delivery failed: status=%s body=%s",
                     response.status_code,
                     response.text,
                 )
                 raise WhatsAppDeliveryError(detail, status_code=response.status_code)
-            extract_meta_message_id(response)
-            return True
+            message_id = extract_meta_message_id(response)
+            logger.info(
+                "WhatsApp session text queued to %s message_id=%s",
+                clean_phone_number(to_number),
+                message_id,
+            )
+            return message_id
     except WhatsAppDeliveryError:
         raise
     except Exception as exc:
-        logger.exception("WhatsApp Graph API request failed.")
+        logger.exception("WhatsApp Graph API text request failed.")
         raise WhatsAppDeliveryError(str(exc)) from exc
+
+
+async def _send_via_whatsapp_graph(to_number: str, body: str) -> bool:
+    await send_whatsapp_text_message(to_number, body)
+    return True
 
 
 async def process_meta_webhook_payload(payload: dict[str, Any]) -> None:

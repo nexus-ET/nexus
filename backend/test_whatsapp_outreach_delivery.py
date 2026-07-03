@@ -85,3 +85,23 @@ def test_wait_for_whatsapp_template_delivered_times_out_on_sent_only() -> None:
         )
 
     asyncio.run(_run())
+
+
+def test_wait_for_outbound_delivery_outcome_reports_failed() -> None:
+    from app.services.whatsapp_outreach_delivery import wait_for_outbound_delivery_outcome
+
+    async def _run() -> None:
+        async def _notify_later() -> None:
+            await asyncio.sleep(0.05)
+            notify_whatsapp_outbound_status("wamid.failed", "failed")
+
+        task = asyncio.create_task(_notify_later())
+        try:
+            assert (
+                await wait_for_outbound_delivery_outcome("wamid.failed", timeout_seconds=2.0)
+                == "failed"
+            )
+        finally:
+            await task
+
+    asyncio.run(_run())
