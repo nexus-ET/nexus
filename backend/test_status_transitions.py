@@ -96,6 +96,13 @@ def test_session_booked_allows_reschedule_and_cancel(patched_transition_env):
     assert cancel.allowed is True
 
 
+def test_engagement_allows_reschedule_and_cancel(patched_transition_env):
+    reschedule = can_transition_to(patched_transition_env, 3, 5)
+    cancel = can_transition_to(patched_transition_env, 3, 6)
+    assert reschedule.allowed is True
+    assert cancel.allowed is True
+
+
 def test_repeat_reschedule_logs_again_with_force_repeat(patched_transition_env):
     blocked = can_transition_to(patched_transition_env, 5, 5)
     assert blocked.allowed is True

@@ -13,6 +13,7 @@ from app.services.admissions_intake_flow import (
     begin_whatsapp_intake_session,
     handle_post_intake_booking_message,
     is_intake_complete,
+    is_post_intake_management_command,
     process_flow_completion,
     process_intake_message,
 )
@@ -516,6 +517,27 @@ async def handle_ai_active_inbound(
             return [flow_reply.text]
 
     db.refresh(lead)
+
+    if is_post_intake_management_command(cleaned_incoming):
+        booking_reply = handle_post_intake_booking_message(db, lead, cleaned_incoming)
+        if booking_reply:
+            if getattr(booking_reply, "suppress_outbound", False):
+                db.commit()
+                return []
+            await persist_and_send_intake_reply(db, lead, phone, booking_reply)
+            lead.stage = LeadStage.AI_ACTIVE
+            lead.is_human_locked = False
+            _audit_ai_turn(
+                db,
+                lead=lead,
+                runtime_config=runtime_config,
+                student_message=cleaned_incoming,
+                ai_reply=booking_reply.text,
+                confidence_score=getattr(booking_reply, "confidence", 1.0),
+                escalated=False,
+            )
+            db.commit()
+            return [booking_reply.text]
 
     if not is_intake_complete(lead):
         reply = await process_intake_message(db, lead, cleaned_incoming, runtime_config)
