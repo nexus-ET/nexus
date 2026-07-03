@@ -28,6 +28,8 @@ from app.services.lead_conversation import ensure_handoff_for_inbound, touch_lea
 from app.services.phone_utils import clean_phone_number
 from app.config import settings
 from app.services.messaging import (
+    OUTREACH_POST_TEMPLATE_CONFIRMED_DELAY_SECONDS,
+    OUTREACH_POST_TEMPLATE_UNCONFIRMED_DELAY_SECONDS,
     OUTREACH_TEMPLATE_FOLLOWUP_DELAY_SECONDS,
     PROVIDER_WHATSAPP,
     WhatsAppDeliveryError,
@@ -37,14 +39,63 @@ from app.services.messaging import (
     record_ai_conversation_audit,
     send_message,
     send_whatsapp_outreach_template,
+    send_whatsapp_text_message,
 )
 from app.services.whatsapp_outreach_delivery import (
+    wait_for_outbound_delivery_outcome,
     wait_for_whatsapp_template_delivered,
 )
 
 logger = logging.getLogger(__name__)
 
 RECENT_HISTORY_LIMIT = 20
+
+
+async def _send_outreach_session_followup(
+    phone: str,
+    text: str,
+    *,
+    retry_delay: float,
+    delivery_wait_seconds: float,
+    max_attempts: int = 2,
+) -> None:
+    """
+    Send the post-template intake prompt and confirm Meta accepted/delivered it.
+
+    Retries only when Meta reports failed — not on timeout (avoids duplicate texts).
+    """
+    last_error: WhatsAppDeliveryError | None = None
+    for attempt in range(1, max_attempts + 1):
+        if attempt > 1:
+            logger.info(
+                "Retrying outreach session follow-up (attempt %s/%s) after Meta failure",
+                attempt,
+                max_attempts,
+            )
+            await asyncio.sleep(retry_delay)
+
+        message_id = await send_whatsapp_text_message(phone, text)
+        outcome = await wait_for_outbound_delivery_outcome(
+            message_id,
+            timeout_seconds=delivery_wait_seconds,
+        )
+        logger.info(
+            "Outreach session follow-up message_id=%s outcome=%s attempt=%s",
+            message_id,
+            outcome,
+            attempt,
+        )
+
+        if outcome in {"delivered", "read", "sent", "timeout"}:
+            return
+
+        last_error = WhatsAppDeliveryError(
+            f"WhatsApp reported follow-up delivery failed (message_id={message_id})."
+        )
+
+    if last_error is not None:
+        raise last_error
+    raise WhatsAppDeliveryError("WhatsApp follow-up could not be delivered.")
 
 
 def lead_has_prior_ai_outreach(db: Session, lead_id: int) -> bool:
@@ -522,7 +573,17 @@ async def initiate_ai_outreach(
             template_send.message_id,
             timeout_seconds=float(settings.WHATSAPP_OUTREACH_DELIVERY_WAIT_SECONDS or 15.0),
         )
-        post_template_delay = 1.5 if delivery_confirmed else followup_delay
+        post_template_confirmed = float(
+            settings.WHATSAPP_OUTREACH_POST_TEMPLATE_DELAY_SECONDS
+            or OUTREACH_POST_TEMPLATE_CONFIRMED_DELAY_SECONDS
+        )
+        post_template_unconfirmed = float(
+            settings.WHATSAPP_OUTREACH_UNCONFIRMED_TEMPLATE_DELAY_SECONDS
+            or OUTREACH_POST_TEMPLATE_UNCONFIRMED_DELAY_SECONDS
+        )
+        post_template_delay = post_template_confirmed if delivery_confirmed else max(
+            followup_delay, post_template_unconfirmed
+        )
         if delivery_confirmed:
             logger.info(
                 "Template delivery confirmed for %s; waiting %.1fs before session follow-up",
@@ -537,22 +598,40 @@ async def initiate_ai_outreach(
             )
         await asyncio.sleep(post_template_delay)
 
-    followup = IntakeReply(text=render_outreach_intake_followup(), confidence=1.0)
-    try:
-        await persist_and_send_intake_reply(db, lead, phone, followup)
-    except WhatsAppDeliveryError as exc:
-        detail = str(exc).lower()
-        if "24-hour" in detail or "131047" in detail or "customer care window" in detail:
-            logger.warning(
-                "Follow-up rejected outside customer care window; retrying after %.1fs: %s",
-                followup_delay,
-                exc,
+    followup_text = render_outreach_intake_followup()
+    followup_delivery_wait = float(
+        settings.WHATSAPP_OUTREACH_FOLLOWUP_DELIVERY_WAIT_SECONDS or 20.0
+    )
+    if get_active_provider() == PROVIDER_WHATSAPP:
+        try:
+            await _send_outreach_session_followup(
+                phone,
+                followup_text,
+                retry_delay=followup_delay,
+                delivery_wait_seconds=followup_delivery_wait,
             )
-            await asyncio.sleep(followup_delay)
-            await persist_and_send_intake_reply(db, lead, phone, followup)
-        else:
-            raise
-    sent_messages.append(followup.text)
+        except WhatsAppDeliveryError as exc:
+            detail = str(exc).lower()
+            if "24-hour" in detail or "131047" in detail or "customer care window" in detail:
+                logger.warning(
+                    "Follow-up rejected outside customer care window; retrying after %.1fs: %s",
+                    followup_delay,
+                    exc,
+                )
+                await asyncio.sleep(followup_delay)
+                await _send_outreach_session_followup(
+                    phone,
+                    followup_text,
+                    retry_delay=followup_delay,
+                    delivery_wait_seconds=followup_delivery_wait,
+                )
+            else:
+                raise
+        await persist_advisor_message(db, lead, followup_text, ai_confidence=1.0)
+    else:
+        followup = IntakeReply(text=followup_text, confidence=1.0)
+        await persist_and_send_intake_reply(db, lead, phone, followup)
+    sent_messages.append(followup_text)
 
     from app.services.student_status_service import ensure_lead_new_status, on_whatsapp_outreach
 
