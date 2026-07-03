@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     # Brief pause after template delivery if webhook status is unavailable.
     WHATSAPP_OUTREACH_FOLLOWUP_DELAY_SECONDS: float = 8.0
     # Max seconds to wait for Meta sent/delivered webhook before fallback delay.
-    WHATSAPP_OUTREACH_DELIVERY_WAIT_SECONDS: float = 3.0
+    WHATSAPP_OUTREACH_DELIVERY_WAIT_SECONDS: float = 15.0
     # Comma-separated body placeholders to send: student, company. Empty = no parameters (static template).
     WHATSAPP_OUTREACH_TEMPLATE_PARAMETERS: str = "student,company"
     # named = Meta {{student_name}} style (requires parameter_name in API); positional = {{1}}, {{2}}.

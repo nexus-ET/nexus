@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Backfill Lead: New status for leads created before the pipeline status system.
+"""Backfill Lead: New status for leads missing a baseline journey row.
 
-Run on staging after migrations when existing leads have NULL status_definition_id
-and an empty status_history — Journey will otherwise show no entries.
+Run on staging after migrations when leads have no Lead: New row in status_history.
+Opening View Journey also backfills one lead at a time; use this script for bulk repair.
 
 Usage:
   python scripts/backfill_lead_new_status.py --dry-run
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -28,60 +27,39 @@ register_all_models()
 
 from app.db.database import SessionLocal
 from app.models.lead import Lead
-from app.models.status_history import ChangedByType, StatusHistory
-from app.services.status_definition_service import STATUS_LEAD_NEW
-
-SOURCE_COMMENT = "Backfill: Lead: New for pre-migration lead."
+from app.services.student_status_service import (
+    _lead_new_history_exists,
+    ensure_lead_new_journey_baseline,
+)
 
 
 def backfill(*, dry_run: bool) -> int:
     db = SessionLocal()
     try:
-        leads = (
-            db.query(Lead)
-            .filter(Lead.status_definition_id.is_(None))
-            .order_by(Lead.id.asc())
-            .all()
-        )
-        if not leads:
-            print("No leads with NULL status_definition_id — nothing to backfill.")
+        leads = db.query(Lead).order_by(Lead.id.asc()).all()
+        missing = [lead for lead in leads if not _lead_new_history_exists(db, lead.id)]
+        if not missing:
+            print("All leads already have a Lead: New journey row.")
             return 0
 
-        print(f"Found {len(leads)} lead(s) without pipeline status.")
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        print(f"Found {len(missing)} lead(s) without Lead: New in status_history.")
+        updated = 0
 
-        for lead in leads:
-            history_count = (
-                db.query(StatusHistory.id)
-                .filter(StatusHistory.student_id == lead.id)
-                .count()
-            )
+        for lead in missing:
             print(
                 f"  lead id={lead.id} name={lead.full_name!r} "
-                f"phone={lead.phone_number!r} history_rows={history_count}"
+                f"phone={lead.phone_number!r} status_definition_id={lead.status_definition_id}"
             )
             if dry_run:
                 continue
-
-            if history_count == 0:
-                db.add(
-                    StatusHistory(
-                        student_id=lead.id,
-                        status_id=STATUS_LEAD_NEW,
-                        changed_by_type=ChangedByType.SYSTEM,
-                        comments=SOURCE_COMMENT,
-                        created_at=now,
-                    )
-                )
-            lead.status_definition_id = STATUS_LEAD_NEW
-            lead.status_entered_at = now
+            if ensure_lead_new_journey_baseline(db, lead, source="backfill script"):
+                updated += 1
 
         if dry_run:
             print("Dry run only — no changes made.")
             return 0
 
-        db.commit()
-        print(f"Backfilled Lead: New for {len(leads)} lead(s).")
+        print(f"Backfilled Lead: New for {updated} lead(s).")
         return 0
     finally:
         db.close()

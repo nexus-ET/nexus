@@ -267,7 +267,7 @@ def resolve_page_routes_for_api_path(path: str) -> list[str]:
         return LEAD_MUTATION_PAGE_ROUTES
 
     if re.search(r"^/api/v1/leads/\d+/journey", path):
-        return ["/prospects", "/my-bookings", "/counselling"]
+        return ["/prospects", "/my-bookings", "/counselling", "/ai-active", "/handoffs"]
 
     if re.search(r"^/api/v1/leads/\d+/pipeline-status", path):
         return ["/prospects", "/my-bookings", "/counselling"]

@@ -631,6 +631,9 @@ async def handle_external_social_webhook(request: Request, db: Session = Depends
             db.add(lead)
             db.commit()
             db.refresh(lead)
+            from app.services.student_status_service import on_lead_created
+
+            on_lead_created(db, lead, source="Admin message")
         else:
             ensure_handoff_for_inbound(db, lead)
             if target_phone and lead.phone_number != target_phone:
@@ -865,6 +868,28 @@ async def serve_whatsapp_attachment(file_name: str):
     return FileResponse(file_path)
 
 
+@router.get("/status-definitions", response_model=StatusDefinitionsResponse)
+@router.get("/status-definitions/", response_model=StatusDefinitionsResponse)
+async def list_pipeline_status_definitions(
+    _: User = Depends(deps.get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    return {"items": list_status_definitions(db)}
+
+
+@router.get("/{lead_id}/journey", response_model=StudentJourneyResponse)
+@router.get("/{lead_id}/journey/", response_model=StudentJourneyResponse)
+async def get_student_journey_timeline(
+    lead_id: int,
+    _: User = Depends(deps.get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead profile not found.")
+    return {"student_id": lead_id, "items": get_student_journey(db, lead_id)}
+
+
 @router.get("/{lead_id}")
 @router.get("/{lead_id}/")
 def get_lead_detail(lead_id: int, db: Session = Depends(get_db)):
@@ -890,28 +915,6 @@ async def update_lead_notes(lead_id: int, payload: LeadNotesUpdate, db: Session 
     db.commit()
     db.refresh(lead)
     return build_universal_lead_payload(lead, db)
-
-
-@router.get("/status-definitions", response_model=StatusDefinitionsResponse)
-@router.get("/status-definitions/", response_model=StatusDefinitionsResponse)
-async def list_pipeline_status_definitions(
-    _: User = Depends(deps.get_current_active_user),
-    db: Session = Depends(get_db),
-):
-    return {"items": list_status_definitions(db)}
-
-
-@router.get("/{lead_id}/journey", response_model=StudentJourneyResponse)
-@router.get("/{lead_id}/journey/", response_model=StudentJourneyResponse)
-async def get_student_journey_timeline(
-    lead_id: int,
-    _: User = Depends(deps.get_current_active_user),
-    db: Session = Depends(get_db),
-):
-    lead = db.query(Lead).filter(Lead.id == lead_id).first()
-    if not lead:
-        raise HTTPException(status_code=404, detail="Lead profile not found.")
-    return {"student_id": lead_id, "items": get_student_journey(db, lead_id)}
 
 
 @router.patch("/{lead_id}/pipeline-status", response_model=PipelineStatusUpdateResponse)

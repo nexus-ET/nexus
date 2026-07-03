@@ -17,6 +17,7 @@ from app.services.status_consistency_service import (
 )
 from app.services.status_definition_service import (
     STAGE_COUNSELLING_FINISHED,
+    STAGE_LEAD_NEW,
     STAGE_LEAD_OUTREACH,
     STATUS_COUNSELLING_SCHEDULED,
     STATUS_LEAD_ENGAGEMENT,
@@ -32,6 +33,7 @@ from app.services.status_definition_service import (
     STATUS_PROSPECT_ENROLLED,
     STATUS_PROSPECT_RELAUNCH,
     get_status_definition,
+    get_status_definition_by_name,
 )
 from app.services.status_transition_service import can_transition_to, is_terminal_status
 from app.services.system_log_service import log_system_event
@@ -390,8 +392,114 @@ def on_session_cancelled(
     )
 
 
+def _lead_new_history_exists(db: Session, student_id: int) -> bool:
+    from app.models.status_definition import StatusDefinition
+
+    return (
+        db.query(StatusHistory.id)
+        .join(StatusDefinition, StatusDefinition.id == StatusHistory.status_id)
+        .filter(
+            StatusHistory.student_id == student_id,
+            StatusDefinition.stage_name == STAGE_LEAD_NEW,
+        )
+        .first()
+        is not None
+    )
+
+
+def _resolve_lead_new_definition(db: Session):
+    from app.models.status_definition import StatusDefinition
+
+    row = db.query(StatusDefinition).filter(StatusDefinition.id == STATUS_LEAD_NEW).first()
+    if row:
+        return row
+    return get_status_definition_by_name(db, STAGE_LEAD_NEW)
+
+
+def _baseline_lead_new_journey_item(lead: Lead, definition) -> dict:
+    baseline_time = lead.created_at or lead.status_entered_at or datetime.utcnow()
+    return {
+        "id": 0,
+        "status_id": definition.id if definition is not None else STATUS_LEAD_NEW,
+        "stage_name": definition.stage_name if definition is not None else STAGE_LEAD_NEW,
+        "category": definition.category if definition is not None else "Lead",
+        "description": (
+            definition.description
+            if definition is not None
+            else "Initial inquiry received, pending first contact."
+        ),
+        "changed_by_type": ChangedByType.SYSTEM.value,
+        "changed_by_user_id": None,
+        "changed_by_label": "System",
+        "comments": "Lead record created.",
+        "created_at": baseline_time,
+    }
+
+
+def ensure_lead_new_journey_baseline(db: Session, lead: Lead, *, source: str) -> bool:
+    """
+    Persist Lead: New in status_history when missing.
+
+    Does not change lead.status_definition_id when the lead has already moved forward
+    in the pipeline — only backfills the first journey row for View Journey.
+    """
+    if _lead_new_history_exists(db, lead.id):
+        return False
+
+    definition = _resolve_lead_new_definition(db)
+    if definition is None:
+        log_system_event(
+            db,
+            level="error",
+            source=AUTOMATION_SOURCE,
+            message="Cannot record Lead: New — status_definitions row is missing.",
+            context={"handler": source, "student_id": lead.id},
+            student_id=lead.id,
+            commit=True,
+        )
+        return False
+
+    baseline_time = lead.created_at or datetime.utcnow()
+    record_status_history(
+        db,
+        student_id=lead.id,
+        status_id=definition.id,
+        changed_by_type="system",
+        comments="Lead record created.",
+        created_at=baseline_time,
+    )
+    if lead.status_definition_id is None:
+        lead.status_definition_id = definition.id
+        lead.status_entered_at = baseline_time
+        lead.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(lead)
+    return True
+
+
 def get_student_journey(db: Session, student_id: int) -> list[dict]:
     from app.models.status_definition import StatusDefinition
+    from app.services.status_definitions_seed import seed_status_definitions_if_empty
+
+    lead = db.query(Lead).filter(Lead.id == student_id).first()
+    if not lead:
+        return []
+
+    seed_status_definitions_if_empty(db)
+
+    try:
+        ensure_lead_new_journey_baseline(db, lead, source="journey view")
+    except Exception:
+        log_system_event(
+            db,
+            level="error",
+            source=AUTOMATION_SOURCE,
+            message="Failed to persist Lead: New baseline while loading journey.",
+            context={"student_id": student_id},
+            student_id=student_id,
+            commit=True,
+        )
 
     rows = (
         db.query(StatusHistory, StatusDefinition, User)
@@ -401,7 +509,7 @@ def get_student_journey(db: Session, student_id: int) -> list[dict]:
         .order_by(StatusHistory.created_at.asc(), StatusHistory.id.asc())
         .all()
     )
-    return [
+    items = [
         {
             "id": history.id,
             "status_id": definition.id,
@@ -421,16 +529,20 @@ def get_student_journey(db: Session, student_id: int) -> list[dict]:
         for history, definition, user in rows
     ]
 
+    if not any(item["status_id"] == STATUS_LEAD_NEW or item["stage_name"] == STAGE_LEAD_NEW for item in items):
+        definition = _resolve_lead_new_definition(db)
+        items.insert(0, _baseline_lead_new_journey_item(lead, definition))
+
+    return items
+
+
+def ensure_lead_new_status(db: Session, lead: Lead, *, source: str) -> bool:
+    """Record Lead: New when the lead has no pipeline status yet (idempotent)."""
+    return ensure_lead_new_journey_baseline(db, lead, source=source)
+
 
 def on_lead_created(db: Session, lead: Lead, *, source: str) -> None:
-    try_automated_status_transition(
-        db,
-        lead,
-        status_id=STATUS_LEAD_NEW,
-        source=source,
-        comments=f"Lead created via {source}.",
-        commit=True,
-    )
+    ensure_lead_new_journey_baseline(db, lead, source=source)
 
 
 def on_whatsapp_outreach(db: Session, lead: Lead, *, source: str) -> None:

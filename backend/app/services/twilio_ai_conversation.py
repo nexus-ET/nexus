@@ -38,7 +38,9 @@ from app.services.messaging import (
     send_message,
     send_whatsapp_outreach_template,
 )
-from app.services.whatsapp_outreach_delivery import wait_for_whatsapp_outbound_status
+from app.services.whatsapp_outreach_delivery import (
+    wait_for_whatsapp_template_delivered,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -170,39 +172,41 @@ async def persist_and_send_intake_reply(
     stored_text = reply.text
     target_phone = clean_phone_number(phone or lead.phone_number or "")
 
-    if target_phone:
-        use_meta = get_active_provider() == PROVIDER_WHATSAPP
-        if use_meta:
-            from app.services.meta_whatsapp_interactive import deliver_meta_intake_reply
+    if not target_phone:
+        raise WhatsAppDeliveryError("Missing phone number for WhatsApp delivery.")
 
-            stored_text = await deliver_meta_intake_reply(target_phone, reply)
-        elif reply.whatsapp_flow:
-            sent, delivered_text = dispatch_whatsapp_flow(target_phone, reply.whatsapp_flow)
+    use_meta = get_active_provider() == PROVIDER_WHATSAPP
+    if use_meta:
+        from app.services.meta_whatsapp_interactive import deliver_meta_intake_reply
+
+        stored_text = await deliver_meta_intake_reply(target_phone, reply)
+    elif reply.whatsapp_flow:
+        sent, delivered_text = dispatch_whatsapp_flow(target_phone, reply.whatsapp_flow)
+        if sent:
+            stored_text = f"{reply.text}\n\n[WhatsApp Flow: {reply.whatsapp_flow.button}]"
+        else:
+            stored_text = delivered_text
+            await _deliver_whatsapp_text(target_phone, delivered_text)
+    else:
+        interactive = reply.quick_reply or reply.list_picker
+        if interactive:
+            sent, delivered_text = dispatch_whatsapp_interactive(target_phone, interactive)
             if sent:
-                stored_text = f"{reply.text}\n\n[WhatsApp Flow: {reply.whatsapp_flow.button}]"
+                label = (
+                    reply.quick_reply.actions[0].get("title", "Quick reply")
+                    if reply.quick_reply
+                    else reply.list_picker.button
+                )
+                stored_text = (
+                    f"{reply.text}\n\n[WhatsApp interactive: {label}]"
+                    if reply.text
+                    else f"[WhatsApp interactive: {label}]"
+                )
             else:
                 stored_text = delivered_text
                 await _deliver_whatsapp_text(target_phone, delivered_text)
         else:
-            interactive = reply.quick_reply or reply.list_picker
-            if interactive:
-                sent, delivered_text = dispatch_whatsapp_interactive(target_phone, interactive)
-                if sent:
-                    label = (
-                        reply.quick_reply.actions[0].get("title", "Quick reply")
-                        if reply.quick_reply
-                        else reply.list_picker.button
-                    )
-                    stored_text = (
-                        f"{reply.text}\n\n[WhatsApp interactive: {label}]"
-                        if reply.text
-                        else f"[WhatsApp interactive: {label}]"
-                    )
-                else:
-                    stored_text = delivered_text
-                    await _deliver_whatsapp_text(target_phone, delivered_text)
-            else:
-                await _deliver_whatsapp_text(target_phone, reply.text)
+            await _deliver_whatsapp_text(target_phone, reply.text)
 
     outbound = Message(
         lead_id=lead.id,
@@ -496,6 +500,10 @@ async def initiate_ai_outreach(
     begin_whatsapp_intake_session(db, lead, force_full_restart=True)
 
     sent_messages: list[str] = []
+    followup_delay = float(
+        settings.WHATSAPP_OUTREACH_FOLLOWUP_DELAY_SECONDS
+        or OUTREACH_TEMPLATE_FOLLOWUP_DELAY_SECONDS
+    )
 
     if get_active_provider() == PROVIDER_WHATSAPP and outreach_template_is_configured():
         template_send = await send_whatsapp_outreach_template(
@@ -510,34 +518,45 @@ async def initiate_ai_outreach(
         await persist_advisor_message(db, lead, template_send.display_text)
         sent_messages.append(template_send.display_text)
 
-        delivery_confirmed = await wait_for_whatsapp_outbound_status(
+        delivery_confirmed = await wait_for_whatsapp_template_delivered(
             template_send.message_id,
-            timeout_seconds=float(settings.WHATSAPP_OUTREACH_DELIVERY_WAIT_SECONDS or 3.0),
+            timeout_seconds=float(settings.WHATSAPP_OUTREACH_DELIVERY_WAIT_SECONDS or 15.0),
         )
-        followup_delay = float(
-            settings.WHATSAPP_OUTREACH_FOLLOWUP_DELAY_SECONDS
-            or OUTREACH_TEMPLATE_FOLLOWUP_DELAY_SECONDS
-        )
+        post_template_delay = 1.5 if delivery_confirmed else followup_delay
         if delivery_confirmed:
             logger.info(
                 "Template delivery confirmed for %s; waiting %.1fs before session follow-up",
                 template_send.message_id,
-                followup_delay,
+                post_template_delay,
             )
         else:
             logger.warning(
                 "Template delivery webhook not received for %s; waiting %.1fs before follow-up",
                 template_send.message_id,
-                followup_delay,
+                post_template_delay,
             )
-        await asyncio.sleep(followup_delay)
+        await asyncio.sleep(post_template_delay)
 
     followup = IntakeReply(text=render_outreach_intake_followup(), confidence=1.0)
-    await persist_and_send_intake_reply(db, lead, phone, followup)
+    try:
+        await persist_and_send_intake_reply(db, lead, phone, followup)
+    except WhatsAppDeliveryError as exc:
+        detail = str(exc).lower()
+        if "24-hour" in detail or "131047" in detail or "customer care window" in detail:
+            logger.warning(
+                "Follow-up rejected outside customer care window; retrying after %.1fs: %s",
+                followup_delay,
+                exc,
+            )
+            await asyncio.sleep(followup_delay)
+            await persist_and_send_intake_reply(db, lead, phone, followup)
+        else:
+            raise
     sent_messages.append(followup.text)
 
-    from app.services.student_status_service import on_whatsapp_outreach
+    from app.services.student_status_service import ensure_lead_new_status, on_whatsapp_outreach
 
+    ensure_lead_new_status(db, lead, source="AI outreach")
     on_whatsapp_outreach(db, lead, source="AI outreach")
     db.refresh(lead)
     return sent_messages
