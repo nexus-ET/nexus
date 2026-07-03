@@ -439,6 +439,26 @@ def _looks_like_full_name(text: str) -> bool:
     return all(re.search(r"[a-zA-Z]", part) for part in parts[:2])
 
 
+def _normalize_intake_name(text: str) -> str:
+    return " ".join((text or "").split()).title()
+
+
+def _accept_intake_name_reply(text: str) -> str | None:
+    """
+    Normalize a student's name reply after the combined outreach template.
+
+    Accepts single names (e.g. Ishq) — the template already asked for full name.
+    """
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) < 2:
+        return None
+    if cleaned.lower().startswith("whatsapp contact"):
+        return None
+    if not re.search(r"[a-zA-Z]", cleaned):
+        return None
+    return _normalize_intake_name(cleaned)
+
+
 async def process_intake_message(
     db: Session,
     lead: Lead,
@@ -458,8 +478,9 @@ async def process_intake_message(
     first = (lead.full_name or "there").split()[0]
 
     if step in {INTAKE_STEP_WELCOME, ""} or not getattr(lead, "intake_step", None):
-        if _looks_like_full_name(text):
-            lead.full_name = text.title()
+        accepted = _accept_intake_name_reply(text)
+        if accepted:
+            lead.full_name = accepted
             lead.intake_step = INTAKE_STEP_CURRENT_LOCATION
             db.commit()
             return await _agent_intake_reply(
@@ -483,15 +504,16 @@ async def process_intake_message(
         )
 
     if step == INTAKE_STEP_FULL_NAME:
-        if not _looks_like_full_name(text):
+        accepted = _accept_intake_name_reply(text)
+        if not accepted:
             return await _agent_intake_reply(
                 db,
                 lead,
                 runtime_config,
-                task="INTAKE_STEP=FULL_NAME; Previous answer was not a valid full name. Ask again for first and last name.",
+                task="INTAKE_STEP=FULL_NAME; Ask once more for the student's name.",
                 incoming_text=text,
             )
-        lead.full_name = text.title()
+        lead.full_name = accepted
         lead.intake_step = INTAKE_STEP_CURRENT_LOCATION
         db.commit()
         return await _agent_intake_reply(

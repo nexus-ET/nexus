@@ -641,6 +641,15 @@ async def handle_ai_active_inbound(
     return [llm_result.text]
 
 
+async def _record_whatsapp_outreach_status(db: Session, lead: Lead) -> None:
+    """Persist Lead: New baseline then Lead: Outreach as soon as outreach is queued."""
+    from app.services.student_status_service import ensure_lead_new_status, on_whatsapp_outreach
+
+    ensure_lead_new_status(db, lead, source="AI outreach")
+    on_whatsapp_outreach(db, lead, source="AI outreach")
+    db.refresh(lead)
+
+
 async def initiate_ai_outreach(
     db: Session,
     lead: Lead,
@@ -668,6 +677,7 @@ async def initiate_ai_outreach(
     template_wamid: str | None = None
     followup_text = render_outreach_intake_followup()
     skip_followup = outreach_uses_combined_template()
+    outreach_status_recorded = False
 
     if get_active_provider() == PROVIDER_WHATSAPP and outreach_template_is_configured():
         template_name = (settings.WHATSAPP_OUTREACH_TEMPLATE or "").strip()
@@ -686,6 +696,8 @@ async def initiate_ai_outreach(
         await persist_advisor_message(db, lead, template_send.display_text)
         sent_messages.append(template_send.display_text)
         template_wamid = template_send.message_id
+        await _record_whatsapp_outreach_status(db, lead)
+        outreach_status_recorded = True
 
         if skip_followup:
             logger.info(
@@ -766,9 +778,8 @@ async def initiate_ai_outreach(
         await persist_and_send_intake_reply(db, lead, phone, followup)
         sent_messages.append(followup_text)
 
-    from app.services.student_status_service import ensure_lead_new_status, on_whatsapp_outreach
+    if not outreach_status_recorded:
+        await _record_whatsapp_outreach_status(db, lead)
 
-    ensure_lead_new_status(db, lead, source="AI outreach")
-    on_whatsapp_outreach(db, lead, source="AI outreach")
     db.refresh(lead)
     return sent_messages
