@@ -16,8 +16,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
+load_dotenv(BACKEND_ROOT / ".env")
+
+from app.db.register_models import register_all_models
+
+register_all_models()
 
 from app.db.database import SessionLocal
 from app.models.lead import Lead
