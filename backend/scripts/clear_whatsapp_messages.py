@@ -1,6 +1,8 @@
 """
 Clear WhatsApp message history for a lead and reset intake for a fresh AI session.
 
+Removes all messages and pipeline status rows except **Lead: New** (View Journey baseline).
+
 Local:
   python scripts/clear_whatsapp_messages.py +918754545407 --dry-run
   python scripts/clear_whatsapp_messages.py +918754545407 --yes
@@ -147,6 +149,16 @@ def clear_whatsapp_data(
                     (lead_pk,),
                 )
                 slot_count = cur.fetchone()[0]
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM status_history sh
+                    JOIN status_definitions sd ON sd.id = sh.status_id
+                    WHERE sh.student_id = %s AND sd.stage_name <> 'Lead: New'
+                    """,
+                    (lead_pk,),
+                )
+                status_history_count = cur.fetchone()[0]
 
                 print(f"  would delete messages: {message_count}")
                 print(f"  would delete message_history (lead): {history_lead_count}")
@@ -154,7 +166,8 @@ def clear_whatsapp_data(
                 print(f"  would delete processed_messages: {processed_count}")
                 print(f"  would delete conversation_audit_logs: {audit_count}")
                 print(f"  would release consultation slots: {slot_count}")
-                print("  would reset intake/profile/handoff fields for fresh start")
+                print(f"  would delete status_history (except Lead: New): {status_history_count}")
+                print("  would reset intake/profile/handoff fields and pipeline to Lead: New")
 
                 if dry_run:
                     continue
@@ -180,6 +193,57 @@ def clear_whatsapp_data(
                 )
                 cur.execute(
                     """
+                    DELETE FROM status_history sh
+                    USING status_definitions sd
+                    WHERE sh.status_id = sd.id
+                      AND sh.student_id = %s
+                      AND sd.stage_name <> 'Lead: New'
+                    """,
+                    (lead_pk,),
+                )
+                cur.execute(
+                    """
+                    SELECT sd.id
+                    FROM status_definitions sd
+                    WHERE sd.stage_name = 'Lead: New'
+                    LIMIT 1
+                    """,
+                )
+                lead_new_row = cur.fetchone()
+                lead_new_status_id = lead_new_row[0] if lead_new_row else 1
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM status_history sh
+                    JOIN status_definitions sd ON sd.id = sh.status_id
+                    WHERE sh.student_id = %s AND sd.stage_name = 'Lead: New'
+                    LIMIT 1
+                    """,
+                    (lead_pk,),
+                )
+                if cur.fetchone() is None:
+                    cur.execute(
+                        """
+                        INSERT INTO status_history (
+                            student_id,
+                            status_id,
+                            changed_by_type,
+                            comments,
+                            created_at
+                        )
+                        SELECT
+                            %s,
+                            %s,
+                            'system',
+                            'Lead record created.',
+                            COALESCE(l.created_at, NOW())
+                        FROM leads l
+                        WHERE l.id = %s
+                        """,
+                        (lead_pk, lead_new_status_id, lead_pk),
+                    )
+                cur.execute(
+                    """
                     UPDATE leads SET
                         phone_number = trim(both E' \t\r\n' from phone_number),
                         intake_step = NULL,
@@ -196,10 +260,12 @@ def clear_whatsapp_data(
                         handoff_ai_confidence = NULL,
                         handoff_reason = NULL,
                         stage = 'AI_ACTIVE',
-                        is_human_locked = FALSE
+                        is_human_locked = FALSE,
+                        status_definition_id = %s,
+                        status_entered_at = COALESCE(created_at, status_entered_at, NOW())
                     WHERE id = %s
                     """,
-                    (lead_pk,),
+                    (lead_new_status_id, lead_pk),
                 )
 
         if dry_run:
