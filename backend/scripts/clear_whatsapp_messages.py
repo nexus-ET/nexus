@@ -77,6 +77,161 @@ def _find_leads(cur, *, phone: str | None, lead_id: int | None) -> list[tuple]:
     return cur.fetchall()
 
 
+def _status_history_layout(cur) -> tuple[str, str, str]:
+    """Return (table_name, student_fk_column, status_fk_column)."""
+    cur.execute(
+        """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name IN ('status_history', 'lead_status_history')
+        ORDER BY CASE table_name WHEN 'status_history' THEN 0 ELSE 1 END
+        LIMIT 1
+        """
+    )
+    row = cur.fetchone()
+    if not row:
+        raise SystemExit("ERROR: status_history / lead_status_history table not found.")
+
+    table = row[0]
+    if table == "status_history":
+        return table, "student_id", "status_id"
+    return table, "lead_id", "status_definition_id"
+
+
+def _lead_new_status_id(cur) -> int:
+    cur.execute(
+        """
+        SELECT id FROM status_definitions
+        WHERE trim(stage_name) = 'Lead: New'
+        ORDER BY id ASC
+        LIMIT 1
+        """
+    )
+    row = cur.fetchone()
+    if row:
+        return int(row[0])
+    cur.execute(
+        """
+        SELECT id FROM status_definitions
+        WHERE stage_name ILIKE 'lead:%new%'
+        ORDER BY id ASC
+        LIMIT 1
+        """
+    )
+    row = cur.fetchone()
+    return int(row[0]) if row else 1
+
+
+def _count_status_history_rows(cur, table: str, student_col: str, lead_pk: int) -> int:
+    cur.execute(
+        f"SELECT COUNT(*) FROM {table} WHERE {student_col} = %s",
+        (lead_pk,),
+    )
+    return int(cur.fetchone()[0])
+
+
+def _count_non_lead_new_status_rows(
+    cur,
+    table: str,
+    student_col: str,
+    status_col: str,
+    lead_pk: int,
+    lead_new_status_id: int,
+) -> int:
+    cur.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM {table} sh
+        WHERE sh.{student_col} = %s
+          AND sh.{status_col} <> %s
+        """,
+        (lead_pk, lead_new_status_id),
+    )
+    return int(cur.fetchone()[0])
+
+
+def _delete_non_lead_new_status_rows(
+    cur,
+    table: str,
+    student_col: str,
+    status_col: str,
+    lead_pk: int,
+    lead_new_status_id: int,
+) -> int:
+    cur.execute(
+        f"""
+        DELETE FROM {table}
+        WHERE {student_col} = %s
+          AND {status_col} <> %s
+        """,
+        (lead_pk, lead_new_status_id),
+    )
+    return cur.rowcount
+
+
+def _ensure_lead_new_status_row(
+    cur,
+    table: str,
+    student_col: str,
+    status_col: str,
+    lead_pk: int,
+    lead_new_status_id: int,
+) -> None:
+    cur.execute(
+        f"""
+        SELECT 1 FROM {table}
+        WHERE {student_col} = %s AND {status_col} = %s
+        LIMIT 1
+        """,
+        (lead_pk, lead_new_status_id),
+    )
+    if cur.fetchone() is not None:
+        return
+
+    if table == "lead_status_history":
+        cur.execute(
+            f"""
+            INSERT INTO {table} (
+                {student_col},
+                {status_col},
+                notes,
+                created_at
+            )
+            SELECT
+                %s,
+                %s,
+                'Lead record created.',
+                COALESCE(l.created_at, NOW())
+            FROM leads l
+            WHERE l.id = %s
+            """,
+            (lead_pk, lead_new_status_id, lead_pk),
+        )
+        return
+
+    cur.execute(
+        f"""
+        INSERT INTO {table} (
+            {student_col},
+            {status_col},
+            changed_by_type,
+            comments,
+            created_at
+        )
+        SELECT
+            %s,
+            %s,
+            'system',
+            'Lead record created.',
+            COALESCE(l.created_at, NOW())
+        FROM leads l
+        WHERE l.id = %s
+        """,
+        (lead_pk, lead_new_status_id, lead_pk),
+    )
+
+
 def clear_whatsapp_data(
     *,
     phone: str | None,
@@ -99,6 +254,12 @@ def clear_whatsapp_data(
                 return 1
 
             normalized, digits = _normalize_phone(phone or leads[0][2] or "")
+            status_table, student_col, status_col = _status_history_layout(cur)
+            lead_new_status_id = _lead_new_status_id(cur)
+            print(
+                f"Using {status_table}.{student_col} / {status_col} "
+                f"(Lead: New status_id={lead_new_status_id})"
+            )
 
             for row in leads:
                 lead_pk, name, lead_phone, intake_step, stage = row
@@ -149,16 +310,15 @@ def clear_whatsapp_data(
                     (lead_pk,),
                 )
                 slot_count = cur.fetchone()[0]
-                cur.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM status_history sh
-                    JOIN status_definitions sd ON sd.id = sh.status_id
-                    WHERE sh.student_id = %s AND sd.stage_name <> 'Lead: New'
-                    """,
-                    (lead_pk,),
+                status_total = _count_status_history_rows(cur, status_table, student_col, lead_pk)
+                status_history_count = _count_non_lead_new_status_rows(
+                    cur,
+                    status_table,
+                    student_col,
+                    status_col,
+                    lead_pk,
+                    lead_new_status_id,
                 )
-                status_history_count = cur.fetchone()[0]
 
                 print(f"  would delete messages: {message_count}")
                 print(f"  would delete message_history (lead): {history_lead_count}")
@@ -166,7 +326,10 @@ def clear_whatsapp_data(
                 print(f"  would delete processed_messages: {processed_count}")
                 print(f"  would delete conversation_audit_logs: {audit_count}")
                 print(f"  would release consultation slots: {slot_count}")
-                print(f"  would delete status_history (except Lead: New): {status_history_count}")
+                print(
+                    f"  would delete {status_table} (except Lead: New): "
+                    f"{status_history_count} of {status_total} row(s)"
+                )
                 print("  would reset intake/profile/handoff fields and pipeline to Lead: New")
 
                 if dry_run:
@@ -191,57 +354,29 @@ def clear_whatsapp_data(
                     "UPDATE consultation_slots SET lead_id = NULL WHERE lead_id = %s",
                     (lead_pk,),
                 )
-                cur.execute(
-                    """
-                    DELETE FROM status_history sh
-                    USING status_definitions sd
-                    WHERE sh.status_id = sd.id
-                      AND sh.student_id = %s
-                      AND sd.stage_name <> 'Lead: New'
-                    """,
-                    (lead_pk,),
+                deleted_status_rows = _delete_non_lead_new_status_rows(
+                    cur,
+                    status_table,
+                    student_col,
+                    status_col,
+                    lead_pk,
+                    lead_new_status_id,
                 )
-                cur.execute(
-                    """
-                    SELECT sd.id
-                    FROM status_definitions sd
-                    WHERE sd.stage_name = 'Lead: New'
-                    LIMIT 1
-                    """,
+                _ensure_lead_new_status_row(
+                    cur,
+                    status_table,
+                    student_col,
+                    status_col,
+                    lead_pk,
+                    lead_new_status_id,
                 )
-                lead_new_row = cur.fetchone()
-                lead_new_status_id = lead_new_row[0] if lead_new_row else 1
-                cur.execute(
-                    """
-                    SELECT 1
-                    FROM status_history sh
-                    JOIN status_definitions sd ON sd.id = sh.status_id
-                    WHERE sh.student_id = %s AND sd.stage_name = 'Lead: New'
-                    LIMIT 1
-                    """,
-                    (lead_pk,),
+                remaining_status = _count_status_history_rows(
+                    cur, status_table, student_col, lead_pk
                 )
-                if cur.fetchone() is None:
-                    cur.execute(
-                        """
-                        INSERT INTO status_history (
-                            student_id,
-                            status_id,
-                            changed_by_type,
-                            comments,
-                            created_at
-                        )
-                        SELECT
-                            %s,
-                            %s,
-                            'system',
-                            'Lead record created.',
-                            COALESCE(l.created_at, NOW())
-                        FROM leads l
-                        WHERE l.id = %s
-                        """,
-                        (lead_pk, lead_new_status_id, lead_pk),
-                    )
+                print(
+                    f"  deleted {status_table} rows (non Lead: New): {deleted_status_rows}; "
+                    f"remaining: {remaining_status}"
+                )
                 cur.execute(
                     """
                     UPDATE leads SET
