@@ -27,7 +27,13 @@ AUTOMATION_ALLOWED_TRANSITIONS: dict[int | None, frozenset[int]] = {
     None: frozenset({STATUS_LEAD_NEW}),
     1: frozenset({STATUS_LEAD_OUTREACH}),
     2: frozenset({STATUS_LEAD_ENGAGEMENT}),
-    3: frozenset({STATUS_LEAD_SESSION_BOOKED}),
+    3: frozenset(
+        {
+            STATUS_LEAD_SESSION_BOOKED,
+            STATUS_LEAD_SESSION_RESCHEDULED,
+            STATUS_LEAD_SESSION_CANCELLED,
+        }
+    ),
     4: frozenset({STATUS_LEAD_SESSION_RESCHEDULED, STATUS_LEAD_SESSION_CANCELLED}),
     5: frozenset(
         {

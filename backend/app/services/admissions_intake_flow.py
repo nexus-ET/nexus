@@ -92,8 +92,8 @@ def _strip_booking_markdown(text: str) -> str:
 RESCHEDULE_PATTERN = re.compile(
     r"(reschedule|change|move|update|switch|pick another|different|new)\s+"
     r"(slot|appointment|booking|call|time|date|schedule)|"
-    r"(change|move|reschedule|cancel)\s+(my|the)\s+(slot|appointment|booking|call)|"
-    r"^reschedule$|^change slot$|^change appointment$|^cancel appointment$|^cancel booking$",
+    r"(change|move|reschedule)\s+(my|the)\s+(slot|appointment|booking|call)|"
+    r"^reschedule$|^change slot$|^change appointment$",
     re.IGNORECASE,
 )
 BOOKING_INFO_PATTERN = re.compile(
@@ -107,9 +107,52 @@ THANKS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 CANCEL_PATTERN = re.compile(
-    r"^\*?cancel\*?(?:\s+(?:appointment|booking|my appointment))?\*?$",
+    r"^\*?cancel\*?(?:\s+(?:appointment|booking|my appointment|my booking|slot|call))?\*?$",
     re.IGNORECASE,
 )
+CANCEL_COMMAND_PATTERN = re.compile(
+    r"(?:^|\b)(?:please\s+)?cancel(?:\s+please)?(?:\s+it|\s+this|\s+that|\s+now)?\s*$|"
+    r"\b(?:i\s+)?(?:want|need|would like|'d like)\s+to\s+cancel\b|"
+    r"\bcancel\s+(?:my|the|this|our)\s+(?:slot|appointment|booking|call|session|consultation)\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_management_command(text: str) -> str:
+    command_text = _strip_booking_markdown(text).strip()
+    return re.sub(r"[^\w\s'+-]+$", "", command_text).strip()
+
+
+def is_reschedule_command(text: str) -> bool:
+    command_text = _normalize_management_command(text)
+    lowered = command_text.lower()
+    return bool(RESCHEDULE_PATTERN.search(command_text)) or lowered in {
+        "reschedule",
+        "change slot",
+        "change appointment",
+    }
+
+
+def is_cancel_command(text: str) -> bool:
+    command_text = _normalize_management_command(text)
+    if not command_text:
+        return False
+    lowered = command_text.lower()
+    if CANCEL_PATTERN.match(command_text) or CANCEL_COMMAND_PATTERN.search(command_text):
+        return True
+    return lowered == "cancel" or lowered.startswith("cancel ")
+
+
+def is_post_intake_management_command(text: str) -> bool:
+    """Reschedule/cancel/thanks/booking-info commands handled outside intake steps."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if is_reschedule_command(cleaned) or is_cancel_command(cleaned):
+        return True
+    if THANKS_PATTERN.match(cleaned):
+        return True
+    return bool(BOOKING_INFO_PATTERN.search(cleaned))
 
 
 @dataclass
@@ -714,6 +757,10 @@ async def process_intake_message(
         )
 
     if step == INTAKE_STEP_PICK_DATE:
+        management_reply = handle_post_intake_booking_message(db, lead, text)
+        if management_reply:
+            return management_reply
+
         dates = _offered_dates_for_lead(db, lead)
         if not dates:
             dates = _available_dates(db)
@@ -764,6 +811,10 @@ async def process_intake_message(
         )
 
     if step == INTAKE_STEP_PICK_TIME:
+        management_reply = handle_post_intake_booking_message(db, lead, text)
+        if management_reply:
+            return management_reply
+
         context = _load_context(lead)
         selected_raw = context.get("selected_date")
         if not selected_raw:
@@ -1016,6 +1067,12 @@ def _appointment_management_note() -> str:
     )
 
 
+def _clear_booking_selection_context(context: dict[str, Any]) -> None:
+    context.pop("selected_date", None)
+    context.pop("time_slot_ids", None)
+    context.pop("date_options", None)
+
+
 def release_lead_consultation_slot(db: Session, lead: Lead) -> None:
     from app.services.counselling_service import cancel_active_counselling_bookings_for_lead
 
@@ -1026,6 +1083,15 @@ def release_lead_consultation_slot(db: Session, lead: Lead) -> None:
     lead.calendar_booking_id = None
     cancel_active_counselling_bookings_for_lead(db, lead.id, commit=False)
     db.commit()
+
+
+def _reset_booking_intake_context(db: Session, lead: Lead) -> None:
+    context = _load_context(lead)
+    preferred_course = context.get("preferred_course")
+    _clear_booking_selection_context(context)
+    if preferred_course:
+        context["preferred_course"] = preferred_course
+    _save_context(db, lead, context)
 
 
 def format_booking_summary(lead: Lead) -> str:
@@ -1060,6 +1126,8 @@ def is_booking_management_message(text: str, lead: Lead, flow_data: str | None =
         return False
     if RESCHEDULE_PATTERN.search(cleaned):
         return True
+    if is_cancel_command(cleaned):
+        return True
     if BOOKING_INFO_PATTERN.search(cleaned):
         return True
     if lead.consultation_scheduled_at and _parse_choice_number(cleaned, 10):
@@ -1068,10 +1136,13 @@ def is_booking_management_message(text: str, lead: Lead, flow_data: str | None =
 
 
 def handle_post_intake_booking_message(db: Session, lead: Lead, incoming_text: str) -> IntakeReply | None:
-    if get_intake_step(lead) in {INTAKE_STEP_PICK_DATE, INTAKE_STEP_PICK_TIME}:
+    text = (incoming_text or "").strip()
+    step = get_intake_step(lead)
+    if step in {INTAKE_STEP_PICK_DATE, INTAKE_STEP_PICK_TIME} and not is_post_intake_management_command(
+        text
+    ):
         return None
 
-    text = (incoming_text or "").strip()
     command_text = _strip_booking_markdown(text)
     lowered = command_text.lower()
     first = (lead.full_name or "there").split()[0]
@@ -1087,11 +1158,10 @@ def handle_post_intake_booking_message(db: Session, lead: Lead, incoming_text: s
             text=f"You're welcome, {first}! Feel free to message anytime if you have questions."
         )
 
-    if CANCEL_PATTERN.match(command_text) or (
-        "cancel" in lowered and "appointment" in lowered
-    ):
+    if is_cancel_command(text):
         had_booking = bool(lead.consultation_scheduled_at)
         release_lead_consultation_slot(db, lead)
+        _reset_booking_intake_context(db, lead)
         lead.intake_step = INTAKE_STEP_COMPLETE
         lead.wants_consultation_call = True
         db.commit()
@@ -1116,11 +1186,7 @@ def handle_post_intake_booking_message(db: Session, lead: Lead, incoming_text: s
             text=f"{first}, you don't have an active appointment to cancel. Reply *reschedule* to book one."
         )
 
-    if RESCHEDULE_PATTERN.search(command_text) or lowered in {
-        "reschedule",
-        "change slot",
-        "change appointment",
-    }:
+    if is_reschedule_command(text):
         had_booking = bool(lead.consultation_scheduled_at)
         previous_summary = (
             format_booking_summary(lead)
@@ -1128,6 +1194,7 @@ def handle_post_intake_booking_message(db: Session, lead: Lead, incoming_text: s
             else f"{first}, let's schedule your consultation."
         )
         release_lead_consultation_slot(db, lead)
+        _reset_booking_intake_context(db, lead)
         lead.intake_step = INTAKE_STEP_PICK_DATE
         lead.stage = LeadStage.AI_ACTIVE
         lead.is_human_locked = False
