@@ -67,6 +67,7 @@ from app.routers import (
 from app.db.database import SessionLocal
 from app.services.agent_runtime import get_or_create_agent_config
 from app.services.status_change_reasons import seed_status_change_reasons
+from app.services.status_definitions_seed import seed_status_definitions_if_empty
 from app.services.admin_roles import seed_admin_roles
 from app.services.navigation_rbac import seed_navigation_pages, seed_role_page_permissions
 from app.services.admissions_intake_flow import ensure_consultation_slots, dedupe_consultation_slots
@@ -113,6 +114,8 @@ def bootstrap_application() -> None:
             bootstrap_logger.info("Agent runtime configuration initialized.")
             seed_status_change_reasons(bootstrap_db)
             bootstrap_logger.info("Status change reasons initialized.")
+            if seed_status_definitions_if_empty(bootstrap_db):
+                bootstrap_logger.info("Pipeline status definitions seeded (39 stages).")
             seed_admin_roles(bootstrap_db)
             bootstrap_logger.info("Admin roles initialized.")
             seed_navigation_pages(bootstrap_db)

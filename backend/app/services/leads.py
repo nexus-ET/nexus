@@ -376,6 +376,9 @@ def _merge_existing_lead(
     from app.services.lead_study_interest import hydrate_lead_study_interest
 
     hydrate_lead_study_interest(db, lead, commit=False)
+    from app.services.student_status_service import ensure_lead_new_status
+
+    ensure_lead_new_status(db, lead, source="Meta merge")
     db.commit()
     db.refresh(lead)
     logger.info(
@@ -407,6 +410,9 @@ def save_lead(db: Session, lead_data: dict[str, Any]) -> SaveLeadResult:
         from app.services.lead_study_interest import hydrate_lead_study_interest
 
         hydrate_lead_study_interest(db, existing_by_leadgen, commit=True)
+        from app.services.student_status_service import ensure_lead_new_status
+
+        ensure_lead_new_status(db, existing_by_leadgen, source="Meta refresh")
         logger.info("save_lead updated leadgen_id=%s lead_id=%s", leadgen_id, existing_by_leadgen.id)
         return SaveLeadResult(lead=existing_by_leadgen, created=False)
 

@@ -28,6 +28,7 @@ STATUS_PROSPECT_CANCELLED = 38
 STATUS_PROSPECT_RELAUNCH = 39
 
 STAGE_LEAD_OUTREACH = "Lead: Outreach"
+STAGE_LEAD_NEW = "Lead: New"
 STAGE_COUNSELLING_SCHEDULED = "Counselling: Scheduled"
 STAGE_COUNSELLING_FINISHED = "Counselling: Finished"
 STAGE_LEAD_SESSION_BOOKED = "Lead: Session Booked"
@@ -57,6 +58,9 @@ def serialize_status_definition(row: StatusDefinition) -> dict:
 
 
 def list_status_definitions(db: Session) -> list[dict]:
+    from app.services.status_definitions_seed import seed_status_definitions_if_empty
+
+    seed_status_definitions_if_empty(db)
     rows = db.query(StatusDefinition).order_by(StatusDefinition.id.asc()).all()
     return [serialize_status_definition(row) for row in rows]
 
