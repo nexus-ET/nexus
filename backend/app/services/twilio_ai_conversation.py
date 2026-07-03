@@ -514,19 +514,23 @@ async def initiate_ai_outreach(
             template_send.message_id,
             timeout_seconds=float(settings.WHATSAPP_OUTREACH_DELIVERY_WAIT_SECONDS or 3.0),
         )
+        followup_delay = float(
+            settings.WHATSAPP_OUTREACH_FOLLOWUP_DELAY_SECONDS
+            or OUTREACH_TEMPLATE_FOLLOWUP_DELAY_SECONDS
+        )
         if delivery_confirmed:
-            await asyncio.sleep(0.5)
-        else:
-            fallback_delay = float(
-                settings.WHATSAPP_OUTREACH_FOLLOWUP_DELAY_SECONDS
-                or OUTREACH_TEMPLATE_FOLLOWUP_DELAY_SECONDS
+            logger.info(
+                "Template delivery confirmed for %s; waiting %.1fs before session follow-up",
+                template_send.message_id,
+                followup_delay,
             )
+        else:
             logger.warning(
                 "Template delivery webhook not received for %s; waiting %.1fs before follow-up",
                 template_send.message_id,
-                fallback_delay,
+                followup_delay,
             )
-            await asyncio.sleep(fallback_delay)
+        await asyncio.sleep(followup_delay)
 
     followup = IntakeReply(text=render_outreach_intake_followup(), confidence=1.0)
     await persist_and_send_intake_reply(db, lead, phone, followup)
