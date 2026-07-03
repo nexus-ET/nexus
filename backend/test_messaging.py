@@ -272,3 +272,22 @@ def test_outreach_followup_template_is_configured(monkeypatch: pytest.MonkeyPatc
     assert outreach_followup_template_is_configured() is False
     monkeypatch.setattr(settings, "WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE", "et_intake_fullname")
     assert outreach_followup_template_is_configured() is True
+
+
+def test_format_outreach_template_display_text_includes_intake_when_combined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import settings
+    from app.services.messaging import (
+        OutreachTemplateParameter,
+        format_outreach_template_display_text,
+    )
+
+    monkeypatch.setattr(settings, "WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP", True)
+    params = [
+        OutreachTemplateParameter(text="Priya"),
+        OutreachTemplateParameter(text="Edutrust"),
+    ]
+    text = format_outreach_template_display_text(params, template_name="et_student_welcome")
+    assert "Thanks for reaching Edutrust" in text
+    assert "reply with your full name" in text.lower()

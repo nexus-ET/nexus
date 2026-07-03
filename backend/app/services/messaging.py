@@ -119,23 +119,36 @@ def outreach_followup_template_is_configured() -> bool:
     return bool((settings.WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE or "").strip())
 
 
+def outreach_uses_combined_template() -> bool:
+    """True when the welcome Meta template body already includes the intake prompt."""
+    return bool(settings.WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP)
+
+
 def format_outreach_template_display_text(
     body_parameters: list[OutreachTemplateParameter] | None,
     *,
     template_name: str | None = None,
 ) -> str:
     """Human-readable preview of the outreach template for chat history."""
+    from app.services.intake_templates import render_outreach_intake_followup
+
     name = (template_name or settings.WHATSAPP_OUTREACH_TEMPLATE or "").strip() or "template"
     if not body_parameters:
-        return f"[WhatsApp template: {name}]"
-    student = body_parameters[0].text if body_parameters else "there"
-    if len(body_parameters) >= 2:
-        company = body_parameters[1].text
-        return (
-            f"Hi {student}! Thanks for reaching {company}. "
-            "We're excited to help you get started with your study abroad plans."
-        )
-    return f"Hi {student}!"
+        text = f"[WhatsApp template: {name}]"
+    else:
+        student = body_parameters[0].text if body_parameters else "there"
+        if len(body_parameters) >= 2:
+            company = body_parameters[1].text
+            text = (
+                f"Hi {student}! Thanks for reaching {company}. "
+                "We're excited to help you get started with your study abroad plans."
+            )
+        else:
+            text = f"Hi {student}!"
+
+    if outreach_uses_combined_template():
+        text = f"{text}\n\n{render_outreach_intake_followup()}"
+    return text
 
 
 @dataclass(frozen=True)

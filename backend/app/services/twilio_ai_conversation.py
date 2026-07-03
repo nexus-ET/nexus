@@ -37,6 +37,7 @@ from app.services.messaging import (
     get_active_provider,
     outreach_followup_template_is_configured,
     outreach_template_is_configured,
+    outreach_uses_combined_template,
     record_ai_conversation_audit,
     send_message,
     send_whatsapp_outreach_followup_template,
@@ -663,6 +664,8 @@ async def initiate_ai_outreach(
         or OUTREACH_TEMPLATE_FOLLOWUP_DELAY_SECONDS
     )
     template_wamid: str | None = None
+    skip_followup = outreach_uses_combined_template()
+    followup_text = render_outreach_intake_followup()
 
     if get_active_provider() == PROVIDER_WHATSAPP and outreach_template_is_configured():
         template_send = await send_whatsapp_outreach_template(
@@ -678,40 +681,52 @@ async def initiate_ai_outreach(
         sent_messages.append(template_send.display_text)
         template_wamid = template_send.message_id
 
-        delivery_confirmed = await wait_for_whatsapp_template_delivered(
-            template_send.message_id,
-            timeout_seconds=float(settings.WHATSAPP_OUTREACH_DELIVERY_WAIT_SECONDS or 15.0),
-        )
-        post_template_confirmed = float(
-            settings.WHATSAPP_OUTREACH_POST_TEMPLATE_DELAY_SECONDS
-            or OUTREACH_POST_TEMPLATE_CONFIRMED_DELAY_SECONDS
-        )
-        post_template_unconfirmed = float(
-            settings.WHATSAPP_OUTREACH_UNCONFIRMED_TEMPLATE_DELAY_SECONDS
-            or OUTREACH_POST_TEMPLATE_UNCONFIRMED_DELAY_SECONDS
-        )
-        post_template_delay = post_template_confirmed if delivery_confirmed else max(
-            followup_delay, post_template_unconfirmed
-        )
-        if delivery_confirmed:
+        if skip_followup:
             logger.info(
-                "Template delivery confirmed for %s; waiting %.1fs before session follow-up",
+                "Combined outreach template %s sent; skipping second WhatsApp message (message_id=%s)",
+                template_send.template_name,
                 template_send.message_id,
-                post_template_delay,
             )
         else:
-            logger.warning(
-                "Template delivery webhook not received for %s; waiting %.1fs before follow-up",
+            delivery_confirmed = await wait_for_whatsapp_template_delivered(
                 template_send.message_id,
-                post_template_delay,
+                timeout_seconds=float(settings.WHATSAPP_OUTREACH_DELIVERY_WAIT_SECONDS or 15.0),
             )
-        await asyncio.sleep(post_template_delay)
+            post_template_confirmed = float(
+                settings.WHATSAPP_OUTREACH_POST_TEMPLATE_DELAY_SECONDS
+                or OUTREACH_POST_TEMPLATE_CONFIRMED_DELAY_SECONDS
+            )
+            post_template_unconfirmed = float(
+                settings.WHATSAPP_OUTREACH_UNCONFIRMED_TEMPLATE_DELAY_SECONDS
+                or OUTREACH_POST_TEMPLATE_UNCONFIRMED_DELAY_SECONDS
+            )
+            post_template_delay = post_template_confirmed if delivery_confirmed else max(
+                followup_delay, post_template_unconfirmed
+            )
+            if delivery_confirmed:
+                logger.info(
+                    "Template delivery confirmed for %s; waiting %.1fs before follow-up",
+                    template_send.message_id,
+                    post_template_delay,
+                )
+            else:
+                logger.warning(
+                    "Template delivery webhook not received for %s; waiting %.1fs before follow-up",
+                    template_send.message_id,
+                    post_template_delay,
+                )
+            await asyncio.sleep(post_template_delay)
 
-    followup_text = render_outreach_intake_followup()
     followup_delivery_wait = float(
         settings.WHATSAPP_OUTREACH_FOLLOWUP_DELIVERY_WAIT_SECONDS or 20.0
     )
-    if get_active_provider() == PROVIDER_WHATSAPP:
+    if skip_followup:
+        if get_active_provider() == PROVIDER_WHATSAPP and not outreach_template_is_configured():
+            raise WhatsAppDeliveryError(
+                "WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP is enabled but WHATSAPP_OUTREACH_TEMPLATE "
+                "is not configured. Set the combined welcome template name in .env."
+            )
+    elif get_active_provider() == PROVIDER_WHATSAPP:
         try:
             await _deliver_outreach_followup(
                 phone,
@@ -733,14 +748,17 @@ async def initiate_ai_outreach(
                 )
                 raise WhatsAppDeliveryError(
                     f"{exc} Create a Utility template (et_intake_fullname) in Meta Business Manager "
-                    "and set WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE in staging .env."
+                    "and set WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE in staging .env, or set "
+                    "WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP=true when the welcome template "
+                    "already includes the intake prompt."
                 ) from exc
             raise
         await persist_advisor_message(db, lead, followup_text, ai_confidence=1.0)
+        sent_messages.append(followup_text)
     else:
         followup = IntakeReply(text=followup_text, confidence=1.0)
         await persist_and_send_intake_reply(db, lead, phone, followup)
-    sent_messages.append(followup_text)
+        sent_messages.append(followup_text)
 
     from app.services.student_status_service import ensure_lead_new_status, on_whatsapp_outreach
 
