@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Clear WhatsApp message history for a lead on the VPS (staging/production).
+# Keeps Lead: New in status_history; removes Outreach, Engagement, and all WhatsApp messages.
 #
 # Preview (no changes):
 #   sudo bash /var/www/nexus/backend/deploy/clear-whatsapp-messages.sh +918754545407 --dry-run
