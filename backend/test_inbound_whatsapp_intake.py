@@ -26,6 +26,14 @@ def test_looks_like_full_name_requires_first_and_last() -> None:
     assert not _looks_like_full_name("WhatsApp Contact (+911234567890)")
 
 
+def test_accept_intake_name_reply_accepts_single_name() -> None:
+    from app.services.admissions_intake_flow import _accept_intake_name_reply
+
+    assert _accept_intake_name_reply("Ishq") == "Ishq"
+    assert _accept_intake_name_reply("Priya Sharma") == "Priya Sharma"
+    assert _accept_intake_name_reply("a") is None
+
+
 def test_find_lead_for_inbound_whatsapp_prefers_active_intake_over_handoff() -> None:
     now = datetime.utcnow()
     outreach_lead = SimpleNamespace(
@@ -87,6 +95,41 @@ def test_process_intake_full_name_advances_to_location() -> None:
         assert lead.intake_step == INTAKE_STEP_CURRENT_LOCATION
         assert lead.full_name == "Priya Sharma"
         assert "city and country" in reply.text.lower()
+
+    asyncio.run(_run())
+
+
+def test_process_intake_single_name_advances_to_location() -> None:
+    async def _run() -> None:
+        lead = SimpleNamespace(
+            id=1,
+            full_name="Henry Ford",
+            intake_step=INTAKE_STEP_FULL_NAME,
+            intake_context=None,
+            preferred_country=None,
+            current_location=None,
+            phone_number="+911234567890",
+            academic_summary=None,
+            consultation_scheduled_at=None,
+            wants_consultation_call=None,
+        )
+        db = MagicMock()
+        db.commit = MagicMock()
+
+        from app.config import settings
+
+        with patch.object(settings, "NEXUS_APPOINTMENTS_ONLY", True):
+            reply = await process_intake_message(
+                db,
+                lead,
+                "Ishq",
+                MagicMock(is_active=False),
+            )
+
+        assert lead.intake_step == INTAKE_STEP_CURRENT_LOCATION
+        assert lead.full_name == "Ishq"
+        assert "city and country" in reply.text.lower()
+        assert "full first and last name" not in reply.text.lower()
 
     asyncio.run(_run())
 

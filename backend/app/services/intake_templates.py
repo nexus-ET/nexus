@@ -107,8 +107,6 @@ def render_deterministic_intake_text(
     task_lower = (task or "").lower()
 
     if step in {INTAKE_STEP_WELCOME, INTAKE_STEP_FULL_NAME, ""}:
-        if "not a valid full name" in task_lower or "previous answer was not" in task_lower:
-            return "Please reply with your full first and last name (for example: Priya Sharma)."
         return OUTREACH_FULL_NAME_PROMPT
 
     if step == INTAKE_STEP_CURRENT_LOCATION:

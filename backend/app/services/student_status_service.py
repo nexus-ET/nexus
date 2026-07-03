@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Literal
 
@@ -36,6 +37,8 @@ from app.services.status_definition_service import (
     get_status_definition_by_name,
 )
 from app.services.status_transition_service import can_transition_to, is_terminal_status
+
+logger = logging.getLogger(__name__)
 from app.services.system_log_service import log_system_event
 
 ChangedByTypeLiteral = Literal["system", "admin"]
@@ -545,8 +548,8 @@ def on_lead_created(db: Session, lead: Lead, *, source: str) -> None:
     ensure_lead_new_journey_baseline(db, lead, source=source)
 
 
-def on_whatsapp_outreach(db: Session, lead: Lead, *, source: str) -> None:
-    try_automated_status_transition(
+def on_whatsapp_outreach(db: Session, lead: Lead, *, source: str) -> dict:
+    result = try_automated_status_transition(
         db,
         lead,
         status_id=STATUS_LEAD_OUTREACH,
@@ -554,6 +557,14 @@ def on_whatsapp_outreach(db: Session, lead: Lead, *, source: str) -> None:
         comments=f"WhatsApp outreach triggered ({source}).",
         commit=True,
     )
+    if not result.get("changed") and result.get("blocked"):
+        logger.warning(
+            "Lead %s outreach status not updated (%s): %s",
+            lead.id,
+            source,
+            result.get("reason"),
+        )
+    return result
 
 
 def on_whatsapp_inbound(db: Session, lead: Lead) -> None:
