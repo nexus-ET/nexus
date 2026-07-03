@@ -74,6 +74,11 @@ WHATSAPP_OUTREACH_POST_TEMPLATE_DELAY_SECONDS=5
 WHATSAPP_OUTREACH_UNCONFIRMED_TEMPLATE_DELAY_SECONDS=18
 WHATSAPP_OUTREACH_FOLLOWUP_DELIVERY_WAIT_SECONDS=20
 
+# REQUIRED for reliable 2nd WhatsApp message — create in Meta Business Manager first (see below).
+WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE=et_intake_fullname
+WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE_LANGUAGE=en
+WHATSAPP_OUTREACH_REQUIRE_FOLLOWUP_TEMPLATE=true
+
 NEXUS_WHATSAPP_AUTO_SYNC=true
 ```
 
@@ -84,6 +89,64 @@ https://nexus-dev.edutrust.in/api/webhook
 ```
 
 Test line vars (`WHATSAPP_TEST_*`) may remain for reference but are **not used** when `NEXUS_INSTANCE` is staging.
+
+---
+
+## WhatsApp second message (intake prompt) — Meta template required
+
+After `et_student_welcome`, Meta often **accepts session text** but **does not deliver it** to the phone (common in India). Nexus now sends a **second Utility template** instead.
+
+### 1. Create template in Meta Business Manager
+
+1. Open [Meta Business Manager](https://business.facebook.com/) → WhatsApp Manager → **Message templates**.
+2. **Create template**:
+   - **Name:** `et_intake_fullname` (must match `WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE`)
+   - **Category:** Utility
+   - **Language:** English
+   - **Body** (no variables):
+
+     ```text
+     To book your free study abroad consultation, simply reply with your full name.
+     ```
+
+3. Submit and wait for **Approved** status.
+
+Or register via API on the VPS (uses credentials from `.env`):
+
+```bash
+cd /var/www/nexus/backend && source .venv/bin/activate
+python scripts/register_whatsapp_followup_template.py
+```
+
+### 2. Staging `.env` (required)
+
+```env
+WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE=et_intake_fullname
+WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE_LANGUAGE=en
+WHATSAPP_OUTREACH_REQUIRE_FOLLOWUP_TEMPLATE=true
+```
+
+### 3. Deploy and restart
+
+```bash
+sudo bash /var/www/nexus/backend/deploy/deploy-staging.sh
+```
+
+### 4. Verify logs after “Start AI Conversation”
+
+```bash
+journalctl -u nexus-backend -n 100 --no-pager | grep -i "follow-up template\|et_intake"
+```
+
+Expect: `Sent WhatsApp outreach follow-up template 'et_intake_fullname'`.
+
+### Alternative (single message, no second template)
+
+Append the intake line to `et_student_welcome` in Meta and set:
+
+```env
+WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP=true
+```
 
 ---
 

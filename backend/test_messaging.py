@@ -262,3 +262,13 @@ def test_assert_whatsapp_business_outreach_allowed_with_recent_inbound(
 
     db = SimpleNamespace(query=lambda *args, **kwargs: _Query())
     assert_whatsapp_business_outreach_allowed(db, lead_id=1)
+
+
+def test_outreach_followup_template_is_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import settings
+    from app.services.messaging import outreach_followup_template_is_configured
+
+    monkeypatch.setattr(settings, "WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE", "")
+    assert outreach_followup_template_is_configured() is False
+    monkeypatch.setattr(settings, "WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE", "et_intake_fullname")
+    assert outreach_followup_template_is_configured() is True
