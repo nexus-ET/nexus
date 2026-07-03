@@ -29,6 +29,7 @@ STATUS_PROSPECT_RELAUNCH = 39
 
 STAGE_LEAD_OUTREACH = "Lead: Outreach"
 STAGE_LEAD_NEW = "Lead: New"
+STAGE_LEAD_ENGAGEMENT = "Lead: Engagement"
 STAGE_COUNSELLING_SCHEDULED = "Counselling: Scheduled"
 STAGE_COUNSELLING_FINISHED = "Counselling: Finished"
 STAGE_LEAD_SESSION_BOOKED = "Lead: Session Booked"
@@ -78,6 +79,24 @@ def get_status_definition_by_name(db: Session, stage_name: str) -> StatusDefinit
         .filter(StatusDefinition.stage_name == stage_name)
         .first()
     )
+
+
+def resolve_status_id_by_name(
+    db: Session,
+    stage_name: str,
+    *,
+    fallback: int | None = None,
+) -> int | None:
+    row = get_status_definition_by_name(db, stage_name)
+    return row.id if row is not None else fallback
+
+
+LEAD_FUNNEL_STAGE_NAMES: tuple[str, ...] = (
+    STAGE_LEAD_NEW,
+    STAGE_LEAD_OUTREACH,
+    STAGE_LEAD_ENGAGEMENT,
+    STAGE_LEAD_SESSION_BOOKED,
+)
 
 
 def resolve_lead_status_meta(

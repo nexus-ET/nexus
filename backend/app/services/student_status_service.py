@@ -17,7 +17,9 @@ from app.services.status_consistency_service import (
     validate_status_data_consistency,
 )
 from app.services.status_definition_service import (
+    LEAD_FUNNEL_STAGE_NAMES,
     STAGE_COUNSELLING_FINISHED,
+    STAGE_LEAD_ENGAGEMENT,
     STAGE_LEAD_NEW,
     STAGE_LEAD_OUTREACH,
     STATUS_COUNSELLING_SCHEDULED,
@@ -35,11 +37,12 @@ from app.services.status_definition_service import (
     STATUS_PROSPECT_RELAUNCH,
     get_status_definition,
     get_status_definition_by_name,
+    resolve_status_id_by_name,
 )
 from app.services.status_transition_service import can_transition_to, is_terminal_status
+from app.services.system_log_service import log_system_event
 
 logger = logging.getLogger(__name__)
-from app.services.system_log_service import log_system_event
 
 ChangedByTypeLiteral = Literal["system", "admin"]
 
@@ -54,6 +57,161 @@ def _format_user_name(user: User | None) -> str:
     if first and last:
         return f"{first} {last}"
     return first or last or user.email or "Admin"
+
+
+def _status_history_has_stage(db: Session, student_id: int, stage_name: str) -> bool:
+    from app.models.status_definition import StatusDefinition
+
+    return (
+        db.query(StatusHistory.id)
+        .join(StatusDefinition, StatusDefinition.id == StatusHistory.status_id)
+        .filter(
+            StatusHistory.student_id == student_id,
+            StatusDefinition.stage_name == stage_name,
+        )
+        .first()
+        is not None
+    )
+
+
+def resolve_effective_lead_status_id(db: Session, lead: Lead) -> int | None:
+    """Current pipeline status from the lead row, or the latest status_history row."""
+    if lead.status_definition_id is not None:
+        return lead.status_definition_id
+
+    latest = (
+        db.query(StatusHistory.status_id)
+        .filter(StatusHistory.student_id == lead.id)
+        .order_by(StatusHistory.created_at.desc(), StatusHistory.id.desc())
+        .first()
+    )
+    return int(latest[0]) if latest else None
+
+
+def sync_lead_pipeline_status_id(db: Session, lead: Lead) -> bool:
+    """
+    Align leads.status_definition_id with journey history when the FK was never set.
+    """
+    if lead.status_definition_id is not None:
+        return False
+
+    effective = resolve_effective_lead_status_id(db, lead)
+    if effective is None:
+        return False
+
+    lead.status_definition_id = effective
+    lead.status_entered_at = lead.status_entered_at or datetime.utcnow()
+    lead.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(lead)
+    return True
+
+
+def _infer_funnel_history_time(db: Session, lead: Lead, stage_name: str) -> datetime:
+    from app.models.message import Message
+
+    if stage_name == STAGE_LEAD_NEW:
+        return lead.created_at or datetime.utcnow()
+
+    if stage_name == STAGE_LEAD_OUTREACH:
+        advisor_msg = (
+            db.query(Message.created_at)
+            .filter(Message.lead_id == lead.id, Message.sender == "advisor")
+            .order_by(Message.created_at.asc(), Message.id.asc())
+            .first()
+        )
+        if advisor_msg and advisor_msg[0]:
+            return advisor_msg[0]
+        return lead.status_entered_at or lead.updated_at or datetime.utcnow()
+
+    if stage_name == STAGE_LEAD_ENGAGEMENT:
+        candidate_msg = (
+            db.query(Message.created_at)
+            .filter(Message.lead_id == lead.id, Message.sender == "candidate")
+            .order_by(Message.created_at.asc(), Message.id.asc())
+            .first()
+        )
+        if candidate_msg and candidate_msg[0]:
+            return candidate_msg[0]
+        return lead.status_entered_at or lead.updated_at or datetime.utcnow()
+
+    return lead.status_entered_at or lead.updated_at or datetime.utcnow()
+
+
+def ensure_funnel_journey_history(db: Session, lead: Lead, *, source: str) -> bool:
+    """
+    Backfill Lead funnel rows in status_history from WhatsApp activity when missing.
+
+    Repairs staging leads where outreach ran but pipeline transitions were blocked.
+    """
+    from app.models.message import Message
+    from app.models.status_definition import StatusDefinition
+    from app.services.status_definitions_seed import ensure_status_definition_funnel_links
+
+    ensure_status_definition_funnel_links(db)
+
+    stages_to_ensure: list[str] = [STAGE_LEAD_NEW]
+    has_advisor = (
+        db.query(Message.id)
+        .filter(Message.lead_id == lead.id, Message.sender == "advisor")
+        .first()
+        is not None
+    )
+    has_candidate = (
+        db.query(Message.id)
+        .filter(Message.lead_id == lead.id, Message.sender == "candidate")
+        .first()
+        is not None
+    )
+    if has_advisor:
+        stages_to_ensure.append(STAGE_LEAD_OUTREACH)
+    if has_candidate:
+        stages_to_ensure.append(STAGE_LEAD_ENGAGEMENT)
+
+    effective = resolve_effective_lead_status_id(db, lead)
+    if effective is not None:
+        effective_def = db.query(StatusDefinition).filter(StatusDefinition.id == effective).first()
+        if effective_def and effective_def.stage_name in LEAD_FUNNEL_STAGE_NAMES:
+            idx = LEAD_FUNNEL_STAGE_NAMES.index(effective_def.stage_name)
+            for stage_name in LEAD_FUNNEL_STAGE_NAMES[: idx + 1]:
+                if stage_name not in stages_to_ensure:
+                    stages_to_ensure.append(stage_name)
+
+    changed = False
+    ordered = [name for name in LEAD_FUNNEL_STAGE_NAMES if name in stages_to_ensure]
+    for stage_name in ordered:
+        if _status_history_has_stage(db, lead.id, stage_name):
+            continue
+        definition = get_status_definition_by_name(db, stage_name)
+        if definition is None:
+            continue
+        comments = {
+            STAGE_LEAD_NEW: "Lead record created.",
+            STAGE_LEAD_OUTREACH: f"WhatsApp outreach recorded ({source}).",
+            STAGE_LEAD_ENGAGEMENT: "Student replied on WhatsApp.",
+        }.get(stage_name, f"Pipeline stage recorded ({source}).")
+        record_status_history(
+            db,
+            student_id=lead.id,
+            status_id=definition.id,
+            changed_by_type="system",
+            comments=comments,
+            created_at=_infer_funnel_history_time(db, lead, stage_name),
+        )
+        changed = True
+
+    if changed:
+        for stage_name in reversed(ordered):
+            if _status_history_has_stage(db, lead.id, stage_name):
+                definition = get_status_definition_by_name(db, stage_name)
+                if definition is not None:
+                    lead.status_definition_id = definition.id
+                    lead.status_entered_at = _infer_funnel_history_time(db, lead, stage_name)
+                break
+        lead.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(lead)
+    return changed
 
 
 def record_status_history(
@@ -120,7 +278,10 @@ def update_student_status(
     assert_single_active_pipeline_status(lead)
     _validate_before_update(db, student_id)
 
-    current_status_id = lead.status_definition_id
+    sync_lead_pipeline_status_id(db, lead)
+    db.refresh(lead)
+
+    current_status_id = resolve_effective_lead_status_id(db, lead)
     if skip_if_unchanged and not force_history and current_status_id == status_id:
         return {
             "changed": False,
@@ -447,6 +608,14 @@ def ensure_lead_new_journey_baseline(db: Session, lead: Lead, *, source: str) ->
     in the pipeline — only backfills the first journey row for View Journey.
     """
     if _lead_new_history_exists(db, lead.id):
+        if lead.status_definition_id is None:
+            definition = _resolve_lead_new_definition(db)
+            if definition is not None:
+                lead.status_definition_id = definition.id
+                lead.status_entered_at = lead.status_entered_at or lead.created_at or datetime.utcnow()
+                lead.updated_at = datetime.utcnow()
+                db.commit()
+                db.refresh(lead)
         return False
 
     definition = _resolve_lead_new_definition(db)
@@ -490,9 +659,15 @@ def get_student_journey(db: Session, student_id: int) -> list[dict]:
         return []
 
     seed_status_definitions_if_empty(db)
+    from app.services.status_definitions_seed import ensure_status_definition_funnel_links
+
+    ensure_status_definition_funnel_links(db)
 
     try:
         ensure_lead_new_journey_baseline(db, lead, source="journey view")
+        sync_lead_pipeline_status_id(db, lead)
+        ensure_funnel_journey_history(db, lead, source="journey view")
+        db.refresh(lead)
     except Exception:
         log_system_event(
             db,
@@ -549,10 +724,21 @@ def on_lead_created(db: Session, lead: Lead, *, source: str) -> None:
 
 
 def on_whatsapp_outreach(db: Session, lead: Lead, *, source: str) -> dict:
+    sync_lead_pipeline_status_id(db, lead)
+    db.refresh(lead)
+    outreach_status_id = resolve_status_id_by_name(
+        db,
+        STAGE_LEAD_OUTREACH,
+        fallback=STATUS_LEAD_OUTREACH,
+    )
+    if outreach_status_id is None:
+        logger.error("Lead %s outreach status missing from status_definitions.", lead.id)
+        return {"changed": False, "blocked": True, "reason": "Lead: Outreach definition missing."}
+
     result = try_automated_status_transition(
         db,
         lead,
-        status_id=STATUS_LEAD_OUTREACH,
+        status_id=outreach_status_id,
         source=source,
         comments=f"WhatsApp outreach triggered ({source}).",
         commit=True,
@@ -567,15 +753,33 @@ def on_whatsapp_outreach(db: Session, lead: Lead, *, source: str) -> dict:
     return result
 
 
-def on_whatsapp_inbound(db: Session, lead: Lead) -> None:
-    try_automated_status_transition(
+def on_whatsapp_inbound(db: Session, lead: Lead) -> dict:
+    sync_lead_pipeline_status_id(db, lead)
+    db.refresh(lead)
+    engagement_status_id = resolve_status_id_by_name(
+        db,
+        STAGE_LEAD_ENGAGEMENT,
+        fallback=STATUS_LEAD_ENGAGEMENT,
+    )
+    if engagement_status_id is None:
+        logger.error("Lead %s engagement status missing from status_definitions.", lead.id)
+        return {"changed": False, "blocked": True, "reason": "Lead: Engagement definition missing."}
+
+    result = try_automated_status_transition(
         db,
         lead,
-        status_id=STATUS_LEAD_ENGAGEMENT,
+        status_id=engagement_status_id,
         source="whatsapp_inbound",
         comments="Student replied on WhatsApp.",
         commit=True,
     )
+    if not result.get("changed") and result.get("blocked"):
+        logger.warning(
+            "Lead %s engagement status not updated: %s",
+            lead.id,
+            result.get("reason"),
+        )
+    return result
 
 
 def on_session_booked(db: Session, lead: Lead) -> None:

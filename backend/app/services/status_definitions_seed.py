@@ -18,6 +18,12 @@ def seed_status_definitions_if_empty(db: Session) -> bool:
     table — View Journey and pipeline status dropdowns then show nothing.
     """
     from app.models.status_definition import StatusDefinition
+    from app.services.status_definition_service import (
+        STAGE_LEAD_ENGAGEMENT,
+        STAGE_LEAD_NEW,
+        STAGE_LEAD_OUTREACH,
+        STAGE_LEAD_SESSION_BOOKED,
+    )
 
     if db.query(StatusDefinition.id).limit(1).first() is not None:
         return False
@@ -91,3 +97,35 @@ def seed_status_definitions_if_empty(db: Session) -> bool:
     db.commit()
     logger.info("Seeded 39 status_definitions rows.")
     return True
+
+
+def ensure_status_definition_funnel_links(db: Session) -> bool:
+    """
+    Repair next_stage_id links for the lead funnel when missing (common on partial migrations).
+    """
+    from app.services.status_definition_service import (
+        STAGE_LEAD_ENGAGEMENT,
+        STAGE_LEAD_NEW,
+        STAGE_LEAD_OUTREACH,
+        STAGE_LEAD_SESSION_BOOKED,
+        get_status_definition_by_name,
+    )
+
+    changed = False
+    funnel_links = (
+        (STAGE_LEAD_NEW, STAGE_LEAD_OUTREACH),
+        (STAGE_LEAD_OUTREACH, STAGE_LEAD_ENGAGEMENT),
+        (STAGE_LEAD_ENGAGEMENT, STAGE_LEAD_SESSION_BOOKED),
+    )
+    for current_name, next_name in funnel_links:
+        current = get_status_definition_by_name(db, current_name)
+        nxt = get_status_definition_by_name(db, next_name)
+        if current is None or nxt is None:
+            continue
+        if current.next_stage_id != nxt.id:
+            current.next_stage_id = nxt.id
+            changed = True
+    if changed:
+        db.commit()
+        logger.info("Repaired status_definitions funnel next_stage_id links.")
+    return changed
