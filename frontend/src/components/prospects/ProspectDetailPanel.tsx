@@ -20,7 +20,12 @@ import {
   platformBadgeStyle,
 } from '../../utils/prospectMessages';
 import { useUpdateProspectNotes, useUpdateProspectStatus } from '../../hooks/useProspects';
-import { useStatusDefinitions, useUpdateStudentStatus } from '../../hooks/useStudentStatus';
+import {
+  useStatusDefinitions,
+  useUpdateStudentStatus,
+  useValidTransitions,
+  ValidTransitionOption,
+} from '../../hooks/useStudentStatus';
 import StudentJourneyPanel from '../StudentJourneyPanel';
 import { categoryBadgeClass } from '../../utils/statusBadges';
 
@@ -95,18 +100,35 @@ export default function ProspectDetailPanel({
   const [notesDraft, setNotesDraft] = useState('');
   const [pipelineStatusId, setPipelineStatusId] = useState('');
   const [pipelineComments, setPipelineComments] = useState('');
+  const [expressTargetId, setExpressTargetId] = useState('');
+  const [revertTargetId, setRevertTargetId] = useState('');
   const [journeyOpen, setJourneyOpen] = useState(false);
   const historyRef = useRef<HTMLDivElement | null>(null);
   const statusMutation = useUpdateProspectStatus();
   const notesMutation = useUpdateProspectNotes(leadId);
   const { data: statusDefinitionsData } = useStatusDefinitions();
+  const { data: validTransitions } = useValidTransitions(leadId);
   const pipelineStatusMutation = useUpdateStudentStatus(leadId);
 
   const statusDefinitions = statusDefinitionsData?.items ?? [];
-  const selectedPipelineStatus = useMemo(
-    () => statusDefinitions.find(item => String(item.id) === pipelineStatusId),
-    [pipelineStatusId, statusDefinitions]
+  const forwardTransitions = validTransitions?.forward ?? [];
+  const expressTransitions = useMemo(
+    () => (validTransitions?.express ?? []).filter(item => item.can_trigger),
+    [validTransitions?.express]
   );
+  const backwardTransitions = useMemo(
+    () => (validTransitions?.backward ?? []).filter(item => item.can_trigger),
+    [validTransitions?.backward]
+  );
+  const relaunchTransitions = useMemo(
+    () => (validTransitions?.relaunch ?? []).filter(item => item.can_trigger),
+    [validTransitions?.relaunch]
+  );
+  const revertTransitions = useMemo(
+    () => [...backwardTransitions, ...relaunchTransitions],
+    [backwardTransitions, relaunchTransitions]
+  );
+  const nextForward = forwardTransitions[0] ?? null;
 
   useEffect(() => {
     setJourneyOpen(false);
@@ -125,12 +147,21 @@ export default function ProspectDetailPanel({
     () => statusDefinitions.find(item => item.id === detail?.status_definition_id),
     [detail?.status_definition_id, statusDefinitions]
   );
-  const requiresOverrideComment = useMemo(() => {
-    if (!pipelineStatusId || !detail?.status_definition_id) return false;
-    const selectedId = Number(pipelineStatusId);
-    if (selectedId === detail.status_definition_id) return false;
-    return currentPipelineDefinition?.next_stage_id !== selectedId;
-  }, [pipelineStatusId, detail?.status_definition_id, currentPipelineDefinition, detail]);
+  const selectedRevertTransition = useMemo(
+    () => revertTransitions.find(item => String(item.to_status_id) === revertTargetId),
+    [revertTargetId, revertTransitions]
+  );
+  const selectedExpressTransition = useMemo(
+    () => expressTransitions.find(item => String(item.to_status_id) === expressTargetId),
+    [expressTargetId, expressTransitions]
+  );
+  const requiresRevertComment = Boolean(selectedRevertTransition?.requires_comment);
+
+  useEffect(() => {
+    setExpressTargetId('');
+    setRevertTargetId('');
+    setPipelineComments('');
+  }, [leadId, detail?.status_definition_id]);
 
   useEffect(() => {
     if (detail?.status_definition_id) {
@@ -204,16 +235,43 @@ export default function ProspectDetailPanel({
     notesMutation.mutate(notesDraft);
   };
 
-  const handlePipelineStatusSave = () => {
-    if (!pipelineStatusId || !detail) return;
-    if (requiresOverrideComment && !pipelineComments.trim()) {
-      window.alert('Please add a comment explaining this non-standard status change.');
+  const applyPipelineTransition = (
+    option: ValidTransitionOption,
+    comments?: string
+  ) => {
+    pipelineStatusMutation.mutate(
+      {
+        status_definition_id: option.to_status_id,
+        transition_type: option.transition_type,
+        comments: comments?.trim() || undefined,
+      },
+      {
+        onSuccess: () => {
+          setPipelineComments('');
+          setExpressTargetId('');
+          setRevertTargetId('');
+        },
+      }
+    );
+  };
+
+  const handleForwardStep = () => {
+    if (!nextForward) return;
+    applyPipelineTransition(nextForward, pipelineComments);
+  };
+
+  const handleExpressJump = () => {
+    if (!selectedExpressTransition) return;
+    applyPipelineTransition(selectedExpressTransition, pipelineComments);
+  };
+
+  const handleRevertUpdate = () => {
+    if (!selectedRevertTransition) return;
+    if (requiresRevertComment && !pipelineComments.trim()) {
+      window.alert('Please add a comment explaining this revert or relaunch.');
       return;
     }
-    pipelineStatusMutation.mutate({
-      status_definition_id: Number(pipelineStatusId),
-      comments: pipelineComments.trim() || undefined,
-    });
+    applyPipelineTransition(selectedRevertTransition, pipelineComments);
   };
 
   const handleMessage = () => {
@@ -326,47 +384,120 @@ export default function ProspectDetailPanel({
                 </span>
               ) : null}
             </div>
-            <label className="prospects-pipeline-status__label" htmlFor="pipeline-status-select">
-              Update status
-            </label>
-            <select
-              id="pipeline-status-select"
-              value={pipelineStatusId}
-              onChange={event => setPipelineStatusId(event.target.value)}
-              disabled={pipelineStatusMutation.isPending || statusDefinitions.length === 0}
-            >
-              <option value="">Select pipeline status</option>
-              {statusDefinitions.map(stage => (
-                <option key={stage.id} value={stage.id}>
-                  {stage.stage_name}
-                </option>
-              ))}
-            </select>
-            {selectedPipelineStatus?.description ? (
-              <p className="prospects-pipeline-status__description">{selectedPipelineStatus.description}</p>
+
+            {nextForward ? (
+              <div className="prospects-pipeline-status__section">
+                <p className="prospects-pipeline-status__label">Next step</p>
+                <p className="prospects-pipeline-status__description">
+                  {nextForward.description || `Advance to ${nextForward.stage_name}.`}
+                </p>
+                <button
+                  type="button"
+                  className="prospects-action-btn prospects-action-btn--primary"
+                  onClick={handleForwardStep}
+                  disabled={pipelineStatusMutation.isPending}
+                >
+                  {pipelineStatusMutation.isPending ? 'Saving...' : `Next: ${nextForward.stage_name}`}
+                </button>
+              </div>
             ) : (
               <p className="prospects-pipeline-status__description prospects-pipeline-status__description--muted">
-                Select a status to view its guidance.
+                No standard forward step is configured from this stage.
               </p>
             )}
-            <textarea
-              value={pipelineComments}
-              onChange={event => setPipelineComments(event.target.value)}
-              placeholder={
-                requiresOverrideComment
-                  ? 'Required: explain why this status bypasses the standard workflow...'
-                  : 'Optional note for this status change...'
-              }
-              rows={3}
-            />
-            <button
-              type="button"
-              className="prospects-action-btn prospects-action-btn--primary"
-              onClick={handlePipelineStatusSave}
-              disabled={!pipelineStatusId || pipelineStatusMutation.isPending}
-            >
-              {pipelineStatusMutation.isPending ? 'Saving...' : 'Save pipeline status'}
-            </button>
+
+            {(validTransitions?.express ?? []).length > 0 ? (
+              <div className="prospects-pipeline-status__section">
+                <label className="prospects-pipeline-status__label" htmlFor="express-status-select">
+                  Jump to…
+                </label>
+                <select
+                  id="express-status-select"
+                  value={expressTargetId}
+                  onChange={event => setExpressTargetId(event.target.value)}
+                  disabled={pipelineStatusMutation.isPending || expressTransitions.length === 0}
+                >
+                  <option value="">
+                    {expressTransitions.length === 0
+                      ? 'Express jumps require Student Manager access'
+                      : 'Select express destination'}
+                  </option>
+                  {expressTransitions.map(option => (
+                    <option key={`express-${option.to_status_id}`} value={option.to_status_id}>
+                      {option.stage_name}
+                    </option>
+                  ))}
+                </select>
+                {selectedExpressTransition?.description ? (
+                  <p className="prospects-pipeline-status__description">
+                    {selectedExpressTransition.description}
+                  </p>
+                ) : null}
+                <button
+                  type="button"
+                  className="prospects-action-btn"
+                  onClick={handleExpressJump}
+                  disabled={!expressTargetId || pipelineStatusMutation.isPending}
+                >
+                  Express jump
+                </button>
+              </div>
+            ) : null}
+
+            {revertTransitions.length === 0 ? (
+              <textarea
+                value={pipelineComments}
+                onChange={event => setPipelineComments(event.target.value)}
+                placeholder="Optional note for the next forward or express step..."
+                rows={2}
+              />
+            ) : null}
+
+            {revertTransitions.length > 0 ? (
+              <details className="prospects-pipeline-status__revert">
+                <summary>Revert / update</summary>
+                <label className="prospects-pipeline-status__label" htmlFor="revert-status-select">
+                  Choose target stage
+                </label>
+                <select
+                  id="revert-status-select"
+                  value={revertTargetId}
+                  onChange={event => setRevertTargetId(event.target.value)}
+                  disabled={pipelineStatusMutation.isPending}
+                >
+                  <option value="">Select stage</option>
+                  {revertTransitions.map(option => (
+                    <option key={`${option.transition_type}-${option.to_status_id}`} value={option.to_status_id}>
+                      {option.stage_name}
+                    </option>
+                  ))}
+                </select>
+                <textarea
+                  value={pipelineComments}
+                  onChange={event => setPipelineComments(event.target.value)}
+                  placeholder={
+                    requiresRevertComment
+                      ? 'Required: explain why you are reverting or relaunching this student...'
+                      : 'Optional note for this status change...'
+                  }
+                  rows={3}
+                />
+                <button
+                  type="button"
+                  className="prospects-action-btn"
+                  onClick={handleRevertUpdate}
+                  disabled={!revertTargetId || pipelineStatusMutation.isPending}
+                >
+                  {pipelineStatusMutation.isPending ? 'Saving...' : 'Apply revert / update'}
+                </button>
+              </details>
+            ) : null}
+
+            {currentPipelineDefinition?.description ? (
+              <p className="prospects-pipeline-status__description prospects-pipeline-status__description--muted">
+                Current stage guidance: {currentPipelineDefinition.description}
+              </p>
+            ) : null}
           </div>
 
           <div className="prospects-profile-grid">

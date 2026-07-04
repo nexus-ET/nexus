@@ -407,6 +407,26 @@
   gap: 10px;
 }
 
+.prospects-pipeline-status__section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.prospects-pipeline-status__revert {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.prospects-pipeline-status__revert summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
 .prospects-pipeline-status__header {
   display: flex;
   align-items: center;

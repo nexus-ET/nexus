@@ -902,7 +902,11 @@ const MyBookings: React.FC = () => {
 
           className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40"
 
-          onClick={() => setSessionModal(null)}
+          role="dialog"
+
+          aria-modal="true"
+
+          aria-labelledby="counselling-session-title"
 
         >
 
@@ -910,15 +914,19 @@ const MyBookings: React.FC = () => {
 
             className="w-full max-w-6xl max-h-[92vh] rounded-2xl border border-border-subtle bg-card shadow-2xl flex flex-col overflow-hidden"
 
-            onClick={event => event.stopPropagation()}
-
           >
 
             <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-border-subtle bg-surface-bg shrink-0">
 
               <div>
 
-                <h3 className="text-lg font-semibold text-text-main flex items-center gap-2">
+                <h3
+
+                  id="counselling-session-title"
+
+                  className="text-lg font-semibold text-text-main flex items-center gap-2"
+
+                >
 
                   <Sparkles size={18} className="text-violet-700" />
 
