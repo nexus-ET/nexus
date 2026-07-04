@@ -121,6 +121,14 @@ Only if you keep a short welcome template without the intake line, use `WHATSAPP
 | Variable | Suggested value | Purpose |
 |----------|-----------------|--------|
 | `NEXUS_APPOINTMENTS_ONLY` | `true` | Fixed intake + booking flow on WhatsApp (no open-ended LLM Q&A on webhook) |
+| `SECURITY_AUDIT_ALERT_WHATSAPP_ENABLED` | `false` | Stop nightly audit failures from WhatsApp-blasting super admins on staging |
+| `SECURITY_AUDIT_ALERT_MANUAL_ONLY` | `true` | Optional: only send red-flag alerts when someone clicks Run audit in the UI |
+
+To silence all outbound red-flag alerts on staging (audit still runs and logs):
+
+```env
+SECURITY_AUDIT_RED_ALERTS_ENABLED=false
+```
 
 ---
 

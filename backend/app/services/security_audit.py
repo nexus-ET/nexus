@@ -56,6 +56,18 @@ def _route_requires_auth(route_source: str) -> bool:
     return any(marker in route_source for marker in markers)
 
 
+def _admin_id_scoped_booking_handler(handler_source: str, owned_booking_source: str) -> bool:
+    """True when a handler scopes bookings to the current user via inline filter or _get_owned_booking."""
+    if "CounsellingBooking.admin_id == user_id" in handler_source:
+        return True
+    if "_get_owned_booking" not in handler_source:
+        return False
+    return (
+        "CounsellingBooking.admin_id == user_id" in owned_booking_source
+        and "CounsellingBooking.id == booking_id" in owned_booking_source
+    )
+
+
 def check_prompt_injection_guardrails() -> list[SecurityCheckResult]:
     results: list[SecurityCheckResult] = []
 
@@ -287,7 +299,8 @@ def check_idor_controls() -> list[SecurityCheckResult]:
     )
 
     mine_source = inspect.getsource(counselling_service.get_my_bookings)
-    mine_scoped = "CounsellingBooking.admin_id == user_id" in mine_source
+    owned_booking_source = inspect.getsource(counselling_service._get_owned_booking)
+    mine_scoped = _admin_id_scoped_booking_handler(mine_source, owned_booking_source)
     results.append(
         SecurityCheckResult(
             name="my_bookings_admin_id_scope",
@@ -300,7 +313,7 @@ def check_idor_controls() -> list[SecurityCheckResult]:
     )
 
     my_comm_source = inspect.getsource(counselling_service.get_my_booking_communications)
-    comm_scoped = "CounsellingBooking.admin_id == user_id" in my_comm_source
+    comm_scoped = _admin_id_scoped_booking_handler(my_comm_source, owned_booking_source)
     results.append(
         SecurityCheckResult(
             name="my_booking_communications_admin_id_scope",

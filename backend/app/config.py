@@ -105,6 +105,11 @@ class Settings(BaseSettings):
 
     SECURITY_AUDIT_ENABLED: bool = True
     SECURITY_AUDIT_CRON_HOUR: int = 2
+    # Outbound red-flag alerts (WhatsApp/email/push to super admins). Audit runs still log failures.
+    SECURITY_AUDIT_RED_ALERTS_ENABLED: bool = True
+    SECURITY_AUDIT_ALERT_WHATSAPP_ENABLED: bool = True
+    # When true, scheduled failures are logged only — manual "Run audit" still sends alerts.
+    SECURITY_AUDIT_ALERT_MANUAL_ONLY: bool = False
 
     # Max pending + scheduled counselling appointments allowed at the same time slot
     MAX_COUNSELLING_BOOKINGS_PER_SLOT: int = 5

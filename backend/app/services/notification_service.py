@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from app.db.database import SessionLocal
+from app.config import settings
 from app.models.counselling_booking import CounsellingBooking
 from app.models.lead import Lead
 from app.models.message import Message
@@ -419,6 +420,7 @@ class NotificationService:
         email_sent = 0
         push_sent = 0
         whatsapp_sent = 0
+        whatsapp_enabled = settings.SECURITY_AUDIT_ALERT_WHATSAPP_ENABLED
 
         for admin in super_admins:
             if admin.email:
@@ -464,7 +466,7 @@ class NotificationService:
                         priority="urgent",
                     )
 
-            if admin.phone_number:
+            if whatsapp_enabled and admin.phone_number:
                 sent = await send_message(admin.phone_number, f"{title}\n\n{message}")
                 status = "sent" if sent else "failed"
                 if sent:

@@ -7,6 +7,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db.database import SessionLocal
 from app.models.security_audit_run import SecurityAuditRun
 from app.schemas.security_audit import SecurityAuditRunOut, SecurityCheckResult as SecurityCheckResultSchema
@@ -69,12 +70,21 @@ def _persist_run(
     return run
 
 
+def _should_send_red_flag_alert(*, triggered_by: str) -> bool:
+    if not settings.SECURITY_AUDIT_RED_ALERTS_ENABLED:
+        return False
+    if settings.SECURITY_AUDIT_ALERT_MANUAL_ONLY and triggered_by != "manual":
+        return False
+    return True
+
+
 def _handle_red_flags(
     db: Session,
     *,
     run: SecurityAuditRun,
     failed_checks: list[SecurityCheckResult],
     triggered_by_user_id: int | None,
+    triggered_by: str,
 ) -> bool:
     failure_summary = "; ".join(f"{check.name}: {check.message}" for check in failed_checks[:5])
     write_audit_log(
@@ -90,6 +100,17 @@ def _handle_red_flags(
         },
         sync_mode="AUTOMATED",
     )
+
+    if not _should_send_red_flag_alert(triggered_by=triggered_by):
+        logger.info(
+            "Security audit run %s red flags logged; outbound alerts suppressed "
+            "(RED_ALERTS=%s MANUAL_ONLY=%s triggered_by=%s).",
+            run.id,
+            settings.SECURITY_AUDIT_RED_ALERTS_ENABLED,
+            settings.SECURITY_AUDIT_ALERT_MANUAL_ONLY,
+            triggered_by,
+        )
+        return False
 
     title = "NEXUS Security Fortress Alert"
     message = (
@@ -134,6 +155,7 @@ def run_security_audit_suite(
             run=run,
             failed_checks=failed,
             triggered_by_user_id=triggered_by_user_id,
+            triggered_by=triggered_by,
         )
 
     return run, alert_sent
