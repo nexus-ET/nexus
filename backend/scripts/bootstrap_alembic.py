@@ -25,7 +25,7 @@ from sqlalchemy.engine import Inspector
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 LEGACY_BASELINE_REVISION = "d9a4b2c81f0e"
-HEAD_REVISION = "q3m6n1o25p7k"
+HEAD_REVISION = "r4n7o2p36q8l"
 
 ORDERED_REVISIONS: list[str] = [
     "d9a4b2c81f0e",
@@ -42,6 +42,7 @@ ORDERED_REVISIONS: list[str] = [
     "o1k4l9m03n5i",
     "p2l5m0n14o6j",
     "q3m6n1o25p7k",
+    "r4n7o2p36q8l",
 ]
 
 
@@ -110,6 +111,7 @@ def _revision_checks() -> dict[str, Callable[[Inspector], bool]]:
         and _has_column(i, "status_history", "changed_by_type"),
         "p2l5m0n14o6j": lambda i: _has_table(i, "system_logs"),
         "q3m6n1o25p7k": _session_cancelled_allows_rebook,
+        "r4n7o2p36q8l": lambda i: _has_table(i, "status_transitions"),
     }
 
 
