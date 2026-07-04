@@ -449,6 +449,7 @@ const CounsellingSessionPanel: React.FC<CounsellingSessionPanelProps> = ({
               placeholderText="Select follow-up date"
               className="w-full rounded-lg border border-border-subtle bg-surface-bg px-3 py-2 text-sm"
               wrapperClassName="w-full"
+              popperProps={{ strategy: 'fixed' }}
               isClearable
             />
           </div>

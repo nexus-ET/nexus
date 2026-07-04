@@ -57,9 +57,17 @@ from app.schemas.status_definition import (
     PipelineStatusUpdateResponse,
     StatusDefinitionsResponse,
     StudentJourneyResponse,
+    ValidTransitionOption,
+    ValidTransitionsResponse,
 )
 from app.services.status_definition_service import list_status_definitions, resolve_lead_status_meta
-from app.services.student_status_service import get_student_journey, update_student_status
+from app.services.status_transition_service import get_valid_transitions
+from app.services.student_status_service import (
+    get_student_journey,
+    resolve_effective_lead_status_id,
+    sync_lead_pipeline_status_id,
+    update_student_status,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -890,6 +898,31 @@ async def get_student_journey_timeline(
     return {"student_id": lead_id, "items": get_student_journey(db, lead_id)}
 
 
+@router.get("/{lead_id}/valid-transitions", response_model=ValidTransitionsResponse)
+@router.get("/{lead_id}/valid-transitions/", response_model=ValidTransitionsResponse)
+async def get_student_valid_transitions(
+    lead_id: int,
+    current_user: User = Depends(deps.get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead profile not found.")
+
+    sync_lead_pipeline_status_id(db, lead)
+    db.refresh(lead)
+    current_status_id = resolve_effective_lead_status_id(db, lead)
+    grouped = get_valid_transitions(db, current_status_id, user=current_user)
+    return ValidTransitionsResponse(
+        student_id=lead_id,
+        current_status_id=current_status_id,
+        forward=[ValidTransitionOption(**item) for item in grouped["forward"]],
+        express=[ValidTransitionOption(**item) for item in grouped["express"]],
+        backward=[ValidTransitionOption(**item) for item in grouped["backward"]],
+        relaunch=[ValidTransitionOption(**item) for item in grouped["relaunch"]],
+    )
+
+
 @router.get("/{lead_id}")
 @router.get("/{lead_id}/")
 def get_lead_detail(lead_id: int, db: Session = Depends(get_db)):
@@ -929,6 +962,7 @@ async def update_student_pipeline_status(
     if not lead:
         raise HTTPException(status_code=404, detail="Lead profile not found.")
 
+    use_structured_transition = payload.transition_type is not None
     result = update_student_status(
         db,
         student_id=lead_id,
@@ -937,11 +971,14 @@ async def update_student_pipeline_status(
         changed_by_user_id=current_user.id,
         comments=payload.comments,
         skip_if_unchanged=True,
-        allow_override=True,
+        allow_override=not use_structured_transition,
+        transition_type=payload.transition_type,
+        acting_user=current_user,
         commit=True,
     )
     if result.get("blocked"):
-        raise HTTPException(status_code=400, detail=result.get("reason", "Status update blocked."))
+        status_code = 403 if "Unauthorized Attempt" in str(result.get("reason", "")) else 400
+        raise HTTPException(status_code=status_code, detail=result.get("reason", "Status update blocked."))
     return {
         "student_id": lead_id,
         "status_definition_id": result["status_id"],

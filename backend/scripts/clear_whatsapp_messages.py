@@ -1,7 +1,8 @@
 """
 Clear WhatsApp message history for a lead and reset intake for a fresh AI session.
 
-Removes all messages and pipeline status rows except **Lead: New** (View Journey baseline).
+Removes all messages, counselling bookings (My Bookings / session data), and pipeline
+status rows except **Lead: New** (View Journey baseline).
 
 Local:
   python scripts/clear_whatsapp_messages.py +918754545407 --dry-run
@@ -232,6 +233,32 @@ def _ensure_lead_new_status_row(
     )
 
 
+def _booking_ids_for_lead(cur, lead_pk: int) -> list[int]:
+    cur.execute(
+        "SELECT id FROM counselling_bookings WHERE lead_id = %s ORDER BY id",
+        (lead_pk,),
+    )
+    return [int(row[0]) for row in cur.fetchall()]
+
+
+def _delete_counselling_bookings(cur, booking_ids: list[int]) -> int:
+    if not booking_ids:
+        return 0
+    cur.execute(
+        "DELETE FROM counselling_notes WHERE booking_id = ANY(%s)",
+        (booking_ids,),
+    )
+    cur.execute(
+        "DELETE FROM notification_logs WHERE booking_id = ANY(%s)",
+        (booking_ids,),
+    )
+    cur.execute(
+        "DELETE FROM counselling_bookings WHERE id = ANY(%s)",
+        (booking_ids,),
+    )
+    return len(booking_ids)
+
+
 def clear_whatsapp_data(
     *,
     phone: str | None,
@@ -319,6 +346,7 @@ def clear_whatsapp_data(
                     lead_pk,
                     lead_new_status_id,
                 )
+                booking_ids = _booking_ids_for_lead(cur, lead_pk)
 
                 print(f"  would delete messages: {message_count}")
                 print(f"  would delete message_history (lead): {history_lead_count}")
@@ -326,6 +354,10 @@ def clear_whatsapp_data(
                 print(f"  would delete processed_messages: {processed_count}")
                 print(f"  would delete conversation_audit_logs: {audit_count}")
                 print(f"  would release consultation slots: {slot_count}")
+                print(
+                    f"  would delete counselling bookings: {len(booking_ids)}"
+                    + (f" {booking_ids}" if booking_ids else "")
+                )
                 print(
                     f"  would delete {status_table} (except Lead: New): "
                     f"{status_history_count} of {status_total} row(s)"
@@ -354,6 +386,9 @@ def clear_whatsapp_data(
                     "UPDATE consultation_slots SET lead_id = NULL WHERE lead_id = %s",
                     (lead_pk,),
                 )
+                deleted_bookings = _delete_counselling_bookings(cur, booking_ids)
+                if deleted_bookings:
+                    print(f"  deleted counselling bookings: {deleted_bookings}")
                 deleted_status_rows = _delete_non_lead_new_status_rows(
                     cur,
                     status_table,
@@ -414,7 +449,9 @@ def clear_whatsapp_data(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Clear WhatsApp messages for a phone number or lead id"
+        description=(
+            "Clear WhatsApp messages and counselling bookings for a phone number or lead id"
+        )
     )
     parser.add_argument(
         "phone",

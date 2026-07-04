@@ -45,16 +45,51 @@ export function useStudentJourney(studentId: number | null) {
   });
 }
 
+export type TransitionType = 'forward' | 'backward' | 'express' | 'relaunch';
+
+export type ValidTransitionOption = {
+  to_status_id: number;
+  transition_type: TransitionType;
+  stage_name: string;
+  category: string;
+  description?: string | null;
+  requires_comment: boolean;
+  can_trigger: boolean;
+};
+
+export type ValidTransitionsResponse = {
+  student_id: number;
+  current_status_id: number | null;
+  forward: ValidTransitionOption[];
+  express: ValidTransitionOption[];
+  backward: ValidTransitionOption[];
+  relaunch: ValidTransitionOption[];
+};
+
+export function useValidTransitions(studentId: number | null) {
+  return useQuery<ValidTransitionsResponse>({
+    queryKey: ['valid-transitions', studentId],
+    queryFn: () => apiFetch(`leads/${studentId}/valid-transitions`),
+    enabled: studentId != null && !Number.isNaN(studentId),
+    staleTime: 30_000,
+  });
+}
+
 export function useUpdateStudentStatus(studentId: number | null) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { status_definition_id: number; comments?: string | null }) =>
+    mutationFn: (payload: {
+      status_definition_id: number;
+      comments?: string | null;
+      transition_type?: TransitionType;
+    }) =>
       apiFetch(`leads/${studentId}/pipeline-status`, {
         method: 'PATCH',
         body: JSON.stringify(payload),
       }),
     onSuccess: () => {
       if (studentId != null) {
+        queryClient.invalidateQueries({ queryKey: ['valid-transitions', studentId] });
         queryClient.invalidateQueries({ queryKey: ['student-journey', studentId] });
         queryClient.invalidateQueries({ queryKey: ['prospects', 'detail', studentId] });
         queryClient.invalidateQueries({ queryKey: ['prospects', 'list'] });

@@ -53,6 +53,14 @@ def patched_transition_env(monkeypatch):
         "app.services.status_transition_service.get_status_definition",
         _get_definition,
     )
+    monkeypatch.setattr(
+        "app.services.status_transition_service.ensure_status_transitions_seeded",
+        lambda _db: None,
+    )
+    monkeypatch.setattr(
+        "app.services.status_transition_service._lookup_transition_row",
+        lambda *_args, **_kwargs: None,
+    )
     return db
 
 

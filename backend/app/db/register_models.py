@@ -24,6 +24,7 @@ def register_all_models() -> None:
     from app.models.system_log import SystemLog  # noqa: F401
     from app.models.lead import Lead  # noqa: F401
     from app.models.status_definition import StatusDefinition  # noqa: F401
+    from app.models.status_transition import StatusTransition  # noqa: F401
     from app.models.lead_quarantine import LeadQuarantine  # noqa: F401
     from app.models.raw_incoming_lead import RawIncomingLead  # noqa: F401
     from app.models.message import Message  # noqa: F401

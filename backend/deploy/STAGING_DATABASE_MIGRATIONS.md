@@ -4,8 +4,14 @@ Auto-maintained by `backend/scripts/promote_to_staging.py`.
 
 Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
 
-**Current head:** `q3m6n1o25p7k`
-**Doc generated:** 2026-07-04 04:28 UTC
+**Current head:** `r4n7o2p36q8l`
+**Doc generated:** 2026-07-04 08:11 UTC
+
+## Migrations in this release
+
+| Revision | Migration | Changes |
+|----------|-----------|---------|
+| `r4n7o2p36q8l` | r4n7o2p36q8l_add_status_transitions_table | New table(s): `status_transitions` |
 
 ## Full migration chain (at head)
 
@@ -32,6 +38,7 @@ Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
 | `o1k4l9m03n5i` | o1k4l9m03n5i_add_status_history_table | New table(s): `status_history`; Alter: `status_history.changed_by_type` |
 | `p2l5m0n14o6j` | p2l5m0n14o6j_add_system_logs_table | New table(s): `system_logs` |
 | `q3m6n1o25p7k` | q3m6n1o25p7k_unblock_session_cancelled_status | SQL data migration |
+| `r4n7o2p36q8l` | r4n7o2p36q8l_add_status_transitions_table | New table(s): `status_transitions` |
 
 ## Manual run (VPS or local)
 
@@ -46,5 +53,5 @@ alembic upgrade head
 
 ```bash
 alembic current
-# Expected: q3m6n1o25p7k (head)
+# Expected: r4n7o2p36q8l (head)
 ```

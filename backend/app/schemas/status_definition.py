@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+TransitionTypeLiteral = Literal["forward", "backward", "express", "relaunch"]
 
 
 class StatusDefinitionOut(BaseModel):
@@ -53,6 +56,26 @@ class StudentJourneyResponse(BaseModel):
 class PipelineStatusUpdateRequest(BaseModel):
     status_definition_id: int = Field(ge=1)
     comments: str | None = None
+    transition_type: TransitionTypeLiteral | None = None
+
+
+class ValidTransitionOption(BaseModel):
+    to_status_id: int
+    transition_type: TransitionTypeLiteral
+    stage_name: str
+    category: str
+    description: str | None = None
+    requires_comment: bool = False
+    can_trigger: bool = True
+
+
+class ValidTransitionsResponse(BaseModel):
+    student_id: int
+    current_status_id: int | None = None
+    forward: list[ValidTransitionOption] = Field(default_factory=list)
+    express: list[ValidTransitionOption] = Field(default_factory=list)
+    backward: list[ValidTransitionOption] = Field(default_factory=list)
+    relaunch: list[ValidTransitionOption] = Field(default_factory=list)
 
 
 class PipelineStatusUpdateResponse(BaseModel):

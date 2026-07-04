@@ -39,7 +39,13 @@ from app.services.status_definition_service import (
     get_status_definition_by_name,
     resolve_status_id_by_name,
 )
-from app.services.status_transition_service import can_transition_to, is_terminal_status
+from app.services.status_transition_service import (
+    TransitionTypeLiteral,
+    build_express_transition_comment,
+    can_transition_to,
+    get_valid_transitions,
+    is_terminal_status,
+)
 from app.services.system_log_service import log_system_event
 
 logger = logging.getLogger(__name__)
@@ -268,6 +274,8 @@ def update_student_status(
     skip_if_unchanged: bool = True,
     allow_override: bool = False,
     force_history: bool = False,
+    transition_type: TransitionTypeLiteral | None = None,
+    acting_user: User | None = None,
     commit: bool = True,
 ) -> dict:
     """Central entry point for pipeline status changes + history logging."""
@@ -299,8 +307,27 @@ def update_student_status(
         status_id,
         allow_override=allow_override,
         force_repeat=force_history,
+        transition_type=transition_type,
+        acting_user=acting_user,
     )
     if not transition.allowed:
+        if "Unauthorized Attempt" in transition.reason:
+            log_system_event(
+                db,
+                level="warning",
+                source="status_transition",
+                message=transition.reason,
+                context={
+                    "current_status_id": current_status_id,
+                    "requested_status_id": status_id,
+                    "transition_type": transition_type or transition.transition_type,
+                    "changed_by_user_id": changed_by_user_id,
+                },
+                student_id=student_id,
+                commit=commit,
+            )
+            if changed_by_type == "admin":
+                raise HTTPException(status_code=403, detail=transition.reason)
         if changed_by_type == "system":
             log_system_event(
                 db,
@@ -323,9 +350,22 @@ def update_student_status(
             }
         raise HTTPException(status_code=400, detail=transition.reason)
 
+    resolved_transition_type = transition.transition_type or transition_type
+    if resolved_transition_type == "express" and current_status_id is not None:
+        comments = build_express_transition_comment(
+            db,
+            from_status_id=current_status_id,
+            to_status_id=status_id,
+            user_comment=comments,
+        )
+
     sanitized_comments = input_sanitizer(comments) if comments else None
     if transition.requires_override_comment and not (sanitized_comments or "").strip():
-        detail = "A comment is required when overriding the standard pipeline flow."
+        detail = "A comment is required for this lifecycle transition."
+        if resolved_transition_type == "backward":
+            detail = "A comment is required when reverting to a previous pipeline stage."
+        elif resolved_transition_type == "relaunch":
+            detail = "A comment is required when relaunching a closed prospect."
         if changed_by_type == "admin":
             raise HTTPException(status_code=400, detail=detail)
         log_system_event(
@@ -337,14 +377,25 @@ def update_student_status(
                 "current_status_id": current_status_id,
                 "requested_status_id": status_id,
                 "transition_reason": transition.reason,
+                "transition_type": resolved_transition_type,
             },
             student_id=student_id,
             commit=commit,
         )
         return {"changed": False, "blocked": True, "student_id": student_id, "reason": detail}
 
-    if transition.is_override and sanitized_comments and not sanitized_comments.startswith("[Override]"):
-        sanitized_comments = f"[Override] {sanitized_comments}"
+    if transition.is_override and sanitized_comments:
+        prefix_map = {
+            "express": "[Express]",
+            "backward": "[Revert]",
+            "relaunch": "[Relaunch]",
+        }
+        prefix = prefix_map.get(resolved_transition_type or "", "[Override]")
+        if not sanitized_comments.startswith("Express jump performed:") and not sanitized_comments.startswith(prefix):
+            sanitized_comments = f"{prefix} {sanitized_comments}"
+    elif transition.is_override and sanitized_comments and resolved_transition_type is None:
+        if not sanitized_comments.startswith("[Override]"):
+            sanitized_comments = f"[Override] {sanitized_comments}"
 
     definition = get_status_definition(db, status_id)
     now = datetime.utcnow()

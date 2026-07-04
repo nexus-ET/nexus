@@ -41,7 +41,7 @@ After deploy, confirm:
 
 ```bash
 alembic current
-# Expected: q3m6n1o25p7k (head)
+# Expected: r4n7o2p36q8l (head)
 ```
 
 ---
