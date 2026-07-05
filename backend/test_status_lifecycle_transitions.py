@@ -37,8 +37,7 @@ def test_collect_skipped_standard_path_stages_for_new_to_counselling() -> None:
         1: SimpleNamespace(id=1, stage_name="Lead: New", next_stage_id=2),
         2: SimpleNamespace(id=2, stage_name="Lead: Outreach", next_stage_id=3),
         3: SimpleNamespace(id=3, stage_name="Lead: Engagement", next_stage_id=4),
-        4: SimpleNamespace(id=4, stage_name="Lead: Session Booked", next_stage_id=5),
-        5: SimpleNamespace(id=5, stage_name="Lead: Session Rescheduled", next_stage_id=3),
+        4: SimpleNamespace(id=4, stage_name="Lead: Session Booked", next_stage_id=12),
         12: SimpleNamespace(id=12, stage_name="Counselling: Scheduled", next_stage_id=13),
     }
 
@@ -56,7 +55,6 @@ def test_collect_skipped_standard_path_stages_for_new_to_counselling() -> None:
         "Lead: Outreach",
         "Lead: Engagement",
         "Lead: Session Booked",
-        "Lead: Session Rescheduled",
     ]
 
 
