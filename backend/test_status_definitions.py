@@ -5,9 +5,11 @@ from app.services.status_definition_service import (
     STAGE_LEAD_OUTREACH,
     STATUS_COUNSELLING_FINISHED,
     STATUS_COUNSELLING_SCHEDULED,
+    STATUS_DOCUMENT_IN_PREPARATION,
     STATUS_LEAD_NEW,
     STATUS_LEAD_OUTREACH,
     STATUS_PROSPECT_ENROLLED,
+    STATUS_PROSPECT_RELAUNCH,
     TERMINAL_STATUS_IDS,
     serialize_status_definition,
 )
@@ -20,16 +22,19 @@ def test_legacy_admission_stage_map_contains_counselling():
 def test_status_constants():
     assert STATUS_LEAD_NEW == 1
     assert STATUS_LEAD_OUTREACH == 2
-    assert STATUS_COUNSELLING_SCHEDULED == 10
-    assert STATUS_COUNSELLING_FINISHED == 11
-    assert STATUS_PROSPECT_ENROLLED == 37
+    assert STATUS_COUNSELLING_SCHEDULED == 12
+    assert STATUS_COUNSELLING_FINISHED == 13
+    assert STATUS_DOCUMENT_IN_PREPARATION == 18
+    assert STATUS_PROSPECT_ENROLLED == 43
+    assert STATUS_PROSPECT_RELAUNCH == 45
 
 
 def test_terminal_status_ids():
     assert 8 in TERMINAL_STATUS_IDS
-    assert 39 in TERMINAL_STATUS_IDS
+    assert 44 in TERMINAL_STATUS_IDS
+    assert 45 not in TERMINAL_STATUS_IDS
     assert 6 not in TERMINAL_STATUS_IDS
-    assert 10 not in TERMINAL_STATUS_IDS
+    assert 12 not in TERMINAL_STATUS_IDS
 
 
 def test_serialize_status_definition_shape():

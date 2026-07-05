@@ -25,13 +25,13 @@ DEFINITIONS = {
     1: _definition(1, "Lead: New", next_stage_id=2),
     2: _definition(2, "Lead: Outreach", next_stage_id=3),
     3: _definition(3, "Lead: Engagement", next_stage_id=4),
-    4: _definition(4, "Lead: Session Booked", next_stage_id=10),
-    5: _definition(5, "Lead: Session Rescheduled", next_stage_id=4),
-    6: _definition(6, "Lead: Session Cancelled", next_stage_id=4),
-    10: _definition(10, "Counselling: Scheduled", next_stage_id=11),
-    27: _definition(27, "Visa: Application Approved", next_stage_id=28),
-    38: _definition(38, "Prospect: Cancelled & Closed", next_stage_id=None),
-    39: _definition(39, "Prospect: Relaunch", next_stage_id=None),
+    4: _definition(4, "Lead: Session Booked", next_stage_id=5),
+    5: _definition(5, "Lead: Session Rescheduled", next_stage_id=3),
+    6: _definition(6, "Lead: Session Cancelled", next_stage_id=3),
+    12: _definition(12, "Counselling: Scheduled", next_stage_id=13),
+    33: _definition(33, "Visa: Application Approved", next_stage_id=34),
+    44: _definition(44, "Prospect: Cancelled & Closed", next_stage_id=11),
+    45: _definition(45, "Prospect: Relaunch", next_stage_id=1),
 }
 
 
@@ -71,29 +71,29 @@ def test_can_transition_forward_step(patched_transition_env):
 
 
 def test_can_transition_blocks_illegal_jump(patched_transition_env):
-    result = can_transition_to(patched_transition_env, 1, 27)
+    result = can_transition_to(patched_transition_env, 1, 33)
     assert result.allowed is False
     assert "Illegal transition" in result.reason
 
 
 def test_can_transition_admin_override_requires_comment(patched_transition_env):
-    result = can_transition_to(patched_transition_env, 1, 27, allow_override=True)
+    result = can_transition_to(patched_transition_env, 1, 33, allow_override=True)
     assert result.allowed is True
     assert result.requires_override_comment is True
     assert result.is_override is True
 
 
 def test_terminal_status_blocks_automation(patched_transition_env):
-    result = can_transition_to(patched_transition_env, 38, 2)
+    result = can_transition_to(patched_transition_env, 44, 2)
     assert result.allowed is False
     assert "Terminal" in result.reason
 
 
 def test_terminal_relaunch_requires_admin(patched_transition_env):
-    blocked = can_transition_to(patched_transition_env, 38, 39, allow_override=False)
+    blocked = can_transition_to(patched_transition_env, 44, 45, allow_override=False)
     assert blocked.allowed is False
 
-    allowed = can_transition_to(patched_transition_env, 38, 39, allow_override=True)
+    allowed = can_transition_to(patched_transition_env, 44, 45, allow_override=True)
     assert allowed.allowed is True
 
 

@@ -37,8 +37,9 @@ def test_collect_skipped_standard_path_stages_for_new_to_counselling() -> None:
         1: SimpleNamespace(id=1, stage_name="Lead: New", next_stage_id=2),
         2: SimpleNamespace(id=2, stage_name="Lead: Outreach", next_stage_id=3),
         3: SimpleNamespace(id=3, stage_name="Lead: Engagement", next_stage_id=4),
-        4: SimpleNamespace(id=4, stage_name="Lead: Session Booked", next_stage_id=10),
-        10: SimpleNamespace(id=10, stage_name="Counselling: Scheduled", next_stage_id=11),
+        4: SimpleNamespace(id=4, stage_name="Lead: Session Booked", next_stage_id=5),
+        5: SimpleNamespace(id=5, stage_name="Lead: Session Rescheduled", next_stage_id=3),
+        12: SimpleNamespace(id=12, stage_name="Counselling: Scheduled", next_stage_id=13),
     }
 
     def _get_definition(_db, status_id: int):
@@ -49,12 +50,13 @@ def test_collect_skipped_standard_path_stages_for_new_to_counselling() -> None:
             "app.services.status_transition_service.get_status_definition",
             _get_definition,
         )
-        skipped = collect_skipped_standard_path_stages(db, 1, 10)
+        skipped = collect_skipped_standard_path_stages(db, 1, 12)
 
     assert skipped == [
         "Lead: Outreach",
         "Lead: Engagement",
         "Lead: Session Booked",
+        "Lead: Session Rescheduled",
     ]
 
 
@@ -63,9 +65,9 @@ def test_build_express_transition_comment_includes_skipped_stages() -> None:
 
     definitions = {
         3: SimpleNamespace(id=3, stage_name="Lead: Engagement", next_stage_id=4),
-        4: SimpleNamespace(id=4, stage_name="Lead: Session Booked", next_stage_id=10),
-        10: SimpleNamespace(id=10, stage_name="Counselling: Scheduled", next_stage_id=11),
-        16: SimpleNamespace(id=16, stage_name="Admission: Application Doc-Prep", next_stage_id=17),
+        4: SimpleNamespace(id=4, stage_name="Lead: Session Booked", next_stage_id=5),
+        12: SimpleNamespace(id=12, stage_name="Counselling: Scheduled", next_stage_id=13),
+        18: SimpleNamespace(id=18, stage_name="Document: In Preparation", next_stage_id=19),
     }
 
     def _get_definition(_db, status_id: int):
@@ -83,12 +85,12 @@ def test_build_express_transition_comment_includes_skipped_stages() -> None:
         comment = build_express_transition_comment(
             db,
             from_status_id=3,
-            to_status_id=16,
+            to_status_id=18,
             user_comment="Student already has docs ready.",
         )
 
     assert "Express jump performed" in comment
-    assert "Admission: Application Doc-Prep" in comment
+    assert "Document: In Preparation" in comment
     assert "Student already has docs ready." in comment
 
 
@@ -96,7 +98,7 @@ def test_express_transition_requires_manager_permission(monkeypatch) -> None:
     db = MagicMock()
     configured = SimpleNamespace(
         transition_type=TransitionType.EXPRESS,
-        to_status_id=10,
+        to_status_id=12,
     )
 
     monkeypatch.setattr(
@@ -111,14 +113,14 @@ def test_express_transition_requires_manager_permission(monkeypatch) -> None:
     blocked = can_transition_to(
         db,
         1,
-        10,
+        12,
         transition_type="express",
         acting_user=_user(role_name="Student Advisor"),
     )
     allowed = can_transition_to(
         db,
         1,
-        10,
+        12,
         transition_type="express",
         acting_user=_user(role_name="Student Manager"),
     )

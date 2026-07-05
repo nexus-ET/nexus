@@ -14,5 +14,5 @@ def test_seed_status_definitions_if_empty_inserts_when_table_empty():
     db = MagicMock()
     db.query.return_value.limit.return_value.first.return_value = None
     assert seed_status_definitions_if_empty(db) is True
-    assert db.execute.call_count >= 7
+    assert db.execute.call_count >= 2
     db.commit.assert_called_once()
