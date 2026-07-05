@@ -116,19 +116,73 @@ Only if you keep a short welcome template without the intake line, use `WHATSAPP
 
 ---
 
-## New in this release — add to staging
+## Release 2026-07-05 — flash before deploy (manual edit only)
+
+**Files to update yourself (never commit):**
+
+| File | Environment |
+|------|-------------|
+| `/var/www/nexus/backend/.env` | Hostinger VPS (staging) |
+| `E:\NEXUS-staging\backend\.env` | Local staging worktree (optional) |
+
+**Do not copy** `E:\NEXUS\backend\.env` to staging.
+
+### Required for this release
+
+| Variable | Staging value | Why |
+|----------|---------------|-----|
+| `NEXUS_APPOINTMENTS_ONLY` | `true` | WhatsApp intake uses degree → major → country → booking; rule-based study extraction (no Ollama/OpenAI needed) |
+| `NEXUS_INSTANCE` | `nexus-dev` or `staging` | Routes to business WhatsApp line |
+| `ENVIRONMENT` | `staging` | |
+| `PUBLIC_TUNNEL_BASE` | `https://nexus-dev.edutrust.in` | Permanent webhook base |
+| `FRONTEND_URL` | `https://nexus-dev.edutrust.in` | |
+| `DATABASE_URL` | Staging Neon URL | Separate from dev DB |
+| `WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP` | `true` | Single combined welcome template |
+
+### Recommended for staging (reduce noise)
 
 | Variable | Suggested value | Purpose |
 |----------|-----------------|--------|
-| `NEXUS_APPOINTMENTS_ONLY` | `true` | Fixed intake + booking flow on WhatsApp (no open-ended LLM Q&A on webhook) |
-| `SECURITY_AUDIT_ALERT_WHATSAPP_ENABLED` | `false` | Stop nightly audit failures from WhatsApp-blasting super admins on staging |
-| `SECURITY_AUDIT_ALERT_MANUAL_ONLY` | `true` | Optional: only send red-flag alerts when someone clicks Run audit in the UI |
+| `SECURITY_AUDIT_ALERT_WHATSAPP_ENABLED` | `false` | Stop nightly audit failures from WhatsApp-blasting super admins |
+| `SECURITY_AUDIT_ALERT_MANUAL_ONLY` | `true` | Optional: red-flag alerts only on manual Run audit |
 
 To silence all outbound red-flag alerts on staging (audit still runs and logs):
 
 ```env
 SECURITY_AUDIT_RED_ALERTS_ENABLED=false
 ```
+
+### Not required on staging for this release
+
+| Variable | Notes |
+|----------|--------|
+| `OLLAMA_*` / `OPENAI_*` / `GROQ_*` | Not used when `NEXUS_APPOINTMENTS_ONLY=true` |
+| `NEXUS_TUNNEL_*` | Dev-only; keep `NEXUS_TUNNEL_ENABLED=false` on VPS |
+
+### Quick copy block (adjust secrets locally on VPS)
+
+```env
+NEXUS_INSTANCE=nexus-dev
+ENVIRONMENT=staging
+PUBLIC_TUNNEL_BASE=https://nexus-dev.edutrust.in
+NEXUS_TUNNEL_ENABLED=false
+FRONTEND_URL=https://nexus-dev.edutrust.in
+NEXUS_APPOINTMENTS_ONLY=true
+WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP=true
+SECURITY_AUDIT_ALERT_WHATSAPP_ENABLED=false
+SECURITY_AUDIT_ALERT_MANUAL_ONLY=true
+# DATABASE_URL, WHATSAPP_*, SECRET_KEY — keep existing staging values
+```
+
+---
+
+## Prior release — still verify on staging
+
+| Variable | Suggested value | Purpose |
+|----------|-----------------|--------|
+| `NEXUS_APPOINTMENTS_ONLY` | `true` | Fixed intake + booking flow on WhatsApp (no open-ended LLM Q&A on webhook) |
+| `SECURITY_AUDIT_ALERT_WHATSAPP_ENABLED` | `false` | Stop nightly audit failures from WhatsApp-blasting super admins on staging |
+| `SECURITY_AUDIT_ALERT_MANUAL_ONLY` | `true` | Optional: only send red-flag alerts when someone clicks Run audit in the UI |
 
 ---
 

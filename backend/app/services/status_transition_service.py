@@ -151,6 +151,17 @@ def get_valid_transitions(
     return grouped
 
 
+def is_backward_transition(
+    db: Session,
+    current_status_id: int | None,
+    next_status_id: int,
+) -> bool:
+    if current_status_id == next_status_id:
+        return True
+    row = _lookup_transition_row(db, current_status_id, next_status_id)
+    return row is not None and row.transition_type == TransitionType.BACKWARD
+
+
 def collect_skipped_standard_path_stages(
     db: Session,
     from_status_id: int,

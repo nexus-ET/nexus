@@ -1,13 +1,107 @@
+from datetime import date, datetime
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
 
 from app.services.counselling_service import (
     _booking_session_status_label,
     _build_data_exchange,
     _communications_to_timeline,
     _is_audio_media,
+    _my_bookings_view_all,
     _resolve_lead_jump_path,
+    get_my_bookings_overview,
 )
 from app.services.pipeline_service import resolve_admission_stage_meta
+
+
+def _user(user_id: int, *, superuser: bool = False, role_name: str = "") -> SimpleNamespace:
+    admin_role = SimpleNamespace(name=role_name) if role_name else None
+    return SimpleNamespace(
+        id=user_id,
+        is_superuser=superuser,
+        admin_role_ref=admin_role,
+        role=role_name,
+    )
+
+
+def test_my_bookings_view_all_for_super_admin() -> None:
+    assert _my_bookings_view_all(_user(1, superuser=True)) is True
+
+
+def test_my_bookings_view_all_for_counselling_admin_role() -> None:
+    assert _my_bookings_view_all(_user(2, role_name="Web Admin")) is True
+
+
+def test_my_bookings_view_all_for_regular_counsellor() -> None:
+    assert _my_bookings_view_all(_user(3, role_name="Counsellor")) is False
+
+
+def test_get_my_bookings_overview_counts_all_statuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    calendar_today = date(2026, 7, 5)
+    monkeypatch.setattr(
+        "app.services.counselling_service.office_today",
+        lambda db: calendar_today,
+    )
+
+    bookings = [
+        SimpleNamespace(
+            scheduled_time=datetime(2026, 7, 3, 10, 0),
+            status="COMPLETED",
+        ),
+        SimpleNamespace(
+            scheduled_time=datetime(2026, 7, 5, 11, 0),
+            status="SCHEDULED",
+        ),
+        SimpleNamespace(
+            scheduled_time=datetime(2026, 7, 8, 9, 0),
+            status="CANCELLED",
+        ),
+    ]
+
+    db = MagicMock()
+    monkeypatch.setattr(
+        "app.services.counselling_service._my_bookings_query",
+        lambda db, user: MagicMock(all=MagicMock(return_value=bookings)),
+    )
+
+    overview = get_my_bookings_overview(db, _user(42))
+
+    assert overview == {
+        "past_count": 1,
+        "today_count": 1,
+        "upcoming_count": 1,
+        "calendar_today": calendar_today,
+        "view_all_bookings": False,
+    }
+
+
+def test_is_forward_status_change_uses_stage_id_order() -> None:
+    from app.services.counselling_service import _is_forward_status_change
+
+    db = MagicMock()
+    assert _is_forward_status_change(db, 12, 13) is True
+    assert _is_forward_status_change(db, 12, 4) is False
+    assert _is_forward_status_change(db, 12, 12) is False
+
+
+def test_is_backward_transition_uses_transition_graph() -> None:
+    from app.models.status_transition import TransitionType
+    from app.services.status_transition_service import is_backward_transition
+
+    db = MagicMock()
+    backward_row = SimpleNamespace(transition_type=TransitionType.BACKWARD)
+    forward_row = SimpleNamespace(transition_type=TransitionType.FORWARD)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            "app.services.status_transition_service._lookup_transition_row",
+            lambda db, current, next, transition_type=None: backward_row if next == 11 else forward_row,
+        )
+        assert is_backward_transition(db, 12, 12) is True
+        assert is_backward_transition(db, 12, 11) is True
+        assert is_backward_transition(db, 12, 13) is False
 
 
 def test_booking_session_status_label():

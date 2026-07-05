@@ -1,8 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { Calendar, Loader2, RefreshCw, UserPlus, XCircle, ArrowRightLeft, X, Bot, UserRound, MessageSquare, CheckCircle2 } from 'lucide-react';
 import { apiFetch, hasValidSession } from '../utils/api';
+import { computeFloatingMenuPosition } from '../utils/floatingMenuPosition';
 import SessionWrapUpDrawer from '../components/SessionWrapUpDrawer';
 import PipelineAnalyticsPanel, { PipelineAnalyticsData } from '../components/PipelineAnalyticsPanel';
 
@@ -237,6 +238,7 @@ const CounsellingDashboard: React.FC = () => {
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [wrapUpDrawer, setWrapUpDrawer] = useState<{ bookingId: number; candidateName: string } | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
   const communicationsEndRef = useRef<HTMLDivElement | null>(null);
   const focusDateRef = useRef(focusDate);
   focusDateRef.current = focusDate;
@@ -306,6 +308,31 @@ const CounsellingDashboard: React.FC = () => {
     window.addEventListener('click', closeMenu);
     return () => window.removeEventListener('click', closeMenu);
   }, []);
+
+  useLayoutEffect(() => {
+    if (!contextMenu || !menuRef.current) {
+      setMenuPosition(null);
+      return;
+    }
+
+    const reposition = () => {
+      if (!menuRef.current || !contextMenu) return;
+      const rect = menuRef.current.getBoundingClientRect();
+      setMenuPosition(
+        computeFloatingMenuPosition(contextMenu.x, contextMenu.y, rect.width, rect.height)
+      );
+    };
+
+    reposition();
+    window.addEventListener('resize', reposition);
+    return () => window.removeEventListener('resize', reposition);
+  }, [contextMenu, contextMenu?.loading, contextMenu?.admins.length, contextMenu?.mode]);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      setMenuPosition(null);
+    }
+  }, [contextMenu]);
 
   useEffect(() => {
     if (communicationsModal && !communicationsModal.loading) {
@@ -1006,11 +1033,15 @@ const CounsellingDashboard: React.FC = () => {
       {contextMenu && (
         <div
           ref={menuRef}
-          className="fixed z-50 min-w-[260px] rounded-xl border border-border-subtle bg-card shadow-xl py-2"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
+          className="fixed z-50 w-[min(100vw-2rem,320px)] max-h-[min(70vh,520px)] flex flex-col rounded-xl border border-border-subtle bg-card shadow-xl py-2"
+          style={{
+            top: menuPosition?.top ?? contextMenu.y,
+            left: menuPosition?.left ?? contextMenu.x,
+            visibility: menuPosition ? 'visible' : 'hidden',
+          }}
           onContextMenu={event => event.preventDefault()}
         >
-          <div className="px-3 py-2 border-b border-border-subtle text-xs font-semibold text-text-muted">
+          <div className="px-3 py-2 border-b border-border-subtle text-xs font-semibold text-text-muted shrink-0">
             {contextMenu.mode === 'assign' ? (
               <span className="flex items-center gap-2">
                 <UserPlus size={14} />
@@ -1025,7 +1056,7 @@ const CounsellingDashboard: React.FC = () => {
           </div>
 
           {contextMenu.mode === 'manage' && (
-            <>
+            <div className="shrink-0">
               <button
                 type="button"
                 disabled={actionLoading}
@@ -1050,9 +1081,10 @@ const CounsellingDashboard: React.FC = () => {
                 <XCircle size={15} />
                 Cancel booking
               </button>
-            </>
+            </div>
           )}
 
+          <div className="min-h-0 flex-1 overflow-y-auto">
           {contextMenu.loading ? (
             <div className="px-3 py-4 text-sm text-text-muted flex items-center gap-2">
               <Loader2 size={14} className="animate-spin" />
@@ -1099,6 +1131,7 @@ const CounsellingDashboard: React.FC = () => {
               )}
             </>
           )}
+          </div>
         </div>
       )}
 

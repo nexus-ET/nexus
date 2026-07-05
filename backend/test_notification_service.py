@@ -2,10 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.services.notification_service import persist_booking_confirmation_in_chat
+from app.services.admissions_intake_flow import (
+    BOOKING_CANCEL_BUTTON_ID,
+    BOOKING_RESCHEDULE_BUTTON_ID,
+    build_appointment_management_reply,
+)
+from app.services.notification_service import (
+    NotificationService,
+    persist_booking_confirmation_in_chat,
+)
+
+
+def test_build_appointment_management_reply_includes_buttons() -> None:
+    reply = build_appointment_management_reply()
+    assert "reschedule or cancel" in reply.text.lower()
+    assert reply.quick_reply is not None
+    action_ids = [action["id"] for action in reply.quick_reply.actions]
+    assert action_ids == [BOOKING_RESCHEDULE_BUTTON_ID, BOOKING_CANCEL_BUTTON_ID]
 
 
 def test_persist_booking_confirmation_in_chat_saves_advisor_message() -> None:
@@ -55,3 +73,51 @@ def test_persist_booking_confirmation_in_chat_skips_without_lead() -> None:
 
     assert saved is False
     db.add.assert_not_called()
+
+
+def test_send_whatsapp_confirmation_sends_management_buttons_after_confirm() -> None:
+    db = MagicMock()
+    service = NotificationService(db)
+    scheduled = datetime(2026, 7, 3, 10, 0)
+
+    with (
+        patch(
+            "app.services.notification_service.send_message",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as send_message,
+        patch(
+            "app.services.notification_service.persist_booking_confirmation_in_chat",
+            return_value=True,
+        ) as persist_chat,
+        patch(
+            "app.services.notification_service._send_whatsapp_appointment_management_followup",
+            new_callable=AsyncMock,
+            return_value="sent",
+        ) as send_followup,
+        patch(
+            "app.services.notification_service._resolve_lead_for_booking_notification",
+            return_value=None,
+        ),
+        patch.object(service, "_log_attempt"),
+    ):
+        status = asyncio.run(
+            service.send_whatsapp_confirmation(
+                booking_id=12,
+                candidate_name="Lemon",
+                admin_name="Ishq Ahmed",
+                scheduled_time=scheduled,
+                candidate_phone="+918754545407",
+                lead_id=27,
+            )
+        )
+
+    assert status == "sent"
+    send_message.assert_awaited_once()
+    persist_chat.assert_called_once()
+    send_followup.assert_awaited_once_with(
+        db,
+        booking_id=12,
+        lead_id=27,
+        candidate_phone="+918754545407",
+    )

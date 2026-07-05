@@ -104,6 +104,15 @@ class MyBookingsResponse(BaseModel):
     upcoming: list[MyBookingOut]
     calendar_today: date
     total_count: int
+    view_all_bookings: bool = False
+
+
+class MyBookingsOverviewResponse(BaseModel):
+    past_count: int
+    today_count: int
+    upcoming_count: int
+    calendar_today: date
+    view_all_bookings: bool = False
 
 
 class MyBookingReassignRequest(BaseModel):
@@ -213,6 +222,7 @@ class MyBookingsDayResponse(BaseModel):
     date: date
     calendar_today: date
     bookings: list[MyBookingOut]
+    view_all_bookings: bool = False
 
 
 class BookingActivityLogResponse(BaseModel):
@@ -223,6 +233,11 @@ class BookingActivityLogResponse(BaseModel):
     status_definitions: list[StatusDefinitionOut]
     current_status_definition_id: int | None = None
     suggested_next_status_definition_id: int | None = None
+    previous_stage_id: int | None = None
+    appointment_date: date | None = None
+    calendar_today: date | None = None
+    forward_status_changes_blocked: bool = False
+    backward_status_ids: list[int] = Field(default_factory=list)
     lead_jump_path: str | None = None
     can_update_status: bool = False
 

@@ -34,6 +34,42 @@ def test_accept_intake_name_reply_accepts_single_name() -> None:
     assert _accept_intake_name_reply("a") is None
 
 
+def test_lead_has_real_name_accepts_single_name() -> None:
+    from types import SimpleNamespace
+
+    from app.services.admissions_intake_flow import _lead_has_real_name
+
+    assert _lead_has_real_name(SimpleNamespace(full_name="Ishq"))
+    assert _lead_has_real_name(SimpleNamespace(full_name="Priya Sharma"))
+    assert not _lead_has_real_name(SimpleNamespace(full_name="WhatsApp Contact (+911234567890)"))
+    assert not _lead_has_real_name(SimpleNamespace(full_name="a"))
+
+
+def test_begin_whatsapp_intake_force_restart_clears_stale_location() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.services.admissions_intake_flow import (
+        INTAKE_STEP_FULL_NAME,
+        begin_whatsapp_intake_session,
+    )
+
+    lead = SimpleNamespace(
+        full_name="Henry Ford",
+        intake_step="TARGET_COUNTRY",
+        current_location="Mumbai, India",
+        intake_context='{"pending_country": "UK"}',
+        preferred_country=None,
+        additional_data=None,
+    )
+    db = MagicMock()
+    begin_whatsapp_intake_session(db, lead, force_full_restart=True)
+    assert lead.intake_step == INTAKE_STEP_FULL_NAME
+    assert lead.current_location is None
+    assert lead.intake_context is None
+    db.commit.assert_called_once()
+
+
 def test_find_lead_for_inbound_whatsapp_prefers_active_intake_over_handoff() -> None:
     now = datetime.utcnow()
     outreach_lead = SimpleNamespace(
@@ -226,5 +262,92 @@ def test_handle_ai_active_inbound_silent_after_confirmed_booking() -> None:
 
         send_reply.assert_not_awaited()
         assert result == []
+
+    asyncio.run(_run())
+
+
+def test_no_thanks_on_call_consent_returns_management_buttons() -> None:
+    async def _run() -> None:
+        from app.services.admissions_intake_flow import (
+            BOOKING_BOOK_SESSION_BUTTON_ID,
+            BOOKING_NOT_INTERESTED_BUTTON_ID,
+            INTAKE_STEP_CALL_CONSENT,
+        )
+
+        lead = SimpleNamespace(
+            id=1,
+            full_name="Sahil Kumar",
+            intake_step=INTAKE_STEP_CALL_CONSENT,
+            intake_context=None,
+            preferred_country="UK",
+            current_location="Mumbai, India",
+            phone_number="+911234567890",
+            academic_summary=None,
+            consultation_scheduled_at=None,
+            wants_consultation_call=None,
+            test_scores="English: 7.0",
+            gre_score=None,
+            gmat_score=None,
+            english_test_scores="7.0",
+        )
+        db = MagicMock()
+        db.commit = MagicMock()
+
+        from app.config import settings
+
+        with patch.object(settings, "NEXUS_APPOINTMENTS_ONLY", True):
+            reply = await process_intake_message(
+                db,
+                lead,
+                "No thanks",
+                MagicMock(is_active=False),
+            )
+
+        assert lead.intake_step == INTAKE_STEP_COMPLETE
+        assert lead.wants_consultation_call is False
+        assert "saved your profile" in reply.text.lower()
+        assert "book session" in reply.text.lower()
+        assert reply.quick_reply is not None
+        action_ids = [action["id"] for action in reply.quick_reply.actions]
+        assert action_ids == [BOOKING_BOOK_SESSION_BUTTON_ID, BOOKING_NOT_INTERESTED_BUTTON_ID]
+
+    asyncio.run(_run())
+
+
+def test_not_interested_starts_marketing_consent_flow() -> None:
+    async def _run() -> None:
+        from app.services.admissions_intake_flow import (
+            INTAKE_STEP_COMPLETE,
+            INTAKE_STEP_MARKETING_CONSENT,
+            MARKETING_OPT_IN_BUTTON_ID,
+            MARKETING_OPT_OUT_BUTTON_ID,
+            handle_post_intake_booking_message,
+        )
+
+        lead = SimpleNamespace(
+            id=2,
+            full_name="Sahil Kumar",
+            intake_step=INTAKE_STEP_COMPLETE,
+            intake_context=None,
+            preferred_country="UK",
+            current_location="Mumbai, India",
+            phone_number="+911234567890",
+            academic_summary=None,
+            consultation_scheduled_at=None,
+            wants_consultation_call=False,
+            stage=LeadStage.AI_ACTIVE,
+            is_human_locked=False,
+        )
+        db = MagicMock()
+        db.commit = MagicMock()
+        db.refresh = MagicMock()
+
+        reply = handle_post_intake_booking_message(db, lead, "Not Interested")
+
+        assert lead.intake_step == INTAKE_STEP_MARKETING_CONSENT
+        assert "timely information" in reply.text.lower()
+        assert reply.quick_reply is not None
+        action_ids = [action["id"] for action in reply.quick_reply.actions]
+        assert action_ids == [MARKETING_OPT_IN_BUTTON_ID, MARKETING_OPT_OUT_BUTTON_ID]
 
     asyncio.run(_run())

@@ -310,7 +310,7 @@ def test_format_outreach_template_display_text_uses_meta_body(
         body_parameter_count=2,
         body_text=(
             "Hi {{1}}! Thanks for reaching {{2}}.\n\n"
-            "To book your free study abroad consultation, simply reply with your full name."
+            "To book your *free study abroad consultation*, simply *reply with your full name*."
         ),
     )
     params = [
@@ -323,7 +323,7 @@ def test_format_outreach_template_display_text_uses_meta_body(
         spec=spec,
     )
     assert "Hi Priya! Thanks for reaching Edutrust." in text
-    assert "simply reply with your full name" in text
+    assert "*reply with your full name*" in text
     assert "We're excited to help" not in text
 
 
@@ -331,7 +331,7 @@ def test_template_body_includes_intake_prompt() -> None:
     from app.services.messaging import template_body_includes_intake_prompt
 
     assert template_body_includes_intake_prompt(
-        "To book your free study abroad consultation, simply reply with your full name."
+        "To book your *free study abroad consultation*, simply *reply with your full name*."
     )
     assert not template_body_includes_intake_prompt(
         "Hi {{1}}! Thanks for reaching {{2}}. We're excited to help you get started."

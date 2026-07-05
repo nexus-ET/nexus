@@ -1,8 +1,15 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Bot, Archive, Map } from 'lucide-react';
 import { apiFetch } from '../utils/api';
 import LeadStudyInterestPanel from '../components/LeadStudyInterestPanel';
 import StudentJourneyPanel from '../components/StudentJourneyPanel';
+import LeadQueueSidebarFilters from '../components/LeadQueueSidebarFilters';
+import {
+  buildLeadQueueQueryParams,
+  DEFAULT_INTERACTION_DAYS,
+  interactionDaysEmptyLabel,
+  type InteractionDaysFilter,
+} from '../utils/leadQueueFilters';
 
 interface MessagePayload {
   id?: number | string;
@@ -162,6 +169,8 @@ export default function HandoffsView() {
   const [leadsQueue, setLeadsQueue] = useState<Lead[]>([]);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [interactionDays, setInteractionDays] = useState<InteractionDaysFilter>(DEFAULT_INTERACTION_DAYS);
   const [messageText, setMessageText] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -200,19 +209,21 @@ export default function HandoffsView() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const filteredHandoffLeads = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) return leadsQueue;
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(searchQuery.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
 
-    return leadsQueue.filter(lead => {
-      const name = (lead.name || lead.full_name || '').toLowerCase();
-      return name.includes(query);
-    });
-  }, [leadsQueue, searchQuery]);
+  const emptyQueueMessage = useMemo(() => {
+    if (debouncedSearch) return 'No matching candidates found.';
+    if (interactionDays === 0) return 'No candidates in the handoff queue.';
+    return `No candidates with activity in ${interactionDaysEmptyLabel(interactionDays)}.`;
+  }, [debouncedSearch, interactionDays]);
 
-  const fetchHandoffQueue = async (signal?: AbortSignal) => {
+  const fetchHandoffQueue = useCallback(async (signal?: AbortSignal) => {
     try {
-      const data = await apiFetch('leads/queue', { signal });
+      const query = buildLeadQueueQueryParams(interactionDays, debouncedSearch);
+      const data = await apiFetch(`leads/queue?${query}`, { signal });
       const handoffOnly = (Array.isArray(data) ? data : [])
         .map(mapLeadFromApi)
         .filter(isHandoffLead)
@@ -221,7 +232,7 @@ export default function HandoffsView() {
       setLoadError(null);
 
       setSelectedLead(prev => {
-        if (!prev) return null;
+        if (!prev) return handoffOnly[0] ?? null;
         const updatedLead = handoffOnly.find((l: Lead) => l.id === prev.id);
         if (!updatedLead) return prev;
 
@@ -239,13 +250,14 @@ export default function HandoffsView() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [interactionDays, debouncedSearch]);
 
   useEffect(() => {
     let isActive = true;
     async function executionLoop() {
       if (abortControllerRef.current) abortControllerRef.current.abort();
       abortControllerRef.current = new AbortController();
+      setIsLoading(true);
       await fetchHandoffQueue(abortControllerRef.current.signal);
       if (isActive) pollingTimerRef.current = setTimeout(executionLoop, 4000);
     }
@@ -255,7 +267,7 @@ export default function HandoffsView() {
       if (pollingTimerRef.current) clearTimeout(pollingTimerRef.current);
       if (abortControllerRef.current) abortControllerRef.current.abort();
     };
-  }, []);
+  }, [fetchHandoffQueue]);
 
   useEffect(() => {
     if (!selectedLead?.id) return;
@@ -773,18 +785,15 @@ export default function HandoffsView() {
       <div style={styles.leftSidebarPanel}>
         <div style={styles.sidebarHeader}>
           <h2 style={styles.sidebarTitle}>Queue</h2>
-          <span style={styles.activeCounterBadge}>{filteredHandoffLeads.length}</span>
+          <span style={styles.activeCounterBadge}>{leadsQueue.length}</span>
         </div>
 
-        <div style={styles.searchHeaderSection}>
-          <input
-            type="text"
-            placeholder="Search candidates..."
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            style={styles.searchBarInput}
-          />
-        </div>
+        <LeadQueueSidebarFilters
+          interactionDays={interactionDays}
+          onInteractionDaysChange={setInteractionDays}
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
+        />
         
         <div className="custom-scroll-region" style={styles.leadScrollList}>
           {isLoading ? (
@@ -792,11 +801,9 @@ export default function HandoffsView() {
           ) : loadError ? (
             <div style={styles.emptyListPlaceholder}>{loadError}</div>
           ) : leadsQueue.length === 0 ? (
-            <div style={styles.emptyListPlaceholder}>No candidates in the handoff queue.</div>
-          ) : filteredHandoffLeads.length === 0 ? (
-            <div style={styles.emptyListPlaceholder}>No matching candidates found.</div>
+            <div style={styles.emptyListPlaceholder}>{emptyQueueMessage}</div>
           ) : (
-            filteredHandoffLeads.map((lead) => {
+            leadsQueue.map((lead) => {
               const isSelected = selectedLead?.id === lead.id;
               const badgeStyle = getStatusBadgeStyle(lead.stage);
               const unreadCount = getUnreadCount(lead);

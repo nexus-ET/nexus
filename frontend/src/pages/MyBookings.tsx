@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
 import DatePicker from 'react-datepicker';
 
@@ -31,6 +31,10 @@ import { apiFetch, hasValidSession } from '../utils/api';
 import { categoryBadgeClass } from '../utils/statusBadges';
 
 import CounsellingSessionPanel from '../components/CounsellingSessionPanel';
+
+import BookingOverviewMetrics, {
+  type BookingMetricKey,
+} from '../components/BookingOverviewMetrics';
 
 import SessionOutcomeSection from '../components/SessionOutcomeSection';
 
@@ -116,14 +120,13 @@ interface MyBooking {
 
 
 
-interface MyBookingsDayResponse {
-
-  date: string;
-
+interface MyBookingsGroupedResponse {
+  past: MyBooking[];
+  today: MyBooking[];
+  upcoming: MyBooking[];
   calendar_today: string;
-
-  bookings: MyBooking[];
-
+  total_count: number;
+  view_all_bookings: boolean;
 }
 
 
@@ -194,67 +197,63 @@ const formatLocationCountry = (booking: MyBooking): string => {
 
 
 
+const METRIC_LABELS: Record<BookingMetricKey, string> = {
+  past: 'Past bookings',
+  today: "Today's bookings",
+  upcoming: 'Upcoming bookings',
+};
+
 const MyBookings: React.FC = () => {
-
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
-
   const [calendarToday, setCalendarToday] = useState('');
-
-  const [bookings, setBookings] = useState<MyBooking[]>([]);
-
+  const [groupedBookings, setGroupedBookings] = useState<MyBookingsGroupedResponse | null>(null);
   const [currentUserId, setCurrentUserId] = useState<number | null>(null);
-
   const [loading, setLoading] = useState(true);
-
   const [error, setError] = useState<string | null>(null);
-
   const [reassignModal, setReassignModal] = useState<ReassignModalState | null>(null);
-
   const [interactionBookingId, setInteractionBookingId] = useState<number | null>(null);
-
   const [sessionModal, setSessionModal] = useState<SessionModalState | null>(null);
-
   const [journeyPanel, setJourneyPanel] = useState<JourneyPanelState | null>(null);
+  const [activeMetric, setActiveMetric] = useState<BookingMetricKey>('today');
 
+  const viewAllBookings = groupedBookings?.view_all_bookings ?? false;
 
-
-  const loadBookings = useCallback(
-
-    async (dateIso?: string | null, showSpinner = true) => {
-
-      if (!hasValidSession()) return;
-
-      try {
-
-        if (showSpinner) setLoading(true);
-
-        setError(null);
-
-        const query = dateIso ? `?date=${encodeURIComponent(dateIso)}` : '';
-
-        const data = (await apiFetch(`bookings/mine/day${query}`)) as MyBookingsDayResponse;
-
-        setBookings(data.bookings);
-
-        setCalendarToday(data.calendar_today);
-
-        setSelectedDate(prev => prev ?? data.calendar_today);
-
-      } catch (err) {
-
-        setError(err instanceof Error ? err.message : 'Failed to load your bookings.');
-
-      } finally {
-
-        if (showSpinner) setLoading(false);
-
-      }
-
-    },
-
-    []
-
+  const overview = useMemo(
+    () =>
+      groupedBookings
+        ? {
+            past_count: groupedBookings.past.length,
+            today_count: groupedBookings.today.length,
+            upcoming_count: groupedBookings.upcoming.length,
+            calendar_today: groupedBookings.calendar_today,
+          }
+        : null,
+    [groupedBookings]
   );
+
+  const loadBookings = useCallback(async (showSpinner = true) => {
+    if (!hasValidSession()) return;
+
+    try {
+      if (showSpinner) setLoading(true);
+      setError(null);
+
+      const data = (await apiFetch('bookings/mine')) as MyBookingsGroupedResponse;
+      setGroupedBookings(data);
+      setCalendarToday(data.calendar_today);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load your bookings.');
+    } finally {
+      if (showSpinner) setLoading(false);
+    }
+  }, []);
+
+  const bookings = useMemo(() => {
+    if (!groupedBookings) return [];
+    const sectionBookings = groupedBookings[activeMetric] ?? [];
+    if (!selectedDate) return sectionBookings;
+    return sectionBookings.filter(booking => booking.scheduled_time.startsWith(selectedDate));
+  }, [groupedBookings, activeMetric, selectedDate]);
 
 
 
@@ -273,48 +272,36 @@ const MyBookings: React.FC = () => {
 
 
   useEffect(() => {
+    loadBookings();
+  }, [loadBookings]);
 
-    loadBookings(selectedDate);
-
-  }, [loadBookings, selectedDate]);
-
-
-
-  const handleDateChange = (date: Date | null) => {
-
-    if (!date) return;
-
-    setSelectedDate(toIsoDate(date));
-
+  const handleMetricClick = (metric: BookingMetricKey) => {
+    setActiveMetric(metric);
+    setSelectedDate(null);
   };
 
-
+  const handleDateChange = (date: Date | null) => {
+    if (!date) return;
+    setSelectedDate(toIsoDate(date));
+  };
 
   const jumpToToday = () => {
-
-    if (calendarToday) setSelectedDate(calendarToday);
-
+    if (calendarToday) {
+      setActiveMetric('today');
+      setSelectedDate(calendarToday);
+    }
   };
 
 
 
   const selectedDateLabel = selectedDate
-
     ? parseIsoDate(selectedDate).toLocaleDateString(undefined, {
-
         weekday: 'long',
-
         day: 'numeric',
-
         month: 'long',
-
         year: 'numeric',
-
       })
-
-    : '…';
-
-
+    : METRIC_LABELS[activeMetric];
 
   const isToday = Boolean(selectedDate && calendarToday && selectedDate === calendarToday);
 
@@ -406,7 +393,7 @@ const MyBookings: React.FC = () => {
 
       setReassignModal(null);
 
-      await loadBookings(selectedDate, false);
+      await Promise.all([loadBookings(false)]);
 
     } catch (err) {
 
@@ -522,7 +509,7 @@ const MyBookings: React.FC = () => {
 
       </button>
 
-      {booking.status === 'SCHEDULED' && (
+      {booking.status === 'SCHEDULED' && booking.admin_id === currentUserId && (
 
         <button
 
@@ -565,11 +552,9 @@ const MyBookings: React.FC = () => {
           </h1>
 
           <p className="text-sm text-text-muted mt-1">
-
-            Counselling sessions assigned to you for the selected date. Complete sessions, update outcomes,
-
-            and review interactions from here.
-
+            {viewAllBookings
+              ? 'All counselling sessions handled across the team. Use the overview cards to browse past, today, and upcoming bookings.'
+              : 'Counselling sessions you have handled. Use the overview cards to browse past, today, and upcoming bookings.'}
           </p>
 
         </div>
@@ -578,7 +563,7 @@ const MyBookings: React.FC = () => {
 
           type="button"
 
-          onClick={() => loadBookings(selectedDate)}
+          onClick={() => loadBookings()}
 
           disabled={loading}
 
@@ -628,23 +613,25 @@ const MyBookings: React.FC = () => {
 
         />
 
-        {!isToday && (
-
+        {selectedDate ? (
           <button
-
             type="button"
-
-            onClick={jumpToToday}
-
+            onClick={() => setSelectedDate(null)}
             className="text-xs font-semibold text-accent hover:underline whitespace-nowrap"
-
           >
-
-            Jump to today
-
+            Show all in section
           </button>
+        ) : null}
 
-        )}
+        {!isToday && selectedDate ? (
+          <button
+            type="button"
+            onClick={jumpToToday}
+            className="text-xs font-semibold text-accent hover:underline whitespace-nowrap"
+          >
+            Jump to today
+          </button>
+        ) : null}
 
         <span className="text-sm text-text-muted sm:ml-auto">{selectedDateLabel}</span>
 
@@ -657,6 +644,20 @@ const MyBookings: React.FC = () => {
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
 
       )}
+
+
+
+      <BookingOverviewMetrics
+
+        overview={overview}
+
+        activeMetric={activeMetric}
+
+        loading={loading}
+
+        onMetricClick={handleMetricClick}
+
+      />
 
 
 
@@ -678,12 +679,17 @@ const MyBookings: React.FC = () => {
 
             <Calendar size={28} className="mx-auto text-text-muted mb-3" />
 
-            <p className="text-sm font-medium text-text-main">No bookings on this date</p>
-
+            <p className="text-sm font-medium text-text-main">
+              {selectedDate
+                ? `No bookings on ${selectedDateLabel}`
+                : `No ${METRIC_LABELS[activeMetric].toLowerCase()}`}
+            </p>
             <p className="text-xs text-text-muted mt-1">
-
-              Sessions assigned to you for {selectedDateLabel} will appear here.
-
+              {selectedDate
+                ? `Try another date or clear the date filter to see all ${METRIC_LABELS[activeMetric].toLowerCase()}.`
+                : viewAllBookings
+                  ? 'Assigned counselling sessions will appear here once they are recorded.'
+                  : 'Sessions you have handled will appear here once they are assigned to you.'}
             </p>
 
           </div>
@@ -699,7 +705,7 @@ const MyBookings: React.FC = () => {
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-text-muted">
 
                   <th className="px-4 py-3">Candidate</th>
-
+                  {viewAllBookings ? <th className="px-4 py-3">Counsellor</th> : null}
                   <th className="px-4 py-3">Location &amp; Country</th>
 
                   <th className="px-4 py-3">Course Interest</th>
@@ -721,7 +727,9 @@ const MyBookings: React.FC = () => {
                   <tr key={booking.id} className="hover:bg-surface-bg/40">
 
                     <td className="px-4 py-3 font-medium text-text-main">{booking.candidate_name}</td>
-
+                    {viewAllBookings ? (
+                      <td className="px-4 py-3 text-text-muted">{booking.admin_name || '—'}</td>
+                    ) : null}
                     <td className="px-4 py-3 text-text-muted">{formatLocationCountry(booking)}</td>
 
                     <td className="px-4 py-3 text-text-muted">{booking.course_interest || '—'}</td>
@@ -978,7 +986,7 @@ const MyBookings: React.FC = () => {
 
                   bookingId={sessionModal.booking.id}
 
-                  onStatusUpdated={() => loadBookings(selectedDate, false)}
+                  onStatusUpdated={() => loadBookings(false)}
 
                 />
 

@@ -97,6 +97,6 @@ def test_target_template_asks_only_course_when_country_prefilled():
 
 def test_outreach_intake_followup_uses_consultation_prompt_only() -> None:
     text = render_outreach_intake_followup()
-    assert text == "To book your free study abroad consultation, simply reply with your full name."
+    assert text == "To book your *free study abroad consultation*, simply *reply with your full name*."
     assert "Admissions assistant" not in text
     assert "Hi " not in text

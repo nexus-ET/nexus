@@ -97,6 +97,70 @@ def _whatsapp_message(candidate_name: str, admin_name: str, scheduled_time: date
     )
 
 
+async def _send_whatsapp_appointment_management_followup(
+    db: Session,
+    *,
+    booking_id: int,
+    lead_id: int | None,
+    candidate_phone: str,
+) -> str:
+    """Send reschedule/cancel buttons after counsellor assignment confirmation."""
+    from app.services.admissions_intake_flow import build_appointment_management_reply
+
+    reply = build_appointment_management_reply()
+    lead = _resolve_lead_for_booking_notification(
+        db,
+        lead_id=lead_id,
+        candidate_phone=candidate_phone,
+    )
+
+    try:
+        if lead:
+            from app.services.twilio_ai_conversation import persist_and_send_intake_reply
+
+            await persist_and_send_intake_reply(db, lead, candidate_phone, reply)
+        else:
+            from app.services.messaging import PROVIDER_WHATSAPP, get_active_provider
+
+            if get_active_provider() == PROVIDER_WHATSAPP:
+                from app.services.meta_whatsapp_interactive import deliver_meta_intake_reply
+
+                await deliver_meta_intake_reply(candidate_phone, reply)
+            else:
+                from app.services.twilio_whatsapp_interactive import dispatch_whatsapp_interactive
+
+                interactive = reply.quick_reply or reply.list_picker
+                if interactive:
+                    sent, fallback = dispatch_whatsapp_interactive(candidate_phone, interactive)
+                    if not sent:
+                        await send_message(candidate_phone, fallback)
+                else:
+                    await send_message(candidate_phone, reply.text)
+        status = "sent"
+    except Exception:
+        logger.exception(
+            "Failed to send appointment management buttons (booking_id=%s phone=%s)",
+            booking_id,
+            candidate_phone,
+        )
+        status = "failed"
+
+    db.add(
+        NotificationLog(
+            booking_id=booking_id,
+            user_id=None,
+            channel="whatsapp",
+            status=status,
+            title="WhatsApp appointment management",
+            message=reply.text,
+            priority="normal",
+            sent_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+    return status
+
+
 def _email_content(candidate_name: str, admin_name: str, scheduled_time: datetime) -> tuple[str, str]:
     subject = f"Confirmation: Session with {admin_name}."
     body = f"Dear {candidate_name}, your session is {_format_time(scheduled_time)}."
@@ -252,6 +316,26 @@ class NotificationService:
         lead_id: int | None = None,
     ) -> str:
         message = _whatsapp_message(candidate_name, admin_name, scheduled_time)
+        lead = _resolve_lead_for_booking_notification(
+            self.db,
+            lead_id=lead_id,
+            candidate_phone=candidate_phone,
+        )
+        if lead:
+            from app.services.student_status_service import is_lead_communication_opted_out
+
+            if is_lead_communication_opted_out(self.db, lead):
+                self._log_attempt(
+                    booking_id=booking_id,
+                    user_id=None,
+                    channel="whatsapp",
+                    status="skipped",
+                    title="WhatsApp confirmation",
+                    message=message,
+                    priority="normal",
+                )
+                return "skipped"
+
         if not candidate_phone:
             self._log_attempt(
                 booking_id=booking_id,
@@ -272,6 +356,12 @@ class NotificationService:
                 lead_id=lead_id,
                 candidate_phone=candidate_phone,
                 message=message,
+            )
+            await _send_whatsapp_appointment_management_followup(
+                self.db,
+                booking_id=booking_id,
+                lead_id=lead_id,
+                candidate_phone=candidate_phone,
             )
         self._log_attempt(
             booking_id=booking_id,
@@ -491,6 +581,21 @@ class NotificationService:
         candidate_name: str,
         message: str,
     ) -> bool:
+        from app.services.student_status_service import is_lead_communication_opted_out
+
+        lead = self.db.query(Lead).filter(Lead.id == lead_id).first()
+        if lead and is_lead_communication_opted_out(self.db, lead):
+            self._log_attempt(
+                booking_id=None,
+                user_id=None,
+                channel="whatsapp",
+                status="skipped",
+                title="Document Reminder",
+                message=message,
+                priority="important",
+            )
+            return False
+
         title = "Document Reminder"
         sent = await send_message(phone_number, message)
         status = "sent" if sent else "failed"
