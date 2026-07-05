@@ -21,6 +21,7 @@ from app.schemas.counselling import (
     BookingViewDetailResponse,
     MyBookingReassignRequest,
     MyBookingsDayResponse,
+    MyBookingsOverviewResponse,
     MyBookingsResponse,
     PendingBookingsResponse,
     ScheduleGridResponse,
@@ -82,7 +83,16 @@ def list_my_bookings(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user),
 ):
-    return counselling_service.get_my_bookings(db, current_user.id)
+    return counselling_service.get_my_bookings(db, current_user)
+
+
+@router.get("/bookings/mine/overview", response_model=MyBookingsOverviewResponse)
+@router.get("/bookings/mine/overview/", response_model=MyBookingsOverviewResponse)
+def get_my_bookings_overview(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.get_my_bookings_overview(db, current_user)
 
 
 @router.get("/bookings/mine/day", response_model=MyBookingsDayResponse)
@@ -93,7 +103,7 @@ def list_my_bookings_for_date(
     current_user: User = Depends(deps.get_current_active_user),
 ):
     selected = date or office_today(db)
-    return counselling_service.get_my_bookings_for_date(db, current_user.id, selected)
+    return counselling_service.get_my_bookings_for_date(db, current_user, selected)
 
 
 @router.get("/status-definitions", response_model=StatusDefinitionsResponse)

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.lead import Lead
 from app.services.admissions_intake_flow import (
+    IntakeReply,
     _available_times_for_date,
     _finalize_consultation_booking,
     _format_slot_date,
@@ -105,7 +106,7 @@ def complete_booking_from_flow(
     lead: Lead,
     selected_date_raw: str,
     selected_time_raw: str,
-) -> str:
+) -> IntakeReply:
     selected_date = date.fromisoformat(str(selected_date_raw)[:10])
     slots = _available_times_for_date(db, selected_date)
     context = _load_context(lead)
@@ -120,8 +121,7 @@ def complete_booking_from_flow(
         raise ValueError("Could not match the selected time slot.")
 
     first = (lead.full_name or "there").split()[0]
-    reply = _finalize_consultation_booking(db, lead, selected_date, slots[choice - 1].id, first)
-    return reply.text
+    return _finalize_consultation_booking(db, lead, selected_date, slots[choice - 1].id, first)
 
 
 def parse_flow_completion_payload(raw: str | dict[str, Any]) -> dict[str, Any]:

@@ -1,14 +1,15 @@
 import os
+import re
 import traceback
 import mimetypes
 import logging
 from pathlib import Path
 from typing import List, Optional
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import cast, String, or_, func
 from sqlalchemy.orm import Session, joinedload
@@ -60,6 +61,7 @@ from app.schemas.status_definition import (
     ValidTransitionOption,
     ValidTransitionsResponse,
 )
+from app.models.status_definition import StatusDefinition
 from app.services.status_definition_service import list_status_definitions, resolve_lead_status_meta
 from app.services.status_transition_service import get_valid_transitions
 from app.services.student_status_service import (
@@ -91,29 +93,93 @@ os.makedirs(UPLOAD_DIRECTORY, exist_ok=True)
 # ---------------------------------------------------------
 # 🛠️ NEW PATCH ROUTE TO FIX 404
 # ---------------------------------------------------------
+ALLOWED_QUEUE_INTERACTION_DAYS = {0, 5, 15, 30}
+
+
+def _normalize_queue_interaction_days(days: int) -> int | None:
+    """Return day window for queue filtering, or None for all time."""
+    if days == 0:
+        return None
+    if days in ALLOWED_QUEUE_INTERACTION_DAYS:
+        return days
+    return 5
+
+
+def _apply_lead_queue_search(query, q: str | None):
+    term = (q or "").strip()
+    if not term:
+        return query
+
+    pattern = f"%{term.lower()}%"
+    filters = [
+        func.lower(Lead.full_name).like(pattern),
+        func.lower(Lead.email).like(pattern),
+    ]
+    digits = re.sub(r"\D", "", term)
+    if digits:
+        filters.append(Lead.phone_number.like(f"%{digits}%"))
+    return query.filter(or_(*filters))
+
+
+def _apply_lead_interaction_window(query, db: Session, days: int | None):
+    if not days or days <= 0:
+        return query
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    latest_msg = (
+        db.query(
+            Message.lead_id.label("lead_id"),
+            func.max(Message.created_at).label("latest_at"),
+        )
+        .group_by(Message.lead_id)
+        .subquery()
+    )
+    activity_at = func.coalesce(latest_msg.c.latest_at, Lead.updated_at, Lead.created_at)
+    return query.outerjoin(latest_msg, Lead.id == latest_msg.c.lead_id).filter(activity_at >= cutoff)
+
+
+def _build_handoff_leads_query(db: Session):
+    return db.query(Lead).filter(
+        or_(
+            cast(Lead.stage, String).ilike("%HANDOFF%"),
+            cast(Lead.stage, String).ilike("%HUMAN%"),
+            Lead.is_human_locked == True,
+        )
+    )
+
+
+def _build_active_leads_query(db: Session):
+    return db.query(Lead).filter(
+        Lead.stage == LeadStage.AI_ACTIVE,
+        Lead.is_human_locked == False,
+    )
+
+
 @router.get("/queue")
 @router.get("/queue/")
 @router.get("/handoffs")
 @router.get("/handoffs/")
 @router.get("/handoff")
 @router.get("/handoff/")
-async def get_handoff_queue(db: Session = Depends(get_db)):
+async def get_handoff_queue(
+    db: Session = Depends(get_db),
+    days: int = Query(5, ge=0, le=365),
+    q: str | None = Query(None, max_length=120),
+):
     """
     Fetches leads flagged as HANDOFF or manually locked by a human.
+    Default: activity within the last 5 days. Pass days=0 for all time.
+    When q is set, the activity window is ignored and all matching candidates are returned.
     """
     try:
-        handoff_list = (
-            db.query(Lead)
-            .filter(
-                or_(
-                    cast(Lead.stage, String).ilike("%HANDOFF%"),
-                    cast(Lead.stage, String).ilike("%HUMAN%"),
-                    Lead.is_human_locked == True,
-                )
+        query = _build_handoff_leads_query(db)
+        if q and q.strip():
+            query = _apply_lead_queue_search(query, q)
+        else:
+            query = _apply_lead_interaction_window(
+                query, db, _normalize_queue_interaction_days(days)
             )
-            .order_by(Lead.updated_at.desc())
-            .all()
-        )
+        handoff_list = query.order_by(Lead.updated_at.desc()).all()
         stats_by_id = _load_message_stats_for_leads(db, [lead.id for lead in handoff_list])
         return [
             build_handoff_queue_item(lead, stats_by_id.get(lead.id, {}))
@@ -295,7 +361,13 @@ def _load_message_stats_for_leads(db: Session, lead_ids: list[int]) -> dict[int,
     }
 
 
-def build_active_queue_item(lead: Lead, stats: dict | None = None) -> dict:
+def build_active_queue_item(
+    lead: Lead,
+    stats: dict | None = None,
+    db: Session | None = None,
+    *,
+    status_by_id: dict | None = None,
+) -> dict:
     """Lightweight AI Active list payload without full message history."""
     stats = stats or {}
     raw_stage = lead.stage or LeadStage.AI_ACTIVE
@@ -313,6 +385,32 @@ def build_active_queue_item(lead: Lead, stats: dict | None = None) -> dict:
     if len(fallback_text) > 240:
         fallback_text = f"{fallback_text[:237]}..."
 
+    status_definition_id = None
+    status_stage_name = None
+    status_category = None
+    status_description = None
+    if db is not None:
+        cached = (
+            status_by_id.get(lead.status_definition_id)
+            if status_by_id and lead.status_definition_id
+            else None
+        )
+        if cached is not None:
+            status_definition_id = cached.id
+            status_stage_name = cached.stage_name
+            status_category = cached.category
+            status_description = cached.description
+        else:
+            status_definition_id, status_stage_name, status_category = resolve_lead_status_meta(db, lead)
+            if status_definition_id:
+                definition = (
+                    status_by_id.get(status_definition_id)
+                    if status_by_id is not None
+                    else db.query(StatusDefinition).filter(StatusDefinition.id == status_definition_id).first()
+                )
+                if definition:
+                    status_description = definition.description
+
     return {
         "id": lead.id,
         "full_name": lead.full_name,
@@ -323,6 +421,10 @@ def build_active_queue_item(lead: Lead, stats: dict | None = None) -> dict:
         "stage": clean_stage,
         "status": clean_stage,
         "current_stage": clean_stage,
+        "status_definition_id": status_definition_id,
+        "status_stage_name": status_stage_name,
+        "status_category": status_category,
+        "status_description": status_description,
         "unread_count": stats.get("unread_count", 0),
         "total_messages_received": stats.get("total_messages_received", 0),
         "has_ai_messages": stats.get("has_ai_messages", False),
@@ -333,12 +435,17 @@ def build_active_queue_item(lead: Lead, stats: dict | None = None) -> dict:
         "messages": [],
         **{
             key: value
-            for key, value in build_intake_profile_summary(lead, db=None).items()
+            for key, value in build_intake_profile_summary(
+                lead,
+                db,
+                refresh_lead=False,
+                include_booking_options=False,
+                include_session_fields=True,
+            ).items()
             if key
             not in {
                 "available_consultation_dates",
                 "available_consultation_times",
-                "selected_consultation_date",
             }
         },
     }
@@ -694,21 +801,32 @@ async def handle_external_social_webhook(request: Request, db: Session = Depends
 @router.get("/active/")
 @router.get("/active-stream")
 @router.get("/active-stream/")
-def get_active_leads_queue(db: Session = Depends(get_db)):
+def get_active_leads_queue(
+    db: Session = Depends(get_db),
+    days: int = Query(5, ge=0, le=365),
+    q: str | None = Query(None, max_length=120),
+):
     """Returns leads currently managed by the AI agent (not in handoff)."""
     try:
-        active_leads = (
-            db.query(Lead)
-            .filter(
-                Lead.stage == LeadStage.AI_ACTIVE,
-                Lead.is_human_locked == False,
+        query = _build_active_leads_query(db)
+        if q and q.strip():
+            query = _apply_lead_queue_search(query, q)
+        else:
+            query = _apply_lead_interaction_window(
+                query, db, _normalize_queue_interaction_days(days)
             )
-            .order_by(Lead.updated_at.desc())
-            .all()
-        )
+        active_leads = query.order_by(Lead.updated_at.desc()).all()
         stats_by_id = _load_message_stats_for_leads(db, [lead.id for lead in active_leads])
+        status_by_id = {
+            row.id: row for row in db.query(StatusDefinition).all()
+        }
         return [
-            build_active_queue_item(lead, stats_by_id.get(lead.id, {}))
+            build_active_queue_item(
+                lead,
+                stats_by_id.get(lead.id, {}),
+                db,
+                status_by_id=status_by_id,
+            )
             for lead in active_leads
         ]
     except Exception as e:

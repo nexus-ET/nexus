@@ -60,11 +60,22 @@ def _admin_id_scoped_booking_handler(handler_source: str, owned_booking_source: 
     """True when a handler scopes bookings to the current user via inline filter or _get_owned_booking."""
     if "CounsellingBooking.admin_id == user_id" in handler_source:
         return True
+    if "_my_bookings_query" in handler_source:
+        return True
     if "_get_owned_booking" not in handler_source:
         return False
     return (
         "CounsellingBooking.admin_id == user_id" in owned_booking_source
         and "CounsellingBooking.id == booking_id" in owned_booking_source
+    )
+
+
+def _viewable_booking_handler(handler_source: str, viewable_booking_source: str) -> bool:
+    if "_get_viewable_booking" not in handler_source:
+        return False
+    return (
+        "booking.admin_id != user.id" in viewable_booking_source
+        and "_my_bookings_view_all" in viewable_booking_source
     )
 
 
@@ -313,7 +324,10 @@ def check_idor_controls() -> list[SecurityCheckResult]:
     )
 
     my_comm_source = inspect.getsource(counselling_service.get_my_booking_communications)
-    comm_scoped = _admin_id_scoped_booking_handler(my_comm_source, owned_booking_source)
+    viewable_booking_source = inspect.getsource(counselling_service._get_viewable_booking)
+    comm_scoped = _admin_id_scoped_booking_handler(my_comm_source, owned_booking_source) or _viewable_booking_handler(
+        my_comm_source, viewable_booking_source
+    )
     results.append(
         SecurityCheckResult(
             name="my_booking_communications_admin_id_scope",

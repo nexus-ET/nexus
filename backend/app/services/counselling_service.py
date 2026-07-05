@@ -4,7 +4,7 @@ from datetime import date, datetime, time, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models.counselling_booking import CounsellingBooking
 from app.models.counselling_note import CounsellingNote
@@ -24,6 +24,7 @@ from app.services.status_definition_service import (
     list_status_definitions,
     resolve_lead_status_meta,
 )
+from app.services.status_transition_service import get_valid_transitions, is_backward_transition
 from app.services.admin_roles import get_active_admin_role_ids
 from app.services.public_holiday_service import is_bookable_day, is_public_holiday
 from app.services.security_service import input_sanitizer
@@ -41,6 +42,7 @@ CANCELLED_STATUS = "CANCELLED"
 COMPLETED_STATUS = "COMPLETED"
 SCHEDULE_DAYS = 14
 VISIBLE_PENDING_COLUMNS = 3
+MY_BOOKINGS_ADMIN_ROLE_NAMES = {"Super Admin", "Web Admin"}
 
 ADMIN_CELL_LABELS = {
     "available": "Available",
@@ -755,6 +757,70 @@ def _booking_section_for_date(booking_date: date, calendar_today: date) -> str:
     return "today"
 
 
+def _my_bookings_view_all(user: User) -> bool:
+    if user.is_superuser:
+        return True
+    role_name = user.admin_role_ref.name if user.admin_role_ref and user.admin_role_ref.name else ""
+    return role_name in MY_BOOKINGS_ADMIN_ROLE_NAMES
+
+
+def _my_bookings_query(db: Session, user: User):
+    user_id = user.id
+    query = db.query(CounsellingBooking).filter(CounsellingBooking.admin_id.isnot(None))
+    if not _my_bookings_view_all(user):
+        query = query.filter(CounsellingBooking.admin_id == user_id)
+    return query.order_by(CounsellingBooking.scheduled_time.asc())
+
+
+def _group_serialized_my_bookings(
+    db: Session,
+    bookings: list[CounsellingBooking],
+) -> tuple[list[dict], list[dict], list[dict]]:
+    calendar_today = office_today(db)
+    admin_cache: dict[int, User | None] = {}
+    lead_cache: dict[int, Lead | None] = {}
+    past: list[dict] = []
+    today: list[dict] = []
+    upcoming: list[dict] = []
+
+    for booking in bookings:
+        if booking.admin_id not in admin_cache:
+            admin_cache[booking.admin_id] = (
+                db.query(User).filter(User.id == booking.admin_id).first()
+                if booking.admin_id
+                else None
+            )
+        admin = admin_cache.get(booking.admin_id)
+        lead = None
+        if booking.lead_id:
+            if booking.lead_id not in lead_cache:
+                lead_cache[booking.lead_id] = (
+                    db.query(Lead).filter(Lead.id == booking.lead_id).first()
+                )
+            lead = lead_cache.get(booking.lead_id)
+        booking_date = booking.scheduled_time.date()
+        section = _booking_section_for_date(booking_date, calendar_today)
+        payload = _serialize_my_booking(db, booking, admin, section, lead=lead)
+        if section == "past":
+            past.append(payload)
+        elif section == "today":
+            today.append(payload)
+        else:
+            upcoming.append(payload)
+
+    past.sort(key=lambda item: item["scheduled_time"], reverse=True)
+    return past, today, upcoming
+
+
+def _get_viewable_booking(db: Session, user: User, booking_id: int) -> CounsellingBooking:
+    booking = db.query(CounsellingBooking).filter(CounsellingBooking.id == booking_id).first()
+    if not booking or booking.admin_id is None:
+        raise HTTPException(status_code=404, detail="Booking not found or not assigned to you.")
+    if booking.admin_id != user.id and not _my_bookings_view_all(user):
+        raise HTTPException(status_code=404, detail="Booking not found or not assigned to you.")
+    return booking
+
+
 def _get_owned_booking(db: Session, user_id: int, booking_id: int) -> CounsellingBooking:
     booking = (
         db.query(CounsellingBooking)
@@ -865,48 +931,10 @@ def _build_data_exchange(messages: list[dict]) -> tuple[list[dict], list[dict]]:
     return shared_by_student, shared_by_admin
 
 
-def get_my_bookings(db: Session, user_id: int) -> dict:
+def get_my_bookings(db: Session, user: User) -> dict:
     calendar_today = office_today(db)
-    bookings = (
-        db.query(CounsellingBooking)
-        .filter(
-            CounsellingBooking.admin_id == user_id,
-            CounsellingBooking.status == SCHEDULED_STATUS,
-        )
-        .order_by(CounsellingBooking.scheduled_time.asc())
-        .all()
-    )
-
-    admin_cache: dict[int, User | None] = {}
-    past: list[dict] = []
-    today: list[dict] = []
-    upcoming: list[dict] = []
-
-    for booking in bookings:
-        if booking.admin_id not in admin_cache:
-            admin_cache[booking.admin_id] = (
-                db.query(User).filter(User.id == booking.admin_id).first()
-                if booking.admin_id
-                else None
-            )
-        admin = admin_cache.get(booking.admin_id)
-        booking_date = booking.scheduled_time.date()
-        if booking_date < calendar_today:
-            section = "past"
-        elif booking_date > calendar_today:
-            section = "upcoming"
-        else:
-            section = "today"
-
-        payload = _serialize_my_booking(db, booking, admin, section)
-        if section == "past":
-            past.append(payload)
-        elif section == "today":
-            today.append(payload)
-        else:
-            upcoming.append(payload)
-
-    past.sort(key=lambda item: item["scheduled_time"], reverse=True)
+    bookings = _my_bookings_query(db, user).all()
+    past, today, upcoming = _group_serialized_my_bookings(db, bookings)
 
     return {
         "past": past,
@@ -914,22 +942,41 @@ def get_my_bookings(db: Session, user_id: int) -> dict:
         "upcoming": upcoming,
         "calendar_today": calendar_today,
         "total_count": len(bookings),
+        "view_all_bookings": _my_bookings_view_all(user),
     }
 
 
-def get_my_bookings_for_date(db: Session, user_id: int, selected_date: date) -> dict:
+def get_my_bookings_overview(db: Session, user: User) -> dict:
     calendar_today = office_today(db)
-    bookings = (
-        db.query(CounsellingBooking)
-        .filter(
-            CounsellingBooking.admin_id == user_id,
-            CounsellingBooking.status.in_([SCHEDULED_STATUS, COMPLETED_STATUS]),
-        )
-        .order_by(CounsellingBooking.scheduled_time.asc())
-        .all()
-    )
+    bookings = _my_bookings_query(db, user).all()
+    past_count = 0
+    today_count = 0
+    upcoming_count = 0
+
+    for booking in bookings:
+        booking_date = booking.scheduled_time.date()
+        if booking_date < calendar_today:
+            past_count += 1
+        elif booking_date > calendar_today:
+            upcoming_count += 1
+        else:
+            today_count += 1
+
+    return {
+        "past_count": past_count,
+        "today_count": today_count,
+        "upcoming_count": upcoming_count,
+        "calendar_today": calendar_today,
+        "view_all_bookings": _my_bookings_view_all(user),
+    }
+
+
+def get_my_bookings_for_date(db: Session, user: User, selected_date: date) -> dict:
+    calendar_today = office_today(db)
+    bookings = _my_bookings_query(db, user).all()
 
     admin_cache: dict[int, User | None] = {}
+    lead_cache: dict[int, Lead | None] = {}
     day_bookings: list[dict] = []
 
     for booking in bookings:
@@ -945,13 +992,18 @@ def get_my_bookings_for_date(db: Session, user_id: int, selected_date: date) -> 
         section = _booking_section_for_date(booking.scheduled_time.date(), calendar_today)
         lead = None
         if booking.lead_id:
-            lead = db.query(Lead).filter(Lead.id == booking.lead_id).first()
+            if booking.lead_id not in lead_cache:
+                lead_cache[booking.lead_id] = (
+                    db.query(Lead).filter(Lead.id == booking.lead_id).first()
+                )
+            lead = lead_cache.get(booking.lead_id)
         day_bookings.append(_serialize_my_booking(db, booking, admin, section, lead=lead))
 
     return {
         "date": selected_date,
         "calendar_today": calendar_today,
         "bookings": day_bookings,
+        "view_all_bookings": _my_bookings_view_all(user),
     }
 
 
@@ -971,11 +1023,68 @@ def _build_booking_interaction_timeline(db: Session, booking_id: int) -> list[di
     return timeline
 
 
+def _booking_forward_status_change_blocked(booking: CounsellingBooking, calendar_today: date) -> bool:
+    return booking.scheduled_time.date() > calendar_today
+
+
+def _find_previous_stage_id(db: Session, current_status_id: int | None) -> int | None:
+    if not current_status_id:
+        return None
+    predecessor = (
+        db.query(StatusDefinition)
+        .filter(StatusDefinition.next_stage_id == current_status_id)
+        .order_by(StatusDefinition.id.asc())
+        .first()
+    )
+    return predecessor.id if predecessor else None
+
+
+def _is_forward_status_change(
+    db: Session,
+    current_status_id: int | None,
+    next_status_id: int,
+) -> bool:
+    if current_status_id is None or current_status_id == next_status_id:
+        return False
+    if next_status_id < current_status_id:
+        return False
+    if is_backward_transition(db, current_status_id, next_status_id):
+        return False
+    return True
+
+
+def _assert_booking_status_change_allowed_before_appointment(
+    db: Session,
+    booking: CounsellingBooking,
+    lead: Lead,
+    status_definition_id: int,
+) -> None:
+    calendar_today = office_today(db)
+    if not _booking_forward_status_change_blocked(booking, calendar_today):
+        return
+    if lead.status_definition_id == status_definition_id:
+        return
+    if not _is_forward_status_change(db, lead.status_definition_id, status_definition_id):
+        return
+
+    appointment_label = _format_day_label(booking.scheduled_time.date())
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"This appointment is scheduled for {appointment_label}. "
+            "Forward stage changes are not allowed before the session date. "
+            "You may move the candidate to an earlier stage."
+        ),
+    )
+
+
 def _serialize_booking_activity_context(
     db: Session,
     booking: CounsellingBooking,
     admin: User | None,
     lead: Lead | None,
+    *,
+    acting_user: User | None = None,
 ) -> dict:
     calendar_today = office_today(db)
     section = _booking_section_for_date(booking.scheduled_time.date(), calendar_today)
@@ -1004,10 +1113,17 @@ def _serialize_booking_activity_context(
 
     current_status_id = lead.status_definition_id if lead else None
     suggested_next = None
+    previous_stage_id = None
+    backward_status_ids: list[int] = []
     if current_status_id:
         current_definition = db.query(StatusDefinition).filter(StatusDefinition.id == current_status_id).first()
         if current_definition:
             suggested_next = current_definition.next_stage_id
+        previous_stage_id = _find_previous_stage_id(db, current_status_id)
+        transitions = get_valid_transitions(db, current_status_id, user=acting_user)
+        backward_status_ids = [item["to_status_id"] for item in transitions["backward"]]
+
+    forward_status_changes_blocked = _booking_forward_status_change_blocked(booking, calendar_today)
 
     return {
         "booking": serialized_booking,
@@ -1017,20 +1133,31 @@ def _serialize_booking_activity_context(
         "status_definitions": list_status_definitions(db),
         "current_status_definition_id": current_status_id,
         "suggested_next_status_definition_id": suggested_next,
+        "previous_stage_id": previous_stage_id,
+        "appointment_date": booking.scheduled_time.date(),
+        "calendar_today": calendar_today,
+        "forward_status_changes_blocked": forward_status_changes_blocked,
+        "backward_status_ids": backward_status_ids,
         "lead_jump_path": _resolve_lead_jump_path(lead),
-        "can_update_status": bool(lead) and booking.status == SCHEDULED_STATUS,
+        "can_update_status": bool(lead),
     }
 
 
 def get_booking_activity_log(db: Session, user_id: int, booking_id: int) -> dict:
-    booking = _get_owned_booking(db, user_id, booking_id)
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
     admin = db.query(User).filter(User.id == booking.admin_id).first() if booking.admin_id else None
     lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
-    return _serialize_booking_activity_context(db, booking, admin, lead)
+    return _serialize_booking_activity_context(db, booking, admin, lead, acting_user=user)
 
 
 def get_booking_interaction_log(db: Session, user_id: int, booking_id: int) -> dict:
-    booking = _get_owned_booking(db, user_id, booking_id)
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
     admin = db.query(User).filter(User.id == booking.admin_id).first() if booking.admin_id else None
     lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
     calendar_today = office_today(db)
@@ -1061,14 +1188,28 @@ def update_my_booking_status(
     notes: str | None = None,
 ) -> dict:
     booking = _get_owned_booking(db, user_id, booking_id)
-    if booking.status != SCHEDULED_STATUS:
-        raise HTTPException(status_code=400, detail="Only scheduled bookings can be updated.")
+    if booking.status not in (SCHEDULED_STATUS, COMPLETED_STATUS):
+        raise HTTPException(
+            status_code=400,
+            detail="Only active or completed session bookings can be updated.",
+        )
     if not booking.lead_id:
         raise HTTPException(status_code=400, detail="Booking is not linked to a lead.")
 
     lead = db.query(Lead).filter(Lead.id == booking.lead_id).first()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found.")
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    _assert_booking_status_change_allowed_before_appointment(
+        db,
+        booking,
+        lead,
+        status_definition_id,
+    )
 
     return apply_lead_status(
         db,
@@ -1473,5 +1614,8 @@ def get_booking_communications(db: Session, booking_id: int) -> dict:
 
 
 def get_my_booking_communications(db: Session, user_id: int, booking_id: int) -> dict:
-    _get_owned_booking(db, user_id, booking_id)
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    _get_viewable_booking(db, user, booking_id)
     return get_booking_communications(db, booking_id)

@@ -220,6 +220,12 @@ def lead_has_prior_ai_outreach(db: Session, lead_id: int) -> bool:
 
 
 def assert_ai_outreach_allowed(db: Session, lead: Lead, *, force_restart: bool = False) -> None:
+    from app.services.student_status_service import is_lead_communication_opted_out
+
+    if is_lead_communication_opted_out(db, lead):
+        raise ValueError(
+            "This candidate has opted out of communication. Outreach and marketing are disabled."
+        )
     if lead_has_prior_ai_outreach(db, lead.id) and not force_restart:
         raise ValueError(
             "An AI WhatsApp conversation is already in progress for this student. "
@@ -499,6 +505,12 @@ async def handle_ai_active_inbound(
 ) -> list[str]:
     runtime_config = get_runtime_agent_config(db)
     cleaned_incoming = (incoming_text or "").strip()
+
+    from app.services.student_status_service import is_lead_communication_opted_out
+
+    if is_lead_communication_opted_out(db, lead):
+        db.commit()
+        return []
 
     if flow_data:
         flow_reply = process_flow_completion(db, lead, flow_data)

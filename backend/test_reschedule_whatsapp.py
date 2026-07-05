@@ -35,10 +35,21 @@ from app.services.twilio_ai_conversation import handle_ai_active_inbound
         "cancel my appointment",
         "cancel appointment",
         "I want to cancel",
+        "booking:cancel",
     ],
 )
 def test_is_cancel_command_recognizes_common_phrases(message: str) -> None:
     assert is_cancel_command(message)
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["reschedule", "booking:reschedule", "Reschedule"],
+)
+def test_is_reschedule_command_recognizes_buttons(message: str) -> None:
+    from app.services.admissions_intake_flow import is_reschedule_command
+
+    assert is_reschedule_command(message)
 
 
 def test_engagement_can_transition_to_session_rescheduled() -> None:
@@ -90,8 +101,8 @@ def test_reschedule_from_pick_time_shows_date_picker() -> None:
             "app.services.admissions_intake_flow.release_lead_consultation_slot",
         ) as release_slot,
         patch(
-            "app.services.admissions_intake_flow._reset_booking_intake_context",
-        ) as reset_context,
+            "app.services.admissions_intake_flow._begin_reschedule_booking",
+        ) as begin_reschedule,
         patch(
             "app.services.admissions_intake_flow._build_date_picker_payload",
         ) as build_date_picker,
@@ -119,8 +130,8 @@ def test_reschedule_from_pick_time_shows_date_picker() -> None:
     assert reply.list_picker is not None
     assert reply.list_picker.button == "Choose date"
     assert lead.intake_step == INTAKE_STEP_PICK_DATE
-    release_slot.assert_called_once()
-    reset_context.assert_called_once()
+    release_slot.assert_not_called()
+    begin_reschedule.assert_called_once()
     on_rescheduled.assert_called_once()
 
 
@@ -212,12 +223,104 @@ def test_cancel_from_pick_time_returns_confirmation_not_time_picker() -> None:
 
     assert reply is not None
     assert reply.list_picker is None
-    assert reply.quick_reply is None
+    assert reply.quick_reply is not None
+    assert reply.quick_reply.actions[0]["id"] == "booking:reschedule"
     assert "cancelled" in reply.text.lower()
     assert lead.intake_step == INTAKE_STEP_COMPLETE
     release_slot.assert_called_once()
     reset_context.assert_called_once()
     on_cancelled.assert_called_once()
+
+
+def test_cancel_with_active_booking_record_without_lead_timestamp() -> None:
+    scheduled = datetime(2026, 7, 15, 14, 0)
+    booking = SimpleNamespace(
+        id=99,
+        scheduled_time=scheduled,
+        admin_id=None,
+        status="SCHEDULED",
+    )
+    lead = SimpleNamespace(
+        id=5,
+        full_name="Sahil",
+        intake_step=INTAKE_STEP_COMPLETE,
+        consultation_scheduled_at=None,
+        wants_consultation_call=True,
+        stage=LeadStage.AI_ACTIVE,
+        is_human_locked=False,
+        calendar_booking_id=None,
+        intake_context="{}",
+    )
+    db = MagicMock()
+    db.refresh = MagicMock()
+    db.commit = MagicMock()
+
+    mock_query = MagicMock()
+    db.query.return_value = mock_query
+    mock_query.filter.return_value.order_by.return_value.first.return_value = booking
+
+    with (
+        patch(
+            "app.services.admissions_intake_flow.release_lead_consultation_slot",
+        ) as release_slot,
+        patch(
+            "app.services.admissions_intake_flow._reset_booking_intake_context",
+        ),
+        patch(
+            "app.services.student_status_service.on_session_cancelled",
+        ) as on_cancelled,
+    ):
+        reply = handle_post_intake_booking_message(db, lead, "booking:cancel")
+
+    assert reply is not None
+    assert "cancelled" in reply.text.lower()
+    assert "don't have an active appointment" not in reply.text.lower()
+    assert reply.quick_reply is not None
+    assert reply.quick_reply.actions[0]["id"] == "booking:reschedule"
+    release_slot.assert_called_once()
+    on_cancelled.assert_called_once()
+    assert on_cancelled.call_args.kwargs["had_active_booking"] is True
+
+
+def test_cancel_without_booking_offers_pre_booking_buttons() -> None:
+    lead = SimpleNamespace(
+        id=6,
+        full_name="Sahil",
+        intake_step=INTAKE_STEP_COMPLETE,
+        consultation_scheduled_at=None,
+        wants_consultation_call=True,
+        stage=LeadStage.AI_ACTIVE,
+        is_human_locked=False,
+        calendar_booking_id=None,
+        intake_context="{}",
+    )
+    db = MagicMock()
+    db.refresh = MagicMock()
+    db.commit = MagicMock()
+
+    mock_query = MagicMock()
+    db.query.return_value = mock_query
+    mock_query.filter.return_value.order_by.return_value.first.return_value = None
+
+    with (
+        patch(
+            "app.services.admissions_intake_flow.release_lead_consultation_slot",
+        ),
+        patch(
+            "app.services.admissions_intake_flow._reset_booking_intake_context",
+        ),
+        patch(
+            "app.services.student_status_service.on_session_cancelled",
+        ) as on_cancelled,
+    ):
+        reply = handle_post_intake_booking_message(db, lead, "cancel")
+
+    assert reply is not None
+    assert "don't have a consultation booked yet" in reply.text
+    assert reply.quick_reply is not None
+    assert reply.quick_reply.actions[0]["id"] == "booking:book_session"
+    assert reply.quick_reply.actions[1]["id"] == "booking:not_interested"
+    assert on_cancelled.call_args.kwargs["had_active_booking"] is False
 
 
 def test_handle_ai_active_cancel_skips_process_intake_when_pick_time() -> None:
@@ -275,3 +378,73 @@ def test_handle_ai_active_cancel_skips_process_intake_when_pick_time() -> None:
         assert result == ["Your appointment has been cancelled."]
 
     asyncio.run(_run())
+
+
+def test_session_profile_shows_pending_date_during_pick_time() -> None:
+    from app.services.admissions_intake_flow import _build_consultation_session_profile_fields
+
+    lead = SimpleNamespace(
+        consultation_scheduled_at=datetime(2026, 7, 1, 10, 0),
+    )
+    context = {
+        "selected_date": "2026-07-10",
+        "pending_session_date_label": "Thu, Jul 10, 2026",
+    }
+    fields = _build_consultation_session_profile_fields(
+        None,
+        lead,
+        step=INTAKE_STEP_PICK_TIME,
+        context=context,
+    )
+    assert fields["consultation_session_date"] == "Thu, Jul 10, 2026"
+    assert fields["consultation_session_time"] == "Pending selection"
+
+
+def test_session_profile_keeps_confirmed_booking_during_reschedule_pick_date() -> None:
+    from app.services.admissions_intake_flow import _build_consultation_session_profile_fields
+
+    lead = SimpleNamespace(
+        consultation_scheduled_at=datetime(2026, 7, 1, 14, 0),
+    )
+    fields = _build_consultation_session_profile_fields(
+        None,
+        lead,
+        step=INTAKE_STEP_PICK_DATE,
+        context={"reschedule_in_progress": True},
+    )
+    assert fields["consultation_session_date"] == "Wed, Jul 01, 2026"
+    assert fields["consultation_session_time"] == "2:00 PM"
+
+
+def test_build_intake_profile_summary_includes_session_fields_without_refresh() -> None:
+    from app.services.admissions_intake_flow import build_intake_profile_summary
+
+    lead = SimpleNamespace(
+        intake_step=INTAKE_STEP_PICK_TIME,
+        intake_context=json.dumps(
+            {
+                "selected_date": "2026-07-10",
+                "pending_session_date_label": "Thu, Jul 10, 2026",
+            }
+        ),
+        consultation_scheduled_at=None,
+        current_location=None,
+        preferred_country=None,
+        academic_summary=None,
+        english_test_scores=None,
+        gre_score=None,
+        gmat_score=None,
+        test_scores=None,
+        wants_consultation_call=True,
+        calendar_booking_id=None,
+    )
+    summary = build_intake_profile_summary(
+        lead,
+        None,
+        refresh_lead=False,
+        include_booking_options=False,
+        include_session_fields=True,
+    )
+    assert summary["consultation_session_date"] == "Thu, Jul 10, 2026"
+    assert summary["consultation_session_time"] == "Pending selection"
+    assert summary["selected_consultation_date"] == "2026-07-10"

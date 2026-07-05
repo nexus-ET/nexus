@@ -1,7 +1,14 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bot, Archive, Users, Calendar, CheckCircle2, Circle, Map } from 'lucide-react';
 import { apiFetch, hasValidSession } from '../utils/api';
 import StudentJourneyPanel from '../components/StudentJourneyPanel';
+import LeadQueueSidebarFilters from '../components/LeadQueueSidebarFilters';
+import {
+  buildLeadQueueQueryParams,
+  DEFAULT_INTERACTION_DAYS,
+  interactionDaysEmptyLabel,
+  type InteractionDaysFilter,
+} from '../utils/leadQueueFilters';
 
 interface ConsultationDateOption {
   date: string;
@@ -44,6 +51,8 @@ interface ActiveLead {
   preferred_country?: string | null;
   preferred_course?: string | null;
   target_program?: string | null;
+  target_degree?: string | null;
+  target_major?: string | null;
   study_interest_complete?: boolean;
   english_test_scores?: string | null;
   gre_score?: string | null;
@@ -52,10 +61,40 @@ interface ActiveLead {
   wants_consultation_call?: boolean | null;
   consultation_scheduled_at?: string | null;
   calendar_booking_id?: string | null;
+  consultation_session_date?: string | null;
+  consultation_session_time?: string | null;
+  assigned_counsellor_name?: string | null;
   available_consultation_dates?: ConsultationDateOption[];
   available_consultation_times?: ConsultationTimeOption[];
   selected_consultation_date?: string | null;
+  status_definition_id?: number | null;
+  status_stage_name?: string | null;
+  status_category?: string | null;
+  status_description?: string | null;
 }
+
+const PIPELINE_STATUS_MARKETING_DISABLED = 'Lead: Marketing Disabled';
+const PIPELINE_STATUS_PROSPECT_CANCELLED = 'Prospect: Cancelled & Closed';
+const OUTREACH_BLOCKED_STATUS_IDS = new Set([11, 44]);
+const OUTREACH_BLOCKED_STATUS_NAMES = new Set([
+  PIPELINE_STATUS_MARKETING_DISABLED,
+  PIPELINE_STATUS_PROSPECT_CANCELLED,
+]);
+
+const isOutreachBlocked = (
+  lead: Pick<ActiveLead, 'status_stage_name' | 'status_definition_id'>
+): boolean => {
+  if (lead.status_definition_id != null && OUTREACH_BLOCKED_STATUS_IDS.has(lead.status_definition_id)) {
+    return true;
+  }
+  if (lead.status_stage_name && OUTREACH_BLOCKED_STATUS_NAMES.has(lead.status_stage_name)) {
+    return true;
+  }
+  return false;
+};
+
+const OUTREACH_BLOCKED_TOOLTIP =
+  'This candidate has opted out of communication. Outreach and marketing are disabled.';
 
 const normalizeStatus = (status?: string): string => {
   const raw = (status || '').toUpperCase().replace(/-/g, '_');
@@ -66,6 +105,12 @@ const normalizeStatus = (status?: string): string => {
 const isAiActive = (status?: string): boolean => normalizeStatus(status) === 'AI_ACTIVE';
 
 const getLeadPhone = (lead: ActiveLead): string => lead.phone || lead.phone_number || '';
+
+const getStartOutreachDisabledReason = (lead: ActiveLead): string | null => {
+  if (isOutreachBlocked(lead)) return OUTREACH_BLOCKED_TOOLTIP;
+  if (!getLeadPhone(lead)) return 'Add a phone number to start WhatsApp outreach';
+  return null;
+};
 
 const leadHasAiMessages = (lead: ActiveLead): boolean => {
   if (typeof lead.has_ai_messages === 'boolean') return lead.has_ai_messages;
@@ -90,7 +135,9 @@ const normalizeMessage = (msg: Record<string, unknown>): ChatMessage => {
 const INTAKE_STEPS = [
   { key: 'FULL_NAME', label: 'Full name' },
   { key: 'CURRENT_LOCATION', label: 'Location' },
-  { key: 'TARGET_COUNTRY', label: 'Country & course' },
+  { key: 'TARGET_DEGREE', label: 'Program' },
+  { key: 'TARGET_MAJOR', label: 'Major' },
+  { key: 'TARGET_COUNTRY', label: 'Country' },
   { key: 'ENGLISH_SCORES', label: 'English scores' },
   { key: 'GRE_SCORE', label: 'GRE' },
   { key: 'GMAT_SCORE', label: 'GMAT' },
@@ -149,6 +196,8 @@ const mapLeadFromApi = (lead: Record<string, unknown>): ActiveLead => {
     preferred_country: (lead.preferred_country as string | null | undefined) ?? null,
     preferred_course: (lead.preferred_course as string | null | undefined) ?? null,
     target_program: (lead.target_program as string | null | undefined) ?? null,
+    target_degree: (lead.target_degree as string | null | undefined) ?? null,
+    target_major: (lead.target_major as string | null | undefined) ?? null,
     study_interest_complete: Boolean(lead.study_interest_complete),
     english_test_scores: (lead.english_test_scores as string | null | undefined) ?? null,
     gre_score: (lead.gre_score as string | null | undefined) ?? null,
@@ -157,9 +206,16 @@ const mapLeadFromApi = (lead: Record<string, unknown>): ActiveLead => {
     wants_consultation_call: (lead.wants_consultation_call as boolean | null | undefined) ?? null,
     consultation_scheduled_at: (lead.consultation_scheduled_at as string | null | undefined) ?? null,
     calendar_booking_id: (lead.calendar_booking_id as string | null | undefined) ?? null,
+    consultation_session_date: (lead.consultation_session_date as string | null | undefined) ?? null,
+    consultation_session_time: (lead.consultation_session_time as string | null | undefined) ?? null,
+    assigned_counsellor_name: (lead.assigned_counsellor_name as string | null | undefined) ?? null,
     available_consultation_dates: (lead.available_consultation_dates as ConsultationDateOption[] | undefined) ?? [],
     available_consultation_times: (lead.available_consultation_times as ConsultationTimeOption[] | undefined) ?? [],
     selected_consultation_date: (lead.selected_consultation_date as string | null | undefined) ?? null,
+    status_definition_id: (lead.status_definition_id as number | null | undefined) ?? null,
+    status_stage_name: (lead.status_stage_name as string | null | undefined) ?? null,
+    status_category: (lead.status_category as string | null | undefined) ?? null,
+    status_description: (lead.status_description as string | null | undefined) ?? null,
   };
 };
 
@@ -190,6 +246,10 @@ const sortActiveLeads = (a: ActiveLead, b: ActiveLead): number => {
 };
 
 const mergeLeadSnapshot = (previous: ActiveLead, incoming: ActiveLead): ActiveLead => {
+  if (previous.id !== incoming.id) {
+    return incoming;
+  }
+
   const incomingMessages = incoming.messages ?? [];
   const previousMessages = previous.messages ?? [];
   const messages =
@@ -206,6 +266,8 @@ const mergeLeadSnapshot = (previous: ActiveLead, incoming: ActiveLead): ActiveLe
     preferred_country: incoming.preferred_country ?? previous.preferred_country,
     preferred_course: incoming.preferred_course ?? previous.preferred_course,
     target_program: incoming.target_program ?? previous.target_program,
+    target_degree: incoming.target_degree ?? previous.target_degree,
+    target_major: incoming.target_major ?? previous.target_major,
     study_interest_complete:
       incoming.study_interest_complete ?? previous.study_interest_complete,
     english_test_scores: incoming.english_test_scores ?? previous.english_test_scores,
@@ -213,8 +275,17 @@ const mergeLeadSnapshot = (previous: ActiveLead, incoming: ActiveLead): ActiveLe
     gmat_score: incoming.gmat_score ?? previous.gmat_score,
     test_scores: incoming.test_scores ?? previous.test_scores,
     wants_consultation_call: incoming.wants_consultation_call ?? previous.wants_consultation_call,
-    consultation_scheduled_at: incoming.consultation_scheduled_at ?? previous.consultation_scheduled_at,
+    consultation_scheduled_at: incoming.consultation_scheduled_at,
     calendar_booking_id: incoming.calendar_booking_id ?? previous.calendar_booking_id,
+    consultation_session_date:
+      incoming.consultation_session_date ?? previous.consultation_session_date,
+    consultation_session_time:
+      incoming.consultation_session_time ?? previous.consultation_session_time,
+    assigned_counsellor_name: incoming.assigned_counsellor_name,
+    status_definition_id: incoming.status_definition_id,
+    status_stage_name: incoming.status_stage_name,
+    status_category: incoming.status_category,
+    status_description: incoming.status_description,
     intake_step: incoming.intake_step ?? previous.intake_step,
     intake_step_label: incoming.intake_step_label ?? previous.intake_step_label,
     intake_complete: incoming.intake_complete ?? previous.intake_complete,
@@ -298,15 +369,21 @@ const TRANSITION_OPTIONS = [
   { key: 'archive', label: 'ARCHIVE', icon: Archive },
 ] as const;
 
-const getCourseOrProgramValue = (lead: Pick<ActiveLead, 'preferred_course' | 'target_program'>): string =>
-  (lead.preferred_course || lead.target_program || '').trim();
+const getTargetProgramValue = (
+  lead: Pick<ActiveLead, 'target_degree' | 'target_program'>
+): string => (lead.target_degree || lead.target_program || '').trim();
+
+const getTargetMajorValue = (
+  lead: Pick<ActiveLead, 'target_major' | 'preferred_course'>
+): string => (lead.target_major || lead.preferred_course || '').trim();
 
 function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
   const currentStepIndex = getIntakeStepIndex(lead.intake_step);
-  const courseOrProgram = getCourseOrProgramValue(lead);
+  const targetProgram = getTargetProgramValue(lead);
+  const targetMajor = getTargetMajorValue(lead);
   const studyPrefilled = Boolean(
     lead.study_interest_complete ||
-      (lead.preferred_country && courseOrProgram)
+      (lead.preferred_country && (targetProgram || targetMajor))
   );
   const showCalendar =
     lead.intake_step === 'PICK_DATE' && (lead.available_consultation_dates?.length ?? 0) > 0;
@@ -315,29 +392,52 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
   const hasProfileData =
     lead.current_location ||
     lead.preferred_country ||
-    courseOrProgram ||
+    targetProgram ||
+    targetMajor ||
     lead.english_test_scores ||
     lead.gre_score ||
     lead.gmat_score ||
-    lead.consultation_scheduled_at;
+    lead.consultation_scheduled_at ||
+    lead.consultation_session_date ||
+    lead.assigned_counsellor_name;
 
-  if (lead.intake_complete && !hasProfileData) return null;
+  if (lead.intake_complete && !hasProfileData && !lead.status_stage_name) return null;
+
+  const pipelineStatusLabel = (lead.status_stage_name || '').trim() || 'Status pending';
+  const pipelineStatusDescription = (lead.status_description || '').trim();
+  const outreachBlocked = isOutreachBlocked(lead);
 
   return (
     <div style={styles.intakeProfilePanel}>
       <div style={styles.intakeProfileHeader}>
-        <div>
-          <span style={styles.intakeProfileTitle}>Admissions intake</span>
-          <span style={styles.intakeStepBadge}>
-            {lead.intake_complete ? 'Complete' : lead.intake_step_label || 'In progress'}
-          </span>
-        </div>
-        {lead.consultation_scheduled_at && (
-          <div style={styles.scheduledCallBadge}>
-            <Calendar size={13} />
-            {formatConsultationDateTime(lead.consultation_scheduled_at)}
+        <div style={styles.intakeProfileHeaderMainRow}>
+          <div>
+            <span style={styles.intakeProfileTitle}>Admissions intake</span>
+            <span style={styles.intakeStepBadge}>
+              {lead.intake_complete ? 'Complete' : lead.intake_step_label || 'In progress'}
+            </span>
           </div>
-        )}
+          <div style={styles.intakePipelineStatusBlock}>
+            <span
+              style={{
+                ...styles.intakePipelineStatus,
+                color: outreachBlocked ? '#b91c1c' : '#0f172a',
+              }}
+            >
+              {pipelineStatusLabel}
+            </span>
+            {pipelineStatusDescription ? (
+              <span
+                style={{
+                  ...styles.intakePipelineStatusDescription,
+                  color: outreachBlocked ? '#dc2626' : '#64748b',
+                }}
+              >
+                {pipelineStatusDescription}
+              </span>
+            ) : null}
+          </div>
+        </div>
       </div>
 
       {!lead.intake_complete && (
@@ -377,12 +477,16 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
           <span style={styles.intakeFieldValue}>{lead.current_location || '—'}</span>
         </div>
         <div style={styles.intakeFieldCell}>
-          <span style={styles.intakeFieldLabel}>Target country</span>
-          <span style={styles.intakeFieldValue}>{lead.preferred_country || '—'}</span>
+          <span style={styles.intakeFieldLabel}>Target program</span>
+          <span style={styles.intakeFieldValue}>{targetProgram || '—'}</span>
         </div>
         <div style={styles.intakeFieldCell}>
-          <span style={styles.intakeFieldLabel}>Course/Programs</span>
-          <span style={styles.intakeFieldValue}>{courseOrProgram || '—'}</span>
+          <span style={styles.intakeFieldLabel}>TARGET MAJOR</span>
+          <span style={styles.intakeFieldValue}>{targetMajor || '—'}</span>
+        </div>
+        <div style={styles.intakeFieldCell}>
+          <span style={styles.intakeFieldLabel}>TARGET COUNTRY</span>
+          <span style={styles.intakeFieldValue}>{lead.preferred_country || '—'}</span>
         </div>
         <div style={styles.intakeFieldCell}>
           <span style={styles.intakeFieldLabel}>English scores</span>
@@ -404,6 +508,20 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
               : lead.wants_consultation_call === false
                 ? 'No'
                 : '—'}
+          </span>
+        </div>
+        <div style={styles.intakeFieldCell}>
+          <span style={styles.intakeFieldLabel}>Session date</span>
+          <span style={styles.intakeFieldValue}>{lead.consultation_session_date || '—'}</span>
+        </div>
+        <div style={styles.intakeFieldCell}>
+          <span style={styles.intakeFieldLabel}>Session time</span>
+          <span style={styles.intakeFieldValue}>{lead.consultation_session_time || '—'}</span>
+        </div>
+        <div style={styles.intakeFieldCell}>
+          <span style={styles.intakeFieldLabel}>Assigned counsellor</span>
+          <span style={styles.intakeFieldValue}>
+            {lead.assigned_counsellor_name?.trim() || 'Not assigned'}
           </span>
         </div>
       </div>
@@ -452,6 +570,8 @@ export default function AiActiveView() {
   const [queue, setQueue] = useState<ActiveLead[]>([]);
   const [selectedLead, setSelectedLead] = useState<ActiveLead | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [interactionDays, setInteractionDays] = useState<InteractionDaysFilter>(DEFAULT_INTERACTION_DAYS);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [updatingRowId, setUpdatingRowId] = useState<number | null>(null);
@@ -471,45 +591,39 @@ export default function AiActiveView() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const pollingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const conversationAbortRef = useRef<AbortController | null>(null);
+  const selectedLeadIdRef = useRef<number | null>(null);
   const queuePollInFlightRef = useRef(false);
-  const conversationPollInFlightRef = useRef(false);
 
-  const filteredLeads = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) return queue;
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(searchQuery.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
 
-    return queue.filter(lead => {
-      const name = lead.name.toLowerCase();
-      const email = lead.email.toLowerCase();
-      const phone = getLeadPhone(lead).toLowerCase();
-      return name.includes(query) || email.includes(query) || phone.includes(query);
-    });
-  }, [queue, searchQuery]);
+  useEffect(() => {
+    selectedLeadIdRef.current = selectedLead?.id ?? null;
+  }, [selectedLead?.id]);
 
-  const groupedMessages = useMemo(() => {
-    if (!selectedLead) return {};
+  const applyLeadDetail = useCallback((mapped: ActiveLead) => {
+    if (selectedLeadIdRef.current !== mapped.id) return;
 
-    const groups: Record<string, ChatMessage[]> = {};
-    selectedLead.messages.forEach(msg => {
-      const label = getDateGroupLabel(msg.created_at);
-      if (!groups[label]) groups[label] = [];
-      groups[label].push(msg);
-    });
-    Object.values(groups).forEach(messages =>
-      messages.sort(
-        (a, b) =>
-          new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
-      )
+    setSelectedLead(prev => (prev?.id === mapped.id ? mergeLeadSnapshot(prev, mapped) : prev));
+    setQueue(prev =>
+      prev.map(item => (item.id === mapped.id ? mergeLeadSnapshot(item, mapped) : item))
     );
-    return groups;
-  }, [selectedLead]);
+  }, []);
 
-  const hasNoMessages = useMemo(() => Object.keys(groupedMessages).length === 0, [groupedMessages]);
+  const fetchLeadDetail = useCallback(async (leadId: number, signal?: AbortSignal) => {
+    const data = await apiFetch(`leads/${leadId}`, { signal });
+    const mapped = mapLeadFromApi(data as Record<string, unknown>);
+    applyLeadDetail(mapped);
+    return mapped;
+  }, [applyLeadDetail]);
 
-  const fetchActiveQueue = async (signal?: AbortSignal) => {
-    if (!hasValidSession()) return;
+  const fetchActiveQueue = useCallback(async (signal?: AbortSignal) => {
     try {
-      const data = await apiFetch('leads/active', { signal });
+      const query = buildLeadQueueQueryParams(interactionDays, debouncedSearch);
+      const data = await apiFetch(`leads/active?${query}`, { signal });
       const activeOnly = (Array.isArray(data) ? data : [])
         .map(mapLeadFromApi)
         .filter(lead => isAiActive(lead.status))
@@ -535,7 +649,33 @@ export default function AiActiveView() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [interactionDays, debouncedSearch]);
+
+  const groupedMessages = useMemo(() => {
+    if (!selectedLead) return {};
+
+    const groups: Record<string, ChatMessage[]> = {};
+    selectedLead.messages.forEach(msg => {
+      const label = getDateGroupLabel(msg.created_at);
+      if (!groups[label]) groups[label] = [];
+      groups[label].push(msg);
+    });
+    Object.values(groups).forEach(messages =>
+      messages.sort(
+        (a, b) =>
+          new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+      )
+    );
+    return groups;
+  }, [selectedLead]);
+
+  const hasNoMessages = useMemo(() => Object.keys(groupedMessages).length === 0, [groupedMessages]);
+
+  const emptyQueueMessage = useMemo(() => {
+    if (debouncedSearch) return 'No matching candidates found.';
+    if (interactionDays === 0) return 'No leads are currently in AI Active status.';
+    return `No candidates with activity in ${interactionDaysEmptyLabel(interactionDays)}.`;
+  }, [debouncedSearch, interactionDays]);
 
   useEffect(() => {
     void apiFetch('settings/whatsapp-outreach')
@@ -554,6 +694,7 @@ export default function AiActiveView() {
   useEffect(() => {
     let isActive = true;
     abortControllerRef.current = new AbortController();
+    setIsLoading(true);
 
     async function pollQueue() {
       if (!isActive || queuePollInFlightRef.current) {
@@ -578,42 +719,34 @@ export default function AiActiveView() {
       if (pollingTimerRef.current) clearTimeout(pollingTimerRef.current);
       abortControllerRef.current?.abort();
     };
-  }, []);
+  }, [fetchActiveQueue]);
 
   useEffect(() => {
     if (!selectedLead?.id) return;
 
-    let isActive = true;
+    conversationAbortRef.current?.abort();
+    const controller = new AbortController();
+    conversationAbortRef.current = controller;
 
     const refreshSelectedConversation = async () => {
-      if (!hasValidSession() || conversationPollInFlightRef.current) return;
-      conversationPollInFlightRef.current = true;
+      if (!hasValidSession()) return;
       try {
-        const data = await apiFetch(`leads/${selectedLead.id}`);
-        if (!isActive) return;
-
-        const mapped = mapLeadFromApi(data as Record<string, unknown>);
-        setSelectedLead(prev => (prev ? mergeLeadSnapshot(prev, mapped) : mapped));
-        setQueue(prev =>
-          prev.map(item => (item.id === mapped.id ? mergeLeadSnapshot(item, mapped) : item))
-        );
+        await fetchLeadDetail(selectedLead.id, controller.signal);
       } catch (error: unknown) {
         if (error instanceof Error && error.name !== 'AbortError') {
           console.error('Failed to refresh AI active conversation:', error);
         }
-      } finally {
-        conversationPollInFlightRef.current = false;
       }
     };
 
-    refreshSelectedConversation();
+    void refreshSelectedConversation();
     const interval = setInterval(refreshSelectedConversation, 8000);
 
     return () => {
-      isActive = false;
+      controller.abort();
       clearInterval(interval);
     };
-  }, [selectedLead?.id]);
+  }, [selectedLead?.id, selectedLead?.messages.length, selectedLead?.updated_at, fetchLeadDetail]);
 
   useEffect(() => {
     const container = chatContainerRef.current;
@@ -622,6 +755,8 @@ export default function AiActiveView() {
   }, [selectedLead?.id, selectedLead?.messages.length]);
 
   const handleSelectLead = async (lead: ActiveLead) => {
+    conversationAbortRef.current?.abort();
+    selectedLeadIdRef.current = lead.id;
     setSelectedLead(lead);
 
     if (getUnreadCount(lead) === 0) return;
@@ -658,8 +793,9 @@ export default function AiActiveView() {
     const target = leadOverride ?? selectedLead;
     if (!target) return;
 
-    if (!getLeadPhone(target)) {
-      alert('This lead does not have a phone number for WhatsApp outreach.');
+    const disabledReason = getStartOutreachDisabledReason(target);
+    if (disabledReason) {
+      alert(disabledReason);
       return;
     }
 
@@ -678,8 +814,7 @@ export default function AiActiveView() {
 
       const detail = await apiFetch(`leads/${target.id}`);
       const mapped = mapLeadFromApi(detail as Record<string, unknown>);
-      setSelectedLead(mapped);
-      setQueue(prev => prev.map(item => (item.id === mapped.id ? { ...item, ...mapped } : item)));
+      applyLeadDetail(mapped);
       setOutreachSuccess(
         `WhatsApp message sent from ${whatsappConfig?.business_phone_number || 'business line'} to ${getLeadPhone(mapped) || 'student'}.`
       );
@@ -817,18 +952,15 @@ export default function AiActiveView() {
       <div style={styles.leftSidebarPanel}>
         <div style={styles.sidebarHeader}>
           <h2 style={styles.sidebarTitle}>AI Active</h2>
-          <span style={styles.activeCounterBadge}>{filteredLeads.length}</span>
+          <span style={styles.activeCounterBadge}>{queue.length}</span>
         </div>
 
-        <div style={styles.searchHeaderSection}>
-          <input
-            type="text"
-            placeholder="Search candidates..."
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            style={styles.searchBarInput}
-          />
-        </div>
+        <LeadQueueSidebarFilters
+          interactionDays={interactionDays}
+          onInteractionDaysChange={setInteractionDays}
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
+        />
 
         <div className="custom-scroll-region" style={styles.leadScrollList}>
           {isLoading ? (
@@ -836,11 +968,9 @@ export default function AiActiveView() {
           ) : loadError ? (
             <div style={styles.emptyListPlaceholder}>{loadError}</div>
           ) : queue.length === 0 ? (
-            <div style={styles.emptyListPlaceholder}>No leads are currently in AI Active status.</div>
-          ) : filteredLeads.length === 0 ? (
-            <div style={styles.emptyListPlaceholder}>No matching candidates found.</div>
+            <div style={styles.emptyListPlaceholder}>{emptyQueueMessage}</div>
           ) : (
-            filteredLeads.map(lead => {
+            queue.map(lead => {
               const isSelected = selectedLead?.id === lead.id;
               const unreadCount = getUnreadCount(lead);
 
@@ -900,12 +1030,18 @@ export default function AiActiveView() {
                     ) : (
                       <button
                         type="button"
-                        style={styles.cardStartButton}
-                        disabled={startingOutreachId === lead.id || !getLeadPhone(lead)}
+                        style={{
+                          ...styles.cardStartButton,
+                          ...(getStartOutreachDisabledReason(lead)
+                            ? { opacity: 0.55, cursor: 'not-allowed' }
+                            : {}),
+                        }}
+                        disabled={
+                          startingOutreachId === lead.id || Boolean(getStartOutreachDisabledReason(lead))
+                        }
                         title={
-                          !getLeadPhone(lead)
-                            ? 'Add a phone number to start WhatsApp outreach'
-                            : 'Send the standard AI welcome on WhatsApp'
+                          getStartOutreachDisabledReason(lead) ||
+                          'Send the standard AI welcome on WhatsApp'
                         }
                         onClick={event => {
                           event.stopPropagation();
@@ -952,12 +1088,19 @@ export default function AiActiveView() {
                 <button
                   type="button"
                   onClick={() => void handleStartAiConversation()}
-                  disabled={startingOutreachId === selectedLead.id || !getLeadPhone(selectedLead)}
-                  style={styles.headerStartButton}
+                  disabled={
+                    startingOutreachId === selectedLead.id ||
+                    Boolean(getStartOutreachDisabledReason(selectedLead))
+                  }
+                  style={{
+                    ...styles.headerStartButton,
+                    ...(getStartOutreachDisabledReason(selectedLead)
+                      ? { opacity: 0.55, cursor: 'not-allowed' }
+                      : {}),
+                  }}
                   title={
-                    !getLeadPhone(selectedLead)
-                      ? 'Add a phone number to start WhatsApp outreach'
-                      : 'Send the standard AI welcome on WhatsApp'
+                    getStartOutreachDisabledReason(selectedLead) ||
+                    'Send the standard AI welcome on WhatsApp'
                   }
                 >
                   {startingOutreachId === selectedLead.id ? 'Sending...' : 'Start AI Conversation'}
@@ -971,7 +1114,7 @@ export default function AiActiveView() {
               </div>
             </div>
 
-            <IntakeProfilePanel lead={selectedLead} />
+            <IntakeProfilePanel key={selectedLead.id} lead={selectedLead} />
 
             <div ref={chatContainerRef} className="custom-scroll-region" style={styles.whatsappChatFeedSurface}>
               {hasNoMessages ? (
@@ -987,8 +1130,17 @@ export default function AiActiveView() {
                   <button
                     type="button"
                     onClick={() => void handleStartAiConversation()}
-                    disabled={startingOutreachId === selectedLead.id || !getLeadPhone(selectedLead)}
-                    style={styles.startConversationButton}
+                    disabled={
+                      startingOutreachId === selectedLead.id ||
+                      Boolean(getStartOutreachDisabledReason(selectedLead))
+                    }
+                    style={{
+                      ...styles.startConversationButton,
+                      ...(getStartOutreachDisabledReason(selectedLead)
+                        ? { opacity: 0.55, cursor: 'not-allowed' }
+                        : {}),
+                    }}
+                    title={getStartOutreachDisabledReason(selectedLead) || undefined}
                   >
                     {startingOutreachId === selectedLead.id ? 'Sending...' : 'Start AI Conversation'}
                   </button>
@@ -1048,6 +1200,8 @@ export default function AiActiveView() {
               <span style={{ flex: 1 }}>
                 {outreachSuccess ? (
                   <span style={{ color: '#15803d' }}>{outreachSuccess}</span>
+                ) : isOutreachBlocked(selectedLead) ? (
+                  OUTREACH_BLOCKED_TOOLTIP
                 ) : leadHasAiMessages(selectedLead)
                   ? 'AI Agent is active on WhatsApp. The student can continue the conversation there — outreach cannot be started again from this screen.'
                   : 'Click Start AI Conversation to send the standard welcome message to this student on WhatsApp.'}
@@ -1056,8 +1210,17 @@ export default function AiActiveView() {
                 <button
                   type="button"
                   onClick={() => void handleStartAiConversation()}
-                  disabled={startingOutreachId === selectedLead.id || !getLeadPhone(selectedLead)}
-                  style={styles.footerActionButton}
+                  disabled={
+                    startingOutreachId === selectedLead.id ||
+                    Boolean(getStartOutreachDisabledReason(selectedLead))
+                  }
+                  style={{
+                    ...styles.footerActionButton,
+                    ...(getStartOutreachDisabledReason(selectedLead)
+                      ? { opacity: 0.55, cursor: 'not-allowed' }
+                      : {}),
+                  }}
+                  title={getStartOutreachDisabledReason(selectedLead) || undefined}
                 >
                   {startingOutreachId === selectedLead.id ? 'Sending...' : 'Start AI Conversation'}
                 </button>
@@ -1367,11 +1530,36 @@ const styles = {
   } as React.CSSProperties,
   intakeProfileHeader: {
     display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    marginBottom: '10px',
+  } as React.CSSProperties,
+  intakeProfileHeaderMainRow: {
+    display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    gap: '12px',
-    marginBottom: '10px',
-    flexWrap: 'wrap',
+    gap: '16px',
+    width: '100%',
+  } as React.CSSProperties,
+  intakePipelineStatusBlock: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+    gap: '4px',
+    flexShrink: 0,
+    maxWidth: '52%',
+  } as React.CSSProperties,
+  intakePipelineStatus: {
+    fontSize: '18px',
+    fontWeight: '800',
+    lineHeight: 1.2,
+    textAlign: 'right',
+  } as React.CSSProperties,
+  intakePipelineStatusDescription: {
+    fontSize: '12px',
+    fontWeight: '500',
+    lineHeight: 1.35,
+    textAlign: 'right',
   } as React.CSSProperties,
   intakeProfileTitle: {
     display: 'block',

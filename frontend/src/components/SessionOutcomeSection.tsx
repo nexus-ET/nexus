@@ -1,7 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, UserPlus, UserRound } from 'lucide-react';
 import { apiFetch } from '../utils/api';
-import { categoryBadgeClass } from '../utils/statusBadges';
 
 interface StatusDefinition {
   id: number;
@@ -25,6 +24,11 @@ interface SessionOutcomeData {
   status_definitions: StatusDefinition[];
   current_status_definition_id?: number | null;
   suggested_next_status_definition_id?: number | null;
+  previous_stage_id?: number | null;
+  appointment_date?: string | null;
+  calendar_today?: string | null;
+  forward_status_changes_blocked?: boolean;
+  backward_status_ids?: number[];
   shared_by_student: DataExchangeItem[];
   shared_by_admin: DataExchangeItem[];
   can_update_status: boolean;
@@ -52,22 +56,78 @@ export const getSelectableStatusOptions = (
   currentStatusId: number | null | undefined
 ): StatusDefinition[] => {
   if (!currentStatusId) return definitions;
+  return definitions.filter(item => item.id !== currentStatusId);
+};
+
+export const resolveSuggestedNextStatusId = (
+  definitions: StatusDefinition[],
+  currentStatusId: number | null | undefined,
+  suggestedNextStatusDefinitionId?: number | null
+): number | '' => {
+  if (suggestedNextStatusDefinitionId) {
+    return suggestedNextStatusDefinitionId;
+  }
 
   const current = definitions.find(item => item.id === currentStatusId);
-  if (!current) return definitions;
-
-  if (current.stage_name === 'Counselling: Scheduled' && current.next_stage_id) {
-    const next = definitions.find(item => item.id === current.next_stage_id);
-    return next ? [next] : [];
+  if (current?.next_stage_id) {
+    return current.next_stage_id;
   }
 
-  if (current.next_stage_id) {
-    const next = definitions.find(item => item.id === current.next_stage_id);
-    return next ? [next] : definitions;
-  }
-
-  return definitions;
+  return '';
 };
+
+export const isUpcomingAppointment = (
+  appointmentDate?: string | null,
+  calendarToday?: string | null
+): boolean => {
+  if (!appointmentDate || !calendarToday) return false;
+  return appointmentDate > calendarToday;
+};
+
+export const isForwardStageSelection = (
+  currentStatusId: number | null | undefined,
+  targetStatusId: number | '',
+  backwardStatusIds: number[] = []
+): boolean => {
+  if (!currentStatusId || !targetStatusId) return false;
+
+  const current = Number(currentStatusId);
+  const target = Number(targetStatusId);
+  if (target === current) return false;
+  if (backwardStatusIds.includes(target)) return false;
+  if (target < current) return false;
+  return true;
+};
+
+export const resolvePreselectedStageId = (
+  data: SessionOutcomeData,
+  selectable: StatusDefinition[]
+): number | '' => {
+  const upcoming = isUpcomingAppointment(data.appointment_date, data.calendar_today);
+  if (!upcoming) {
+    const suggested = resolveSuggestedNextStatusId(
+      data.status_definitions,
+      data.current_status_definition_id,
+      data.suggested_next_status_definition_id
+    );
+    if (suggested && selectable.some(item => item.id === suggested)) {
+      return suggested;
+    }
+    return selectable[0]?.id ?? '';
+  }
+
+  const backwardCandidates = [
+    data.previous_stage_id,
+    ...(data.backward_status_ids ?? []),
+    ...selectable.filter(stage => stage.id < Number(data.current_status_definition_id)).map(stage => stage.id),
+  ].filter((value): value is number => typeof value === 'number');
+
+  const allowed = backwardCandidates.find(id => selectable.some(item => item.id === id));
+  return allowed ?? '';
+};
+
+export const FORWARD_STATUS_BLOCKED_MESSAGE =
+  'Forward stage changes are not allowed before the appointment date. You may move the candidate to an earlier stage.';
 
 const SessionOutcomeSection: React.FC<SessionOutcomeSectionProps> = ({
   bookingId,
@@ -76,13 +136,16 @@ const SessionOutcomeSection: React.FC<SessionOutcomeSectionProps> = ({
   const [activity, setActivity] = useState<SessionOutcomeData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [stageWarning, setStageWarning] = useState<string | null>(null);
   const [nextStatusId, setNextStatusId] = useState<number | ''>('');
   const [statusNotes, setStatusNotes] = useState('');
   const [submittingStatus, setSubmittingStatus] = useState(false);
+  const lastValidStatusIdRef = useRef<number | ''>('');
 
   const loadActivity = async () => {
     setLoading(true);
     setError(null);
+    setStageWarning(null);
     try {
       const data = (await apiFetch(`bookings/mine/${bookingId}/activity`)) as SessionOutcomeData;
       setActivity(data);
@@ -91,13 +154,9 @@ const SessionOutcomeSection: React.FC<SessionOutcomeSectionProps> = ({
         data.status_definitions,
         data.current_status_definition_id
       );
-      const suggested =
-        data.suggested_next_status_definition_id ??
-        selectable[0]?.id ??
-        data.status_definitions.find(item => item.id === data.current_status_definition_id)
-          ?.next_stage_id ??
-        '';
-      setNextStatusId(suggested || '');
+      const preselected = resolvePreselectedStageId(data, selectable);
+      lastValidStatusIdRef.current = preselected;
+      setNextStatusId(preselected);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load session outcome data.');
       setActivity(null);
@@ -130,8 +189,50 @@ const SessionOutcomeSection: React.FC<SessionOutcomeSectionProps> = ({
     [selectableOptions, nextStatusId]
   );
 
+  const upcomingAppointment = useMemo(
+    () => isUpcomingAppointment(activity?.appointment_date, activity?.calendar_today),
+    [activity]
+  );
+
+  const forwardChangeBlocked = useMemo(
+    () =>
+      upcomingAppointment &&
+      isForwardStageSelection(
+        activity?.current_status_definition_id,
+        nextStatusId,
+        activity?.backward_status_ids ?? []
+      ),
+    [activity, nextStatusId, upcomingAppointment]
+  );
+
+  const handleStageChange = (value: number | '') => {
+    if (
+      value &&
+      activity?.current_status_definition_id &&
+      isUpcomingAppointment(activity.appointment_date, activity.calendar_today) &&
+      isForwardStageSelection(
+        activity.current_status_definition_id,
+        value,
+        activity.backward_status_ids ?? []
+      )
+    ) {
+      setStageWarning(FORWARD_STATUS_BLOCKED_MESSAGE);
+      setNextStatusId(lastValidStatusIdRef.current);
+      return;
+    }
+
+    setStageWarning(null);
+    setError(null);
+    lastValidStatusIdRef.current = value;
+    setNextStatusId(value);
+  };
+
   const handleUpdateStatus = async () => {
-    if (!nextStatusId) return;
+    if (!nextStatusId || !activity) return;
+    if (forwardChangeBlocked) {
+      setError(FORWARD_STATUS_BLOCKED_MESSAGE);
+      return;
+    }
     try {
       setSubmittingStatus(true);
       setError(null);
@@ -173,57 +274,82 @@ const SessionOutcomeSection: React.FC<SessionOutcomeSectionProps> = ({
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
       )}
 
-      {activity.can_update_status && (
+      {(currentStatus || activity.current_status_definition_id) && (
         <div className="rounded-xl border border-violet-200 bg-violet-50/60 p-4 space-y-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-violet-800">
-              Update Session Outcome
-            </p>
-            <p className="text-xs text-violet-900/80 mt-0.5">
-              Move the candidate to the next pipeline status after completing the session.
-            </p>
-          </div>
-
-          <div className="flex flex-col sm:flex-row sm:items-start gap-3">
-            <div className="flex-1 min-w-0 space-y-1">
-              <label className="block">
-                <span className="text-xs font-medium text-text-muted">Next stage</span>
-                <select
-                  value={nextStatusId}
-                  onChange={event =>
-                    setNextStatusId(event.target.value ? Number(event.target.value) : '')
-                  }
-                  className="mt-1 w-full rounded-lg border border-border-subtle bg-card px-3 py-2 text-sm"
-                >
-                  {selectableOptions.length === 0 ? (
-                    <option value="">No next stages available</option>
-                  ) : (
-                    selectableOptions.map(stage => (
-                      <option key={stage.id} value={stage.id}>
-                        {stage.stage_name}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </label>
-              {selectedStatus?.description ? (
-                <p className="text-[11px] text-text-muted leading-snug">{selectedStatus.description}</p>
-              ) : null}
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-wide text-violet-800">
+                Update Session Outcome
+              </p>
+              <p className="text-xs text-violet-900/80 mt-0.5">
+                Move the candidate to the next pipeline status after completing the session.
+              </p>
             </div>
 
             {currentStatus ? (
-              <div className="shrink-0 sm:pt-5">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-text-muted mb-1">
+              <div className="shrink-0 text-right">
+                <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">
                   Current status
                 </p>
-                <span
-                  className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${categoryBadgeClass(
-                    currentStatus.category
-                  )}`}
-                >
+                <p className="mt-1 text-base font-bold text-text-main leading-snug">
                   {currentStatus.stage_name}
-                </span>
+                </p>
               </div>
+            ) : null}
+          </div>
+
+          {upcomingAppointment ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              This appointment is scheduled for{' '}
+              {activity.appointment_date
+                ? new Date(`${activity.appointment_date}T12:00:00`).toLocaleDateString(undefined, {
+                    weekday: 'short',
+                    month: 'short',
+                    day: 'numeric',
+                    year: 'numeric',
+                  })
+                : 'a future date'}
+              . Forward stage changes are disabled until then. You can still move the candidate to an
+              earlier stage.
+            </div>
+          ) : null}
+
+          <div className="space-y-1">
+            <label className="block">
+              <span className="text-xs font-medium text-text-muted">Next stage</span>
+              <select
+                value={nextStatusId}
+                onChange={event =>
+                  handleStageChange(event.target.value ? Number(event.target.value) : '')
+                }
+                className="mt-1 w-full rounded-lg border border-border-subtle bg-card px-3 py-2 text-sm"
+              >
+                {selectableOptions.length === 0 ? (
+                  <option value="">No next stages available</option>
+                ) : (
+                  selectableOptions.map(stage => {
+                    const optionBlocked =
+                      upcomingAppointment &&
+                      isForwardStageSelection(
+                        activity.current_status_definition_id,
+                        stage.id,
+                        activity.backward_status_ids ?? []
+                      );
+                    return (
+                      <option key={stage.id} value={stage.id} disabled={optionBlocked}>
+                        {stage.stage_name}
+                        {optionBlocked ? ' (available after appointment date)' : ''}
+                      </option>
+                    );
+                  })
+                )}
+              </select>
+            </label>
+            {stageWarning ? (
+              <p className="text-[11px] text-amber-800 leading-snug">{stageWarning}</p>
+            ) : null}
+            {selectedStatus?.description ? (
+              <p className="text-[11px] text-text-muted leading-snug">{selectedStatus.description}</p>
             ) : null}
           </div>
 
@@ -241,7 +367,12 @@ const SessionOutcomeSection: React.FC<SessionOutcomeSectionProps> = ({
           <button
             type="button"
             onClick={handleUpdateStatus}
-            disabled={submittingStatus || !nextStatusId}
+            disabled={
+              submittingStatus ||
+              !nextStatusId ||
+              !activity.can_update_status ||
+              forwardChangeBlocked
+            }
             className="inline-flex items-center gap-2 rounded-lg bg-violet-700 px-3 py-2 text-sm font-semibold text-white hover:bg-violet-800 disabled:opacity-60"
           >
             {submittingStatus ? <Loader2 size={16} className="animate-spin" /> : null}

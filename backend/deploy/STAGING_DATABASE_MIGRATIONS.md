@@ -5,13 +5,7 @@ Auto-maintained by `backend/scripts/promote_to_staging.py`.
 Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
 
 **Current head:** `s5p8q1r54s0m`
-**Doc generated:** 2026-07-05 01:00 UTC
-
-## Migrations in this release
-
-| Revision | Migration | Changes |
-|----------|-----------|---------|
-| `s5p8q1r54s0m` | s5p8q1r54s0m_reseed_status_definitions_v3 | reseed status_definitions v3 (45 stages) |
+**Doc generated:** 2026-07-05 11:41 UTC
 
 ## Full migration chain (at head)
 

@@ -32,6 +32,8 @@ from app.services.status_definition_service import (
     STATUS_LEAD_CANCELLED_NO_ANSWER,
     STATUS_LEAD_CANCELLED_NOT_INTERESTED,
     STATUS_LEAD_DEFERRED,
+    STATUS_LEAD_MARKETING_DISABLED,
+    STATUS_LEAD_MARKETING_ENABLED,
     STATUS_PROSPECT_CANCELLED,
     STATUS_PROSPECT_ENROLLED,
     STATUS_PROSPECT_RELAUNCH,
@@ -831,6 +833,43 @@ def on_whatsapp_inbound(db: Session, lead: Lead) -> dict:
             result.get("reason"),
         )
     return result
+
+
+def is_lead_communication_opted_out(db: Session, lead: Lead) -> bool:
+    """True when the student must not receive automated WhatsApp outreach or replies."""
+    blocked_status_ids = frozenset({STATUS_LEAD_MARKETING_DISABLED, STATUS_PROSPECT_CANCELLED})
+    if getattr(lead, "status_definition_id", None) in blocked_status_ids:
+        return True
+    if not hasattr(lead, "status_definition_id"):
+        return False
+    sync_lead_pipeline_status_id(db, lead)
+    db.refresh(lead)
+    effective_id = resolve_effective_lead_status_id(db, lead)
+    return effective_id in blocked_status_ids
+
+
+def on_marketing_opt_in_selected(db: Session, lead: Lead) -> dict:
+    return update_student_status(
+        db,
+        student_id=lead.id,
+        status_id=STATUS_LEAD_MARKETING_ENABLED,
+        changed_by_type="system",
+        comments="Student opted in to marketing updates via WhatsApp.",
+        allow_override=True,
+        force_history=True,
+    )
+
+
+def on_marketing_opt_out_selected(db: Session, lead: Lead) -> dict:
+    return update_student_status(
+        db,
+        student_id=lead.id,
+        status_id=STATUS_LEAD_MARKETING_DISABLED,
+        changed_by_type="system",
+        comments="Student opted out of all further WhatsApp communication.",
+        allow_override=True,
+        force_history=True,
+    )
 
 
 def on_session_booked(db: Session, lead: Lead) -> None:

@@ -385,6 +385,11 @@ def process_stalled_document_reminders(db: Session) -> int:
     service = NotificationService(db)
     sent_count = 0
     for lead in leads:
+        from app.services.student_status_service import is_lead_communication_opted_out
+
+        if is_lead_communication_opted_out(db, lead):
+            continue
+
         already_sent = (
             db.query(AdmissionHistory.id)
             .filter(
