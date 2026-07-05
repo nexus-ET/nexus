@@ -440,7 +440,7 @@ def build_active_queue_item(
                 db,
                 refresh_lead=False,
                 include_booking_options=False,
-                include_session_fields=True,
+                include_session_fields=False,
             ).items()
             if key
             not in {

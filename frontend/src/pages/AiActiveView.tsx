@@ -374,8 +374,15 @@ const getTargetProgramValue = (
 ): string => (lead.target_degree || lead.target_program || '').trim();
 
 const getTargetMajorValue = (
-  lead: Pick<ActiveLead, 'target_major' | 'preferred_course'>
-): string => (lead.target_major || lead.preferred_course || '').trim();
+  lead: Pick<ActiveLead, 'target_major' | 'preferred_course' | 'target_degree' | 'target_program'>
+): string => {
+  const major = (lead.target_major || '').trim();
+  if (major) return major;
+  const program = getTargetProgramValue(lead);
+  const preferredCourse = (lead.preferred_course || '').trim();
+  if (program && preferredCourse === program) return '';
+  return preferredCourse;
+};
 
 function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
   const currentStepIndex = getIntakeStepIndex(lead.intake_step);

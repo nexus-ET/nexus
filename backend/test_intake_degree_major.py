@@ -51,7 +51,74 @@ def test_normalize_major_reply_enforces_length() -> None:
 def test_normalize_target_country_reply() -> None:
     assert _normalize_target_country_reply("UK") == "UK"
     assert _normalize_target_country_reply("jp") == "Japan"
+    assert _normalize_target_country_reply("AU") == "Australia"
+    assert _normalize_target_country_reply("Australia") == "Australia"
     assert _normalize_target_country_reply("x" * (INTAKE_TEXT_MAX_LENGTH + 1)) is None
+
+
+def test_load_target_major_blank_until_captured() -> None:
+    from app.services.admissions_intake_flow import _load_target_major
+
+    assert (
+        _load_target_major(
+            {
+                "target_degree": "Bachelor's Degree (3-4 years)",
+                "target_program": "Bachelor's Degree (3-4 years)",
+            }
+        )
+        == ""
+    )
+    assert (
+        _load_target_major(
+            {
+                "target_degree": "Bachelor's Degree (3-4 years)",
+                "target_program": "Bachelor's Degree (3-4 years)",
+                "target_major": "Computer Science",
+                "preferred_course": "Computer Science",
+            }
+        )
+        == "Computer Science"
+    )
+
+
+def test_study_interest_profile_fields_do_not_mirror_degree_into_major() -> None:
+    from types import SimpleNamespace
+
+    from app.services.lead_study_interest import study_interest_profile_fields
+
+    lead = SimpleNamespace(
+        preferred_country=None,
+        intake_context=json.dumps(
+            {
+                "target_degree": "Bachelor's Degree (3-4 years)",
+                "target_program": "Bachelor's Degree (3-4 years)",
+            }
+        ),
+        additional_data=None,
+    )
+    fields = study_interest_profile_fields(lead)
+    assert fields["target_program"] == "Bachelor's Degree (3-4 years)"
+    assert fields["preferred_course"] is None
+
+
+def test_resolve_target_country_reply_uses_llm_for_typos() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from app.services.admissions_intake_flow import _resolve_target_country_reply
+    from app.services.ai_service import LlmResult
+
+    async def _run() -> None:
+        runtime_config = SimpleNamespace(ai_model="ollama:llama3.1")
+        with patch(
+            "app.services.ai_service.call_agent_llm",
+            new=AsyncMock(return_value=LlmResult(text="Australia", confidence=0.9)),
+        ) as llm_mock:
+            country = await _resolve_target_country_reply("Astralia", runtime_config)
+        assert country == "Australia"
+        llm_mock.assert_awaited_once()
+
+    asyncio.run(_run())
 
 
 def test_normalize_score_reply_enforces_length() -> None:

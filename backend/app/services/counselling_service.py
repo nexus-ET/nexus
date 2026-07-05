@@ -17,6 +17,7 @@ from app.models.user import User
 from app.services.lead_study_interest import resolve_lead_study_interest
 from app.services.pipeline_service import OUTCOME_CONFIG
 from app.services.status_definition_service import (
+    STATUS_COUNSELLING_FOLLOW_UP,
     STATUS_COUNSELLING_SCHEDULED,
     apply_lead_status,
     get_lead_status_history,
@@ -1053,6 +1054,16 @@ def _is_forward_status_change(
     return True
 
 
+def _is_status_change_blocked_before_appointment(
+    db: Session,
+    current_status_id: int | None,
+    status_definition_id: int,
+) -> bool:
+    if status_definition_id == STATUS_COUNSELLING_FOLLOW_UP:
+        return True
+    return _is_forward_status_change(db, current_status_id, status_definition_id)
+
+
 def _assert_booking_status_change_allowed_before_appointment(
     db: Session,
     booking: CounsellingBooking,
@@ -1064,7 +1075,9 @@ def _assert_booking_status_change_allowed_before_appointment(
         return
     if lead.status_definition_id == status_definition_id:
         return
-    if not _is_forward_status_change(db, lead.status_definition_id, status_definition_id):
+    if not _is_status_change_blocked_before_appointment(
+        db, lead.status_definition_id, status_definition_id
+    ):
         return
 
     appointment_label = _format_day_label(booking.scheduled_time.date())
@@ -1072,7 +1085,7 @@ def _assert_booking_status_change_allowed_before_appointment(
         status_code=400,
         detail=(
             f"This appointment is scheduled for {appointment_label}. "
-            "Forward stage changes are not allowed before the session date. "
+            "Forward stage and follow-up changes are not allowed before the session date. "
             "You may move the candidate to an earlier stage."
         ),
     )
