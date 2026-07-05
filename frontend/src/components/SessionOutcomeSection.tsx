@@ -84,6 +84,8 @@ export const isUpcomingAppointment = (
   return appointmentDate > calendarToday;
 };
 
+export const COUNSELLING_FOLLOW_UP_STATUS_ID = 15;
+
 export const isForwardStageSelection = (
   currentStatusId: number | null | undefined,
   targetStatusId: number | '',
@@ -97,6 +99,17 @@ export const isForwardStageSelection = (
   if (backwardStatusIds.includes(target)) return false;
   if (target < current) return false;
   return true;
+};
+
+/** Stages that must not be selected before the appointment date (forward + follow-up). */
+export const isStageBlockedBeforeAppointment = (
+  currentStatusId: number | null | undefined,
+  targetStatusId: number | '',
+  backwardStatusIds: number[] = []
+): boolean => {
+  if (!targetStatusId) return false;
+  if (Number(targetStatusId) === COUNSELLING_FOLLOW_UP_STATUS_ID) return true;
+  return isForwardStageSelection(currentStatusId, targetStatusId, backwardStatusIds);
 };
 
 export const resolvePreselectedStageId = (
@@ -120,14 +133,16 @@ export const resolvePreselectedStageId = (
     data.previous_stage_id,
     ...(data.backward_status_ids ?? []),
     ...selectable.filter(stage => stage.id < Number(data.current_status_definition_id)).map(stage => stage.id),
-  ].filter((value): value is number => typeof value === 'number');
+  ]
+    .filter((value): value is number => typeof value === 'number')
+    .filter(id => id !== COUNSELLING_FOLLOW_UP_STATUS_ID);
 
   const allowed = backwardCandidates.find(id => selectable.some(item => item.id === id));
   return allowed ?? '';
 };
 
 export const FORWARD_STATUS_BLOCKED_MESSAGE =
-  'Forward stage changes are not allowed before the appointment date. You may move the candidate to an earlier stage.';
+  'Forward stage and follow-up changes are not allowed before the appointment date. You may move the candidate to an earlier stage.';
 
 const SessionOutcomeSection: React.FC<SessionOutcomeSectionProps> = ({
   bookingId,
@@ -197,7 +212,7 @@ const SessionOutcomeSection: React.FC<SessionOutcomeSectionProps> = ({
   const forwardChangeBlocked = useMemo(
     () =>
       upcomingAppointment &&
-      isForwardStageSelection(
+      isStageBlockedBeforeAppointment(
         activity?.current_status_definition_id,
         nextStatusId,
         activity?.backward_status_ids ?? []
@@ -210,7 +225,7 @@ const SessionOutcomeSection: React.FC<SessionOutcomeSectionProps> = ({
       value &&
       activity?.current_status_definition_id &&
       isUpcomingAppointment(activity.appointment_date, activity.calendar_today) &&
-      isForwardStageSelection(
+      isStageBlockedBeforeAppointment(
         activity.current_status_definition_id,
         value,
         activity.backward_status_ids ?? []
@@ -309,7 +324,7 @@ const SessionOutcomeSection: React.FC<SessionOutcomeSectionProps> = ({
                     year: 'numeric',
                   })
                 : 'a future date'}
-              . Forward stage changes are disabled until then. You can still move the candidate to an
+              . Forward stage and follow-up changes are disabled until then. You can still move the candidate to an
               earlier stage.
             </div>
           ) : null}
@@ -330,7 +345,7 @@ const SessionOutcomeSection: React.FC<SessionOutcomeSectionProps> = ({
                   selectableOptions.map(stage => {
                     const optionBlocked =
                       upcomingAppointment &&
-                      isForwardStageSelection(
+                      isStageBlockedBeforeAppointment(
                         activity.current_status_definition_id,
                         stage.id,
                         activity.backward_status_ids ?? []

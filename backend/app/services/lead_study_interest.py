@@ -93,7 +93,9 @@ def resolve_lead_study_interest(lead: Lead) -> dict[str, str | None]:
     ) or None
     if not program and course:
         program = course
-    if not course and program:
+    target_degree = str(context.get("target_degree") or "").strip()
+    target_major = str(context.get("target_major") or "").strip()
+    if not course and program and not (target_degree and not target_major):
         course = program
 
     return {
@@ -187,6 +189,16 @@ def hydrate_lead_study_interest(
 
 def study_interest_profile_fields(lead: Lead) -> dict[str, Any]:
     study = resolve_lead_study_interest(lead)
+    context = _load_intake_context(lead)
+    target_degree = str(context.get("target_degree") or "").strip()
+    target_major = str(context.get("target_major") or "").strip()
+    if target_degree:
+        return {
+            "preferred_country": study.get("country") or getattr(lead, "preferred_country", None),
+            "preferred_course": target_major or None,
+            "target_program": target_degree,
+            "study_interest_complete": lead_has_complete_study_interest(lead),
+        }
     return {
         "preferred_country": study.get("country") or getattr(lead, "preferred_country", None),
         "preferred_course": study.get("course"),

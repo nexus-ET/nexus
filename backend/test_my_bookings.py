@@ -86,6 +86,15 @@ def test_is_forward_status_change_uses_stage_id_order() -> None:
     assert _is_forward_status_change(db, 12, 12) is False
 
 
+def test_follow_up_blocked_before_appointment_even_as_backward_transition() -> None:
+    from app.services.counselling_service import _is_status_change_blocked_before_appointment
+    from app.services.status_definition_service import STATUS_COUNSELLING_FOLLOW_UP
+
+    db = MagicMock()
+    assert _is_status_change_blocked_before_appointment(db, 12, STATUS_COUNSELLING_FOLLOW_UP) is True
+    assert _is_status_change_blocked_before_appointment(db, 12, 11) is False
+
+
 def test_is_backward_transition_uses_transition_graph() -> None:
     from app.models.status_transition import TransitionType
     from app.services.status_transition_service import is_backward_transition

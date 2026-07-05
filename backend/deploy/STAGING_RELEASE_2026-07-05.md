@@ -46,6 +46,12 @@ Safe deployment checklist for **NEXUS-Staging** (`nexus-dev.edutrust.in`).
 - Security audit IDOR checks updated for `_my_bookings_view_all` / `_get_viewable_booking`
 - Notification service tweaks for audit alert gating
 
+### Patch (same day — promote 2)
+- **AI Active list performance:** `/leads/active` no longer loads session/booking fields per lead (~20s → ~1s); session fields still load on lead detail
+- **Target Major vs program:** degree no longer copied into Target Major on AI Active panel; major blank until WhatsApp intake step completes
+- **Country intake:** `AU` → Australia via aliases; Ollama resolves typos (e.g. Astralia) when appointments-only is off
+- **Session Outcome:** **Counselling: Follow-up** greyed out before appointment date (with forward stages); enabled after session date
+
 ---
 
 ## Database (Alembic)
@@ -111,7 +117,7 @@ All routes in `frontend/src/App.tsx` are rebuilt and served by nginx. **Smoke-te
 
 ```powershell
 cd E:\NEXUS
-python backend/scripts/promote_to_staging.py --message "Release 2026-07-05: intake degree/major/country, My Bookings overview, session outcome forward-block"
+python backend/scripts/promote_to_staging.py --message "Release 2026-07-05 patch: AI Active list perf, major/country intake, follow-up block before session"
 ```
 
 Alternative: GitHub Actions → **Promote develop to staging** → Run workflow.

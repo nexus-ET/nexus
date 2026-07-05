@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -18,6 +19,8 @@ from app.services.whatsapp_flow_config import (
     get_whatsapp_flow_id,
     is_whatsapp_flow_enabled,
 )
+
+logger = logging.getLogger(__name__)
 
 INTAKE_STEP_WELCOME = "WELCOME"
 INTAKE_STEP_FULL_NAME = "FULL_NAME"
@@ -85,7 +88,9 @@ _COUNTRY_ALIASES: dict[str, str] = {
     "uae": "UAE",
     "canada": "Canada",
     "australia": "Australia",
+    "au": "Australia",
     "germany": "Germany",
+    "de": "Germany",
     "france": "France",
     "ireland": "Ireland",
     "netherlands": "Netherlands",
@@ -796,6 +801,15 @@ def _normalize_intake_text_reply(
     return cleaned
 
 
+_COUNTRY_RESOLUTION_PROMPT = """You normalize study destination country names for a CRM.
+Given user input, return ONLY the canonical English country name.
+- Expand ISO codes: AU -> Australia, US -> USA, UK -> UK, JP -> Japan, NZ -> New Zealand
+- Fix typos: Astralia -> Australia
+- If already correct, return unchanged
+- If not a valid country, return exactly: INVALID
+Output only the country name, no punctuation or explanation."""
+
+
 def _normalize_target_country_reply(text: str) -> str | None:
     cleaned = " ".join((text or "").split())
     if len(cleaned) < INTAKE_TEXT_MIN_LENGTH or len(cleaned) > INTAKE_TEXT_MAX_LENGTH:
@@ -806,6 +820,44 @@ def _normalize_target_country_reply(text: str) -> str | None:
     if re.search(r"[a-zA-Z]", cleaned):
         return cleaned.title()
     return None
+
+
+async def _resolve_country_with_llm(raw: str, runtime_config) -> str | None:
+    from app.services.ai_service import call_agent_llm
+
+    cleaned = (raw or "").strip()
+    if not cleaned:
+        return None
+    messages = [
+        {"role": "system", "content": _COUNTRY_RESOLUTION_PROMPT},
+        {"role": "user", "content": cleaned},
+    ]
+    try:
+        result = await call_agent_llm(runtime_config.ai_model, messages)
+        candidate = (result.text or "").strip().split("\n")[0].strip().strip("\"'.,")
+        if not candidate or candidate.upper() == "INVALID":
+            return None
+        normalized = _normalize_country_name(candidate)
+        if normalized:
+            return normalized
+        if re.match(r"^[A-Za-z][A-Za-z\s'-]{1,48}$", candidate):
+            return candidate.title() if candidate.islower() else candidate
+    except Exception:
+        logger.exception("Country LLM resolution failed for %r", raw)
+    return None
+
+
+async def _resolve_target_country_reply(text: str, runtime_config) -> str | None:
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) < INTAKE_TEXT_MIN_LENGTH or len(cleaned) > INTAKE_TEXT_MAX_LENGTH:
+        return None
+    normalized = _normalize_country_name(cleaned)
+    if normalized:
+        return normalized
+    llm_country = await _resolve_country_with_llm(cleaned, runtime_config)
+    if llm_country:
+        return llm_country
+    return _normalize_target_country_reply(text)
 
 
 def _normalize_score_reply(text: str) -> str | None:
@@ -910,7 +962,13 @@ def _load_target_degree(context: dict[str, Any]) -> str:
 
 
 def _load_target_major(context: dict[str, Any]) -> str:
-    return str(context.get("preferred_course") or context.get("target_major") or "").strip()
+    explicit = str(context.get("target_major") or "").strip()
+    if explicit:
+        return explicit
+    # In degree → major → country flow, target_program holds the degree label until major is captured.
+    if str(context.get("target_degree") or "").strip():
+        return ""
+    return str(context.get("preferred_course") or "").strip()
 
 
 def _uses_degree_major_country_flow(context: dict[str, Any]) -> bool:
@@ -1096,7 +1154,7 @@ async def process_intake_message(
     if step == INTAKE_STEP_TARGET_COUNTRY:
         context = _load_context(lead)
         if _uses_degree_major_country_flow(context):
-            country = _normalize_target_country_reply(text)
+            country = await _resolve_target_country_reply(text, runtime_config)
             if not country:
                 if len((text or "").strip()) > INTAKE_TEXT_MAX_LENGTH:
                     task = (
@@ -2492,8 +2550,10 @@ def build_intake_profile_summary(
         "intake_complete": is_intake_complete(lead),
         "current_location": getattr(lead, "current_location", None),
         "preferred_country": study_fields.get("preferred_country") or lead.preferred_country,
-        "preferred_course": study_fields.get("preferred_course") or context.get("preferred_course"),
-        "target_program": study_fields.get("target_program") or context.get("target_program"),
+        "preferred_course": _load_target_major(context) or None,
+        "target_program": study_fields.get("target_program")
+        or context.get("target_degree")
+        or context.get("target_program"),
         "target_degree": _load_target_degree(context) or None,
         "target_major": _load_target_major(context) or None,
         "study_interest_complete": study_fields.get("study_interest_complete"),
