@@ -9,7 +9,7 @@ set -euo pipefail
 
 APP_ROOT="/var/www/nexus"
 BACKEND="${APP_ROOT}/backend"
-EXPECTED_HEAD="r4n7o2p36q8l"
+EXPECTED_HEAD="s5p8q1r54s0m"
 BACKEND_HEALTH="http://127.0.0.1:8002/"
 PUBLIC_DOMAIN="${NEXUS_DOMAIN:-nexus-dev.edutrust.in}"
 PUBLIC_BASE="https://${PUBLIC_DOMAIN}"
