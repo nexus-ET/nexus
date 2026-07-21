@@ -126,7 +126,7 @@ def bootstrap_application() -> None:
                 )
             from app.services.whatsapp_webhook_env import audit_whatsapp_webhook_routing
 
-            audit_whatsapp_webhook_routing()
+            audit_whatsapp_webhook_routing(check_reachability=False)
             bootstrap_logger.info("Application bootstrap complete.")
         finally:
             bootstrap_db.close()
