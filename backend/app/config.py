@@ -17,7 +17,19 @@ def normalize_database_url(url: str) -> str:
         "postgres://",
     ):
         if lower.startswith(prefix):
-            return "postgresql+psycopg://" + value[len(prefix) :]
+            value = "postgresql+psycopg://" + value[len(prefix) :]
+            break
+    # Neon console appends channel_binding=require; some psycopg builds reject it.
+    if "channel_binding=" in value.lower():
+        from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+        parsed = urlparse(value)
+        query = [
+            (k, v)
+            for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+            if k.lower() != "channel_binding"
+        ]
+        value = urlunparse(parsed._replace(query=urlencode(query)))
     return value
 
 
