@@ -321,7 +321,16 @@ def audit_whatsapp_webhook_routing(*, check_reachability: bool = True) -> None:
 
     verify_token = resolve_verify_token()
     challenge = "nexus-webhook-health"
+    # Prefer loopback when auditing this host — public hostname often fails hairpin NAT
+    # on the same VPS even though Meta/external clients can reach nginx fine.
+    candidates: list[str] = []
+    port = (os.getenv("NEXUS_PORT") or "8002").strip() or "8002"
+    candidates.append(f"http://127.0.0.1:{port}/api/webhook")
+    if meta_url and meta_url not in candidates:
+        candidates.append(meta_url)
+
     reachable = False
+    last_error: Exception | str | None = None
     try:
         with httpx.Client(
             timeout=12,
@@ -331,17 +340,33 @@ def audit_whatsapp_webhook_routing(*, check_reachability: bool = True) -> None:
                 "ngrok-skip-browser-warning": "true",
             },
         ) as client:
-            response = client.get(
-                meta_url,
-                params={
-                    "hub.mode": "subscribe",
-                    "hub.verify_token": verify_token,
-                    "hub.challenge": challenge,
-                },
-            )
-            reachable = response.status_code == 200 and response.text.strip() == challenge
+            for candidate in candidates:
+                try:
+                    response = client.get(
+                        candidate,
+                        params={
+                            "hub.mode": "subscribe",
+                            "hub.verify_token": verify_token,
+                            "hub.challenge": challenge,
+                        },
+                    )
+                    if response.status_code == 200 and response.text.strip() == challenge:
+                        reachable = True
+                        if candidate.startswith("http://127.0.0.1"):
+                            logger.info(
+                                "WhatsApp webhook verify OK via loopback (%s); "
+                                "skipping public hairpin check.",
+                                candidate,
+                            )
+                        break
+                    last_error = (
+                        f"{candidate} status={response.status_code} body={response.text[:80]!r}"
+                    )
+                except httpx.HTTPError as exc:
+                    last_error = exc
     except httpx.HTTPError as exc:
-        logger.error("WhatsApp webhook health check failed for %s: %s", meta_url, exc)
+        last_error = exc
+        logger.error("WhatsApp webhook health check failed: %s", exc)
 
     if reachable:
         return
@@ -350,8 +375,10 @@ def audit_whatsapp_webhook_routing(*, check_reachability: bool = True) -> None:
         "WhatsApp inbound webhook %s is NOT reachable. "
         "Meta is configured to deliver student messages there, but this backend cannot receive them. "
         "Restart .\\dev.ps1 (tunnel + auto webhook sync) or run: "
-        "python scripts/sync_whatsapp_webhook.py --callback-url <your-tunnel>/api/webhook",
+        "python scripts/sync_whatsapp_webhook.py --callback-url <your-tunnel>/api/webhook "
+        "(detail=%s)",
         meta_url,
+        last_error,
     )
     print(
         "[WhatsApp] ERROR: Inbound webhook is unreachable — student WhatsApp replies will not advance intake.\n"
