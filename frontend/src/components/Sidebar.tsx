@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
 import { isAllowedRoute, isRouteActive, normalizePath } from '../utils/routeAccess';
+import { STUDENT_PIPELINE_NAV, STUDENT_PIPELINE_PATHS } from '../config/studentPipelineNav';
+import { ACADEMIA_HUB_SECTIONS } from '../config/academiaHubNav';
+import { canAccessAcademiaHub } from '../utils/academiaAccess';
 import { Link, useLocation } from 'react-router-dom';
 import { useNexusSession } from '../context/NexusSessionContext';
 import {
@@ -17,6 +20,8 @@ import {
   MessagesSquare,
   FileText,
   Gauge,
+  GraduationCap,
+  BookOpen,
 } from 'lucide-react';
 
 interface SidebarUser {
@@ -41,11 +46,13 @@ const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const location = useLocation();
   const { unreadMessageCount, messagingHubPulse, setMessagingHubPulse } = useNexusSession();
+  const [isStudentsOpen, setIsStudentsOpen] = useState(true);
   const [isAppointmentsOpen, setIsAppointmentsOpen] = useState(true);
   const [isLeadsOpen, setIsLeadsOpen] = useState(true);
   const [isUsersOpen, setIsUsersOpen] = useState(false);
   const [isReportsOpen, setIsReportsOpen] = useState(false);
   const [isCockpitOpen, setIsCockpitOpen] = useState(false);
+  const [isAcademiaOpen, setIsAcademiaOpen] = useState(false);
 
   const currentPath = normalizePath(location.pathname);
   const isRouteAllowed = (path: string) =>
@@ -82,6 +89,9 @@ const Sidebar: React.FC<SidebarProps> = ({
     ...(canAccessCounselling ? [{ path: '/counselling', label: 'Manage Appointments' }] : []),
   ];
 
+  const studentNavItems = STUDENT_PIPELINE_NAV.filter(item => isRouteAllowed(item.path));
+  const showStudentsSection = studentNavItems.length > 0;
+
   const visibleLeadNavItems = leadNavItems.filter(item => isRouteAllowed(item.path));
   const showLeadsSection = visibleLeadNavItems.length > 0;
   const visibleUserNavItems = userNavItems.filter(item => isRouteAllowed(item.path));
@@ -99,6 +109,8 @@ const Sidebar: React.FC<SidebarProps> = ({
     { path: '/settings', label: 'Settings', icon: Settings },
   ].filter(item => isRouteAllowed(item.path));
   const showCockpitSection = cockpitNavItems.length > 0;
+  const showAcademiaHubSection =
+    canAccessAcademiaHub(currentUser) && isRouteAllowed('/academia');
 
   useEffect(() => {
     if (location.pathname.replace(/\/$/, '') === '/messaging-hub') {
@@ -109,6 +121,9 @@ const Sidebar: React.FC<SidebarProps> = ({
   }, [location.pathname, unreadMessageCount, setMessagingHubPulse]);
 
   useEffect(() => {
+    if (STUDENT_PIPELINE_PATHS.some(path => isRouteActive(currentPath, path))) {
+      setIsStudentsOpen(true);
+    }
     if (['/my-bookings', '/counselling'].some(path => isRouteActive(currentPath, path))) {
       setIsAppointmentsOpen(true);
     }
@@ -120,6 +135,9 @@ const Sidebar: React.FC<SidebarProps> = ({
     }
     if (['/reports/meta-leads', '/reports/audit-logs', '/reports', '/analytics'].some(path => isRouteActive(currentPath, path))) {
       setIsReportsOpen(true);
+    }
+    if (currentPath.startsWith('/academia')) {
+      setIsAcademiaOpen(true);
     }
   }, [currentPath]);
 
@@ -196,7 +214,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             )}
 
             {showAppointmentsSection && (
-              <div className="pt-2">
+              <div className="pt-2 lg:hidden">
                 <button
                   type="button"
                   onClick={() => isSidebarOpen && setIsAppointmentsOpen(!isAppointmentsOpen)}
@@ -237,7 +255,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             )}
 
             {showLeadsSection && (
-              <div className="pt-2">
+              <div className="pt-2 lg:hidden">
                 <button
                   type="button"
                   onClick={() => isSidebarOpen && setIsLeadsOpen(!isLeadsOpen)}
@@ -277,8 +295,49 @@ const Sidebar: React.FC<SidebarProps> = ({
               </div>
             )}
 
+            {showStudentsSection && (
+              <div className="pt-2 lg:hidden">
+                <button
+                  type="button"
+                  onClick={() => isSidebarOpen && setIsStudentsOpen(!isStudentsOpen)}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all group hover:bg-card/40 hover:text-text-dark-bg mt-1 ${
+                    !isSidebarOpen ? 'justify-center' : ''
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <GraduationCap size={20} className="text-text-dark-bg" />
+                    {isSidebarOpen && <span className="text-sm font-medium">Manage Students</span>}
+                  </div>
+                  {isSidebarOpen && (
+                    <ChevronDown
+                      size={14}
+                      className={`transition-transform duration-200 ${isStudentsOpen ? 'rotate-180' : ''}`}
+                    />
+                  )}
+                </button>
+
+                {isSidebarOpen && isStudentsOpen && (
+                  <div className="mt-1 ml-4 pl-4 border-l border-border-subtle space-y-1">
+                    {studentNavItems.map(item => (
+                      <Link
+                        key={item.path}
+                        to={item.path}
+                        className={`flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-all ${
+                          isRouteActive(currentPath, item.path)
+                            ? 'bg-card/60 text-text-main border-l-2 border-accent'
+                            : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
+                        }`}
+                      >
+                        <span>{item.label}</span>
+                      </Link>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {showUsersSection && (
-              <div className="pt-2">
+              <div className="pt-2 lg:hidden">
                 <button
                   type="button"
                   onClick={() => isSidebarOpen && setIsUsersOpen(!isUsersOpen)}
@@ -319,7 +378,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             )}
 
             {showReportsSection && (
-              <div className="pt-2">
+              <div className="pt-2 lg:hidden">
                 <button
                   type="button"
                   onClick={() => isSidebarOpen && setIsReportsOpen(!isReportsOpen)}
@@ -359,8 +418,70 @@ const Sidebar: React.FC<SidebarProps> = ({
               </div>
             )}
 
+            {showAcademiaHubSection && (
+              <div className="pt-2 lg:hidden">
+                <button
+                  type="button"
+                  onClick={() => isSidebarOpen && setIsAcademiaOpen(!isAcademiaOpen)}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all group hover:bg-card/40 hover:text-text-dark-bg mt-1 ${
+                    !isSidebarOpen ? 'justify-center' : ''
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <BookOpen size={20} className="text-text-dark-bg" />
+                    {isSidebarOpen && <span className="text-sm font-medium">Academia Hub</span>}
+                  </div>
+                  {isSidebarOpen && (
+                    <ChevronDown
+                      size={14}
+                      className={`transition-transform duration-200 ${isAcademiaOpen ? 'rotate-180' : ''}`}
+                    />
+                  )}
+                </button>
+
+                {isSidebarOpen && isAcademiaOpen && (
+                  <div className="mt-1 ml-4 pl-4 border-l border-border-subtle space-y-3">
+                    {ACADEMIA_HUB_SECTIONS.map(section =>
+                      section.tabbed ? (
+                        <Link
+                          key={section.key}
+                          to={section.path}
+                          className={`flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-all ${
+                            isRouteActive(currentPath, section.path)
+                              ? 'bg-card/60 text-text-main border-l-2 border-accent'
+                              : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
+                          }`}
+                        >
+                          <span>{section.label}</span>
+                        </Link>
+                      ) : (
+                        <div key={section.key} className="space-y-1">
+                          <div className="px-3 pt-1 text-[10px] font-bold uppercase tracking-wider text-text-muted/80">
+                            {section.label}
+                          </div>
+                          {section.items.map(item => (
+                            <Link
+                              key={item.path}
+                              to={item.path}
+                              className={`flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-all ${
+                                isRouteActive(currentPath, item.path)
+                                  ? 'bg-card/60 text-text-main border-l-2 border-accent'
+                                  : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
+                              }`}
+                            >
+                              <span>{item.label}</span>
+                            </Link>
+                          ))}
+                        </div>
+                      )
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             {showCockpitSection && (
-              <div className="pt-2">
+              <div className="pt-2 lg:hidden">
                 <button
                   type="button"
                   onClick={() => isSidebarOpen && setIsCockpitOpen(!isCockpitOpen)}

@@ -9,7 +9,8 @@ set -euo pipefail
 
 APP_ROOT="/var/www/nexus"
 BACKEND="${APP_ROOT}/backend"
-EXPECTED_HEAD="s5p8q1r54s0m"
+# Resolved dynamically from alembic heads (do not hardcode; head moves with academia migrations)
+EXPECTED_HEAD=""
 BACKEND_HEALTH="http://127.0.0.1:8002/"
 PUBLIC_DOMAIN="${NEXUS_DOMAIN:-nexus-dev.edutrust.in}"
 PUBLIC_BASE="https://${PUBLIC_DOMAIN}"
@@ -59,14 +60,21 @@ check "Webhook info ${PUBLIC_BASE}/api/webhook/info" curl -sf "${PUBLIC_BASE}/ap
 echo ""
 echo "==> Database (Alembic)"
 if [[ -d "${BACKEND}/.venv" ]]; then
+  EXPECTED_HEAD="$(
+    bash -c "cd '${BACKEND}' && source .venv/bin/activate && alembic heads 2>/dev/null" \
+      | awk '{print $1}' | head -1
+  )"
   current_head="$(
     bash -c "cd '${BACKEND}' && source .venv/bin/activate && alembic current 2>/dev/null" \
       | awk '{print $1}' | head -1
   )"
-  if [[ "${current_head}" == "${EXPECTED_HEAD}" ]]; then
-    echo "  OK   Alembic head is ${EXPECTED_HEAD}"
+  if [[ -z "${EXPECTED_HEAD}" ]]; then
+    echo "  FAIL Could not resolve alembic heads" >&2
+    failures=$((failures + 1))
+  elif [[ "${current_head}" == "${EXPECTED_HEAD}" ]]; then
+    echo "  OK   Alembic at head ${EXPECTED_HEAD}"
   else
-    echo "  FAIL Alembic head is '${current_head}' (expected ${EXPECTED_HEAD})" >&2
+    echo "  FAIL Alembic current '${current_head}' (expected head ${EXPECTED_HEAD})" >&2
     failures=$((failures + 1))
   fi
 else

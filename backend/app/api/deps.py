@@ -15,6 +15,7 @@ oauth2_scheme = OAuth2PasswordBearer(
 )
 
 COUNSELLING_ADMIN_ROLE_NAMES = {"Super Admin", "Web Admin"}
+ACADEMIA_ADMIN_ROLE_NAMES = COUNSELLING_ADMIN_ROLE_NAMES
 
 
 def get_current_user(
@@ -79,6 +80,16 @@ def require_counselling_admin(
     if _resolved_role_name(current_user) in COUNSELLING_ADMIN_ROLE_NAMES:
         return current_user
     raise HTTPException(status_code=403, detail="Counselling admin access required.")
+
+
+def require_academia_admin(
+    current_user: User = Depends(get_current_active_user),
+) -> User:
+    if current_user.is_superuser:
+        return current_user
+    if _resolved_role_name(current_user) in ACADEMIA_ADMIN_ROLE_NAMES:
+        return current_user
+    raise HTTPException(status_code=403, detail="Academia Hub admin access required.")
 
 
 def require_super_admin(current_user: User = Depends(get_current_active_user)) -> User:

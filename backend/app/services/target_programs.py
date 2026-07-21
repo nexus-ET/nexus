@@ -5,6 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.models.target_course import TargetCourse
 from app.models.target_program import TargetProgram
+from app.services.academic_programs import MAJOR_DEFAULT_PROGRAM_CODE, get_academic_program_by_code
+from app.models.program import Program
 from app.schemas.offline_lead import OfflineLeadCreate
 from app.services.countries import get_country_by_iso2
 
@@ -12,6 +14,7 @@ DEFAULT_TARGET_PROGRAMS: list[dict[str, str | int | list[dict[str, str | int]]]]
     {
         "code": "BUSINESS_MANAGEMENT",
         "label": "Business & Management",
+        "default_program_code": "BBA",
         "sort_order": 1,
         "courses": [
             {"code": "MBA", "label": "MBA", "sort_order": 1},
@@ -25,6 +28,7 @@ DEFAULT_TARGET_PROGRAMS: list[dict[str, str | int | list[dict[str, str | int]]]]
     {
         "code": "NURSING_MIDWIFERY",
         "label": "Nursing & Midwifery",
+        "default_program_code": "BSN",
         "sort_order": 2,
         "courses": [
             {"code": "BSC_NURSING", "label": "BSc Nursing", "sort_order": 1},
@@ -36,6 +40,7 @@ DEFAULT_TARGET_PROGRAMS: list[dict[str, str | int | list[dict[str, str | int]]]]
     {
         "code": "ALLIED_HEALTH",
         "label": "Allied Health",
+        "default_program_code": "BSC",
         "sort_order": 3,
         "courses": [
             {"code": "BSC_PHYSIOTHERAPY", "label": "BSc Physiotherapy", "sort_order": 1},
@@ -47,6 +52,7 @@ DEFAULT_TARGET_PROGRAMS: list[dict[str, str | int | list[dict[str, str | int]]]]
     {
         "code": "MEDICINE_DENTISTRY",
         "label": "Medicine & Dentistry",
+        "default_program_code": "MBBS",
         "sort_order": 4,
         "courses": [
             {"code": "MBBS", "label": "MBBS", "sort_order": 1},
@@ -58,6 +64,7 @@ DEFAULT_TARGET_PROGRAMS: list[dict[str, str | int | list[dict[str, str | int]]]]
     {
         "code": "MEDICAL_SCIENCES",
         "label": "Medical Sciences",
+        "default_program_code": "MSC",
         "sort_order": 5,
         "courses": [
             {"code": "MSC_BIOMEDICAL_SCIENCE", "label": "MSc Biomedical Science", "sort_order": 1},
@@ -69,6 +76,7 @@ DEFAULT_TARGET_PROGRAMS: list[dict[str, str | int | list[dict[str, str | int]]]]
     {
         "code": "ENGINEERING_TECHNOLOGY",
         "label": "Engineering & Technology",
+        "default_program_code": "BENG",
         "sort_order": 6,
         "courses": [
             {"code": "BENG_MECHANICAL", "label": "BEng Mechanical Engineering", "sort_order": 1},
@@ -81,6 +89,7 @@ DEFAULT_TARGET_PROGRAMS: list[dict[str, str | int | list[dict[str, str | int]]]]
     {
         "code": "COMPUTER_SCIENCE_IT",
         "label": "Computer Science & IT",
+        "default_program_code": "BSC",
         "sort_order": 7,
         "courses": [
             {"code": "BSC_COMPUTER_SCIENCE", "label": "BSc Computer Science", "sort_order": 1},
@@ -93,6 +102,7 @@ DEFAULT_TARGET_PROGRAMS: list[dict[str, str | int | list[dict[str, str | int]]]]
     {
         "code": "HUMANITIES_SOCIAL_SCIENCES",
         "label": "Humanities & Social Sciences",
+        "default_program_code": "BA",
         "sort_order": 8,
         "courses": [
             {"code": "MA_INTERNATIONAL_RELATIONS", "label": "MA International Relations", "sort_order": 1},
@@ -104,6 +114,7 @@ DEFAULT_TARGET_PROGRAMS: list[dict[str, str | int | list[dict[str, str | int]]]]
     {
         "code": "LAW_LEGAL_STUDIES",
         "label": "Law & Legal Studies",
+        "default_program_code": "LLB",
         "sort_order": 9,
         "courses": [
             {"code": "LLB", "label": "LLB", "sort_order": 1},
@@ -114,6 +125,7 @@ DEFAULT_TARGET_PROGRAMS: list[dict[str, str | int | list[dict[str, str | int]]]]
     {
         "code": "NATURAL_SCIENCES",
         "label": "Natural Sciences",
+        "default_program_code": "BSC",
         "sort_order": 10,
         "courses": [
             {"code": "BSC_BIOLOGY", "label": "BSc Biology", "sort_order": 1},
@@ -126,46 +138,8 @@ DEFAULT_TARGET_PROGRAMS: list[dict[str, str | int | list[dict[str, str | int]]]]
 
 
 def seed_target_programs(db: Session) -> None:
-    for program_item in DEFAULT_TARGET_PROGRAMS:
-        code = str(program_item["code"])
-        existing = db.query(TargetProgram).filter(TargetProgram.code == code).first()
-        if existing:
-            existing.label = str(program_item["label"])
-            existing.sort_order = int(program_item["sort_order"])
-            existing.is_active = True
-            program = existing
-        else:
-            program = TargetProgram(
-                code=code,
-                label=str(program_item["label"]),
-                sort_order=int(program_item["sort_order"]),
-                is_active=True,
-            )
-            db.add(program)
-            db.flush()
-
-        courses = program_item.get("courses") or []
-        for course_item in courses:
-            course_code = str(course_item["code"])
-            existing_course = (
-                db.query(TargetCourse).filter(TargetCourse.code == course_code).first()
-            )
-            if existing_course:
-                existing_course.program_id = program.id
-                existing_course.label = str(course_item["label"])
-                existing_course.sort_order = int(course_item["sort_order"])
-                existing_course.is_active = True
-                continue
-            db.add(
-                TargetCourse(
-                    program_id=program.id,
-                    code=course_code,
-                    label=str(course_item["label"]),
-                    sort_order=int(course_item["sort_order"]),
-                    is_active=True,
-                )
-            )
-    db.commit()
+    """Disabled — target programs/courses are managed via Admin UI / migrations, not startup seeds."""
+    return
 
 
 def list_active_target_programs(db: Session) -> list[TargetProgram]:

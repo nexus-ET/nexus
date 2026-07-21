@@ -30,15 +30,13 @@ import { apiFetch, hasValidSession } from '../utils/api';
 
 import { categoryBadgeClass } from '../utils/statusBadges';
 
-import CounsellingSessionPanel from '../components/CounsellingSessionPanel';
-
 import BookingOverviewMetrics, {
   type BookingMetricKey,
 } from '../components/BookingOverviewMetrics';
 
-import SessionOutcomeSection from '../components/SessionOutcomeSection';
-
 import InteractionLogDrawer from '../components/InteractionLogDrawer';
+
+import CounsellingSessionModal from '../components/CounsellingSessionModal';
 
 import StudentJourneyPanel from '../components/StudentJourneyPanel';
 
@@ -165,14 +163,6 @@ interface ReassignModalState {
 
 
 
-interface SessionModalState {
-
-  booking: MyBooking;
-
-}
-
-
-
 interface JourneyPanelState {
 
   studentId: number;
@@ -212,7 +202,7 @@ const MyBookings: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [reassignModal, setReassignModal] = useState<ReassignModalState | null>(null);
   const [interactionBookingId, setInteractionBookingId] = useState<number | null>(null);
-  const [sessionModal, setSessionModal] = useState<SessionModalState | null>(null);
+  const [sessionBooking, setSessionBooking] = useState<MyBooking | null>(null);
   const [journeyPanel, setJourneyPanel] = useState<JourneyPanelState | null>(null);
   const [activeMetric, setActiveMetric] = useState<BookingMetricKey>('today');
 
@@ -497,7 +487,7 @@ const MyBookings: React.FC = () => {
 
         type="button"
 
-        onClick={() => setSessionModal({ booking })}
+        onClick={() => setSessionBooking(booking)}
 
         className="inline-flex items-center gap-1 rounded-lg border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-xs font-semibold text-violet-900 hover:bg-violet-100"
 
@@ -537,7 +527,9 @@ const MyBookings: React.FC = () => {
 
   return (
 
-    <div className="p-6 md:p-8 space-y-6">
+    <div className="absolute inset-0 min-h-0 overflow-hidden flex flex-col">
+
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar p-4 md:p-5 space-y-4">
 
       <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
 
@@ -724,7 +716,13 @@ const MyBookings: React.FC = () => {
 
                 {bookings.map(booking => (
 
-                  <tr key={booking.id} className="hover:bg-surface-bg/40">
+                  <tr
+
+                    key={booking.id}
+
+                    className="hover:bg-surface-bg/40"
+
+                  >
 
                     <td className="px-4 py-3 font-medium text-text-main">{booking.candidate_name}</td>
                     {viewAllBookings ? (
@@ -767,6 +765,26 @@ const MyBookings: React.FC = () => {
         bookingId={interactionBookingId}
 
         onClose={() => setInteractionBookingId(null)}
+
+      />
+
+
+
+      <CounsellingSessionModal
+
+        open={sessionBooking !== null}
+
+        bookingId={sessionBooking?.id ?? null}
+
+        candidateName={sessionBooking?.candidate_name ?? ''}
+
+        dateLabel={sessionBooking?.date_label}
+
+        timeLabel={sessionBooking?.time_label}
+
+        onClose={() => setSessionBooking(null)}
+
+        onStatusUpdated={() => loadBookings(false)}
 
       />
 
@@ -904,101 +922,7 @@ const MyBookings: React.FC = () => {
 
 
 
-      {sessionModal && (
-
-        <div
-
-          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40"
-
-          role="dialog"
-
-          aria-modal="true"
-
-          aria-labelledby="counselling-session-title"
-
-        >
-
-          <div
-
-            className="w-full max-w-6xl max-h-[92vh] rounded-2xl border border-border-subtle bg-card shadow-2xl flex flex-col overflow-hidden"
-
-          >
-
-            <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-border-subtle bg-surface-bg shrink-0">
-
-              <div>
-
-                <h3
-
-                  id="counselling-session-title"
-
-                  className="text-lg font-semibold text-text-main flex items-center gap-2"
-
-                >
-
-                  <Sparkles size={18} className="text-violet-700" />
-
-                  Counselling Session
-
-                </h3>
-
-                <p className="text-sm text-text-muted mt-0.5">
-
-                  {sessionModal.booking.candidate_name} · {sessionModal.booking.date_label} ·{' '}
-
-                  {sessionModal.booking.time_label}
-
-                </p>
-
-              </div>
-
-              <button
-
-                type="button"
-
-                onClick={() => setSessionModal(null)}
-
-                className="rounded-lg border border-border-subtle p-2 text-text-muted hover:bg-card hover:text-text-main"
-
-                aria-label="Close counselling session dialog"
-
-              >
-
-                <X size={16} />
-
-              </button>
-
-            </div>
-
-            <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-5 py-5 space-y-8">
-
-              <CounsellingSessionPanel
-
-                bookingId={sessionModal.booking.id}
-
-                candidateName={sessionModal.booking.candidate_name}
-
-              />
-
-              <div className="border-t border-border-subtle pt-6">
-
-                <SessionOutcomeSection
-
-                  bookingId={sessionModal.booking.id}
-
-                  onStatusUpdated={() => loadBookings(false)}
-
-                />
-
-              </div>
-
-            </div>
-
-          </div>
-
-        </div>
-
-      )}
+      </div>
 
     </div>
 

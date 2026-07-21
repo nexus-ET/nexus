@@ -106,15 +106,13 @@ const MyProfile: React.FC = () => {
   const roleLabel = profile?.admin_role?.name || profile?.role || '—';
 
   return (
-    <div className="relative z-10 max-w-4xl mx-auto space-y-6">
+    <div className="relative z-10 max-w-5xl mx-auto space-y-6">
       <div>
         <h2 className="text-2xl font-extrabold text-text-main tracking-tight flex items-center gap-2">
           <UserCircle size={24} />
           My Profile
         </h2>
-        <p className="text-sm text-text-muted mt-1">
-          View your account details. Only your password can be changed here.
-        </p>
+        <p className="text-sm text-text-muted mt-1">Manage your account details and password.</p>
       </div>
 
       {error && (
@@ -145,7 +143,14 @@ const MyProfile: React.FC = () => {
               <ReadOnlyField label="Super Admin" value={profile.is_superuser ? 'Yes' : 'No'} />
               <ReadOnlyField label="Created On" value={formatDateTime(profile.creation_date)} />
               <ReadOnlyField label="Activated On" value={formatDateTime(profile.activation_date)} />
-              <ReadOnlyField label="Deactivated On" value={formatDateTime(profile.deactivation_date)} />
+              <ReadOnlyField
+                label="Deactivated On"
+                value={
+                  profile.is_active
+                    ? 'Not applicable (account is active)'
+                    : formatDateTime(profile.deactivation_date)
+                }
+              />
               <ReadOnlyField
                 label="Creation Reason"
                 value={profile.creation_reason_detail?.reason || '—'}
@@ -156,7 +161,11 @@ const MyProfile: React.FC = () => {
               />
               <ReadOnlyField
                 label="Deactivation Reason"
-                value={profile.deactivation_reason_detail?.reason || '—'}
+                value={
+                  profile.is_active
+                    ? 'Not applicable (account is active)'
+                    : profile.deactivation_reason_detail?.reason || '—'
+                }
               />
             </div>
           </section>

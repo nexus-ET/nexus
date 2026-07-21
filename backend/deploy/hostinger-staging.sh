@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Complete NEXUS staging deploy for Hostinger VPS.
 #
+# Prerequisites:
+#   - /var/www/nexus/backend/.env points DATABASE_URL at Neon Nexus-Dev-1
+#     (pooled postgresql+psycopg://...?sslmode=require). See
+#     STAGING_CONFIG_REQUIREMENTS.md — do not overwrite .env from git.
+#   - Branch "staging" on GitHub includes all alembic/versions for this release.
+#
 # Unlike deploy.sh alone, this script always builds the frontend and restarts
 # services even when migration bootstrap logs warnings. Use after every staging push.
 #

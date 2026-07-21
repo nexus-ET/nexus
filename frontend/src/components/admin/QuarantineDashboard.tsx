@@ -12,8 +12,10 @@ import {
 } from 'lucide-react';
 import { type QuarantineRecord, useQuarantineMutations, useQuarantineRecords } from '../../hooks/useQuarantine';
 import { useBusinessTimezone } from '../../context/BusinessTimezoneContext';
+import { useConfirmation } from '../../context/ConfirmationContext';
 
 const QuarantineDashboard: React.FC = () => {
+  const openConfirm = useConfirmation();
   const { formatDateTime } = useBusinessTimezone();
   const [page, setPage] = useState(1);
   const [limit] = useState(25);
@@ -61,7 +63,12 @@ const QuarantineDashboard: React.FC = () => {
 
   const handleDelete = async () => {
     if (!selected) return;
-    if (!window.confirm('Permanently delete this quarantined record?')) return;
+    if (!(await openConfirm({
+      title: 'Permanently delete record?',
+      message: 'Permanently delete this quarantined record?',
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    }))) return;
     setActionMessage(null);
     setActionError(null);
     try {

@@ -24,7 +24,6 @@ from app.services.status_transition_permissions import (
     RESTRICTED_TRANSITION_TYPES,
     can_use_transition_type,
 )
-from app.services.status_transitions_seed import ensure_status_transitions_seeded
 
 TransitionTypeLiteral = Literal["forward", "backward", "express", "relaunch"]
 
@@ -88,7 +87,6 @@ def _lookup_transition_row(
 ) -> StatusTransition | None:
     if from_status_id is None:
         return None
-    ensure_status_transitions_seeded(db)
     query = db.query(StatusTransition).filter(
         StatusTransition.from_status_id == from_status_id,
         StatusTransition.to_status_id == to_status_id,
@@ -136,7 +134,6 @@ def get_valid_transitions(
     if current_status_id is None:
         return grouped
 
-    ensure_status_transitions_seeded(db)
     rows = (
         db.query(StatusTransition)
         .filter(StatusTransition.from_status_id == current_status_id)

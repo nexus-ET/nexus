@@ -31,13 +31,8 @@ RELAUNCH_TRANSITIONS: list[tuple[int, int]] = [
 
 
 def seed_status_transitions_if_empty(db: Session) -> bool:
-    """Bootstrap transition graph when Alembic seed did not run."""
-    if db.query(StatusTransition.id).limit(1).first() is not None:
-        return False
-    logger.warning("status_transitions is empty — seeding forward, express, backward, and relaunch paths.")
-    _insert_all_transitions(db)
-    db.commit()
-    return True
+    """Disabled — status transitions are managed via Admin UI / migrations, not runtime seeds."""
+    return False
 
 
 def _insert_all_transitions(db: Session) -> None:
@@ -91,4 +86,5 @@ def _insert_all_transitions(db: Session) -> None:
 
 
 def ensure_status_transitions_seeded(db: Session) -> None:
-    seed_status_transitions_if_empty(db)
+    """Disabled — status transitions are managed via Admin UI / migrations, not runtime seeds."""
+    return

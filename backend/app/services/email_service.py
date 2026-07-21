@@ -30,13 +30,24 @@ def send_email(to_addresses: list[str], subject: str, body: str) -> bool:
     message["Subject"] = subject
     message.set_content(body)
 
+    host = settings.SMTP_HOST
+    port = int(settings.SMTP_PORT or 587)
+    # Port 465 = implicit SSL (SMTP_SSL). Port 587 = plain SMTP + STARTTLS.
+    use_implicit_ssl = port == 465
+
     try:
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=20) as server:
-            if settings.SMTP_USE_TLS:
-                server.starttls()
-            if settings.SMTP_USER and settings.SMTP_PASSWORD:
-                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-            server.send_message(message)
+        if use_implicit_ssl:
+            with smtplib.SMTP_SSL(host, port, timeout=20) as server:
+                if settings.SMTP_USER and settings.SMTP_PASSWORD:
+                    server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                server.send_message(message)
+        else:
+            with smtplib.SMTP(host, port, timeout=20) as server:
+                if settings.SMTP_USE_TLS:
+                    server.starttls()
+                if settings.SMTP_USER and settings.SMTP_PASSWORD:
+                    server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                server.send_message(message)
         return True
     except Exception:
         logger.exception("Failed to send email: %s", subject)

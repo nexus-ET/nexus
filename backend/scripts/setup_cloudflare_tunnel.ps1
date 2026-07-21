@@ -66,7 +66,8 @@ if (-not $Hostname) {
     $Hostname = Read-Host "Hostname"
 }
 $Hostname = $Hostname.Trim().ToLower()
-if (-not $Hostname -or $Hostname -notmatch '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$') {
+$hostPattern = '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+if (-not $Hostname -or -not [regex]::IsMatch($Hostname, $hostPattern)) {
     throw "Invalid hostname: $Hostname"
 }
 
@@ -75,23 +76,26 @@ Write-Host "Step 2: Create tunnel '$TunnelName' (skip if it already exists)..." 
 $createOut = & cloudflared tunnel create $TunnelName 2>&1 | Out-String
 Write-Host $createOut
 if ($createOut -match 'already exists') {
-    Write-Host "Tunnel '$TunnelName' already exists — continuing." -ForegroundColor Yellow
+    Write-Host "Tunnel '$TunnelName' already exists - continuing." -ForegroundColor Yellow
 }
 
 $UserCloudflared = Join-Path $env:USERPROFILE ".cloudflared"
-$listJson = & cloudflared tunnel list --output json 2>&1 | Out-String
 $tunnelId = $null
-if ($listJson -match '"name"\s*:\s*"' + [regex]::Escape($TunnelName) + '"') {
-    if ($listJson -match '"id"\s*:\s*"([a-f0-9-]+)"[^}]*"name"\s*:\s*"' + [regex]::Escape($TunnelName) + '"') {
-        $tunnelId = $Matches[1]
-    }
+$listJsonRaw = & cloudflared tunnel list --output json 2>&1 | Out-String
+try {
+    $tunnels = $listJsonRaw | ConvertFrom-Json
+    if ($tunnels -isnot [System.Array]) { $tunnels = @($tunnels) }
+    $found = $tunnels | Where-Object { $_.name -eq $TunnelName } | Select-Object -First 1
+    if ($found -and $found.id) { $tunnelId = [string]$found.id }
+} catch {
+    # cloudflared may print non-JSON noise; fall through to table parse
 }
 if (-not $tunnelId) {
-    # Fallback: parse table output
+    # Fallback: parse table output (UUID then tunnel name)
     $listTable = & cloudflared tunnel list 2>&1 | Out-String
-    if ($listTable -match "([a-f0-9-]{36})\s+$([regex]::Escape($TunnelName))\b") {
-        $tunnelId = $Matches[1]
-    }
+    $uuidPattern = '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\s+' + [regex]::Escape($TunnelName) + '\b'
+    $m = [regex]::Match($listTable, $uuidPattern)
+    if ($m.Success) { $tunnelId = $m.Groups[1].Value }
 }
 $credSource = $null
 if ($tunnelId) {
@@ -117,15 +121,15 @@ Copy-Item -Force $credSource.FullName $credDest
 Write-Host "Credentials copied to $credDest" -ForegroundColor Green
 
 $credRelative = "credentials/$TunnelName.json"
-$configYaml = @"
-tunnel: $TunnelName
-credentials-file: $credRelative
-
-ingress:
-  - hostname: $Hostname
-    service: http://127.0.0.1:$BackendPort
-  - service: http_status:404
-"@
+$configYaml = @(
+    "tunnel: $TunnelName"
+    "credentials-file: $credRelative"
+    ""
+    "ingress:"
+    "  - hostname: $Hostname"
+    "    service: http://127.0.0.1:$BackendPort"
+    "  - service: http_status:404"
+) -join "`n"
 $configYaml | Set-Content $ConfigFile -Encoding utf8
 Write-Host "Wrote $ConfigFile" -ForegroundColor Green
 

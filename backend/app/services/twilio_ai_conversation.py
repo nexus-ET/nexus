@@ -17,7 +17,6 @@ from app.services.admissions_intake_flow import (
     process_flow_completion,
     process_intake_message,
 )
-from app.services.intake_templates import render_outreach_intake_followup
 from app.services.agent_runtime import (
     RuntimeAgentConfig,
     get_runtime_agent_config,
@@ -29,27 +28,21 @@ from app.services.lead_conversation import ensure_handoff_for_inbound, touch_lea
 from app.services.phone_utils import clean_phone_number
 from app.config import settings
 from app.services.messaging import (
-    OUTREACH_POST_TEMPLATE_CONFIRMED_DELAY_SECONDS,
-    OUTREACH_POST_TEMPLATE_UNCONFIRMED_DELAY_SECONDS,
-    OUTREACH_TEMPLATE_FOLLOWUP_DELAY_SECONDS,
     PROVIDER_WHATSAPP,
     WhatsAppDeliveryError,
     assert_whatsapp_business_outreach_allowed,
     get_active_provider,
     outreach_followup_template_is_configured,
     outreach_template_is_configured,
-    outreach_uses_combined_template,
     record_ai_conversation_audit,
-    resolve_outreach_template_language,
-    resolve_skip_intake_followup,
     send_message,
     send_whatsapp_outreach_followup_template,
     send_whatsapp_outreach_template,
     send_whatsapp_text_message,
+    template_body_includes_continue_prompt,
 )
 from app.services.whatsapp_outreach_delivery import (
     wait_for_outbound_delivery_outcome,
-    wait_for_whatsapp_template_delivered,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,9 +60,10 @@ async def _send_outreach_session_followup(
     max_attempts: int = 3,
 ) -> str:
     """
-    Send the post-template intake prompt as session text (fallback path).
+    Send the post-template continue nudge as session text (fallback path).
 
-    Returns the wamid when Meta reports delivered/read. Retries on failed/timeout.
+    Returns the wamid when Meta accepts the message. Retries only when Meta
+    reports failed — never resend after a successful accept (avoids duplicates).
     """
     last_error: WhatsAppDeliveryError | None = None
     for attempt in range(1, max_attempts + 1):
@@ -98,17 +92,9 @@ async def _send_outreach_session_followup(
             bool(context_message_id),
         )
 
-        if outcome in {"delivered", "read"}:
+        # Meta accepted the send — do not resend (duplicate risk).
+        if outcome in {"delivered", "read", "sent"}:
             return message_id
-
-        if outcome == "sent":
-            await asyncio.sleep(min(retry_delay, 8.0))
-            late = await wait_for_outbound_delivery_outcome(
-                message_id,
-                timeout_seconds=delivery_wait_seconds,
-            )
-            if late in {"delivered", "read"}:
-                return message_id
 
         if outcome == "failed":
             last_error = WhatsAppDeliveryError(
@@ -119,6 +105,8 @@ async def _send_outreach_session_followup(
         last_error = WhatsAppDeliveryError(
             f"WhatsApp follow-up delivery not confirmed (message_id={message_id}, outcome={outcome})."
         )
+        # Unknown outcome after accept is still treated as sent once — stop retrying.
+        return message_id
 
     if last_error is not None:
         raise last_error
@@ -134,11 +122,11 @@ async def _deliver_outreach_followup(
     retry_delay: float,
     delivery_wait_seconds: float,
 ) -> str:
-    """Send intake follow-up via template (preferred) or session text (fallback)."""
+    """Send continue follow-up via template (preferred) or session text (fallback)."""
     if settings.WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP:
         logger.info(
-            "Skipping WhatsApp intake follow-up send (WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP); "
-            "welcome template should include the intake prompt."
+            "Skipping WhatsApp follow-up send (WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP); "
+            "only the welcome template will be delivered."
         )
         return template_context_wamid or ""
 
@@ -167,24 +155,19 @@ async def _deliver_outreach_followup(
                 outcome,
                 attempt,
             )
-            if outcome in {"delivered", "read"}:
+            # Accepted by Meta — never resend the same follow-up (duplicate on WhatsApp + AI Active).
+            if outcome in {"delivered", "read", "sent"}:
                 return template_send.message_id
             if outcome == "failed":
                 last_error = WhatsAppDeliveryError(
                     f"WhatsApp follow-up template delivery failed (message_id={template_send.message_id})."
                 )
                 continue
-            if outcome == "sent":
-                late = await wait_for_outbound_delivery_outcome(
-                    template_send.message_id,
-                    timeout_seconds=delivery_wait_seconds,
-                )
-                if late in {"delivered", "read"}:
-                    return template_send.message_id
             last_error = WhatsAppDeliveryError(
                 f"WhatsApp follow-up template not confirmed (message_id={template_send.message_id}, "
                 f"outcome={outcome})."
             )
+            return template_send.message_id
 
         if last_error is not None:
             raise last_error
@@ -194,10 +177,10 @@ async def _deliver_outreach_followup(
         raise WhatsAppDeliveryError(
             "WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE is required on this environment. "
             "Session text after a template often does not reach the device. "
-            "Create Utility template et_intake_fullname in Meta Business Manager and set "
+            "Create Utility template et_intake_continue in Meta Business Manager and set "
             "WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE in .env, or set "
-            "WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP=true if the welcome template already "
-            "includes the intake prompt."
+            "WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP=true if you want only the welcome "
+            "template (no follow-up nudge)."
         )
 
     return await _send_outreach_session_followup(
@@ -217,6 +200,18 @@ def lead_has_prior_ai_outreach(db: Session, lead_id: int) -> bool:
         .first()
         is not None
     )
+
+
+def _lead_already_has_continue_prompt(db: Session, lead_id: int) -> bool:
+    """True when an advisor message already contains the hi/hello continue nudge."""
+    rows = (
+        db.query(Message.text)
+        .filter(Message.lead_id == lead_id, Message.sender == "advisor")
+        .order_by(Message.created_at.desc())
+        .limit(8)
+        .all()
+    )
+    return any(template_body_includes_continue_prompt(text or "") for (text,) in rows)
 
 
 def assert_ai_outreach_allowed(db: Session, lead: Lead, *, force_restart: bool = False) -> None:
@@ -704,20 +699,9 @@ async def initiate_ai_outreach(
     begin_whatsapp_intake_session(db, lead, force_full_restart=True)
 
     sent_messages: list[str] = []
-    followup_delay = float(
-        settings.WHATSAPP_OUTREACH_FOLLOWUP_DELAY_SECONDS
-        or OUTREACH_TEMPLATE_FOLLOWUP_DELAY_SECONDS
-    )
-    template_wamid: str | None = None
-    followup_text = render_outreach_intake_followup()
-    skip_followup = outreach_uses_combined_template()
     outreach_status_recorded = False
 
     if get_active_provider() == PROVIDER_WHATSAPP and outreach_template_is_configured():
-        template_name = (settings.WHATSAPP_OUTREACH_TEMPLATE or "").strip()
-        language_code = resolve_outreach_template_language()
-        skip_followup = await resolve_skip_intake_followup(template_name, language_code)
-
         template_send = await send_whatsapp_outreach_template(
             phone,
             lead=lead,
@@ -729,88 +713,31 @@ async def initiate_ai_outreach(
             )
         await persist_advisor_message(db, lead, template_send.display_text)
         sent_messages.append(template_send.display_text)
-        template_wamid = template_send.message_id
         await _record_whatsapp_outreach_status(db, lead)
         outreach_status_recorded = True
-
-        if skip_followup:
-            logger.info(
-                "Combined outreach template %s sent; skipping second WhatsApp message (message_id=%s)",
-                template_send.template_name,
-                template_send.message_id,
-            )
-        else:
-            delivery_confirmed = await wait_for_whatsapp_template_delivered(
-                template_send.message_id,
-                timeout_seconds=float(settings.WHATSAPP_OUTREACH_DELIVERY_WAIT_SECONDS or 15.0),
-            )
-            post_template_confirmed = float(
-                settings.WHATSAPP_OUTREACH_POST_TEMPLATE_DELAY_SECONDS
-                or OUTREACH_POST_TEMPLATE_CONFIRMED_DELAY_SECONDS
-            )
-            post_template_unconfirmed = float(
-                settings.WHATSAPP_OUTREACH_UNCONFIRMED_TEMPLATE_DELAY_SECONDS
-                or OUTREACH_POST_TEMPLATE_UNCONFIRMED_DELAY_SECONDS
-            )
-            post_template_delay = post_template_confirmed if delivery_confirmed else max(
-                followup_delay, post_template_unconfirmed
-            )
-            if delivery_confirmed:
-                logger.info(
-                    "Template delivery confirmed for %s; waiting %.1fs before follow-up",
-                    template_send.message_id,
-                    post_template_delay,
-                )
-            else:
-                logger.warning(
-                    "Template delivery webhook not received for %s; waiting %.1fs before follow-up",
-                    template_send.message_id,
-                    post_template_delay,
-                )
-            await asyncio.sleep(post_template_delay)
-
-    followup_delivery_wait = float(
-        settings.WHATSAPP_OUTREACH_FOLLOWUP_DELIVERY_WAIT_SECONDS or 20.0
-    )
-    if skip_followup:
-        if get_active_provider() == PROVIDER_WHATSAPP and not outreach_template_is_configured():
-            raise WhatsAppDeliveryError(
-                "WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP is enabled but WHATSAPP_OUTREACH_TEMPLATE "
-                "is not configured. Set the combined welcome template name in .env."
-            )
+        logger.info(
+            "Outreach welcome template %s sent (message_id=%s); "
+            "no continue-prompt follow-up — intake starts when the student messages",
+            template_send.template_name,
+            template_send.message_id,
+        )
     elif get_active_provider() == PROVIDER_WHATSAPP:
-        try:
-            await _deliver_outreach_followup(
-                phone,
-                followup_text,
-                lead=lead,
-                template_context_wamid=template_wamid,
-                retry_delay=followup_delay,
-                delivery_wait_seconds=followup_delivery_wait,
-            )
-        except WhatsAppDeliveryError as exc:
-            detail = str(exc).lower()
-            if (
-                not outreach_followup_template_is_configured()
-                and ("24-hour" in detail or "131047" in detail or "customer care window" in detail)
-            ):
-                logger.warning(
-                    "Session follow-up blocked; configure WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE: %s",
-                    exc,
-                )
-                raise WhatsAppDeliveryError(
-                    f"{exc} Create a Utility template (et_intake_fullname) in Meta Business Manager "
-                    "and set WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE in staging .env, or set "
-                    "WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP=true when the welcome template "
-                    "already includes the intake prompt."
-                ) from exc
-            raise
-        await persist_advisor_message(db, lead, followup_text, ai_confidence=1.0)
-        sent_messages.append(followup_text)
+        raise WhatsAppDeliveryError(
+            "WHATSAPP_OUTREACH_TEMPLATE is not configured. "
+            "Set an approved welcome template name in .env. "
+            "Students reply hi/hello to start intake questions (no separate continue nudge is sent)."
+        )
     else:
-        followup = IntakeReply(text=followup_text, confidence=1.0)
-        await persist_and_send_intake_reply(db, lead, phone, followup)
-        sent_messages.append(followup_text)
+        # Non-WhatsApp providers: welcome via a short opener only (no continue nudge).
+        opener = IntakeReply(
+            text=(
+                "Hi! Thanks for connecting with Edutrust. "
+                "Reply *hi* when you're ready and we'll continue with a few quick questions."
+            ),
+            confidence=1.0,
+        )
+        await persist_and_send_intake_reply(db, lead, phone, opener)
+        sent_messages.append(opener.text)
 
     if not outreach_status_recorded:
         await _record_whatsapp_outreach_status(db, lead)

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Bot, Archive, Users, Calendar, CheckCircle2, Circle, Map } from 'lucide-react';
 import { apiFetch, hasValidSession } from '../utils/api';
 import StudentJourneyPanel from '../components/StudentJourneyPanel';
+import AiActivePulseBoard from '../components/AiActivePulseBoard';
 import LeadQueueSidebarFilters from '../components/LeadQueueSidebarFilters';
 import {
   buildLeadQueueQueryParams,
@@ -134,13 +135,9 @@ const normalizeMessage = (msg: Record<string, unknown>): ChatMessage => {
 
 const INTAKE_STEPS = [
   { key: 'FULL_NAME', label: 'Full name' },
-  { key: 'CURRENT_LOCATION', label: 'Location' },
   { key: 'TARGET_DEGREE', label: 'Program' },
   { key: 'TARGET_MAJOR', label: 'Major' },
   { key: 'TARGET_COUNTRY', label: 'Country' },
-  { key: 'ENGLISH_SCORES', label: 'English scores' },
-  { key: 'GRE_SCORE', label: 'GRE' },
-  { key: 'GMAT_SCORE', label: 'GMAT' },
   { key: 'CALL_CONSENT', label: 'Advisor call' },
   { key: 'PICK_DATE', label: 'Pick date' },
   { key: 'PICK_TIME', label: 'Pick time' },
@@ -167,6 +164,12 @@ const formatConsultationDateTime = (iso?: string | null): string => {
 const getIntakeStepIndex = (step?: string): number => {
   const normalized = (step || 'WELCOME').toUpperCase();
   if (normalized === 'WELCOME') return -1;
+  if (normalized === 'CURRENT_LOCATION') {
+    return INTAKE_STEPS.findIndex(item => item.key === 'TARGET_DEGREE');
+  }
+  if (normalized === 'ENGLISH_SCORES' || normalized === 'GRE_SCORE' || normalized === 'GMAT_SCORE') {
+    return INTAKE_STEPS.findIndex(item => item.key === 'CALL_CONSENT');
+  }
   return INTAKE_STEPS.findIndex(item => item.key === normalized);
 };
 
@@ -397,7 +400,6 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
   const showTimes =
     lead.intake_step === 'PICK_TIME' && (lead.available_consultation_times?.length ?? 0) > 0;
   const hasProfileData =
-    lead.current_location ||
     lead.preferred_country ||
     targetProgram ||
     targetMajor ||
@@ -480,10 +482,6 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
           <span style={styles.intakeFieldValue}>{lead.name || '—'}</span>
         </div>
         <div style={styles.intakeFieldCell}>
-          <span style={styles.intakeFieldLabel}>Current location</span>
-          <span style={styles.intakeFieldValue}>{lead.current_location || '—'}</span>
-        </div>
-        <div style={styles.intakeFieldCell}>
           <span style={styles.intakeFieldLabel}>Target program</span>
           <span style={styles.intakeFieldValue}>{targetProgram || '—'}</span>
         </div>
@@ -494,18 +492,6 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
         <div style={styles.intakeFieldCell}>
           <span style={styles.intakeFieldLabel}>TARGET COUNTRY</span>
           <span style={styles.intakeFieldValue}>{lead.preferred_country || '—'}</span>
-        </div>
-        <div style={styles.intakeFieldCell}>
-          <span style={styles.intakeFieldLabel}>English scores</span>
-          <span style={styles.intakeFieldValue}>{lead.english_test_scores || '—'}</span>
-        </div>
-        <div style={styles.intakeFieldCell}>
-          <span style={styles.intakeFieldLabel}>GRE</span>
-          <span style={styles.intakeFieldValue}>{lead.gre_score || '—'}</span>
-        </div>
-        <div style={styles.intakeFieldCell}>
-          <span style={styles.intakeFieldLabel}>GMAT</span>
-          <span style={styles.intakeFieldValue}>{lead.gmat_score || '—'}</span>
         </div>
         <div style={styles.intakeFieldCell}>
           <span style={styles.intakeFieldLabel}>Advisor call</span>
@@ -640,12 +626,12 @@ export default function AiActiveView() {
       setLoadError(null);
 
       setSelectedLead(prev => {
-        if (!prev) {
-          return activeOnly[0] ?? null;
-        }
+        // Keep an explicit selection in sync; do not auto-select on first load
+        // so the right panel can show the living pulse overview.
+        if (!prev) return null;
 
         const updatedLead = activeOnly.find(l => l.id === prev.id);
-        if (!updatedLead) return prev;
+        if (!updatedLead) return null;
         return mergeLeadSnapshot(prev, updatedLead);
       });
     } catch (error: unknown) {
@@ -1091,6 +1077,17 @@ export default function AiActiveView() {
                 </button>
               </div>
               <div style={styles.headerActionGroup}>
+              <button
+                type="button"
+                onClick={() => {
+                  selectedLeadIdRef.current = null;
+                  setSelectedLead(null);
+                }}
+                style={styles.headerOverviewButton}
+                title="Back to intake pulse overview"
+              >
+                Overview
+              </button>
               {!leadHasAiMessages(selectedLead) ? (
                 <button
                   type="button"
@@ -1235,15 +1232,14 @@ export default function AiActiveView() {
             </div>
           </div>
         ) : (
-          <div style={styles.emptyWorkspaceGrid}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '48px', marginBottom: '12px' }}>🤖</div>
-              <h3 style={{ margin: '0 0 6px 0', color: '#334155' }}>Select a candidate</h3>
-              <p style={{ margin: 0, color: '#64748b', fontSize: '14px' }}>
-                Choose someone from the left panel to view their AI Agent conversation.
-              </p>
-            </div>
-          </div>
+          <AiActivePulseBoard
+            leads={queue}
+            isLoading={isLoading}
+            onSelectLead={leadId => {
+              const lead = queue.find(item => item.id === leadId);
+              if (lead) void handleSelectLead(lead);
+            }}
+          />
         )}
       </div>
       </div>
@@ -1474,6 +1470,17 @@ const styles = {
     gap: '8px',
     flexShrink: 0,
     marginLeft: '16px',
+  } as React.CSSProperties,
+  headerOverviewButton: {
+    border: '1px solid #cbd5e1',
+    backgroundColor: '#ffffff',
+    color: '#03045e',
+    padding: '8px 12px',
+    borderRadius: '8px',
+    fontSize: '12px',
+    fontWeight: '700',
+    cursor: 'pointer',
+    flexShrink: 0,
   } as React.CSSProperties,
   headerJourneyLink: {
     marginTop: '6px',

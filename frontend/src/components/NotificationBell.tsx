@@ -38,7 +38,7 @@ const priorityLabel: Record<string, string> = {
   normal: 'Normal',
 };
 
-const NotificationBell: React.FC = () => {
+const NotificationBell: React.FC<{ onDarkHeader?: boolean }> = ({ onDarkHeader = false }) => {
   const { formatDateTime } = useBusinessTimezone();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -92,12 +92,18 @@ const NotificationBell: React.FC = () => {
           setOpen(prev => !prev);
           if (!open) loadInbox();
         }}
-        className="relative p-2 text-text-muted hover:bg-surface-bg rounded-full transition-colors"
+        className={`relative p-2 rounded-full transition-colors ${
+          onDarkHeader
+            ? 'text-white/85 hover:bg-white/10 hover:text-white'
+            : 'text-text-muted hover:bg-surface-bg'
+        }`}
         aria-label="Notifications"
       >
         <Bell size={20} />
         {unreadCount > 0 && (
-          <span className="absolute top-1.5 right-1.5 min-w-[16px] h-4 px-1 bg-alert rounded-full border-2 border-card text-[9px] font-bold text-white flex items-center justify-center">
+          <span className={`absolute top-1.5 right-1.5 min-w-[16px] h-4 px-1 bg-alert rounded-full border-2 text-[9px] font-bold text-white flex items-center justify-center ${
+            onDarkHeader ? 'border-canvas' : 'border-card'
+          }`}>
             {unreadCount > 9 ? '9+' : unreadCount}
           </span>
         )}

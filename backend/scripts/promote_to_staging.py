@@ -134,8 +134,17 @@ def detect_staging_root(develop_root: Path, explicit: Path | None) -> Path:
 
 def parse_migration_file(path: Path) -> MigrationInfo | None:
     text = path.read_text(encoding="utf-8")
-    rev_match = re.search(r'^revision:\s*str\s*=\s*["\']([^"\']+)["\']', text, re.M)
-    down_match = re.search(r'^down_revision:.*=\s*(.+)$', text, re.M)
+    # Support both `revision: str = "..."` and bare `revision = "..."`
+    rev_match = re.search(
+        r'^revision(?::\s*str)?\s*=\s*["\']([^"\']+)["\']',
+        text,
+        re.M,
+    )
+    down_match = re.search(
+        r'^down_revision(?::[^=]+)?\s*=\s*(.+)$',
+        text,
+        re.M,
+    )
     if not rev_match:
         return None
 

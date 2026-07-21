@@ -1,0 +1,226 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from decimal import Decimal
+
+from fastapi import HTTPException
+from sqlalchemy.orm import Session
+
+from app.models.candidate_test_score import CandidateTestScore
+from app.models.lead import Lead
+from app.schemas.candidate_test_scores import (
+    OVERALL_SCORE_CONFIG,
+    TEST_SECTION_CONFIG,
+    CandidateTestScoreSaveRequest,
+    CandidateTestScoresResponse,
+    OverallScoreConfig,
+    TestName,
+    TestSectionConfig,
+)
+
+
+def _get_section_config(test_name: TestName, section_name: str) -> TestSectionConfig | None:
+    sections = TEST_SECTION_CONFIG.get(test_name, [])
+    normalized = section_name.strip().lower()
+    for section in sections:
+        if section.section_name.lower() == normalized:
+            return section
+    return None
+
+
+def _validate_section_score(
+    test_name: TestName,
+    section_name: str,
+    score: Decimal,
+) -> Decimal:
+    config = _get_section_config(test_name, section_name)
+    if config is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid section '{section_name}' for test {test_name.value}.",
+        )
+
+    score_text = format(score, "f").rstrip("0").rstrip(".")
+    if len(score_text) > config.max_length:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{section_name} score must be at most {config.max_length} characters "
+                f"for {test_name.value}."
+            ),
+        )
+
+    numeric_score = float(score)
+    if numeric_score < config.min_score or numeric_score > config.max_score:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{section_name} score must be between {config.min_score:g} and "
+                f"{config.max_score:g} for {test_name.value}."
+            ),
+        )
+
+    if config.data_type == "integer" and score != score.to_integral_value():
+        raise HTTPException(
+            status_code=400,
+            detail=f"{section_name} score must be a whole number for {test_name.value}.",
+        )
+
+    if config.data_type == "float":
+        return Decimal(str(round(numeric_score, 1)))
+    return score.to_integral_value()
+
+
+def _validate_overall_score(
+    test_name: TestName,
+    score: Decimal | None,
+) -> Decimal | None:
+    if score is None:
+        return None
+
+    config = OVERALL_SCORE_CONFIG.get(test_name)
+    if config is None:
+        return score
+
+    score_text = format(score, "f").rstrip("0").rstrip(".")
+    if len(score_text) > config.max_length:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Overall score must be at most {config.max_length} characters "
+                f"for {test_name.value}."
+            ),
+        )
+
+    numeric_score = float(score)
+    if numeric_score < config.min_score or numeric_score > config.max_score:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Overall score must be between {config.min_score:g} and "
+                f"{config.max_score:g} for {test_name.value}."
+            ),
+        )
+
+    if config.data_type == "integer" and score != score.to_integral_value():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Overall score must be a whole number for {test_name.value}.",
+        )
+
+    if config.data_type == "float":
+        return Decimal(str(round(numeric_score, 1)))
+    return score.to_integral_value()
+
+
+def _resolve_overall_score(
+    test_name: TestName,
+    payload: CandidateTestScoreSaveRequest,
+) -> Decimal | None:
+    if payload.overall_score is not None:
+        return _validate_overall_score(test_name, payload.overall_score)
+
+    if test_name == TestName.DUOLINGO:
+        for section in payload.sections:
+            if section.section_name.strip().lower() == "overall":
+                return _validate_overall_score(test_name, section.score)
+    return None
+
+
+def _serialize_score(record: CandidateTestScore) -> dict:
+    return {
+        "id": record.id,
+        "lead_id": record.lead_id,
+        "booking_id": record.booking_id,
+        "test_name": record.test_name,
+        "test_date": record.test_date,
+        "overall_score": record.overall_score,
+        "section_name": record.section_name,
+        "score": record.score,
+        "score_report_url": record.score_report_url,
+        "created_at": record.created_at,
+    }
+
+
+def get_candidate_test_scores(
+    db: Session,
+    *,
+    booking_id: int,
+    lead: Lead | None,
+) -> CandidateTestScoresResponse:
+    lead_id = lead.id if lead else None
+    if lead_id is not None:
+        query = db.query(CandidateTestScore).filter(CandidateTestScore.lead_id == lead_id)
+    else:
+        query = db.query(CandidateTestScore).filter(CandidateTestScore.booking_id == booking_id)
+
+    records = query.order_by(
+        CandidateTestScore.test_date.desc().nullslast(),
+        CandidateTestScore.created_at.desc(),
+        CandidateTestScore.id.desc(),
+    ).all()
+
+    return CandidateTestScoresResponse(
+        booking_id=booking_id,
+        lead_id=lead_id,
+        scores=[_serialize_score(record) for record in records],
+    )
+
+
+def save_candidate_test_scores(
+    db: Session,
+    *,
+    booking_id: int,
+    lead: Lead | None,
+    payload: CandidateTestScoreSaveRequest,
+) -> CandidateTestScoresResponse:
+    expected_sections = {
+        section.section_name.lower(): section
+        for section in TEST_SECTION_CONFIG[payload.test_name]
+    }
+    provided_sections = {item.section_name.strip().lower(): item for item in payload.sections}
+
+    if set(provided_sections) != set(expected_sections):
+        missing = sorted(expected_sections.keys() - set(provided_sections))
+        extra = sorted(set(provided_sections) - set(expected_sections))
+        details: list[str] = []
+        if missing:
+            details.append(f"missing sections: {', '.join(missing)}")
+        if extra:
+            details.append(f"unexpected sections: {', '.join(extra)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid sections for {payload.test_name.value} ({'; '.join(details)}).",
+        )
+
+    lead_id = lead.id if lead else None
+    created_records: list[CandidateTestScore] = []
+    batch_created_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    validated_overall = _resolve_overall_score(payload.test_name, payload)
+
+    for section_key, section_input in provided_sections.items():
+        canonical_name = expected_sections[section_key].section_name
+        validated_score = _validate_section_score(
+            payload.test_name,
+            canonical_name,
+            section_input.score,
+        )
+        record = CandidateTestScore(
+            lead_id=lead_id,
+            booking_id=booking_id,
+            test_name=payload.test_name.value,
+            test_date=payload.test_date,
+            overall_score=validated_overall,
+            section_name=canonical_name,
+            score=validated_score,
+            score_report_url=payload.score_report_url,
+            created_at=batch_created_at,
+        )
+        db.add(record)
+        created_records.append(record)
+
+    db.commit()
+    for record in created_records:
+        db.refresh(record)
+
+    return get_candidate_test_scores(db, booking_id=booking_id, lead=lead)

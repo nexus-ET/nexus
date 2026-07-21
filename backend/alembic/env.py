@@ -7,9 +7,22 @@ from alembic import context
 
 # 1. Import your Base and Models for autogenerate
 from app.db.database import Base
+from app.models.program import Program
+from app.models.academic_calendar import GlobalAcademicTemplate, ProgramIntakeAssignment
+from app.models.academia_wizard import (
+    AcademiaAuditLog,
+    InstitutionCourseOffering,
+    InstitutionIntake,
+    InstitutionPicture,
+    InstitutionWizardDraft,
+)
+from app.models.level import Level
+from app.models.education_degree import EducationDegree
 from app.models.user import User
 from app.models.client import Client
 from app.models.note import Note
+from app.models.academia_geography import GeographyCity, GeographyState
+from app.models.academia_institution import Campus, CampusType, College, Institution
 from app.config import settings
 
 # this is the Alembic Config object, which provides

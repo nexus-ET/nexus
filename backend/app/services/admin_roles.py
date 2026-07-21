@@ -31,29 +31,8 @@ DEFAULT_ADMIN_ROLES: list[dict[str, str | bool | int]] = [
 
 
 def seed_admin_roles(db: Session) -> None:
-    for item in DEFAULT_ADMIN_ROLES:
-        existing = (
-            db.query(AdminRole)
-            .filter(AdminRole.name == item["name"])
-            .first()
-        )
-        if existing:
-            existing.description = str(item["description"])
-            existing.is_superuser = bool(item["is_superuser"])
-            existing.sort_order = int(item["sort_order"])
-            existing.is_active = True
-            continue
-
-        db.add(
-            AdminRole(
-                name=str(item["name"]),
-                description=str(item["description"]),
-                is_superuser=bool(item["is_superuser"]),
-                is_active=True,
-                sort_order=int(item["sort_order"]),
-            )
-        )
-    db.commit()
+    """Disabled — admin roles are managed via Admin UI / migrations, not startup seeds."""
+    return
 
 
 def get_active_admin_roles(db: Session) -> list[AdminRole]:

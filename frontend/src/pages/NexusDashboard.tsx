@@ -16,11 +16,16 @@ import {
 import { apiFetch, getStoredToken, clearSession } from '../utils/api';
 import { isAllowedRoute, normalizePath } from '../utils/routeAccess';
 import Sidebar from '../components/Sidebar';
+import HeaderMegaNav from '../components/HeaderMegaNav';
 import UserProfileMenu from '../components/UserProfileMenu';
 import NotificationBell from '../components/NotificationBell';
+import AcademiaCommandPalette from '../components/academia/AcademiaCommandPalette';
+import { canAccessAcademiaHub } from '../utils/academiaAccess';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import MetaLeadSyncPanel from '../components/dashboard/MetaLeadSyncPanel';
 import PendingAdvisorQuestionsPanel, { PendingAdvisorQuestion } from '../components/dashboard/PendingAdvisorQuestionsPanel';
+import CalendarAlertsWidget from '../components/dashboard/CalendarAlertsWidget';
+import type { CalendarIntakeAlert } from '../types/hierarchicalIntake';
 import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 
 // --- SCHEMA & DATA LAYER INTERFACES ---
@@ -53,6 +58,7 @@ interface CurrentUser {
   first_name?: string | null;
   last_name?: string | null;
   role?: string | null;
+  is_superuser?: boolean;
   admin_role?: { name?: string | null } | null;
 }
 
@@ -88,6 +94,7 @@ interface DashboardSummary {
   missing_audit_count: number;
   active_ai_chats: number;
   notifications: SystemNotification[];
+  calendar_alerts?: CalendarIntakeAlert[];
   leads: StudentLead[];
   pending_advisor_questions?: PendingAdvisorQuestion[];
 }
@@ -99,6 +106,7 @@ const INITIAL_DASHBOARD: DashboardSummary = {
   missing_audit_count: 0,
   active_ai_chats: 0,
   notifications: [],
+  calendar_alerts: [],
   leads: [],
   pending_advisor_questions: [],
 };
@@ -108,13 +116,14 @@ const DASHBOARD_POLL_INTERVAL_MS = 30_000;
 const NexusDashboard: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
-  const [aiEngineActive, setAiEngineActive] = useState(true);
 
   const [dashboard, setDashboard] = useState<DashboardSummary>(INITIAL_DASHBOARD);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [allowedRoutes, setAllowedRoutes] = useState<string[]>(['/']);
+  const [sessionReady, setSessionReady] = useState(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [academiaCommandPaletteOpen, setAcademiaCommandPaletteOpen] = useState(false);
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -128,7 +137,29 @@ const NexusDashboard: React.FC = () => {
 
   const currentPath = normalizePath(location.pathname);
   const isMessagingHub = currentPath === '/messaging-hub';
+  const isMyBookings = currentPath === '/my-bookings';
+  const isLeadQueuePage =
+    currentPath === '/ai-active' ||
+    currentPath === '/handoffs' ||
+    currentPath === '/prospects' ||
+    currentPath.startsWith('/prospects/') ||
+    currentPath.startsWith('/students/');
+  const isFullBleedPage = isMessagingHub || isMyBookings || isLeadQueuePage;
   const canAccessCurrentRoute = isAllowedRoute(currentPath, allowedRoutes);
+  const canUseAcademiaCommandSearch =
+    canAccessAcademiaHub(currentUser) && isAllowedRoute('/academia', allowedRoutes);
+
+  useEffect(() => {
+    if (!canUseAcademiaCommandSearch) return undefined;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setAcademiaCommandPaletteOpen(true);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [canUseAcademiaCommandSearch]);
 
   const loadAllowedRoutes = useCallback(async () => {
     if (!getStoredToken()) {
@@ -146,18 +177,44 @@ const NexusDashboard: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!getStoredToken()) return;
+    let cancelled = false;
 
-    apiFetch('users/me')
-      .then(data => setCurrentUser(data as CurrentUser))
-      .catch(() => setCurrentUser(null));
+    const loadSession = async () => {
+      if (!getStoredToken()) {
+        if (!cancelled) {
+          setCurrentUser(null);
+          setAllowedRoutes(['/']);
+          setSessionReady(true);
+        }
+        return;
+      }
 
-    loadAllowedRoutes();
+      try {
+        const [userData] = await Promise.all([
+          apiFetch('users/me')
+            .then(data => data as CurrentUser)
+            .catch(() => null),
+          loadAllowedRoutes(),
+        ]);
+        if (!cancelled) {
+          setCurrentUser(userData);
+        }
+      } finally {
+        if (!cancelled) {
+          setSessionReady(true);
+        }
+      }
+    };
+
+    void loadSession();
+    return () => {
+      cancelled = true;
+    };
   }, [loadAllowedRoutes]);
 
   useEffect(() => {
     const handlePermissionsChanged = () => {
-      loadAllowedRoutes();
+      void loadAllowedRoutes();
     };
 
     window.addEventListener('nexus:nav-permissions-changed', handlePermissionsChanged);
@@ -269,37 +326,55 @@ const NexusDashboard: React.FC = () => {
 
       {/* --- TOP HEADER AND CONTAINER WORKSPACE --- */}
       <div className="flex-1 flex flex-col relative overflow-hidden">
-        <header className="sticky top-0 h-16 bg-card/80 backdrop-blur-md border-b border-border-subtle flex items-center justify-between px-8 z-40">
-          <div className="flex items-center gap-6 shrink-0">
-            <div className="flex items-center gap-2 px-3 py-1 bg-card border border-border-subtle rounded-full">
-              <Bot size={14} className="text-success" />
-              <span className={`w-2 h-2 rounded-full bg-success ${aiEngineActive ? 'animate-pulse' : ''}`} />
-              <span className="text-[11px] font-bold text-success tracking-wider uppercase">AI Engine: Active</span>
-            </div>
+        <header className="sticky top-0 h-16 bg-canvas border-b border-white/10 flex items-center justify-between gap-4 px-4 md:px-6 lg:px-8 z-40">
+          <div className="flex items-center gap-3 shrink-0 min-w-0">
+            <HeaderMegaNav allowedRoutes={allowedRoutes} currentUser={currentUser} />
           </div>
 
-          <div className="flex-1 max-w-2xl px-8">
+          <div className="flex-1 max-w-xl min-w-0">
             <div className="relative group">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted group-focus-within:text-accent transition-colors" size={18} />
               <input 
                 type="text"
-                placeholder="Search leads, countries, scores..."
+                placeholder={
+                  canUseAcademiaCommandSearch
+                    ? 'Search Academia Hub entities... (Ctrl+K)'
+                    : 'Search leads, countries, scores...'
+                }
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 bg-surface-bg border border-transparent rounded-xl text-sm focus:outline-none focus:bg-card focus:border-accent focus:ring-4 focus:ring-accent/10 transition-all text-text-main placeholder:text-text-muted/60"
+                readOnly={canUseAcademiaCommandSearch}
+                onClick={() => {
+                  if (canUseAcademiaCommandSearch) {
+                    setAcademiaCommandPaletteOpen(true);
+                  }
+                }}
+                onFocus={() => {
+                  if (canUseAcademiaCommandSearch) {
+                    setAcademiaCommandPaletteOpen(true);
+                  }
+                }}
+                onChange={(e) => {
+                  if (!canUseAcademiaCommandSearch) {
+                    setSearchQuery(e.target.value);
+                  }
+                }}
+                className={`w-full pl-10 pr-4 py-2 bg-white/95 border border-transparent rounded-xl text-sm focus:outline-none focus:bg-card focus:border-accent focus:ring-4 focus:ring-white/20 transition-all text-text-main placeholder:text-text-muted/60 ${
+                  canUseAcademiaCommandSearch ? 'cursor-pointer' : ''
+                }`}
               />
             </div>
           </div>
 
           <div className="flex items-center gap-4 shrink-0">
-            <NotificationBell />
-            <div className="h-8 w-px bg-border-subtle mx-2" />
+            <NotificationBell onDarkHeader />
+            <div className="h-8 w-px bg-white/20 mx-2" />
             <UserProfileMenu
               firstName={userDisplay.firstName}
               lastName={userDisplay.lastName}
               role={userDisplay.role}
               initials={userDisplay.initials}
               onLogout={handleLogout}
+              onDarkHeader
             />
           </div>
         </header>
@@ -307,7 +382,11 @@ const NexusDashboard: React.FC = () => {
         {/* --- MAIN PAGE CONTENT OUTLET --- */}
         <main
           className={`relative flex-1 ${
-            isMessagingHub ? 'flex min-h-0 flex-col overflow-hidden p-4 md:p-6' : 'overflow-y-auto p-8'
+            isMyBookings || isLeadQueuePage
+              ? 'flex min-h-0 flex-col overflow-hidden p-0'
+              : isMessagingHub
+                ? 'flex min-h-0 flex-col overflow-hidden p-4 md:p-6'
+                : 'overflow-y-auto p-8'
           }`}
         >
           <div className="absolute inset-0 z-0 pointer-events-none opacity-15" style={{ backgroundImage: 'radial-gradient(var(--color-text-muted) 1px, transparent 1px)', backgroundSize: '24px 24px' }} />
@@ -337,6 +416,10 @@ const NexusDashboard: React.FC = () => {
               </div>
 
               <MetaLeadSyncPanel />
+
+              {canAccessAcademiaHub(currentUser) ? (
+                <CalendarAlertsWidget alerts={dashboard.calendar_alerts ?? []} />
+              ) : null}
 
               {/* --- 4-CARD DATA HERO ROW --- */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -472,18 +555,35 @@ const NexusDashboard: React.FC = () => {
 
               </div>
             </div>
+          ) : !sessionReady ? (
+            <div className="relative z-10 flex h-full items-center justify-center text-sm text-text-muted">
+              Loading…
+            </div>
           ) : !canAccessCurrentRoute ? (
             <Navigate to={allowedRoutes[0] || '/'} replace />
           ) : (
             <div
               className={`relative z-10 w-full animate-in fade-in slide-in-from-bottom-2 duration-300 ${
-                isMessagingHub ? 'flex min-h-0 flex-1 flex-col' : 'h-full'
+                isFullBleedPage ? 'flex min-h-0 flex-1 flex-col' : 'h-full'
               }`}
             >
-              <Outlet context={{ currentUser }} />
+              <Outlet
+                key={location.pathname}
+                context={{
+                  currentUser,
+                  allowedRoutes,
+                  sessionReady,
+                  onOpenAcademiaCommandPalette: () => setAcademiaCommandPaletteOpen(true),
+                }}
+              />
             </div>
           )}
         </main>
+
+        <AcademiaCommandPalette
+          open={academiaCommandPaletteOpen && canUseAcademiaCommandSearch}
+          onClose={() => setAcademiaCommandPaletteOpen(false)}
+        />
 
         {/* --- GLOBAL PERSISTENT FOOTER --- */}
         <footer className="sticky bottom-0 w-full h-10 bg-card border-t border-border-subtle flex items-center justify-between px-8 z-40">

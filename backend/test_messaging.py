@@ -279,7 +279,6 @@ def test_format_outreach_template_display_text_includes_intake_when_combined(
 ) -> None:
     from app.config import settings
     from app.services.messaging import (
-        MetaTemplateSendSpec,
         OutreachTemplateParameter,
         format_outreach_template_display_text,
     )
@@ -291,7 +290,9 @@ def test_format_outreach_template_display_text_includes_intake_when_combined(
     ]
     text = format_outreach_template_display_text(params, template_name="et_student_welcome")
     assert "Thanks for reaching Edutrust" in text
-    assert "reply with your full name" in text.lower()
+    # Follow-up is a separate WhatsApp message; do not append it into the welcome bubble.
+    assert "reply with your full name" not in text.lower()
+    assert "drop us a quick" not in text.lower()
 
 
 def test_format_outreach_template_display_text_uses_meta_body(
@@ -325,14 +326,28 @@ def test_format_outreach_template_display_text_uses_meta_body(
     assert "Hi Priya! Thanks for reaching Edutrust." in text
     assert "*reply with your full name*" in text
     assert "We're excited to help" not in text
+    assert text.lower().count("reply with your full name") == 1
+    assert "drop us a quick" not in text.lower()
 
 
 def test_template_body_includes_intake_prompt() -> None:
-    from app.services.messaging import template_body_includes_intake_prompt
+    from app.services.messaging import (
+        template_body_includes_continue_prompt,
+        template_body_includes_intake_prompt,
+    )
 
     assert template_body_includes_intake_prompt(
         "To book your *free study abroad consultation*, simply *reply with your full name*."
     )
     assert not template_body_includes_intake_prompt(
         "Hi {{1}}! Thanks for reaching {{2}}. We're excited to help you get started."
+    )
+    assert template_body_includes_continue_prompt(
+        'To continue your study abroad consultation, simply drop us a quick "hi" or "hello"!'
+    )
+    assert template_body_includes_continue_prompt(
+        "Welcome!\n\nTo continue your study abroad consultation, simply drop us a quick hi or hello!"
+    )
+    assert not template_body_includes_continue_prompt(
+        "To book your *free study abroad consultation*, simply *reply with your full name*."
     )

@@ -13,21 +13,39 @@ DEFAULT_NAVIGATION_PAGES: list[dict[str, str | int | bool]] = [
     {"name": "My Appointments", "route": "/my-bookings", "icon": "CalendarCheck", "sort_order": 3},
     {"name": "Manage Appointments", "route": "/counselling", "icon": "Calendar", "sort_order": 4},
     {"name": "Manage Users", "route": "/users", "icon": "UserCog", "sort_order": 5},
-    {"name": "AI Active", "route": "/ai-active", "icon": "Bot", "sort_order": 6},
-    {"name": "Handoffs", "route": "/handoffs", "icon": "Users", "sort_order": 7},
-    {"name": "All Prospects", "route": "/prospects", "icon": "Users", "sort_order": 8},
-    {"name": "Offline Leads", "route": "/offline-leads", "icon": "UserPlus", "sort_order": 9},
-    {"name": "Archive", "route": "/archive", "icon": "Archive", "sort_order": 10},
-    {"name": "AI Agent Brain", "route": "/agents", "icon": "Bot", "sort_order": 11},
-    {"name": "Mission Control", "route": "/command-center", "icon": "Radio", "sort_order": 12},
-    {"name": "My Profile", "route": "/my-profile", "icon": "UserCircle", "sort_order": 13},
-    {"name": "Settings", "route": "/settings", "icon": "Settings", "sort_order": 14},
-    {"name": "Access Control", "route": "/access-control", "icon": "ShieldCheck", "sort_order": 15},
-    {"name": "Security Audit", "route": "/security-audit", "icon": "ShieldAlert", "sort_order": 16},
-    {"name": "Meta Leads", "route": "/reports/meta-leads", "icon": "FileText", "sort_order": 17},
-    {"name": "Analytics", "route": "/analytics", "icon": "BarChart3", "sort_order": 18},
-    {"name": "Audit Logs", "route": "/reports/audit-logs", "icon": "ScrollText", "sort_order": 19},
-    {"name": "Lead Quarantine", "route": "/quarantine", "icon": "ShieldAlert", "sort_order": 20},
+    {"name": "Counselling Students", "route": "/students/counselling", "icon": "GraduationCap", "sort_order": 6},
+    {"name": "Documentation Students", "route": "/students/documentation", "icon": "GraduationCap", "sort_order": 7},
+    {"name": "Admissions Students", "route": "/students/admissions", "icon": "GraduationCap", "sort_order": 8},
+    {"name": "Visa Services Students", "route": "/students/visa-services", "icon": "GraduationCap", "sort_order": 9},
+    {"name": "Pre-Departure Students", "route": "/students/pre-departure", "icon": "GraduationCap", "sort_order": 10},
+    {"name": "Arrivals Students", "route": "/students/arrivals", "icon": "GraduationCap", "sort_order": 11},
+    {"name": "Pipeline Prospects", "route": "/students/prospects", "icon": "GraduationCap", "sort_order": 12},
+    {"name": "AI Active", "route": "/ai-active", "icon": "Bot", "sort_order": 13},
+    {"name": "Handoffs", "route": "/handoffs", "icon": "Users", "sort_order": 14},
+    {"name": "All Prospects", "route": "/prospects", "icon": "Users", "sort_order": 15},
+    {"name": "Offline Leads", "route": "/offline-leads", "icon": "UserPlus", "sort_order": 16},
+    {"name": "Archive", "route": "/archive", "icon": "Archive", "sort_order": 17},
+    {"name": "AI Agent Brain", "route": "/agents", "icon": "Bot", "sort_order": 18},
+    {"name": "Mission Control", "route": "/command-center", "icon": "Radio", "sort_order": 19},
+    {"name": "My Profile", "route": "/my-profile", "icon": "UserCircle", "sort_order": 20},
+    {"name": "Settings", "route": "/settings", "icon": "Settings", "sort_order": 21},
+    {"name": "Access Control", "route": "/access-control", "icon": "ShieldCheck", "sort_order": 22},
+    {"name": "Security Audit", "route": "/security-audit", "icon": "ShieldAlert", "sort_order": 23},
+    {"name": "Meta Leads", "route": "/reports/meta-leads", "icon": "FileText", "sort_order": 24},
+    {"name": "Analytics", "route": "/analytics", "icon": "BarChart3", "sort_order": 25},
+    {"name": "Audit Logs", "route": "/reports/audit-logs", "icon": "ScrollText", "sort_order": 26},
+    {"name": "Lead Quarantine", "route": "/quarantine", "icon": "ShieldAlert", "sort_order": 27},
+    {"name": "Academia Hub", "route": "/academia", "icon": "GraduationCap", "sort_order": 28},
+]
+
+STUDENT_PIPELINE_PAGE_ROUTES: list[str] = [
+    "/students/counselling",
+    "/students/documentation",
+    "/students/admissions",
+    "/students/visa-services",
+    "/students/pre-departure",
+    "/students/arrivals",
+    "/students/prospects",
 ]
 
 DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
@@ -38,6 +56,7 @@ DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
         "/ai-active",
         "/handoffs",
         "/prospects",
+        *STUDENT_PIPELINE_PAGE_ROUTES,
         "/offline-leads",
         "/archive",
         "/agents",
@@ -47,12 +66,14 @@ DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
         "/messaging-hub",
         "/my-bookings",
         "/my-profile",
+        "/academia",
     ],
     "Student Manager": [
         "/",
         "/ai-active",
         "/handoffs",
         "/prospects",
+        *STUDENT_PIPELINE_PAGE_ROUTES,
         "/offline-leads",
         "/archive",
         "/analytics",
@@ -65,6 +86,7 @@ DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
         "/ai-active",
         "/handoffs",
         "/prospects",
+        *STUDENT_PIPELINE_PAGE_ROUTES,
         "/offline-leads",
         "/archive",
         "/messaging-hub",
@@ -109,9 +131,17 @@ API_ROUTE_TO_PAGE: list[tuple[str, str]] = [
     ("/api/v1/pages", "/access-control"),
     ("/api/v1/permissions", "/access-control"),
     ("/api/v1/command-center", "/command-center"),
+    ("/api/v1/academia", "/academia"),
 ]
 
-LEAD_MUTATION_PAGE_ROUTES = ["/ai-active", "/handoffs", "/prospects", "/offline-leads", "/archive"]
+LEAD_MUTATION_PAGE_ROUTES = [
+    "/ai-active",
+    "/handoffs",
+    "/prospects",
+    *STUDENT_PIPELINE_PAGE_ROUTES,
+    "/offline-leads",
+    "/archive",
+]
 
 RBAC_EXEMPT_PREFIXES = (
     "/api/v1/login",
@@ -119,6 +149,7 @@ RBAC_EXEMPT_PREFIXES = (
     "/api/v1/webhooks",
     "/api/v1/leads/webhook",
     "/api/v1/ws",
+    "/api/v1/academia/media",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -138,78 +169,13 @@ RBAC_PUBLIC_AUTH_PREFIXES = (
 
 
 def seed_navigation_pages(db: Session) -> None:
-    for item in DEFAULT_NAVIGATION_PAGES:
-        existing = (
-            db.query(NavigationPage)
-            .filter(NavigationPage.route == item["route"])
-            .first()
-        )
-        if existing:
-            existing.name = str(item["name"])
-            existing.icon = str(item["icon"])
-            existing.sort_order = int(item["sort_order"])
-            existing.is_active = True
-            continue
-
-        db.add(
-            NavigationPage(
-                name=str(item["name"]),
-                route=str(item["route"]),
-                icon=str(item["icon"]),
-                sort_order=int(item["sort_order"]),
-                is_active=True,
-            )
-        )
-    old_roster_page = (
-        db.query(NavigationPage)
-        .filter(NavigationPage.route == "/counselling-roster")
-        .first()
-    )
-    if old_roster_page:
-        old_roster_page.is_active = False
-    for legacy_route in ("/reports", "/audit-logs"):
-        legacy_page = (
-            db.query(NavigationPage)
-            .filter(NavigationPage.route == legacy_route)
-            .first()
-        )
-        if legacy_page:
-            legacy_page.is_active = False
-    db.commit()
+    """Disabled — navigation pages are managed via Admin UI / migrations, not startup seeds."""
+    return
 
 
 def seed_role_page_permissions(db: Session) -> None:
-    pages = db.query(NavigationPage).filter(NavigationPage.is_active.is_(True)).all()
-    page_by_route = {page.route: page for page in pages}
-    roles = db.query(AdminRole).filter(AdminRole.is_active.is_(True)).all()
-
-    for role in roles:
-        allowed_routes = DEFAULT_ROLE_PAGE_ACCESS.get(role.name, ["/"])
-        if role.is_superuser:
-            allowed_routes = [page["route"] for page in DEFAULT_NAVIGATION_PAGES]
-        for page in pages:
-            permission = (
-                db.query(RolePagePermission)
-                .filter(
-                    RolePagePermission.admin_role_id == role.id,
-                    RolePagePermission.navigation_page_id == page.id,
-                )
-                .first()
-            )
-            can_access = page.route in allowed_routes
-            if permission:
-                if permission.can_access != can_access:
-                    permission.can_access = can_access
-                continue
-
-            db.add(
-                RolePagePermission(
-                    admin_role_id=role.id,
-                    navigation_page_id=page.id,
-                    can_access=can_access,
-                )
-            )
-    db.commit()
+    """Disabled — role page permissions are managed via Admin UI / migrations, not startup seeds."""
+    return
 
 
 def get_admin_role_by_name(db: Session, role_name: str) -> AdminRole | None:
@@ -267,16 +233,19 @@ def resolve_page_routes_for_api_path(path: str) -> list[str]:
         return LEAD_MUTATION_PAGE_ROUTES
 
     if re.search(r"^/api/v1/leads/\d+/journey", path):
-        return ["/prospects", "/my-bookings", "/counselling", "/ai-active", "/handoffs"]
+        return ["/prospects", *STUDENT_PIPELINE_PAGE_ROUTES, "/my-bookings", "/counselling", "/ai-active", "/handoffs"]
 
     if re.search(r"^/api/v1/leads/\d+/valid-transitions", path):
-        return ["/prospects", "/my-bookings", "/counselling"]
+        return ["/prospects", *STUDENT_PIPELINE_PAGE_ROUTES, "/my-bookings", "/counselling"]
 
     if re.search(r"^/api/v1/leads/\d+/pipeline-status", path):
-        return ["/prospects", "/my-bookings", "/counselling"]
+        return ["/prospects", *STUDENT_PIPELINE_PAGE_ROUTES, "/my-bookings", "/counselling"]
 
     if path.startswith("/api/v1/leads/status-definitions"):
-        return ["/prospects", "/my-bookings", "/counselling"]
+        return ["/prospects", *STUDENT_PIPELINE_PAGE_ROUTES, "/my-bookings", "/counselling"]
+
+    if path.startswith("/api/v1/leads/prospects"):
+        return ["/prospects", *STUDENT_PIPELINE_PAGE_ROUTES]
 
     if re.search(r"^/api/v1/leads/\d+$", path):
         return LEAD_MUTATION_PAGE_ROUTES

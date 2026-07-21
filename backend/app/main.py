@@ -2,9 +2,11 @@ import os
 import logging
 import asyncio
 import mimetypes
+from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from app.db.database import Base, engine, sync_schema_columns
 
 # 🛠️ CRITICAL DATABASE SCHEMATIC REGISTRATION
@@ -18,7 +20,7 @@ from app.models.admin_role import AdminRole
 from app.models.navigation_page import NavigationPage
 from app.models.role_page_permission import RolePagePermission
 from app.models.message_history import MessageHistory
-from app.models.consultation_slot import ConsultationSlot
+from app.models.calendar_intake_alert import CalendarIntakeAlertLog
 from app.models.counselling_booking import CounsellingBooking
 from app.models.counselling_note import CounsellingNote
 from app.models.notification_log import NotificationLog
@@ -31,7 +33,12 @@ from app.models.raw_incoming_lead import RawIncomingLead
 from app.models.lead_quarantine import LeadQuarantine
 from app.models.audit_log import AuditLog
 from app.models.country import Country
+from app.models.education_course import EducationCourse
+from app.models.course_education_major_mapping import CourseEducationMajorMapping
 from app.models.education_degree import EducationDegree
+from app.models.education_major import EducationMajor
+from app.models.education_major_level import EducationMajorLevel
+from app.models.program_education_major_mapping import ProgramEducationMajorMapping
 from app.models.gpa_cgpa_score import GpaCgpaScore
 from app.models.target_program import TargetProgram
 from app.models.target_course import TargetCourse
@@ -47,7 +54,7 @@ from app.models.conversation_audit_log import ConversationAuditLog
 from app.models.conversation_participant import ConversationParticipant
 from app.models.internal_message import InternalMessage
 from app.api.v1.endpoints import leads
-from app.api.v1 import analytics, notifications, dashboard, users, login, agents, rbac, countries, education_degrees, gpa_cgpa_scores, target_programs, conversation_audit
+from app.api.v1 import analytics, notifications, dashboard, users, login, agents, rbac, countries, education_degrees, education_majors, gpa_cgpa_scores, target_programs, conversation_audit, academia, academia_wizard, academic_calendar
 from app.routers import (
     counselling,
     whatsapp_flow_webhook,
@@ -66,21 +73,10 @@ from app.routers import (
 )
 from app.db.database import SessionLocal
 from app.services.agent_runtime import get_or_create_agent_config
-from app.services.status_change_reasons import seed_status_change_reasons
-from app.services.status_definitions_seed import seed_status_definitions_if_empty
-from app.services.admin_roles import seed_admin_roles
-from app.services.navigation_rbac import seed_navigation_pages, seed_role_page_permissions
 from app.services.admissions_intake_flow import ensure_consultation_slots, dedupe_consultation_slots
 from app.services.whatsapp_flow_crypto import ensure_flow_keypair
-from app.services.public_holiday_service import migrate_holidays_from_dynamic_settings
-from app.services.settings_service import seed_default_settings
-from app.services.lead_sync_settings import seed_lead_sync_settings
-from app.services.sync_log_service import seed_sync_logs_from_legacy_settings, recover_stale_sync_logs
+from app.services.sync_log_service import recover_stale_sync_logs
 from app.services.business_profile_service import ensure_default_business
-from app.services.countries import seed_countries
-from app.services.education_degrees import seed_education_degrees
-from app.services.gpa_cgpa_scores import seed_gpa_cgpa_scores
-from app.services.target_programs import seed_target_programs
 from app.middleware.audit_middleware import audit_middleware
 from app.middleware.rbac_middleware import NavigationRBACMiddleware
 from app.middleware.security_middleware import SecurityHeadersMiddleware
@@ -112,30 +108,11 @@ def bootstrap_application() -> None:
         try:
             get_or_create_agent_config(bootstrap_db)
             bootstrap_logger.info("Agent runtime configuration initialized.")
-            seed_status_change_reasons(bootstrap_db)
-            bootstrap_logger.info("Status change reasons initialized.")
-            if seed_status_definitions_if_empty(bootstrap_db):
-                bootstrap_logger.info("Pipeline status definitions seeded (39 stages).")
-            seed_admin_roles(bootstrap_db)
-            bootstrap_logger.info("Admin roles initialized.")
-            seed_navigation_pages(bootstrap_db)
-            seed_role_page_permissions(bootstrap_db)
-            seed_default_settings(bootstrap_db)
-            seed_lead_sync_settings(bootstrap_db)
-            seeded_logs = seed_sync_logs_from_legacy_settings(bootstrap_db)
-            if seeded_logs:
-                bootstrap_logger.info(
-                    "Sync log audit trail backfilled (%s legacy run).", seeded_logs
-                )
             recovered = recover_stale_sync_logs(bootstrap_db)
             if recovered:
                 bootstrap_logger.info("Recovered %s stale in-progress sync log(s).", recovered)
             ensure_default_business(bootstrap_db)
-            seed_countries(bootstrap_db)
-            seed_education_degrees(bootstrap_db)
-            seed_gpa_cgpa_scores(bootstrap_db)
-            seed_target_programs(bootstrap_db)
-            migrate_holidays_from_dynamic_settings(bootstrap_db)
+            bootstrap_logger.info("Startup catalog/reference seeds are disabled (manage data via Admin UI).")
             bootstrap_logger.info("Dynamic settings initialized.")
             dedupe_consultation_slots(bootstrap_db)
             ensure_consultation_slots(bootstrap_db)
@@ -150,7 +127,7 @@ def bootstrap_application() -> None:
             from app.services.whatsapp_webhook_env import audit_whatsapp_webhook_routing
 
             audit_whatsapp_webhook_routing()
-            bootstrap_logger.info("Navigation RBAC initialized.")
+            bootstrap_logger.info("Application bootstrap complete.")
         finally:
             bootstrap_db.close()
     except Exception:
@@ -193,6 +170,10 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+uploads_directory = Path(__file__).resolve().parents[1] / "uploads"
+uploads_directory.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=uploads_directory), name="uploads")
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -280,8 +261,12 @@ app.include_router(conversation_audit.router, prefix="/api/v1", tags=["Agent Aud
 app.include_router(rbac.router, prefix="/api/v1", tags=["RBAC"])
 app.include_router(countries.router, prefix="/api/v1", tags=["Countries"])
 app.include_router(education_degrees.router, prefix="/api/v1", tags=["Education"])
+app.include_router(education_majors.router, prefix="/api/v1", tags=["Education"])
 app.include_router(gpa_cgpa_scores.router, prefix="/api/v1", tags=["Education"])
 app.include_router(target_programs.router, prefix="/api/v1", tags=["Study Interest"])
+app.include_router(academia.router, prefix="/api/v1", tags=["Academia Hub"])
+app.include_router(academic_calendar.router, prefix="/api/v1", tags=["Academia Hub"])
+app.include_router(academia_wizard.router, prefix="/api/v1", tags=["Academia Hub"])
 app.include_router(login.router, prefix="/api/v1", tags=["Auth"])
 app.include_router(counselling.router, prefix="/api/v1", tags=["Counselling"])
 app.include_router(command_center.router, prefix="/api/v1", tags=["Command Center"])

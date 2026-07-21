@@ -4,6 +4,7 @@ import { apiFetch } from '../utils/api';
 import LeadStudyInterestPanel from '../components/LeadStudyInterestPanel';
 import StudentJourneyPanel from '../components/StudentJourneyPanel';
 import LeadQueueSidebarFilters from '../components/LeadQueueSidebarFilters';
+import AiActivePulseBoard from '../components/AiActivePulseBoard';
 import {
   buildLeadQueueQueryParams,
   DEFAULT_INTERACTION_DAYS,
@@ -232,9 +233,11 @@ export default function HandoffsView() {
       setLoadError(null);
 
       setSelectedLead(prev => {
-        if (!prev) return handoffOnly[0] ?? null;
+        // Keep an explicit selection in sync; do not auto-select on first load
+        // so the right panel can show the living pulse overview.
+        if (!prev) return null;
         const updatedLead = handoffOnly.find((l: Lead) => l.id === prev.id);
-        if (!updatedLead) return prev;
+        if (!updatedLead) return null;
 
         const prevCount = (prev.messages || []).length;
         const nextCount = (updatedLead.messages || []).length;
@@ -254,14 +257,14 @@ export default function HandoffsView() {
 
   useEffect(() => {
     let isActive = true;
-    async function executionLoop() {
+    async function executionLoop(isFirst = false) {
       if (abortControllerRef.current) abortControllerRef.current.abort();
       abortControllerRef.current = new AbortController();
-      setIsLoading(true);
+      if (isFirst) setIsLoading(true);
       await fetchHandoffQueue(abortControllerRef.current.signal);
-      if (isActive) pollingTimerRef.current = setTimeout(executionLoop, 4000);
+      if (isActive) pollingTimerRef.current = setTimeout(() => executionLoop(false), 4000);
     }
-    executionLoop();
+    executionLoop(true);
     return () => {
       isActive = false;
       if (pollingTimerRef.current) clearTimeout(pollingTimerRef.current);
@@ -895,6 +898,14 @@ export default function HandoffsView() {
               )}
               <button
                 type="button"
+                onClick={() => setSelectedLead(null)}
+                style={styles.headerOverviewButton}
+                title="Back to handoff pulse overview"
+              >
+                Overview
+              </button>
+              <button
+                type="button"
                 onClick={() =>
                   setJourneyModal({
                     studentId: selectedLead.id,
@@ -1048,13 +1059,31 @@ export default function HandoffsView() {
 
           </div>
         ) : (
-          <div style={styles.emptyWorkspaceGrid}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '48px', marginBottom: '12px' }}>💬</div>
-              <h3 style={{ margin: '0 0 6px 0', color: '#334155' }}>Workspace Hub Unassigned</h3>
-              <p style={{ margin: 0, color: '#64748b', fontSize: '14px' }}>Select an escalated profile on the left sidebar folder to mount live message histories.</p>
-            </div>
-          </div>
+          <AiActivePulseBoard
+            mode="handoffs"
+            leads={leadsQueue.map(lead => ({
+              id: lead.id,
+              name: lead.name || lead.full_name || `Lead #${lead.id}`,
+              email: lead.email,
+              phone: lead.phone,
+              phone_number: lead.phone_number,
+              preferred_country: lead.preferred_country,
+              preferred_course: lead.preferred_course,
+              target_program: lead.target_program,
+              study_interest_complete: lead.study_interest_complete,
+              status: lead.stage,
+              updated_at: lead.updated_at,
+              latest_interaction_time: lead.latest_interaction_time,
+              unread_count: lead.unread_count,
+              total_messages_received: lead.total_messages_received,
+              messages: lead.messages,
+            }))}
+            isLoading={isLoading}
+            onSelectLead={leadId => {
+              const lead = leadsQueue.find(item => item.id === leadId);
+              if (lead) void handleSelectLead(lead);
+            }}
+          />
         )}
       </div>
 
@@ -1158,6 +1187,17 @@ const styles = {
   mediaEmbedIconButton: { background: 'none', border: 'none', fontSize: '28px', cursor: 'pointer', padding: '6px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.15s' } as React.CSSProperties,
   emojiFloatingTray: { position: 'absolute', bottom: '70px', left: '15px', backgroundColor: '#ffffff', boxShadow: '0 6px 28px rgba(0,0,0,0.18)', borderRadius: '16px', padding: '16px', width: '620px', height: '280px', zIndex: 999, overflow: 'hidden' } as React.CSSProperties,
   emojiGridWrapper: { display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: '12px', width: '100%', height: '100%', overflow: 'hidden' } as React.CSSProperties,
+  headerOverviewButton: {
+    border: '1px solid #cbd5e1',
+    backgroundColor: '#ffffff',
+    color: '#03045e',
+    padding: '8px 12px',
+    borderRadius: '8px',
+    fontSize: '12px',
+    fontWeight: '700',
+    cursor: 'pointer',
+    flexShrink: 0,
+  } as React.CSSProperties,
   emptyWorkspaceGrid: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f8fafc' } as React.CSSProperties,
   mediaAttachmentBubble: { display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '180px' } as React.CSSProperties,
   inlineImagePreview: { width: '100%', maxHeight: '240px', borderRadius: '6px', objectFit: 'cover', marginTop: '2px' } as React.CSSProperties,

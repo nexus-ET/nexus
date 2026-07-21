@@ -60,59 +60,10 @@ INSERT INTO status_definitions (id, stage_name, category, description, next_stag
 
 
 def seed_status_definitions_if_empty(db: Session) -> bool:
-    """
-    Insert the 45 pipeline stages when status_definitions has no rows.
-
-    Staging databases that used create_all() without Alembic end up with an empty
-    table — View Journey and pipeline status dropdowns then show nothing.
-    """
-    from app.models.status_definition import StatusDefinition
-    from app.services.status_definition_service import (
-        STAGE_LEAD_ENGAGEMENT,
-        STAGE_LEAD_NEW,
-        STAGE_LEAD_OUTREACH,
-        STAGE_LEAD_SESSION_BOOKED,
-    )
-
-    if db.query(StatusDefinition.id).limit(1).first() is not None:
-        return False
-
-    logger.warning("status_definitions is empty — seeding v3 pipeline stages.")
-
-    db.execute(text(V3_INSERT_SQL))
-    db.execute(text("SELECT setval('status_definitions_id_seq', (SELECT MAX(id) FROM status_definitions))"))
-    db.commit()
-    logger.info("Seeded 45 status_definitions rows.")
-    return True
+    """Disabled — status definitions are managed via Admin UI / migrations, not runtime seeds."""
+    return False
 
 
 def ensure_status_definition_funnel_links(db: Session) -> bool:
-    """
-    Repair next_stage_id links for the lead funnel when missing (common on partial migrations).
-    """
-    from app.services.status_definition_service import (
-        STAGE_LEAD_ENGAGEMENT,
-        STAGE_LEAD_NEW,
-        STAGE_LEAD_OUTREACH,
-        STAGE_LEAD_SESSION_BOOKED,
-        get_status_definition_by_name,
-    )
-
-    changed = False
-    funnel_links = (
-        (STAGE_LEAD_NEW, STAGE_LEAD_OUTREACH),
-        (STAGE_LEAD_OUTREACH, STAGE_LEAD_ENGAGEMENT),
-        (STAGE_LEAD_ENGAGEMENT, STAGE_LEAD_SESSION_BOOKED),
-    )
-    for current_name, next_name in funnel_links:
-        current = get_status_definition_by_name(db, current_name)
-        nxt = get_status_definition_by_name(db, next_name)
-        if current is None or nxt is None:
-            continue
-        if current.next_stage_id != nxt.id:
-            current.next_stage_id = nxt.id
-            changed = True
-    if changed:
-        db.commit()
-        logger.info("Repaired status_definitions funnel next_stage_id links.")
-    return changed
+    """Disabled — funnel links are managed via Admin UI / migrations, not runtime repair."""
+    return False

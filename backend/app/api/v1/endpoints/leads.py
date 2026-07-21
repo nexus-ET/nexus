@@ -858,6 +858,7 @@ async def get_prospects_paginated(
     date_from: date | None = None,
     date_to: date | None = None,
     stage: str | None = None,
+    category: str | None = None,
 ):
     try:
         return list_prospects_keyset(
@@ -869,6 +870,7 @@ async def get_prospects_paginated(
             date_from=date_from,
             date_to=date_to,
             stage=stage,
+            category=category,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1039,6 +1041,29 @@ async def get_student_valid_transitions(
         backward=[ValidTransitionOption(**item) for item in grouped["backward"]],
         relaunch=[ValidTransitionOption(**item) for item in grouped["relaunch"]],
     )
+
+
+@router.get("/{lead_id}/profile-booking")
+@router.get("/{lead_id}/profile-booking/")
+def get_lead_profile_booking(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    from app.services.counselling_service import get_lead_profile_booking_context
+
+    return get_lead_profile_booking_context(db, current_user, lead_id)
+
+
+@router.get("/{lead_id}/digital-presence-links")
+@router.get("/{lead_id}/digital-presence-links/")
+def get_lead_digital_presence_links(lead_id: int, db: Session = Depends(get_db)):
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead profile not found.")
+    from app.services.digital_presence_link_service import get_digital_presence_links_for_lead
+
+    return get_digital_presence_links_for_lead(db, lead_id).model_dump()
 
 
 @router.get("/{lead_id}")

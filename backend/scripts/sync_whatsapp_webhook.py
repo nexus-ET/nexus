@@ -40,8 +40,13 @@ def verify_callback_reachable(
         "hub.verify_token": verify_token,
         "hub.challenge": challenge,
     }
+    # Meta's crawler UA bypasses ngrok-free interstitial; browser/default UA does not.
+    headers = {
+        "User-Agent": "facebookexternalua",
+        "ngrok-skip-browser-warning": "true",
+    }
     last_error: Exception | None = None
-    with httpx.Client(timeout=20, follow_redirects=True) as client:
+    with httpx.Client(timeout=20, follow_redirects=True, headers=headers) as client:
         for attempt in range(1, retries + 1):
             try:
                 response = client.get(callback_url, params=params)
@@ -50,7 +55,7 @@ def verify_callback_reachable(
                 last_error = RuntimeError(
                     f"Webhook callback is not reachable: {callback_url} "
                     f"(status={response.status_code}). "
-                    "Start dev.ps1 with the Cloudflare tunnel running."
+                    "Start a public tunnel to this backend (ngrok/cloudflared) and retry."
                 )
             except httpx.HTTPError as exc:
                 last_error = exc

@@ -89,9 +89,15 @@ const formatApiErrorDetail = (detail: unknown): string => {
   if (typeof detail === 'string') return detail;
   if (Array.isArray(detail)) {
     const messages = detail
-      .map((item: { msg?: string }) => item?.msg)
-      .filter((msg): msg is string => Boolean(msg))
-      .map(msg => msg.replace(/^Value error,\s*/i, ''));
+      .map((item: { msg?: string; loc?: unknown[] }) => {
+        if (!item?.msg) return null;
+        const field = Array.isArray(item.loc)
+          ? item.loc.filter(part => typeof part === 'string' && part !== 'body').join('.')
+          : '';
+        const msg = item.msg.replace(/^Value error,\s*/i, '');
+        return field ? `${field}: ${msg}` : msg;
+      })
+      .filter((msg): msg is string => Boolean(msg));
     if (messages.length > 0) return messages.join(' ');
   }
   return JSON.stringify(detail);
@@ -144,7 +150,7 @@ export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
 
   // Combine native objects cleanly while ensuring absolute cross-origin headers
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+    ...(requestInit.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
     'ngrok-skip-browser-warning': 'true',
     'X-Nexus-Page': window.location.pathname,
     ...((options?.headers as Record<string, string>) || {}),

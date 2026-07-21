@@ -137,6 +137,20 @@ def template_body_includes_intake_prompt(body_text: str) -> bool:
     return any(marker in normalized for marker in markers)
 
 
+def template_body_includes_continue_prompt(body_text: str) -> bool:
+    """Detect welcome templates that already include the hi/hello continue nudge."""
+    normalized = (body_text or "").strip().lower()
+    if not normalized:
+        return False
+    markers = (
+        "drop us a quick",
+        "continue your study abroad consultation",
+        'quick "hi" or "hello"',
+        "quick hi or hello",
+    )
+    return any(marker in normalized for marker in markers)
+
+
 def render_meta_template_body_text(
     body_text: str,
     body_parameters: list[OutreachTemplateParameter] | None,
@@ -173,24 +187,38 @@ def _format_outreach_template_display_fallback(
     *,
     template_name: str,
 ) -> str:
-    from app.services.intake_templates import render_outreach_intake_followup
-
     if not body_parameters:
-        text = f"[WhatsApp template: {template_name}]"
-    else:
-        student = body_parameters[0].text if body_parameters else "there"
-        if len(body_parameters) >= 2:
-            company = body_parameters[1].text
-            text = (
-                f"Hi {student}! Thanks for reaching {company}. "
-                "We're excited to help you get started with your study abroad plans."
-            )
-        else:
-            text = f"Hi {student}!"
+        return f"[WhatsApp template: {template_name}]"
 
+    student = body_parameters[0].text if body_parameters else "there"
+    if len(body_parameters) >= 2:
+        company = body_parameters[1].text
+        return (
+            f"Hi {student}! Thanks for reaching {company}. "
+            "We're excited to help you get started with your study abroad plans."
+        )
+    return f"Hi {student}!"
+
+
+async def resolve_skip_intake_followup(
+    template_name: str,
+    language_code: str,
+) -> bool:
+    """
+    Skip the second WhatsApp send when explicitly configured, or when the welcome
+    template body already includes the continue (hi/hello) nudge.
+    """
     if outreach_uses_combined_template():
-        text = f"{text}\n\n{render_outreach_intake_followup()}"
-    return text
+        return True
+
+    spec = await fetch_meta_outreach_template_spec(template_name, language_code)
+    if spec and spec.body_text and template_body_includes_continue_prompt(spec.body_text):
+        logger.info(
+            "Meta template %r already includes continue prompt; skipping follow-up send",
+            template_name,
+        )
+        return True
+    return False
 
 
 def format_outreach_template_display_text(
@@ -200,8 +228,6 @@ def format_outreach_template_display_text(
     spec: MetaTemplateSendSpec | None = None,
 ) -> str:
     """Human-readable preview of the outreach template for chat history."""
-    from app.services.intake_templates import render_outreach_intake_followup
-
     name = (template_name or settings.WHATSAPP_OUTREACH_TEMPLATE or "").strip() or "template"
     if spec and spec.body_text.strip():
         rendered = render_meta_template_body_text(
@@ -211,36 +237,9 @@ def format_outreach_template_display_text(
             named_parameter_names=spec.body_named_parameter_names,
         )
         if rendered:
-            if (
-                outreach_uses_combined_template()
-                and not template_body_includes_intake_prompt(rendered)
-            ):
-                rendered = f"{rendered}\n\n{render_outreach_intake_followup()}"
             return rendered
 
     return _format_outreach_template_display_fallback(body_parameters, template_name=name)
-
-
-async def resolve_skip_intake_followup(
-    template_name: str,
-    language_code: str,
-) -> bool:
-    """
-    Skip a second WhatsApp send when the welcome template already contains the intake prompt.
-
-    Honors WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP and auto-detects combined templates from Meta.
-    """
-    if outreach_uses_combined_template():
-        return True
-
-    spec = await fetch_meta_outreach_template_spec(template_name, language_code)
-    if spec and spec.body_text and template_body_includes_intake_prompt(spec.body_text):
-        logger.info(
-            "Meta template %r includes intake prompt; skipping second WhatsApp message",
-            template_name,
-        )
-        return True
-    return False
 
 
 @dataclass(frozen=True)
@@ -929,8 +928,8 @@ async def send_whatsapp_outreach_followup_template(
     if not template_name:
         raise WhatsAppDeliveryError(
             "WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE is not configured. "
-            "Create a static Utility template in Meta (e.g. et_intake_fullname) "
-            "and set the name in .env."
+            "Create a Utility template (et_intake_continue) and set "
+            "WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE in .env."
         )
 
     language_code = (

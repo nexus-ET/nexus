@@ -30,24 +30,8 @@ DEFAULT_GPA_CGPA_SCORES: list[dict[str, str | int | bool]] = [
 
 
 def seed_gpa_cgpa_scores(db: Session) -> None:
-    for item in DEFAULT_GPA_CGPA_SCORES:
-        existing = db.query(GpaCgpaScore).filter(GpaCgpaScore.code == item["code"]).first()
-        if existing:
-            existing.label = str(item["label"])
-            existing.sort_order = int(item["sort_order"])
-            existing.is_other = bool(item.get("is_other", False))
-            existing.is_active = True
-            continue
-        db.add(
-            GpaCgpaScore(
-                code=str(item["code"]),
-                label=str(item["label"]),
-                sort_order=int(item["sort_order"]),
-                is_other=bool(item.get("is_other", False)),
-                is_active=True,
-            )
-        )
-    db.commit()
+    """Disabled — GPA/CGPA bands are managed via Admin UI / migrations, not startup seeds."""
+    return
 
 
 def list_active_gpa_cgpa_scores(db: Session) -> list[GpaCgpaScore]:

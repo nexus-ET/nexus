@@ -154,9 +154,6 @@ def ensure_funnel_journey_history(db: Session, lead: Lead, *, source: str) -> bo
     """
     from app.models.message import Message
     from app.models.status_definition import StatusDefinition
-    from app.services.status_definitions_seed import ensure_status_definition_funnel_links
-
-    ensure_status_definition_funnel_links(db)
 
     stages_to_ensure: list[str] = [STAGE_LEAD_NEW]
     has_advisor = (
@@ -705,16 +702,10 @@ def ensure_lead_new_journey_baseline(db: Session, lead: Lead, *, source: str) ->
 
 def get_student_journey(db: Session, student_id: int) -> list[dict]:
     from app.models.status_definition import StatusDefinition
-    from app.services.status_definitions_seed import seed_status_definitions_if_empty
 
     lead = db.query(Lead).filter(Lead.id == student_id).first()
     if not lead:
         return []
-
-    seed_status_definitions_if_empty(db)
-    from app.services.status_definitions_seed import ensure_status_definition_funnel_links
-
-    ensure_status_definition_funnel_links(db)
 
     try:
         ensure_lead_new_journey_baseline(db, lead, source="journey view")

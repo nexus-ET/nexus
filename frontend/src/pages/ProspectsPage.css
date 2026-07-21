@@ -255,6 +255,14 @@
   justify-content: center;
 }
 
+.prospects-detail-panel--pulse {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
 .prospects-detail-panel__action-bar {
   display: flex;
   align-items: center;

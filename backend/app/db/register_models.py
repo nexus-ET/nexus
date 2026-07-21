@@ -11,6 +11,12 @@ def register_all_models() -> None:
     from app.models.audit_log import AuditLog  # noqa: F401
     from app.models.business import Business  # noqa: F401
     from app.models.candidate_task import CandidateTask  # noqa: F401
+    from app.models.candidate_test_score import CandidateTestScore  # noqa: F401
+    from app.models.work_experience import WorkExperience, WorkProject  # noqa: F401
+    from app.models.research_project import ResearchProject  # noqa: F401
+    from app.models.candidate_education import CandidateEducation  # noqa: F401
+    from app.models.non_academic_activity import NonAcademicActivity  # noqa: F401
+    from app.models.digital_presence_link import DigitalPresenceLink  # noqa: F401
     from app.models.client import Client  # noqa: F401
     from app.models.consultation_slot import ConsultationSlot  # noqa: F401
     from app.models.conversation_audit_log import ConversationAuditLog  # noqa: F401
@@ -25,6 +31,7 @@ def register_all_models() -> None:
     from app.models.lead import Lead  # noqa: F401
     from app.models.status_definition import StatusDefinition  # noqa: F401
     from app.models.status_transition import StatusTransition  # noqa: F401
+    from app.models.students_master import StudentsMaster  # noqa: F401
     from app.models.lead_quarantine import LeadQuarantine  # noqa: F401
     from app.models.raw_incoming_lead import RawIncomingLead  # noqa: F401
     from app.models.message import Message  # noqa: F401

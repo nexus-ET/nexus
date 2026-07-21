@@ -7,12 +7,14 @@ type ProspectsToolbarProps = {
   filters: ProspectsFilters;
   onChange: (next: Partial<ProspectsFilters>) => void;
   filteredTotal?: number;
+  title?: string;
 };
 
 export default function ProspectsToolbar({
   filters,
   onChange,
   filteredTotal,
+  title = 'All Prospects',
 }: ProspectsToolbarProps) {
   const dateFromValue = filters.dateFrom ? new Date(filters.dateFrom) : null;
   const dateToValue = filters.dateTo ? new Date(filters.dateTo) : null;
@@ -20,7 +22,7 @@ export default function ProspectsToolbar({
   return (
     <div className="prospects-toolbar">
       <div className="prospects-toolbar__title">
-        <h2>All Prospects</h2>
+        <h2>{title}</h2>
         {typeof filteredTotal === 'number' ? (
           <span className="prospects-toolbar__count">{filteredTotal} matches</span>
         ) : null}

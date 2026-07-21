@@ -19,13 +19,17 @@ import BusinessDomainEmailField from '../components/BusinessDomainEmailField';
 import StatusChangeModal from '../components/StatusChangeModal';
 import UserStatusPill from '../components/UserStatusPill';
 import {
+  PHONE_LOCAL_DRAFT_MAX_LENGTH,
+  PHONE_LOCAL_PLACEHOLDER,
   PHONE_LOCAL_REQUIREMENTS,
   formatFullPhone,
   formatPhoneCountryLabel,
   parseStoredPhone,
+  sanitizePhoneLocalDraft,
   validatePhoneWithCountry,
 } from '../utils/phoneCountry';
 import { useCountries } from '../hooks/useCountries';
+import { useConfirmation } from '../context/ConfirmationContext';
 import {
   buildBusinessEmail,
   splitEmailUsername,
@@ -148,6 +152,7 @@ const isDuplicateEmail = (
 };
 
 const UsersView: React.FC = () => {
+  const openConfirm = useConfirmation();
   const { currentUser } = useOutletContext<{ currentUser?: AdminUser | null }>() ?? {};
   const viewerIsSuperAdmin = isSuperAdmin(currentUser);
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -437,9 +442,12 @@ const UsersView: React.FC = () => {
       return;
     }
 
-    const confirmed = window.confirm(
-      `Delete ${formatAdminName(user)} permanently?\n\nThis removes their admin account from the system. This action cannot be undone.`
-    );
+    const confirmed = await openConfirm({
+      title: 'Permanently delete admin?',
+      message: `Delete ${formatAdminName(user)} permanently?\n\nThis removes their admin account from the system. This action cannot be undone.`,
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    });
     if (!confirmed) return;
 
     try {
@@ -714,18 +722,19 @@ const UsersView: React.FC = () => {
                     name="admin-phone-number"
                     autoComplete="off"
                     required
-                    inputMode="numeric"
-                    minLength={10}
-                    maxLength={10}
+                    inputMode="text"
+                    autoCapitalize="characters"
+                    spellCheck={false}
+                    maxLength={PHONE_LOCAL_DRAFT_MAX_LENGTH}
                     value={form.phone_number}
                     onChange={e =>
                       setForm(prev => ({
                         ...prev,
-                        phone_number: e.target.value.replace(/\D/g, '').slice(0, 10),
+                        phone_number: sanitizePhoneLocalDraft(e.target.value),
                       }))
                     }
                     className="min-w-0 flex-1 px-3 py-2 bg-surface-bg border border-border-subtle rounded-xl text-sm text-text-main focus:outline-none focus:border-accent focus:ring-4 focus:ring-accent/10"
-                    placeholder="10 digit number"
+                    placeholder={PHONE_LOCAL_PLACEHOLDER}
                   />
                 </div>
                 <p className="mt-1.5 text-[11px] text-text-muted">{PHONE_LOCAL_REQUIREMENTS}</p>

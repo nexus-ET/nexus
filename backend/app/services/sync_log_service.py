@@ -132,60 +132,8 @@ def resolve_transaction_outcome(
 
 
 def seed_sync_logs_from_legacy_settings(db: Session) -> int:
-    if db.query(SyncLog).count() > 0:
-        return 0
-
-    from app.services.settings_service import get_setting
-
-    last_run_at_raw = get_setting(KEY_LAST_RUN_AT, default="", db=db) or ""
-    last_summary_raw = get_setting(KEY_LAST_RUN_SUMMARY, default="", db=db) or ""
-    if not last_run_at_raw or not last_summary_raw:
-        return 0
-
-    try:
-        summary = json.loads(last_summary_raw)
-    except json.JSONDecodeError:
-        return 0
-
-    if not isinstance(summary, dict):
-        return 0
-
-    attempt_at = _parse_legacy_timestamp(last_run_at_raw) or _utcnow_naive()
-    mode_raw = (get_setting(KEY_SYNC_MODE, default="automated", db=db) or "automated").strip().lower()
-    sync_mode = SYNC_MODE_AUTOMATED if mode_raw in {"automated", "auto"} else SYNC_MODE_MANUAL
-    errors = summary.get("errors") or []
-    if not isinstance(errors, list):
-        errors = [str(errors)]
-
-    leads_seen = int(summary.get("leads_seen") or 0)
-    leads_created = int(summary.get("leads_created") or 0)
-    leads_skipped = int(summary.get("leads_skipped") or 0)
-    status, results_count, message = resolve_transaction_outcome(
-        leads_seen=leads_seen,
-        leads_created=leads_created,
-        leads_skipped=leads_skipped,
-        errors=[str(item) for item in errors],
-    )
-
-    row = SyncLog(
-        sync_mode=sync_mode,
-        triggered_by_user=TRIGGERED_BY_SYSTEM,
-        triggered_by_user_id=None,
-        source=SOURCE_SCHEDULED,
-        status=status,
-        results_count=results_count,
-        message=message,
-        forms_processed=int(summary.get("forms_processed") or 0),
-        leads_seen=leads_seen,
-        leads_created=leads_created,
-        leads_skipped=leads_skipped,
-        errors_json=json.dumps([str(item) for item in errors]),
-        attempt_timestamp=attempt_at,
-        completed_at=attempt_at,
-    )
-    db.add(row)
-    db.commit()
-    return 1
+    """Disabled — sync logs are created by sync jobs, not migrated from legacy settings."""
+    return 0
 
 
 def format_user_label(user: User | None) -> str:
