@@ -31,13 +31,15 @@ Your previous Neon DB hit its limit. Staging must use the **new** Neon project/d
 
 | Neon shows | Staging `.env` needs |
 |------------|----------------------|
-| `postgresql://...` or `postgres://...` | `postgresql+psycopg://...` |
+| `postgresql://...` or `postgres://...` | Prefer `postgresql+psycopg://...` (app also auto-rewrites plain `postgresql://`) |
 
 4. Ensure `?sslmode=require` is present (append if missing).
 
 ```env
 DATABASE_URL=postgresql+psycopg://USER:PASSWORD@ep-XXXX-pooler.REGION.aws.neon.tech/neondb?sslmode=require
 ```
+
+If migrations fail with `No module named 'psycopg2'`, the URL still used the default Postgres dialect — pull latest staging (URL normalize + `psycopg[binary]` in requirements) and re-run deploy.
 
 5. In Neon, allow the Hostinger VPS IP if IP allowlisting is enabled.
 

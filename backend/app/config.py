@@ -1,4 +1,25 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def normalize_database_url(url: str) -> str:
+    """Prefer SQLAlchemy psycopg3 dialect (Neon paste URLs default to psycopg2)."""
+    value = (url or "").strip()
+    if not value:
+        return value
+    lower = value.lower()
+    if lower.startswith("sqlite"):
+        return value
+    for prefix in (
+        "postgresql+psycopg2://",
+        "postgres+psycopg2://",
+        "postgresql://",
+        "postgres://",
+    ):
+        if lower.startswith(prefix):
+            return "postgresql+psycopg://" + value[len(prefix) :]
+    return value
+
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "NEXUS"
@@ -8,6 +29,13 @@ class Settings(BaseSettings):
 
     # Database connection string
     DATABASE_URL: str = "sqlite:///./nexus.db"
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def _normalize_database_url(cls, value: object) -> object:
+        if isinstance(value, str):
+            return normalize_database_url(value)
+        return value
 
     # WARNING: In production, these should be loaded from environment variables
     SECRET_KEY: str = "YOUR_SUPER_SECRET_KEY_CHANGE_ME"
