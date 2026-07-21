@@ -279,13 +279,16 @@ def extract_webhook_phone_number_id(payload: dict[str, Any]) -> str | None:
     return None
 
 
-def audit_whatsapp_webhook_routing() -> None:
+def audit_whatsapp_webhook_routing(*, check_reachability: bool = True) -> None:
     """
     Warn loudly when Meta inbound webhooks are not routed to a reachable callback.
 
     Outbound WhatsApp (templates, intake replies) uses the Graph API directly and
     does not need the webhook. A stale Cloudflare quick-tunnel URL is the usual cause
     of “outreach works but replies do nothing”.
+
+    During app lifespan startup, pass check_reachability=False — uvicorn is not
+    accepting connections yet, so a public self-GET always 502s.
     """
     if (settings.PROVIDER or "").strip().upper() != "WHATSAPP":
         return
@@ -304,6 +307,16 @@ def audit_whatsapp_webhook_routing() -> None:
             "[WhatsApp] ERROR: Meta webhook callback is not configured. "
             "Inbound student messages will be ignored."
         )
+        return
+
+    if expected and not status.owned_by_this_environment:
+        logger.warning(
+            "WhatsApp webhook Meta URL %s does not match PUBLIC_TUNNEL_BASE %s",
+            meta_url,
+            expected,
+        )
+
+    if not check_reachability:
         return
 
     verify_token = resolve_verify_token()
@@ -331,12 +344,6 @@ def audit_whatsapp_webhook_routing() -> None:
         logger.error("WhatsApp webhook health check failed for %s: %s", meta_url, exc)
 
     if reachable:
-        if expected and not status.owned_by_this_environment:
-            logger.warning(
-                "WhatsApp webhook Meta URL %s is reachable but does not match PUBLIC_TUNNEL_BASE %s",
-                meta_url,
-                expected,
-            )
         return
 
     logger.error(
