@@ -199,10 +199,181 @@ def _database_has_legacy_schema(inspector: Inspector) -> bool:
     return required.issubset(present)
 
 
+def _database_looks_orm_provisioned(inspector: Inspector) -> bool:
+    """True when schema was built via create_all (modern tables present)."""
+    present = set(inspector.get_table_names())
+    modern = {"students_master", "institutions", "status_definitions", "levels"}
+    return _database_has_legacy_schema(inspector) and bool(present & modern)
+
+
 def _run_alembic(*args: str) -> None:
     cmd = [sys.executable, "-m", "alembic", *args]
     print(f"  {' '.join(cmd)}")
     subprocess.run(cmd, cwd=BACKEND_ROOT, check=True)
+
+
+def _seed_fresh_reference_data(engine) -> None:
+    """Apply catalog rows that Alembic data migrations would have inserted."""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models.country import Country
+    from app.models.education_degree import EducationDegree
+    from app.models.gpa_cgpa_score import GpaCgpaScore
+    from app.models.level import Level
+    from app.models.academia_institution import CampusType
+    from app.models.status_definition import StatusDefinition
+    from app.models.status_transition import StatusTransition, TransitionType
+    from app.services.countries import DEFAULT_COUNTRIES
+    from app.services.education_degrees import DEFAULT_EDUCATION_DEGREES, LEVEL_CODE_TO_ID
+    from app.services.gpa_cgpa_scores import DEFAULT_GPA_CGPA_SCORES
+    from app.services.status_definitions_seed import V3_INSERT_SQL
+
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    try:
+        if db.query(StatusDefinition).count() == 0:
+            print("  Seeding status_definitions v3...")
+            db.execute(text(V3_INSERT_SQL))
+            db.execute(
+                text(
+                    "SELECT setval('status_definitions_id_seq', "
+                    "(SELECT COALESCE(MAX(id), 1) FROM status_definitions))"
+                )
+            )
+            db.commit()
+
+        if db.query(StatusTransition).count() == 0 and db.query(StatusDefinition).count() > 0:
+            print("  Seeding status_transitions...")
+            for row in db.query(StatusDefinition).filter(StatusDefinition.next_stage_id.isnot(None)):
+                db.add(
+                    StatusTransition(
+                        from_status_id=row.id,
+                        to_status_id=row.next_stage_id,
+                        transition_type=TransitionType.FORWARD,
+                    )
+                )
+            for from_id, to_id in ((1, 12), (3, 18), (13, 28)):
+                db.add(
+                    StatusTransition(
+                        from_status_id=from_id,
+                        to_status_id=to_id,
+                        transition_type=TransitionType.EXPRESS,
+                    )
+                )
+            db.add(
+                StatusTransition(
+                    from_status_id=44,
+                    to_status_id=45,
+                    transition_type=TransitionType.RELAUNCH,
+                )
+            )
+            db.flush()
+            forwards = (
+                db.query(StatusTransition)
+                .filter(StatusTransition.transition_type == TransitionType.FORWARD)
+                .all()
+            )
+            for row in forwards:
+                db.add(
+                    StatusTransition(
+                        from_status_id=row.to_status_id,
+                        to_status_id=row.from_status_id,
+                        transition_type=TransitionType.BACKWARD,
+                    )
+                )
+            db.commit()
+
+        if db.query(Country).count() == 0:
+            print("  Seeding countries...")
+            for item in DEFAULT_COUNTRIES:
+                db.add(Country(**item, is_active=True))
+            db.commit()
+
+        level_rows = [
+            (1, "FOUNDATIONAL", "Foundational", "Secondary, Pre-university and foundational pathways."),
+            (2, "UNDERGRAD", "Undergraduate", "Undergraduate and bachelor-level study."),
+            (3, "GRADUATE", "Graduate", "Master's and post-bachelor graduate study."),
+            (4, "DOCTORAL", "Doctoral", "Doctorate and research-intensive doctoral study."),
+        ]
+        if db.query(Level).count() == 0:
+            print("  Seeding levels...")
+            for level_id, code, name, description in level_rows:
+                db.add(Level(id=level_id, code=code, name=name, description=description))
+            db.flush()
+            db.execute(
+                text(
+                    "SELECT setval(pg_get_serial_sequence('levels', 'id'), "
+                    "(SELECT COALESCE(MAX(id), 1) FROM levels))"
+                )
+            )
+            db.commit()
+
+        campus_type_rows = [
+            ("MAIN", "Main", "The primary, flagship location housing central administration."),
+            ("SATELLITE", "Satellite", "A secondary location serving specific regions or demographics."),
+            ("SPECIALIZED", "Specialized", "A location dedicated to a specific academic niche."),
+            ("INTERNATIONAL", "International", "A branch campus located outside the home country."),
+            ("VIRTUAL", "Virtual", "An online-only platform for digital course delivery."),
+        ]
+        if db.query(CampusType).count() == 0:
+            print("  Seeding campus_types...")
+            for code, name, description in campus_type_rows:
+                db.add(CampusType(code=code, name=name, description=description))
+            db.commit()
+
+        if db.query(EducationDegree).count() == 0:
+            print("  Seeding education_degrees...")
+            for item in DEFAULT_EDUCATION_DEGREES:
+                level_code = str(item.get("course_level") or "ENTRY").upper()
+                level_id = LEVEL_CODE_TO_ID.get(level_code, 1)
+                db.add(
+                    EducationDegree(
+                        level_id=level_id,
+                        code=str(item["code"]),
+                        label=str(item["label"]),
+                        is_other=bool(item.get("is_other", False)),
+                        is_active=True,
+                        sort_order=int(item.get("sort_order") or 0),
+                    )
+                )
+            db.commit()
+
+        if db.query(GpaCgpaScore).count() == 0:
+            print("  Seeding gpa_cgpa_scores...")
+            for item in DEFAULT_GPA_CGPA_SCORES:
+                db.add(
+                    GpaCgpaScore(
+                        code=str(item["code"]),
+                        label=str(item["label"]),
+                        is_other=bool(item.get("is_other", False)),
+                        is_active=True,
+                        sort_order=int(item.get("sort_order") or 0),
+                    )
+                )
+            db.commit()
+    finally:
+        db.close()
+
+
+def _bootstrap_fresh_database(engine) -> None:
+    """
+    Nexus Alembic history starts with ALTER-only revisions (schema originally came
+    from SQLAlchemy create_all). Empty Neon DBs (e.g. Nexus-Dev-1) must not run
+    `alembic upgrade head` from revision 0.
+    """
+    print(
+        "Fresh database detected — creating schema from ORM models, "
+        "then stamping Alembic head (early migrations ALTER existing tables)."
+    )
+    from app.db.database import Base, sync_schema_columns
+    from app.db.register_models import register_all_models
+
+    register_all_models()
+    Base.metadata.create_all(bind=engine)
+    # sync_schema_columns uses the app-global engine (same DATABASE_URL).
+    sync_schema_columns()
+    _run_alembic("stamp", "head")
+    _seed_fresh_reference_data(engine)
 
 
 def _stamp_if_behind_schema(inspector: Inspector, current: str | None) -> str | None:
@@ -285,8 +456,14 @@ def main() -> int:
         print(f"Alembic revision: {current}")
         _migrate_to_head(inspector)
     elif not _database_has_legacy_schema(inspector):
-        print("Fresh database detected — running full alembic upgrade head.")
-        _run_alembic("upgrade", "head")
+        _bootstrap_fresh_database(engine)
+    elif _database_looks_orm_provisioned(inspector):
+        print(
+            "ORM-provisioned schema without alembic_version — "
+            "stamping head and ensuring reference seeds."
+        )
+        _run_alembic("stamp", "head")
+        _seed_fresh_reference_data(engine)
     else:
         print("No alembic_version recorded; legacy schema detected.")
         detected = _detect_sequential_schema_revision(inspector)
