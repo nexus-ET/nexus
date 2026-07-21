@@ -172,8 +172,14 @@ app = FastAPI(
 )
 
 uploads_directory = Path(__file__).resolve().parents[1] / "uploads"
-uploads_directory.mkdir(parents=True, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=uploads_directory), name="uploads")
+try:
+    uploads_directory.mkdir(parents=True, exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory=uploads_directory), name="uploads")
+except OSError:
+    bootstrap_logger.exception(
+        "Could not create/mount uploads directory at %s — continuing without /uploads",
+        uploads_directory,
+    )
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)

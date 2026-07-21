@@ -123,11 +123,39 @@ fi
 echo ""
 echo "==> Restart services..."
 if command -v systemctl >/dev/null 2>&1; then
+  # Keep service account able to read code/.env and write uploads after root deploys.
+  mkdir -p "${BACKEND}/uploads"
+  chown -R www-data:www-data "${BACKEND}/uploads" 2>/dev/null || true
+  if [[ -f "${BACKEND}/.env" ]]; then
+    chown www-data:www-data "${BACKEND}/.env" 2>/dev/null || true
+    chmod 640 "${BACKEND}/.env" 2>/dev/null || true
+  fi
+  # Ensure www-data can import app modules pulled as root.
+  chown -R www-data:www-data "${BACKEND}/app" "${BACKEND}/alembic" "${BACKEND}/scripts" 2>/dev/null || true
+
   systemctl restart nexus-backend
   nginx -t
   systemctl reload nginx
+
+  echo "    Waiting for backend on ${BACKEND_HEALTH_URL} ..."
+  backend_ok=0
+  for _ in $(seq 1 30); do
+    if curl -sf "${BACKEND_HEALTH_URL}" >/dev/null 2>&1; then
+      backend_ok=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "${backend_ok}" -ne 1 ]]; then
+    echo "    ERROR: nexus-backend did not become healthy." >&2
+    systemctl --no-pager --full status nexus-backend || true
+    journalctl -u nexus-backend -n 80 --no-pager || true
+  else
+    echo "    Backend is up."
+  fi
 else
   echo "    systemctl not available; restart nexus-backend manually." >&2
+  backend_ok=0
 fi
 
 echo ""
@@ -135,10 +163,10 @@ echo "==> WhatsApp webhook sync..."
 cd "${BACKEND}"
 # shellcheck disable=SC1091
 source .venv/bin/activate
-if python scripts/sync_whatsapp_webhook.py; then
+if [[ "${backend_ok:-0}" -eq 1 ]] && python scripts/sync_whatsapp_webhook.py; then
   echo "    Webhook registered."
 else
-  echo "    Webhook sync failed (check WHATSAPP_* and PUBLIC_TUNNEL_BASE)." >&2
+  echo "    Webhook sync skipped/failed (backend down or WHATSAPP_*/PUBLIC_TUNNEL_BASE)." >&2
 fi
 
 chown -R www-data:www-data "${FRONTEND}/dist" 2>/dev/null || true
@@ -155,6 +183,12 @@ if curl -sf "https://${PUBLIC_DOMAIN}/" >/dev/null 2>&1; then
   echo "    Public site: OK (https://${PUBLIC_DOMAIN}/)"
 else
   echo "    Public site: check nginx / DNS" >&2
+fi
+
+if curl -sf "https://${PUBLIC_DOMAIN}/api/webhook/info" >/dev/null 2>&1; then
+  echo "    Public API proxy: OK (/api/webhook/info)"
+else
+  echo "    Public API proxy: FAIL — nginx → :8002 may be down" >&2
 fi
 
 if [[ -x "${SCRIPT_DIR}/verify-staging-deploy.sh" ]]; then
