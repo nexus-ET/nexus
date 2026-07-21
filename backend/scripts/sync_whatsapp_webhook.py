@@ -34,6 +34,8 @@ def verify_callback_reachable(
     retries: int = 8,
     retry_delay_seconds: float = 2.0,
 ) -> None:
+    import os
+
     challenge = "nexus-webhook-preflight"
     params = {
         "hub.mode": "subscribe",
@@ -45,20 +47,30 @@ def verify_callback_reachable(
         "User-Agent": "facebookexternalua",
         "ngrok-skip-browser-warning": "true",
     }
+    # On the VPS, public hostname often fails hairpin NAT; loopback proves the route works.
+    port = (os.getenv("NEXUS_PORT") or "8002").strip() or "8002"
+    candidates: list[str] = []
+    for url in (f"http://127.0.0.1:{port}/api/webhook", callback_url):
+        if url and url not in candidates:
+            candidates.append(url)
+
     last_error: Exception | None = None
     with httpx.Client(timeout=20, follow_redirects=True, headers=headers) as client:
         for attempt in range(1, retries + 1):
-            try:
-                response = client.get(callback_url, params=params)
-                if response.status_code == 200 and response.text.strip() == challenge:
-                    return
-                last_error = RuntimeError(
-                    f"Webhook callback is not reachable: {callback_url} "
-                    f"(status={response.status_code}). "
-                    "Start a public tunnel to this backend (ngrok/cloudflared) and retry."
-                )
-            except httpx.HTTPError as exc:
-                last_error = exc
+            for candidate in candidates:
+                try:
+                    response = client.get(candidate, params=params)
+                    if response.status_code == 200 and response.text.strip() == challenge:
+                        if candidate.startswith("http://127.0.0.1"):
+                            print(f"Webhook verify OK via loopback ({candidate})")
+                        return
+                    last_error = RuntimeError(
+                        f"Webhook callback is not reachable: {candidate} "
+                        f"(status={response.status_code}). "
+                        "Start a public tunnel to this backend (ngrok/cloudflared) and retry."
+                    )
+                except httpx.HTTPError as exc:
+                    last_error = exc
             if attempt < retries:
                 time.sleep(retry_delay_seconds)
     raise RuntimeError(
