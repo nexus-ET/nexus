@@ -97,7 +97,7 @@ logging.basicConfig(
 bootstrap_logger = logging.getLogger(__name__)
 
 
-def bootstrap_application() -> None:
+def bootstrap_application(*, include_deferred: bool = True) -> None:
     """Run one-time DB/schema seeding. Called from lifespan, not at import time."""
     try:
         bootstrap_logger.info("Nexus database synchronization: checking table structures...")
@@ -114,19 +114,8 @@ def bootstrap_application() -> None:
             ensure_default_business(bootstrap_db)
             bootstrap_logger.info("Startup catalog/reference seeds are disabled (manage data via Admin UI).")
             bootstrap_logger.info("Dynamic settings initialized.")
-            dedupe_consultation_slots(bootstrap_db)
-            ensure_consultation_slots(bootstrap_db)
-            ensure_flow_keypair()
-            bootstrap_logger.info("Consultation slots initialized.")
-            if os.getenv("WHATSAPP_FLOW_ID"):
-                bootstrap_logger.info("WhatsApp Flow booking enabled.")
-                bootstrap_logger.info(
-                    "Flow public key ready for Meta upload "
-                    "(GET /api/v1/webhooks/whatsapp-flow/public-key)"
-                )
-            from app.services.whatsapp_webhook_env import audit_whatsapp_webhook_routing
-
-            audit_whatsapp_webhook_routing(check_reachability=False)
+            if include_deferred:
+                _bootstrap_deferred_services(bootstrap_db)
             bootstrap_logger.info("Application bootstrap complete.")
         finally:
             bootstrap_db.close()
@@ -137,10 +126,40 @@ def bootstrap_application() -> None:
         raise
 
 
+def _bootstrap_deferred_services(bootstrap_db) -> None:
+    """Slow startup work (consultation slots can take 30–60s on cold Neon)."""
+    dedupe_consultation_slots(bootstrap_db)
+    ensure_consultation_slots(bootstrap_db)
+    ensure_flow_keypair()
+    bootstrap_logger.info("Consultation slots initialized.")
+    if os.getenv("WHATSAPP_FLOW_ID"):
+        bootstrap_logger.info("WhatsApp Flow booking enabled.")
+        bootstrap_logger.info(
+            "Flow public key ready for Meta upload "
+            "(GET /api/v1/webhooks/whatsapp-flow/public-key)"
+        )
+    from app.services.whatsapp_webhook_env import audit_whatsapp_webhook_routing
+
+    audit_whatsapp_webhook_routing(check_reachability=False)
+
+
+def bootstrap_deferred_application() -> None:
+    """Run after the HTTP server is accepting connections."""
+    bootstrap_db = SessionLocal()
+    try:
+        _bootstrap_deferred_services(bootstrap_db)
+        bootstrap_logger.info("Deferred application bootstrap complete.")
+    except Exception:
+        bootstrap_logger.exception("Deferred bootstrap failed")
+    finally:
+        bootstrap_db.close()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Fast path only — do not block uvicorn bind on consultation-slot generation.
     try:
-        await asyncio.to_thread(bootstrap_application)
+        await asyncio.to_thread(bootstrap_application, include_deferred=False)
     except Exception:
         bootstrap_logger.exception("Bootstrap failed — server starting with degraded initialization")
 
@@ -157,7 +176,15 @@ async def lifespan(_: FastAPI):
     except Exception:
         bootstrap_logger.exception("Raw lead processor scheduler failed to start")
 
+    deferred = asyncio.create_task(asyncio.to_thread(bootstrap_deferred_application))
+
     yield
+
+    deferred.cancel()
+    try:
+        await deferred
+    except asyncio.CancelledError:
+        pass
 
     shutdown_raw_lead_processor_scheduler()
     shutdown_lead_sync_scheduler()
