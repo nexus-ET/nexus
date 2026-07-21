@@ -28,12 +28,13 @@ export function slugToSource(slug: string | null): string {
   return SLUG_TO_SOURCE[slug.toLowerCase()] || slug.toUpperCase();
 }
 
-export function readFilters(params: URLSearchParams): ProspectsFilters {
+export function readFilters(params: URLSearchParams, fixedCategory = ''): ProspectsFilters {
   return {
     q: params.get('q') || '',
     source: slugToSource(params.get('source')),
     dateFrom: params.get('from') || '',
     dateTo: params.get('to') || '',
+    category: fixedCategory || params.get('category') || '',
   };
 }
 
@@ -74,21 +75,23 @@ export function writeFilterParams(
 export function buildProspectsPath(
   leadId: number | null,
   filters: ProspectsFilters,
-  tab?: ProspectDetailTab
+  tab?: ProspectDetailTab,
+  basePath = '/prospects'
 ): string {
   const params = writeFilterParams(new URLSearchParams(), filters, tab);
   const query = params.toString();
-  const base = leadId ? `/prospects/${leadId}` : '/prospects';
+  const base = leadId ? `${basePath}/${leadId}` : basePath;
   return query ? `${base}?${query}` : base;
 }
 
-export function prospectsScrollStorageKey(filters: ProspectsFilters): string {
+export function prospectsScrollStorageKey(filters: ProspectsFilters, basePath = '/prospects'): string {
   return [
-    'prospects-scroll',
+    `${basePath}-scroll`,
     filters.q,
     filters.source,
     filters.dateFrom,
     filters.dateTo,
+    filters.category,
   ].join('|');
 }
 

@@ -6,6 +6,7 @@ from sqlalchemy import String, and_, cast, func, or_
 from sqlalchemy.orm import Session
 
 from app.models.lead import Lead, LeadChannel, LeadSource, LeadStage
+from app.models.status_definition import StatusDefinition
 
 
 def resolve_platform_badge(lead: Lead) -> str | None:
@@ -40,6 +41,7 @@ def _apply_prospect_filters(
     date_from: date | None,
     date_to: date | None,
     stage: str | None,
+    category: str | None = None,
 ):
     if q:
         term = f"%{q.strip()}%"
@@ -82,18 +84,46 @@ def _apply_prospect_filters(
     if stage and stage.upper() != "ALL":
         query = query.filter(cast(Lead.stage, String).ilike(f"%{stage.upper()}%"))
 
+    normalized_category = (category or "").strip()
+    if normalized_category and normalized_category.upper() != "ALL":
+        query = query.join(
+            StatusDefinition,
+            Lead.status_definition_id == StatusDefinition.id,
+        ).filter(StatusDefinition.category == normalized_category)
+
     return query
 
 
 def build_prospect_list_item(lead: Lead) -> dict:
+    from app.services.admissions_intake_flow import build_intake_profile_summary
+
     received_at = lead.created_at or lead.updated_at
+    updated_at = lead.updated_at or lead.created_at
+    intake = {
+        key: value
+        for key, value in build_intake_profile_summary(lead, db=None).items()
+        if key
+        not in {
+            "available_consultation_dates",
+            "available_consultation_times",
+            "selected_consultation_date",
+        }
+    }
     return {
         "id": lead.id,
         "full_name": lead.full_name,
+        "name": lead.full_name,
+        "email": getattr(lead, "email", None) or "",
+        "phone": getattr(lead, "phone_number", None),
+        "phone_number": getattr(lead, "phone_number", None),
         "stage": lead.stage.value if hasattr(lead.stage, "value") else str(lead.stage),
+        "status": lead.stage.value if hasattr(lead.stage, "value") else str(lead.stage),
         "source": getattr(lead, "source", None),
         "platform_badge": resolve_platform_badge(lead),
         "received_at": received_at.isoformat() if received_at else None,
+        "updated_at": updated_at.isoformat() if updated_at else None,
+        "latest_interaction_time": updated_at.isoformat() if updated_at else None,
+        **intake,
     }
 
 
@@ -107,6 +137,7 @@ def list_prospects_keyset(
     date_from: date | None = None,
     date_to: date | None = None,
     stage: str | None = None,
+    category: str | None = None,
 ) -> dict:
     safe_limit = max(1, min(limit, 100))
     query = db.query(Lead)
@@ -117,6 +148,7 @@ def list_prospects_keyset(
         date_from=date_from,
         date_to=date_to,
         stage=stage,
+        category=category,
     )
 
     filtered_total = query.count()

@@ -73,6 +73,32 @@ SETTING_DEFINITIONS: dict[str, dict[str, str]] = {
         "value_type": "number",
         "description": "Audit log entries older than this are permanently removed by the daily cleanup job.",
     },
+    "CALENDAR_INTAKE_ADVANCE_DAYS": {
+        "label": "Calendar intake advance notification (days)",
+        "value_type": "number",
+        "description": "How many days before the next term class start date admins are alerted to configure intakes.",
+    },
+    "MONITORING_STATUS": {
+        "label": "Monitoring status",
+        "value_type": "select",
+        "description": (
+            "When Active, Nexus periodically pings the uptime target URL and emails "
+            "ALERT_EMAIL on downtime. When Inactive, no health checks are performed."
+        ),
+    },
+    "UPTIME_TARGET_URL": {
+        "label": "Uptime target URL",
+        "value_type": "text",
+        "description": "HTTPS health-check URL pinged while monitoring is Active (e.g. https://example.com/health).",
+    },
+    "ALERT_EMAIL": {
+        "label": "Monitoring alert emails (enter multiple addresses, separated by commas)",
+        "value_type": "text",
+        "description": (
+            "One or more email addresses that receive downtime notifications when a "
+            "health check fails. Separate multiple addresses with commas."
+        ),
+    },
 }
 
 DEFAULT_SETTING_VALUES: dict[str, str] = {
@@ -84,6 +110,19 @@ DEFAULT_SETTING_VALUES: dict[str, str] = {
     "MAX_BOOKINGS_PER_SLOT": "5",
     "BUSINESS_TIMEZONE": "UTC",
     "AUDIT_LOG_RETENTION_DAYS": "90",
+    "CALENDAR_INTAKE_ADVANCE_DAYS": "60",
+    "MONITORING_STATUS": "Inactive",
+    "UPTIME_TARGET_URL": "",
+    "ALERT_EMAIL": "",
+}
+
+MONITORING_STATUS_OPTIONS: list[dict[str, str]] = [
+    {"value": "Inactive", "label": "Inactive"},
+    {"value": "Active", "label": "Active"},
+]
+
+SETTING_SELECT_OPTIONS: dict[str, list[dict[str, str]]] = {
+    "MONITORING_STATUS": MONITORING_STATUS_OPTIONS,
 }
 
 _cache: dict[str, str] = {}
@@ -96,13 +135,8 @@ def clear_settings_cache() -> None:
 
 
 def seed_default_settings(db: Session) -> None:
-    for key, value in DEFAULT_SETTING_VALUES.items():
-        existing = db.query(DynamicSetting).filter(DynamicSetting.key == key).first()
-        if existing:
-            continue
-        db.add(DynamicSetting(key=key, value=value))
-    db.commit()
-    clear_settings_cache()
+    """Disabled — settings are managed via Admin UI, not startup seeds."""
+    return
 
 
 def get_setting(
@@ -247,8 +281,17 @@ def _serialize_setting_payload(
         "label": definition.get("label", key.replace("_", " ").title()),
         "value_type": definition.get("value_type", "text"),
         "description": definition.get("description", ""),
-        "options": BUSINESS_TIMEZONE_OPTIONS if definition.get("value_type") == "timezone" else None,
+        "options": _options_for_setting(key, definition),
     }
+
+
+def _options_for_setting(key: str, definition: dict[str, str]) -> list[dict[str, str]] | None:
+    value_type = definition.get("value_type", "text")
+    if value_type == "timezone":
+        return BUSINESS_TIMEZONE_OPTIONS
+    if value_type == "select":
+        return SETTING_SELECT_OPTIONS.get(key)
+    return None
 
 
 def list_settings(db: Session) -> list[dict]:
@@ -279,6 +322,9 @@ def update_setting(db: Session, key: str, value: str, updated_by_user_id: int | 
 
     if SETTING_DEFINITIONS.get(cleaned_key, {}).get("value_type") == "working_days":
         cleaned_value = serialize_working_day_codes(parse_working_day_codes(cleaned_value))
+
+    if cleaned_key == "ALERT_EMAIL" and cleaned_value:
+        cleaned_value = ", ".join(parse_alert_emails(cleaned_value))
 
     row = db.query(DynamicSetting).filter(DynamicSetting.key == cleaned_key).first()
     if row is None:
@@ -341,6 +387,71 @@ def _validate_setting_value(key: str, value: str) -> str | None:
             return f"{key} must be a valid IANA timezone (e.g. Asia/Kolkata, America/New_York)."
         return None
 
+    if value_type == "select":
+        allowed = {option["value"] for option in SETTING_SELECT_OPTIONS.get(key, [])}
+        if value not in allowed:
+            labels = ", ".join(sorted(allowed)) or "(none)"
+            return f"{key} must be one of: {labels}."
+        return None
+
+    # Optional text settings used by monitoring (empty allowed when Inactive).
+    if key in {"UPTIME_TARGET_URL", "ALERT_EMAIL"}:
+        if not value:
+            return None
+        if key == "UPTIME_TARGET_URL":
+            return _validate_http_url(value)
+        return _validate_alert_emails(value)
+
     if not value:
         return f"{key} cannot be empty."
+    return None
+
+
+def parse_alert_emails(value: str) -> list[str]:
+    """Split a monitoring alert field into unique email addresses.
+
+    Accepts comma, semicolon, or whitespace/newline separated lists.
+    """
+    import re
+
+    parts = re.split(r"[,;\s]+", value or "")
+    emails: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        email = part.strip().strip("<>")
+        if not email:
+            continue
+        key = email.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        emails.append(email)
+    return emails
+
+
+def _validate_http_url(value: str) -> str | None:
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return "UPTIME_TARGET_URL must be a valid URL."
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return "UPTIME_TARGET_URL must be an http or https URL."
+    return None
+
+
+def _validate_alert_emails(value: str) -> str | None:
+    import re
+
+    emails = parse_alert_emails(value)
+    if not emails:
+        return "ALERT_EMAIL must include at least one valid email address."
+    email_re = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+    invalid = [email for email in emails if not email_re.fullmatch(email)]
+    if invalid:
+        return (
+            "ALERT_EMAIL contains invalid address(es): "
+            f"{', '.join(invalid)}. Separate multiple emails with commas."
+        )
     return None

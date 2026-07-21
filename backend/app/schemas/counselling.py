@@ -240,11 +240,79 @@ class BookingActivityLogResponse(BaseModel):
     backward_status_ids: list[int] = Field(default_factory=list)
     lead_jump_path: str | None = None
     can_update_status: bool = False
+    candidate_profile: CandidateProfileOut | None = None
 
 
 class BookingInteractionLogResponse(BaseModel):
     booking: MyBookingOut
     timeline: list[BookingTimelineItemOut]
+
+
+class CandidateProfileLocationOut(BaseModel):
+    address1: str | None = None
+    address2: str | None = None
+    address3: str | None = None
+    city: str | None = None
+    state: str | None = None
+    country_iso2: str | None = None
+    country: str | None = None
+    zipcode: str | None = None
+
+
+class CandidateProfileEducationOut(BaseModel):
+    degree_code: str | None = None
+    degree: str | None = None
+    degree_other: str | None = None
+    major: str | None = None
+    university: str | None = None
+    graduation_year: int | None = None
+    gpa_cgpa_code: str | None = None
+    gpa_cgpa: str | None = None
+    gpa_cgpa_other: str | None = None
+
+
+class CandidateProfileStudyInterestOut(BaseModel):
+    target_destination_iso2: str | None = None
+    target_destination: str | None = None
+    target_program_code: str | None = None
+    target_program: str | None = None
+    target_course_code: str | None = None
+    target_course: str | None = None
+
+
+class CandidateProfileAptitudeOut(BaseModel):
+    english_test_scores: str | None = None
+    gre_score: str | None = None
+    gmat_score: str | None = None
+
+
+class CandidateProfileOut(BaseModel):
+    lead_id: int | None = None
+    first_name: str | None = None
+    middle_name: str | None = None
+    last_name: str | None = None
+    date_of_birth: str | None = None
+    gender: str | None = None
+    marital_status: str | None = None
+    email: str | None = None
+    phone_country_iso2: str | None = None
+    phone_local: str | None = None
+    phone_number: str | None = None
+    phone_country_iso2_secondary: str | None = None
+    phone_local_secondary: str | None = None
+    phone_number_secondary: str | None = None
+    location: CandidateProfileLocationOut
+    education: CandidateProfileEducationOut
+    study_interest: CandidateProfileStudyInterestOut
+    aptitude_scores: CandidateProfileAptitudeOut = Field(default_factory=CandidateProfileAptitudeOut)
+    students_master_id: int | None = None
+    saved_at: str | None = None
+
+
+class BookingCandidateProfileResponse(BaseModel):
+    booking_id: int
+    candidate_name: str
+    profile: CandidateProfileOut
 
 
 class BookingViewDetailResponse(BaseModel):

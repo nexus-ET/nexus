@@ -2,7 +2,7 @@
 """
 Register the WhatsApp outreach follow-up Utility template with Meta.
 
-Creates et_intake_fullname (or WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE) if missing.
+Creates et_intake_continue (or WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE) if missing.
 Template must be approved in Meta before Nexus can send it.
 
 Usage (from backend root, with .env loaded):
@@ -24,11 +24,11 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.config import settings  # noqa: E402
-from app.services.intake_templates import OUTREACH_FULL_NAME_PROMPT  # noqa: E402
+from app.services.intake_templates import OUTREACH_CONTINUE_PROMPT  # noqa: E402
 from app.services.messaging import WHATSAPP_GRAPH_API_BASE  # noqa: E402
 from app.services.whatsapp_config import resolve_whatsapp_waba_id  # noqa: E402
 
-DEFAULT_TEMPLATE_NAME = "et_intake_fullname"
+DEFAULT_TEMPLATE_NAME = "et_intake_continue"
 DEFAULT_LANGUAGE = "en"
 
 
@@ -67,7 +67,7 @@ def main() -> int:
 
     name = _template_name()
     language = _language_code()
-    body_text = OUTREACH_FULL_NAME_PROMPT
+    body_text = OUTREACH_CONTINUE_PROMPT
 
     payload = {
         "name": name,

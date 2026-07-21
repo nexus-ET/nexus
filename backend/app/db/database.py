@@ -572,6 +572,62 @@ def sync_schema_columns() -> None:
 
         CounsellingNote.__table__.create(bind=engine, checkfirst=True)
 
+    if not inspector.has_table("candidate_educations"):
+        from app.models.candidate_education import CandidateEducation
+
+        CandidateEducation.__table__.create(bind=engine, checkfirst=True)
+
+    if not inspector.has_table("non_academic_activities"):
+        from app.models.non_academic_activity import NonAcademicActivity
+
+        NonAcademicActivity.__table__.create(bind=engine, checkfirst=True)
+
+    if not inspector.has_table("digital_presence_links"):
+        from app.models.digital_presence_link import DigitalPresenceLink
+
+        DigitalPresenceLink.__table__.create(bind=engine, checkfirst=True)
+
+    if not inspector.has_table("research_projects"):
+        from app.models.research_project import ResearchProject
+
+        ResearchProject.__table__.create(bind=engine, checkfirst=True)
+
+    if not inspector.has_table("work_experiences"):
+        from app.models.work_experience import WorkExperience, WorkProject
+
+        WorkExperience.__table__.create(bind=engine, checkfirst=True)
+        WorkProject.__table__.create(bind=engine, checkfirst=True)
+
+    if not inspector.has_table("candidate_test_scores"):
+        from app.models.candidate_test_score import CandidateTestScore
+
+        CandidateTestScore.__table__.create(bind=engine, checkfirst=True)
+
+    if inspector.has_table("candidate_test_scores"):
+        score_columns = {column["name"] for column in inspector.get_columns("candidate_test_scores")}
+        if "overall_score" not in score_columns:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE candidate_test_scores ADD COLUMN overall_score NUMERIC(6, 2)")
+                )
+
+    if not inspector.has_table("students_master"):
+        from app.models.students_master import StudentsMaster
+
+        StudentsMaster.__table__.create(bind=engine, checkfirst=True)
+
+    if inspector.has_table("students_master"):
+        master_columns = {column["name"] for column in inspector.get_columns("students_master")}
+        if "aspirations_data" not in master_columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE students_master ADD COLUMN aspirations_data JSON"))
+        if "gender" not in master_columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE students_master ADD COLUMN gender VARCHAR(20)"))
+        if "marital_status" not in master_columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE students_master ADD COLUMN marital_status VARCHAR(20)"))
+
     if not inspector.has_table("status_definitions"):
         from app.models.status_definition import StatusDefinition
 

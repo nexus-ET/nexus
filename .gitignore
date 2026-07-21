@@ -4,6 +4,7 @@
 !**/.env.example
 !**/.env.development.example
 !**/.env.staging.local.example
+!**/.env.staging-source.example
 !**/env.production.example
 
 # Python
@@ -21,8 +22,12 @@ frontend/dist/
 
 # Dev / local
 backend/.dev-stack.lock
+backend/uploads/
 backend/cloudflared/config.yml
 backend/cloudflared/credentials/
+backend/.ngrok-*.txt
+backend/.tunnel-*.txt
+data/
 **/.DS_Store
 .idea/
 .vscode/

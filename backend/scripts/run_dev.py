@@ -718,7 +718,7 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
         if match and tunnel_url != match.group(0):
             tunnel_url = match.group(0)
             _update_env_key("PUBLIC_TUNNEL_BASE", tunnel_url)
-            print(f"[tunnel] PUBLIC_TUNNEL_BASE updated in .env → {tunnel_url}")
+            print(f"[tunnel] PUBLIC_TUNNEL_BASE updated in .env -> {tunnel_url}")
             if _whatsapp_auto_sync_enabled(env):
                 _schedule_whatsapp_webhook_sync(tunnel_url)
                 webhook_synced_locally = True

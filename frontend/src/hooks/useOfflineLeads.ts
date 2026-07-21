@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useDebouncedValue } from './useDebouncedValue';
 import { apiFetch } from '../utils/api';
+import { phoneLocalToDigits } from '../utils/phoneCountry';
 import type {
   OfflineLeadCreatePayload,
   OfflineLeadDuplicateCheck,
@@ -64,7 +65,7 @@ function buildDuplicateCheckUrl(
   const params = new URLSearchParams();
   params.set('email', email.trim());
   params.set('phone_country_iso2', phoneCountryIso2.trim());
-  params.set('phone_local', phoneLocal.replace(/\D/g, ''));
+  params.set('phone_local', phoneLocalToDigits(phoneLocal));
   if (excludeLeadId) params.set('exclude_lead_id', String(excludeLeadId));
   return `leads/offline/check-duplicates?${params.toString()}`;
 }
@@ -78,7 +79,7 @@ export function useOfflineLeadDuplicateCheck(
 ) {
   const debouncedEmail = useDebouncedValue(email.trim(), 400);
   const debouncedPhoneCountry = useDebouncedValue(phoneCountryIso2.trim(), 400);
-  const debouncedPhoneLocal = useDebouncedValue(phoneLocal.replace(/\D/g, ''), 400);
+  const debouncedPhoneLocal = useDebouncedValue(phoneLocalToDigits(phoneLocal), 400);
 
   const emailReady = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(debouncedEmail);
   const phoneReady =

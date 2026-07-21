@@ -95,8 +95,24 @@ def test_target_template_asks_only_course_when_country_prefilled():
     assert "which country would you like to study in" not in text.lower()
 
 
-def test_outreach_intake_followup_uses_consultation_prompt_only() -> None:
+def test_outreach_intake_followup_is_legacy_unused_copy() -> None:
     text = render_outreach_intake_followup()
-    assert text == "To book your *free study abroad consultation*, simply *reply with your full name*."
-    assert "Admissions assistant" not in text
-    assert "Hi " not in text
+    assert "drop us a quick" in text.lower()
+    # Outreach no longer sends this as a second WhatsApp message.
+    assert "reply with your full name" not in text.lower()
+
+
+def test_outreach_full_name_prompt_has_no_booking_line() -> None:
+    from app.services.intake_templates import render_deterministic_intake_text, render_outreach_full_name_prompt
+
+    text = render_outreach_full_name_prompt()
+    assert "free study abroad consultation" not in text.lower()
+
+    lead = SimpleNamespace(full_name="Priya Sharma", intake_step="FULL_NAME", intake_context=None)
+    asked = render_deterministic_intake_text(
+        lead,  # type: ignore[arg-type]
+        task="INTAKE_STEP=FULL_NAME; Ask for the student's full name only.",
+    )
+    assert "free study abroad consultation" not in asked.lower()
+    assert "reply with your full name" not in asked.lower()
+    assert "degree" in asked.lower()

@@ -57,29 +57,8 @@ DEFAULT_STATUS_CHANGE_REASONS: list[dict[str, str | bool]] = [
 
 
 def seed_status_change_reasons(db: Session) -> None:
-    for item in DEFAULT_STATUS_CHANGE_REASONS:
-        existing = (
-            db.query(StatusChangeReason)
-            .filter(
-                StatusChangeReason.reason_type == item["reason_type"],
-                StatusChangeReason.reason == item["reason"],
-            )
-            .first()
-        )
-        if existing:
-            existing.description = str(item["description"])
-            existing.is_active = True
-            continue
-
-        db.add(
-            StatusChangeReason(
-                reason_type=str(item["reason_type"]),
-                reason=str(item["reason"]),
-                description=str(item["description"]),
-                is_active=True,
-            )
-        )
-    db.commit()
+    """Disabled — status change reasons are managed via Admin UI / migrations, not startup seeds."""
+    return
 
 
 def get_reason_by_type(
@@ -99,3 +78,51 @@ def get_reason_by_type(
 
 def get_create_reason(db: Session) -> StatusChangeReason | None:
     return get_reason_by_type(db, "Create")
+
+
+def get_activate_reason(db: Session) -> StatusChangeReason | None:
+    """Prefer an onboarding-friendly Activate reason when available."""
+    preferred_labels = (
+        "Initial Account Activation",
+        "Administrative Reactivation",
+        "Role Restored",
+    )
+    for label in preferred_labels:
+        row = (
+            db.query(StatusChangeReason)
+            .filter(
+                StatusChangeReason.reason_type == "Activate",
+                StatusChangeReason.reason == label,
+                StatusChangeReason.is_active.is_(True),
+            )
+            .first()
+        )
+        if row:
+            return row
+    return get_reason_by_type(db, "Activate")
+
+
+def ensure_initial_activation_reason(db: Session) -> StatusChangeReason | None:
+    """Create a stable Activate reason for first-time account activation if missing."""
+    existing = (
+        db.query(StatusChangeReason)
+        .filter(
+            StatusChangeReason.reason_type == "Activate",
+            StatusChangeReason.reason == "Initial Account Activation",
+        )
+        .first()
+    )
+    if existing:
+        if not existing.is_active:
+            existing.is_active = True
+        return existing
+
+    row = StatusChangeReason(
+        reason_type="Activate",
+        reason="Initial Account Activation",
+        description="Account activated when the user was first created or onboarded",
+        is_active=True,
+    )
+    db.add(row)
+    db.flush()
+    return row

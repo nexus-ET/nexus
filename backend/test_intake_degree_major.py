@@ -9,10 +9,10 @@ from unittest.mock import MagicMock, patch
 
 from app.config import settings
 from app.services.admissions_intake_flow import (
+    INTAKE_STEP_CALL_CONSENT,
     INTAKE_STEP_CURRENT_LOCATION,
     INTAKE_STEP_ENGLISH_SCORES,
     INTAKE_STEP_FULL_NAME,
-    INTAKE_STEP_GRE_SCORE,
     INTAKE_STEP_TARGET_COUNTRY,
     INTAKE_STEP_TARGET_DEGREE,
     INTAKE_STEP_TARGET_MAJOR,
@@ -127,7 +127,7 @@ def test_normalize_score_reply_enforces_length() -> None:
     assert _normalize_score_reply("x" * (SCORE_MAX_LENGTH + 1)) is None
 
 
-def test_location_advances_to_degree_picker() -> None:
+def test_legacy_location_step_skips_to_degree_picker() -> None:
     async def _run() -> None:
         lead = SimpleNamespace(
             id=1,
@@ -153,7 +153,7 @@ def test_location_advances_to_degree_picker() -> None:
             )
 
         assert lead.intake_step == INTAKE_STEP_TARGET_DEGREE
-        assert lead.current_location == "Tokyo, Japan"
+        assert lead.current_location is None
         assert reply.list_picker is not None
         assert len(reply.list_picker.items) == 4
 
@@ -225,7 +225,7 @@ def test_valid_major_advances_to_country() -> None:
     asyncio.run(_run())
 
 
-def test_valid_country_advances_to_english_scores() -> None:
+def test_valid_country_advances_to_call_consent() -> None:
     async def _run() -> None:
         lead = SimpleNamespace(
             id=1,
@@ -256,15 +256,15 @@ def test_valid_country_advances_to_english_scores() -> None:
                 MagicMock(is_active=False),
             )
 
-        assert lead.intake_step == INTAKE_STEP_ENGLISH_SCORES
+        assert lead.intake_step == INTAKE_STEP_CALL_CONSENT
         assert lead.preferred_country == "UK"
         assert "Country: UK" in lead.academic_summary
-        assert "english" in reply.text.lower()
+        assert "consultation" in reply.text.lower()
 
     asyncio.run(_run())
 
 
-def test_score_too_long_is_rejected() -> None:
+def test_legacy_english_score_step_auto_advances_to_call_consent() -> None:
     async def _run() -> None:
         lead = SimpleNamespace(
             id=1,
@@ -286,12 +286,12 @@ def test_score_too_long_is_rejected() -> None:
             reply = await process_intake_message(
                 db,
                 lead,
-                "A" * (SCORE_MAX_LENGTH + 1),
+                "IELTS 7.5",
                 MagicMock(is_active=False),
             )
 
-        assert lead.intake_step == INTAKE_STEP_ENGLISH_SCORES
-        assert "20 characters" in reply.text.lower()
+        assert lead.intake_step == INTAKE_STEP_CALL_CONSENT
+        assert "consultation" in reply.text.lower()
 
     asyncio.run(_run())
 

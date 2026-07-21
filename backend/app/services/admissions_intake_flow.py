@@ -37,6 +37,16 @@ INTAKE_STEP_PICK_TIME = "PICK_TIME"
 INTAKE_STEP_MARKETING_CONSENT = "MARKETING_CONSENT"
 INTAKE_STEP_COMPLETE = "COMPLETE"
 
+# Legacy steps removed from the live WhatsApp questionnaire (auto-skipped if encountered).
+REMOVED_INTAKE_STEPS = frozenset(
+    {
+        INTAKE_STEP_CURRENT_LOCATION,
+        INTAKE_STEP_ENGLISH_SCORES,
+        INTAKE_STEP_GRE_SCORE,
+        INTAKE_STEP_GMAT_SCORE,
+    }
+)
+
 DEFAULT_SLOT_TIMES = ("10:00", "14:00", "16:00")
 BRAND_NAME = "Edutrust"
 NAME_MIN_LENGTH = 2
@@ -272,6 +282,97 @@ class IntakeReply:
     suppress_outbound: bool = False
 
 
+async def _prompt_target_degree_step(
+    db: Session,
+    lead: Lead,
+    runtime_config,
+    *,
+    incoming_text: str = "",
+    reason: str = "Continue intake",
+) -> IntakeReply:
+    return await _degree_step_reply(
+        db,
+        lead,
+        runtime_config,
+        task=(
+            f"INTAKE_STEP=DEGREE; {reason}. "
+            "Ask which program (degree) they are targeting and invite them to tap the button below to choose."
+        ),
+        incoming_text=incoming_text,
+    )
+
+
+async def _skip_removed_intake_step(
+    db: Session,
+    lead: Lead,
+    step: str,
+    runtime_config,
+    *,
+    incoming_text: str = "",
+) -> IntakeReply | None:
+    if step in {INTAKE_STEP_WELCOME, INTAKE_STEP_FULL_NAME, ""} or not getattr(lead, "intake_step", None):
+        # Full-name ask removed from WhatsApp intake — continue from the next open step.
+        # If the student still typed a name, keep it on the lead profile.
+        accepted = _accept_intake_name_reply(incoming_text)
+        if accepted:
+            lead.full_name = accepted
+        next_step = _resolve_intake_restart_step(lead)
+        lead.intake_step = next_step
+        db.commit()
+        if next_step == INTAKE_STEP_TARGET_DEGREE:
+            return await _prompt_target_degree_step(
+                db,
+                lead,
+                runtime_config,
+                incoming_text=incoming_text,
+                reason=(
+                    f"Skipped full-name step (name={lead.full_name!r}); "
+                    "advancing to target degree"
+                ),
+            )
+        if next_step == INTAKE_STEP_TARGET_MAJOR:
+            return await _agent_intake_reply(
+                db,
+                lead,
+                runtime_config,
+                task=(
+                    "INTAKE_STEP=MAJOR; Ask which major they are targeting with examples "
+                    "like Computer Science or Business Administration."
+                ),
+                incoming_text=incoming_text,
+            )
+        if next_step == INTAKE_STEP_TARGET_COUNTRY:
+            return await _agent_intake_reply(
+                db,
+                lead,
+                runtime_config,
+                task=(
+                    "INTAKE_STEP=COUNTRY; Ask which country they are targeting with examples "
+                    "US, UK, JP, AU, NZ."
+                ),
+                incoming_text=incoming_text,
+            )
+        return await _transition_to_call_consent(
+            db,
+            lead,
+            runtime_config,
+            incoming_text=incoming_text,
+        )
+    if step == INTAKE_STEP_CURRENT_LOCATION:
+        lead.intake_step = INTAKE_STEP_TARGET_DEGREE
+        db.commit()
+        return await _prompt_target_degree_step(
+            db,
+            lead,
+            runtime_config,
+            incoming_text=incoming_text,
+            reason=f"Student name is {lead.full_name!r}",
+        )
+    if step in {INTAKE_STEP_ENGLISH_SCORES, INTAKE_STEP_GRE_SCORE, INTAKE_STEP_GMAT_SCORE}:
+        return await _transition_to_call_consent(db, lead, runtime_config, incoming_text=incoming_text)
+    return None
+
+
 async def _agent_intake_reply(
     db: Session,
     lead: Lead,
@@ -392,18 +493,17 @@ async def _handle_study_plan_confirmation(
             _save_context(db, lead, context)
             return await _handle_study_plan_whatsapp_collection(db, lead, incoming_text, runtime_config)
         persist_confirmed_study_plan(db, lead, context, pending)
-        lead.intake_step = INTAKE_STEP_ENGLISH_SCORES
         db.commit()
-        return await _agent_intake_reply(
+        return await _transition_to_call_consent(
             db,
             lead,
             runtime_config,
-            task=(
-                f"INTAKE_STEP=ENGLISH; Target saved as {pending.field} "
-                f"({pending.level}) in {lead.preferred_country}. "
-                "Ask for English test scores or invite them to reply skip."
-            ),
             incoming_text=incoming_text,
+            task=(
+                f"INTAKE_STEP=CONSENT; Target saved as {pending.field} "
+                f"({pending.level}) in {lead.preferred_country}. "
+                "Ask if they want a free consultation call with an admissions advisor."
+            ),
         )
 
     if consent is False:
@@ -771,16 +871,24 @@ def _normalize_intake_name(text: str) -> str:
     return " ".join((text or "").split()).title()
 
 
+def _is_continue_greeting(text: str) -> bool:
+    greeting = " ".join((text or "").split()).lower().strip("!.?")
+    return greeting in {"hi", "hello", "hey", "hola", "namaste", "yo", "hai"}
+
+
 def _accept_intake_name_reply(text: str) -> str | None:
     """
-    Normalize a student's name reply after the combined outreach template.
+    Normalize a student's name reply after the outreach welcome / continue nudge.
 
-    Accepts single names (e.g. Ishq) — the template already asked for full name.
+    Accepts single names (e.g. Ishq). Greeting-only replies (hi/hello) are ignored
+    so intake can continue (skip name when already known, or re-prompt when not).
     """
     cleaned = " ".join((text or "").split())
     if len(cleaned) < NAME_MIN_LENGTH or len(cleaned) > NAME_MAX_LENGTH:
         return None
     if cleaned.lower().startswith("whatsapp contact"):
+        return None
+    if _is_continue_greeting(cleaned):
         return None
     if not re.search(r"[a-zA-Z]", cleaned):
         return None
@@ -975,6 +1083,34 @@ def _uses_degree_major_country_flow(context: dict[str, Any]) -> bool:
     return bool(_load_target_degree(context)) and not context.get("awaiting_study_confirmation")
 
 
+async def _transition_to_call_consent(
+    db: Session,
+    lead: Lead,
+    runtime_config,
+    *,
+    incoming_text: str = "",
+    task: str | None = None,
+) -> IntakeReply:
+    lead.intake_step = INTAKE_STEP_CALL_CONSENT
+    db.commit()
+    consent_reply = await _agent_intake_reply(
+        db,
+        lead,
+        runtime_config,
+        task=task
+        or (
+            "INTAKE_STEP=CONSENT; Ask if they want a free consultation call with an admissions "
+            "advisor to guide them through applications."
+        ),
+        incoming_text=incoming_text,
+    )
+    return IntakeReply(
+        text=consent_reply.text,
+        confidence=consent_reply.confidence,
+        quick_reply=_build_call_consent_quick_reply(consent_reply.text),
+    )
+
+
 async def process_intake_message(
     db: Session,
     lead: Lead,
@@ -993,96 +1129,22 @@ async def process_intake_message(
     text = (incoming_text or "").strip()
     first = (lead.full_name or "there").split()[0]
 
-    if step in {INTAKE_STEP_WELCOME, ""} or not getattr(lead, "intake_step", None):
-        accepted = _accept_intake_name_reply(text)
-        if accepted:
-            lead.full_name = accepted
-            lead.intake_step = INTAKE_STEP_CURRENT_LOCATION
-            db.commit()
-            return await _agent_intake_reply(
-                db,
-                lead,
-                runtime_config,
-                task=(
-                    f"INTAKE_STEP=LOCATION; Student name saved as {lead.full_name!r}. "
-                    "Ask for their current city and country."
-                ),
-                incoming_text=text,
-            )
-        lead.intake_step = INTAKE_STEP_FULL_NAME
-        db.commit()
-        return await _agent_intake_reply(
-            db,
-            lead,
-            runtime_config,
-            task="INTAKE_STEP=WELCOME; Open the WhatsApp intake and ask for the student's full name.",
-            incoming_text=text,
-        )
+    skipped = await _skip_removed_intake_step(db, lead, step, runtime_config, incoming_text=text)
+    if skipped is not None:
+        return skipped
 
-    if step == INTAKE_STEP_FULL_NAME:
-        accepted = _accept_intake_name_reply(text)
-        if not accepted:
-            cleaned_len = len(" ".join((text or "").split()))
-            if cleaned_len > NAME_MAX_LENGTH:
-                task = (
-                    f"INTAKE_STEP=FULL_NAME; Name was too long (max {NAME_MAX_LENGTH} characters). "
-                    "Ask once more for the student's name."
-                )
-            else:
-                task = "INTAKE_STEP=FULL_NAME; Ask once more for the student's name."
-            return await _agent_intake_reply(
-                db,
-                lead,
-                runtime_config,
-                task=task,
-                incoming_text=text,
-            )
-        lead.full_name = accepted
-        lead.intake_step = INTAKE_STEP_CURRENT_LOCATION
-        db.commit()
-        return await _agent_intake_reply(
-            db,
-            lead,
-            runtime_config,
-            task=(
-                f"INTAKE_STEP=LOCATION; Student name saved as {lead.full_name!r}. "
-                "Ask for their current city and country."
-            ),
-            incoming_text=text,
-        )
-
-    if step == INTAKE_STEP_CURRENT_LOCATION:
-        location = _normalize_intake_text_reply(text)
-        if not location:
-            if len((text or "").strip()) > INTAKE_TEXT_MAX_LENGTH:
-                task = (
-                    f"INTAKE_STEP=LOCATION; Reply was too long (max {INTAKE_TEXT_MAX_LENGTH} characters). "
-                    "Ask again for city and country."
-                )
-            else:
-                task = "INTAKE_STEP=LOCATION; Location answer was too short. Ask again for city and country."
-            return await _agent_intake_reply(
-                db,
-                lead,
-                runtime_config,
-                task=task,
-                incoming_text=text,
-            )
-        lead.current_location = location
-        lead.intake_step = INTAKE_STEP_TARGET_DEGREE
-        db.commit()
-        return await _degree_step_reply(
-            db,
-            lead,
-            runtime_config,
-            task=(
-                f"INTAKE_STEP=DEGREE; Location saved as {lead.current_location!r}. "
-                "Ask which program (degree) they are targeting and invite them to tap the button below to choose."
-            ),
-            incoming_text=text,
-        )
+    # Full-name collection removed — any lingering FULL_NAME/WELCOME state is handled above.
 
     if step == INTAKE_STEP_TARGET_DEGREE:
+        # "hi"/"hello" after the continue nudge is not a degree choice — show the picker.
+        if _is_continue_greeting(text):
+            return await _prompt_target_degree_step(
+                db,
+                lead,
+                runtime_config,
+                incoming_text=text,
+                reason="Continue greeting received; present degree options",
+            )
         degree = _parse_degree_selection(text)
         if not degree:
             return await _degree_step_reply(
@@ -1179,17 +1241,16 @@ async def process_intake_message(
             major = _load_target_major(context)
             lead.academic_summary = f"Degree: {degree} | Major: {major} | Country: {country}"
             lead.intake_context = json.dumps(context)
-            lead.intake_step = INTAKE_STEP_ENGLISH_SCORES
             db.commit()
-            return await _agent_intake_reply(
+            return await _transition_to_call_consent(
                 db,
                 lead,
                 runtime_config,
-                task=(
-                    f"INTAKE_STEP=ENGLISH; Country saved as {country!r}. "
-                    "Ask for English test scores (IELTS, TOEFL, PTE, or Duolingo) or invite them to reply skip."
-                ),
                 incoming_text=text,
+                task=(
+                    f"INTAKE_STEP=CONSENT; Country saved as {country!r}. "
+                    "Ask if they want a free consultation call with an admissions advisor."
+                ),
             )
 
         if lead_has_complete_study_interest(lead):
@@ -1197,17 +1258,17 @@ async def process_intake_message(
             if not context.get("awaiting_study_confirmation"):
                 study = resolve_lead_study_interest(lead)
                 _persist_resolved_study_interest(db, lead, study)
-                lead.intake_step = INTAKE_STEP_ENGLISH_SCORES
                 db.commit()
-                return await _agent_intake_reply(
+                return await _transition_to_call_consent(
                     db,
                     lead,
                     runtime_config,
-                    task=(
-                        f"INTAKE_STEP=ENGLISH; Target saved as {study.get('course') or study.get('program')} "
-                        f"in {lead.preferred_country}. Ask for English test scores or invite them to reply skip."
-                    ),
                     incoming_text=text,
+                    task=(
+                        f"INTAKE_STEP=CONSENT; Target saved as {study.get('course') or study.get('program')} "
+                        f"in {lead.preferred_country}. "
+                        "Ask if they want a free consultation call with an admissions advisor."
+                    ),
                 )
 
         context = _load_context(lead)
@@ -1217,97 +1278,6 @@ async def process_intake_message(
         study = resolve_lead_study_interest(lead)
         _prepare_target_step_prefill(db, lead, study)
         return await _handle_study_plan_whatsapp_collection(db, lead, text, runtime_config)
-
-    if step == INTAKE_STEP_ENGLISH_SCORES:
-        if _is_skip(text):
-            lead.english_test_scores = "Not provided yet"
-        else:
-            score = _normalize_score_reply(text)
-            if not score:
-                return await _agent_intake_reply(
-                    db,
-                    lead,
-                    runtime_config,
-                    task=(
-                        f"INTAKE_STEP=ENGLISH; Score reply was too long (max {SCORE_MAX_LENGTH} characters). "
-                        "Ask for English test scores or invite them to reply skip."
-                    ),
-                    incoming_text=text,
-                )
-            lead.english_test_scores = score
-        lead.intake_step = INTAKE_STEP_GRE_SCORE
-        db.commit()
-        return await _agent_intake_reply(
-            db,
-            lead,
-            runtime_config,
-            task="INTAKE_STEP=GRE; Ask for GRE score or invite them to reply skip.",
-            incoming_text=text,
-        )
-
-    if step == INTAKE_STEP_GRE_SCORE:
-        if _is_skip(text):
-            lead.gre_score = "Not provided"
-        else:
-            score = _normalize_score_reply(text)
-            if not score:
-                return await _agent_intake_reply(
-                    db,
-                    lead,
-                    runtime_config,
-                    task=(
-                        f"INTAKE_STEP=GRE; Score reply was too long (max {SCORE_MAX_LENGTH} characters). "
-                        "Ask for GRE score or invite them to reply skip."
-                    ),
-                    incoming_text=text,
-                )
-            lead.gre_score = score
-        lead.intake_step = INTAKE_STEP_GMAT_SCORE
-        db.commit()
-        return await _agent_intake_reply(
-            db,
-            lead,
-            runtime_config,
-            task="INTAKE_STEP=GMAT; Ask for GMAT score or invite them to reply skip.",
-            incoming_text=text,
-        )
-
-    if step == INTAKE_STEP_GMAT_SCORE:
-        if _is_skip(text):
-            lead.gmat_score = "Not provided"
-        else:
-            score = _normalize_score_reply(text)
-            if not score:
-                return await _agent_intake_reply(
-                    db,
-                    lead,
-                    runtime_config,
-                    task=(
-                        f"INTAKE_STEP=GMAT; Score reply was too long (max {SCORE_MAX_LENGTH} characters). "
-                        "Ask for GMAT score or invite them to reply skip."
-                    ),
-                    incoming_text=text,
-                )
-            lead.gmat_score = score
-        lead.test_scores = (
-            f"English: {lead.english_test_scores or 'N/A'} | "
-            f"GRE: {lead.gre_score or 'N/A'} | "
-            f"GMAT: {lead.gmat_score or 'N/A'}"
-        )
-        lead.intake_step = INTAKE_STEP_CALL_CONSENT
-        db.commit()
-        consent_reply = await _agent_intake_reply(
-            db,
-            lead,
-            runtime_config,
-            task="INTAKE_STEP=CONSENT; Ask if they want an admissions advisor to call and guide them through applications.",
-            incoming_text=text,
-        )
-        return IntakeReply(
-            text=consent_reply.text,
-            confidence=consent_reply.confidence,
-            quick_reply=_build_call_consent_quick_reply(consent_reply.text),
-        )
 
     if step == INTAKE_STEP_MARKETING_CONSENT:
         marketing_reply = _handle_marketing_consent_selection(
@@ -1484,6 +1454,14 @@ async def get_current_step_reply(db: Session, lead: Lead, runtime_config) -> Int
 
     hydrate_lead_study_interest(db, lead, commit=False)
     step = get_intake_step(lead)
+    if step == INTAKE_STEP_CURRENT_LOCATION:
+        lead.intake_step = INTAKE_STEP_TARGET_DEGREE
+        db.commit()
+        step = INTAKE_STEP_TARGET_DEGREE
+    if step in {INTAKE_STEP_ENGLISH_SCORES, INTAKE_STEP_GRE_SCORE, INTAKE_STEP_GMAT_SCORE}:
+        lead.intake_step = INTAKE_STEP_CALL_CONSENT
+        db.commit()
+        step = INTAKE_STEP_CALL_CONSENT
     if step == INTAKE_STEP_TARGET_COUNTRY:
         context = _load_context(lead)
         if _uses_degree_major_country_flow(context):
@@ -1499,9 +1477,9 @@ async def get_current_step_reply(db: Session, lead: Lead, runtime_config) -> Int
         study = resolve_lead_study_interest(lead)
         if lead_has_complete_study_interest(lead):
             _persist_resolved_study_interest(db, lead, study)
-            step = INTAKE_STEP_ENGLISH_SCORES
-            lead.intake_step = INTAKE_STEP_ENGLISH_SCORES
+            lead.intake_step = INTAKE_STEP_CALL_CONSENT
             db.commit()
+            step = INTAKE_STEP_CALL_CONSENT
         else:
             _prepare_target_step_prefill(db, lead, study)
             db.commit()
@@ -1532,11 +1510,11 @@ async def get_current_step_reply(db: Session, lead: Lead, runtime_config) -> Int
             ),
         )
     if step in {INTAKE_STEP_WELCOME, INTAKE_STEP_FULL_NAME, ""} or not getattr(lead, "intake_step", None):
-        return await _agent_intake_reply(
+        return await _prompt_target_degree_step(
             db,
             lead,
             runtime_config,
-            task="INTAKE_STEP=WELCOME; Resume intake and ask for the student's full name.",
+            reason="Resume intake after full-name step removal",
         )
     if step == INTAKE_STEP_PICK_DATE:
         return await _booking_step_reply(
@@ -1566,7 +1544,6 @@ async def get_current_step_reply(db: Session, lead: Lead, runtime_config) -> Int
             task="INTAKE_STEP=PICK_DATE; Prompt the student to choose a consultation date.",
         )
     step_tasks = {
-        INTAKE_STEP_CURRENT_LOCATION: "INTAKE_STEP=LOCATION; Ask for current city and country.",
         INTAKE_STEP_TARGET_MAJOR: (
             "INTAKE_STEP=MAJOR; Ask which major they are targeting with examples "
             "like Computer Science or Business Administration."
@@ -1574,9 +1551,6 @@ async def get_current_step_reply(db: Session, lead: Lead, runtime_config) -> Int
         INTAKE_STEP_TARGET_COUNTRY: (
             "INTAKE_STEP=COUNTRY; Ask which country they are targeting with examples US, UK, JP, AU, NZ."
         ),
-        INTAKE_STEP_ENGLISH_SCORES: "INTAKE_STEP=ENGLISH; Ask for English test scores or skip.",
-        INTAKE_STEP_GRE_SCORE: "INTAKE_STEP=GRE; Ask for GRE score or skip.",
-        INTAKE_STEP_GMAT_SCORE: "INTAKE_STEP=GMAT; Ask for GMAT score or skip.",
         INTAKE_STEP_CALL_CONSENT: "INTAKE_STEP=CONSENT; Ask if they want an advisor call.",
     }
     if step == INTAKE_STEP_CALL_CONSENT:
@@ -1667,17 +1641,14 @@ def _resolve_intake_restart_step(lead: Lead, incoming_hint: str | None = None) -
     del incoming_hint
     context = _load_context(lead)
 
-    if _lead_has_real_name(lead):
-        if not lead.current_location:
-            return INTAKE_STEP_CURRENT_LOCATION
-        if not _load_target_degree(context):
-            return INTAKE_STEP_TARGET_DEGREE
-        if not _load_target_major(context):
-            return INTAKE_STEP_TARGET_MAJOR
-        if not (lead.preferred_country or "").strip():
-            return INTAKE_STEP_TARGET_COUNTRY
-        return INTAKE_STEP_ENGLISH_SCORES
-    return INTAKE_STEP_FULL_NAME
+    # Full-name collection removed — start at degree when profile name is present or not.
+    if not _load_target_degree(context):
+        return INTAKE_STEP_TARGET_DEGREE
+    if not _load_target_major(context):
+        return INTAKE_STEP_TARGET_MAJOR
+    if not (lead.preferred_country or "").strip():
+        return INTAKE_STEP_TARGET_COUNTRY
+    return INTAKE_STEP_CALL_CONSENT
 
 
 def begin_whatsapp_intake_session(
@@ -1696,18 +1667,15 @@ def begin_whatsapp_intake_session(
     interest = _extract_study_interest(incoming_hint or "")
 
     if force_full_restart:
-        lead.intake_step = INTAKE_STEP_FULL_NAME
         lead.current_location = None
         context = {"study_interest": interest} if interest else {}
         lead.intake_context = json.dumps(context) if context else None
+        lead.intake_step = INTAKE_STEP_TARGET_DEGREE
     else:
         context = _load_context(lead)
         if interest:
             context["study_interest"] = interest
-        if not _lead_has_real_name(lead):
-            lead.intake_step = INTAKE_STEP_FULL_NAME
-        else:
-            lead.intake_step = _resolve_intake_restart_step(lead, incoming_hint)
+        lead.intake_step = _resolve_intake_restart_step(lead, incoming_hint)
         lead.intake_context = json.dumps(context) if context else None
 
     db.commit()
@@ -2480,13 +2448,9 @@ INTAKE_STEP_LABELS: dict[str, str] = {
 
 INTAKE_STEP_ORDER: list[str] = [
     INTAKE_STEP_FULL_NAME,
-    INTAKE_STEP_CURRENT_LOCATION,
     INTAKE_STEP_TARGET_DEGREE,
     INTAKE_STEP_TARGET_MAJOR,
     INTAKE_STEP_TARGET_COUNTRY,
-    INTAKE_STEP_ENGLISH_SCORES,
-    INTAKE_STEP_GRE_SCORE,
-    INTAKE_STEP_GMAT_SCORE,
     INTAKE_STEP_CALL_CONSENT,
     INTAKE_STEP_PICK_DATE,
     INTAKE_STEP_PICK_TIME,
@@ -2542,6 +2506,8 @@ def build_intake_profile_summary(
     from app.services.lead_study_interest import study_interest_profile_fields
 
     step = get_intake_step(lead)
+    if step in {INTAKE_STEP_ENGLISH_SCORES, INTAKE_STEP_GRE_SCORE, INTAKE_STEP_GMAT_SCORE}:
+        step = INTAKE_STEP_CALL_CONSENT
     context = _load_context(lead)
     study_fields = study_interest_profile_fields(lead)
     summary: dict[str, Any] = {

@@ -8,6 +8,7 @@ interface UserProfileMenuProps {
   role: string;
   initials: string;
   onLogout: () => void;
+  onDarkHeader?: boolean;
 }
 
 const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
@@ -16,6 +17,7 @@ const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
   role,
   initials,
   onLogout,
+  onDarkHeader = false,
 }) => {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -36,18 +38,28 @@ const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
       <button
         type="button"
         onClick={() => setOpen(prev => !prev)}
-        className="flex items-center gap-3 pl-2 rounded-lg hover:bg-surface-bg/80 transition-colors"
+        className={`flex items-center gap-3 pl-2 rounded-lg transition-colors ${
+          onDarkHeader ? 'hover:bg-white/10' : 'hover:bg-surface-bg/80'
+        }`}
         aria-expanded={open}
         aria-haspopup="menu"
       >
         <div className="text-right hidden sm:block">
-          <p className="text-xs font-bold text-text-main">
+          <p className={`text-xs font-bold ${onDarkHeader ? 'text-white' : 'text-text-main'}`}>
             {firstName}
             {lastName ? ` ${lastName}` : ''}
           </p>
-          <p className="text-[10px] font-medium text-text-muted">{role}</p>
+          <p className={`text-[10px] font-medium ${onDarkHeader ? 'text-white/70' : 'text-text-muted'}`}>
+            {role}
+          </p>
         </div>
-        <div className="w-9 h-9 rounded-lg bg-surface-bg flex items-center justify-center text-text-main font-bold border border-border-subtle uppercase">
+        <div
+          className={`w-9 h-9 rounded-lg flex items-center justify-center font-bold border uppercase ${
+            onDarkHeader
+              ? 'bg-white/15 text-white border-white/25'
+              : 'bg-surface-bg text-text-main border-border-subtle'
+          }`}
+        >
           {initials}
         </div>
       </button>

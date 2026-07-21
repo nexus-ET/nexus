@@ -25,8 +25,8 @@ from sqlalchemy.engine import Inspector
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 LEGACY_BASELINE_REVISION = "d9a4b2c81f0e"
-HEAD_REVISION = "s5p8q1r54s0m"
-
+# Legacy stamp chain used only for databases provisioned before Alembic tracking.
+# Fresh Neon projects (e.g. Nexus-Dev-1) take the "Fresh database" path → upgrade head.
 ORDERED_REVISIONS: list[str] = [
     "d9a4b2c81f0e",
     "e1f3a8b92c4d",
@@ -45,6 +45,28 @@ ORDERED_REVISIONS: list[str] = [
     "r4n7o2p36q8l",
     "s5p8q1r54s0m",
 ]
+
+
+def _alembic_head_revision() -> str:
+    """Resolve current Alembic head dynamically (do not hardcode)."""
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "heads"],
+        cwd=BACKEND_ROOT,
+        text=True,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    output = (result.stdout or "") + (result.stderr or "")
+    for line in output.splitlines():
+        token = line.strip().split()[0] if line.strip() else ""
+        if token and len(token) >= 8 and all(ch.isalnum() for ch in token):
+            return token
+    raise RuntimeError(f"Could not resolve alembic head from: {output!r}")
+
+
+HEAD_REVISION = "s5p8q1r54s0m"  # fallback only; overwritten in main()
 
 
 def _load_database_url() -> str:
@@ -246,6 +268,10 @@ def _migrate_to_head(inspector: Inspector) -> None:
 
 
 def main() -> int:
+    global HEAD_REVISION
+    HEAD_REVISION = _alembic_head_revision()
+    print(f"Alembic head target: {HEAD_REVISION}")
+
     database_url = _load_database_url()
     engine = create_engine(database_url)
     inspector = inspect(engine)
@@ -277,6 +303,12 @@ def main() -> int:
 
     final = _current_alembic_revision()
     print(f"Done. Alembic revision is now: {final or 'unknown'}")
+    if final and final != HEAD_REVISION:
+        # Later academia migrations may exist beyond the legacy ORDERED_REVISIONS stamp chain.
+        print(f"Running final alembic upgrade head (target {HEAD_REVISION})...")
+        _run_alembic("upgrade", "head")
+        final = _current_alembic_revision()
+        print(f"Done. Alembic revision is now: {final or 'unknown'}")
     return 0
 
 

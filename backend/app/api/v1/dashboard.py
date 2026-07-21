@@ -54,11 +54,16 @@ async def get_dashboard_summary(limit: int = 5, db: Session = Depends(get_db)):
         }
     ] if metrics["escalation_queue"] > 0 else []
 
+    from app.services.hierarchical_intake_service import list_calendar_intake_alerts
+
+    calendar_alerts = list_calendar_intake_alerts(db, limit=10)
+
     return {
         **metrics,
         # Backward-compatible alias for existing frontend consumers
         "missing_audit_count": metrics["missing_post_audit"],
         "notifications": notifications,
+        "calendar_alerts": [alert.model_dump() for alert in calendar_alerts],
         "leads": [_map_lead_for_dashboard(lead) for lead in pipeline_leads],
         "pending_advisor_questions": get_pending_advisor_questions(db, limit=10),
     }

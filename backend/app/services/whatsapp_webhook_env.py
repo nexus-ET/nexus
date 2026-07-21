@@ -310,7 +310,14 @@ def audit_whatsapp_webhook_routing() -> None:
     challenge = "nexus-webhook-health"
     reachable = False
     try:
-        with httpx.Client(timeout=12, follow_redirects=True) as client:
+        with httpx.Client(
+            timeout=12,
+            follow_redirects=True,
+            headers={
+                "User-Agent": "facebookexternalua",
+                "ngrok-skip-browser-warning": "true",
+            },
+        ) as client:
             response = client.get(
                 meta_url,
                 params={

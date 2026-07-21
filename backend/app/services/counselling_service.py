@@ -14,6 +14,7 @@ from app.models.message import Message
 from app.models.message_history import MessageHistory
 from app.models.status_definition import StatusDefinition
 from app.models.user import User
+from app.services.candidate_profile_service import build_candidate_profile
 from app.services.lead_study_interest import resolve_lead_study_interest
 from app.services.pipeline_service import OUTCOME_CONFIG
 from app.services.status_definition_service import (
@@ -822,6 +823,52 @@ def _get_viewable_booking(db: Session, user: User, booking_id: int) -> Counselli
     return booking
 
 
+def get_viewable_booking_for_lead(db: Session, user: User, lead_id: int) -> CounsellingBooking | None:
+    bookings = (
+        db.query(CounsellingBooking)
+        .filter(
+            CounsellingBooking.lead_id == lead_id,
+            CounsellingBooking.admin_id.isnot(None),
+        )
+        .order_by(CounsellingBooking.scheduled_time.desc(), CounsellingBooking.id.desc())
+        .all()
+    )
+    for booking in bookings:
+        if booking.admin_id == user.id or _my_bookings_view_all(user):
+            return booking
+    return None
+
+
+def get_lead_profile_booking_context(db: Session, user: User, lead_id: int) -> dict:
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead profile not found.")
+    booking = get_viewable_booking_for_lead(db, user, lead_id)
+    if not booking:
+        raise HTTPException(
+            status_code=404,
+            detail="No counselling booking is available for this student on your account.",
+        )
+    admin = db.query(User).filter(User.id == booking.admin_id).first() if booking.admin_id else None
+    section = "today"
+    payload = _serialize_my_booking(db, booking, admin, section, lead=lead)
+    return {
+        "id": payload["id"],
+        "lead_id": payload.get("lead_id"),
+        "candidate_name": payload.get("candidate_name") or lead.full_name,
+        "candidate_email": payload.get("candidate_email") or lead.email,
+        "candidate_phone": payload.get("candidate_phone") or lead.phone_number,
+        "current_location": payload.get("current_location"),
+        "preferred_country": payload.get("preferred_country"),
+        "course_interest": payload.get("course_interest"),
+        "status_definition_id": payload.get("status_definition_id"),
+        "status_stage_name": payload.get("status_stage_name"),
+        "status_category": payload.get("status_category"),
+        "date_label": payload.get("date_label"),
+        "time_label": payload.get("time_label"),
+    }
+
+
 def _get_owned_booking(db: Session, user_id: int, booking_id: int) -> CounsellingBooking:
     booking = (
         db.query(CounsellingBooking)
@@ -1138,6 +1185,21 @@ def _serialize_booking_activity_context(
 
     forward_status_changes_blocked = _booking_forward_status_change_blocked(booking, calendar_today)
 
+    if lead:
+        from app.services.students_master_service import (
+            get_students_master_by_lead,
+            merge_profile_with_students_master,
+        )
+
+        master = get_students_master_by_lead(db, lead.id)
+        candidate_profile = merge_profile_with_students_master(
+            db,
+            build_candidate_profile(db, lead, booking),
+            master,
+        )
+    else:
+        candidate_profile = build_candidate_profile(db, None, booking)
+
     return {
         "booking": serialized_booking,
         "status_history": status_history,
@@ -1153,6 +1215,7 @@ def _serialize_booking_activity_context(
         "backward_status_ids": backward_status_ids,
         "lead_jump_path": _resolve_lead_jump_path(lead),
         "can_update_status": bool(lead),
+        "candidate_profile": candidate_profile,
     }
 
 
@@ -1191,6 +1254,506 @@ def get_booking_view_detail(db: Session, user_id: int, booking_id: int) -> dict:
         "session_outcomes": [],
         "pipeline_stages": [],
     }
+
+
+def get_booking_candidate_profile(db: Session, user_id: int, booking_id: int) -> dict:
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    profile = build_candidate_profile(db, lead, booking)
+    if lead:
+        from app.services.students_master_service import (
+            get_students_master_by_lead,
+            merge_profile_with_students_master,
+        )
+
+        master = get_students_master_by_lead(db, lead.id)
+        profile = merge_profile_with_students_master(db, profile, master)
+    return {
+        "booking_id": booking.id,
+        "candidate_name": booking.candidate_name,
+        "profile": profile,
+    }
+
+
+def save_booking_students_master(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    payload,
+) -> dict:
+    from app.schemas.students_master import StudentMasterSaveRequest
+    from app.services.students_master_service import (
+        students_master_to_profile_dict,
+        upsert_students_master,
+    )
+
+    if not isinstance(payload, StudentMasterSaveRequest):
+        payload = StudentMasterSaveRequest.model_validate(payload)
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+
+    record = upsert_students_master(
+        db,
+        lead=lead,
+        booking_id=booking.id,
+        user_id=user_id,
+        payload=payload,
+    )
+    profile = students_master_to_profile_dict(db, record)
+    return {
+        "booking_id": booking.id,
+        "lead_id": lead.id if lead else None,
+        "students_master_id": record.id,
+        "saved_at": record.updated_at,
+        "profile": profile,
+    }
+
+
+def get_booking_candidate_aspirations(db: Session, user_id: int, booking_id: int) -> dict:
+    from app.services.student_aspirations_service import get_booking_aspirations
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return get_booking_aspirations(db, booking, lead)
+
+
+def save_booking_candidate_aspirations(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    payload,
+) -> dict:
+    from app.schemas.student_aspirations import StudentAspirationsSaveRequest
+    from app.services.student_aspirations_service import save_booking_aspirations
+
+    if not isinstance(payload, StudentAspirationsSaveRequest):
+        payload = StudentAspirationsSaveRequest.model_validate(payload)
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return save_booking_aspirations(db, booking, lead, user_id, payload)
+
+
+def get_booking_candidate_test_scores(db: Session, user_id: int, booking_id: int) -> dict:
+    from app.services.candidate_test_scores_service import get_candidate_test_scores
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return get_candidate_test_scores(db, booking_id=booking_id, lead=lead).model_dump()
+
+
+def save_booking_candidate_test_scores(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    payload,
+) -> dict:
+    from app.schemas.candidate_test_scores import CandidateTestScoreSaveRequest
+    from app.services.candidate_test_scores_service import save_candidate_test_scores
+
+    if not isinstance(payload, CandidateTestScoreSaveRequest):
+        payload = CandidateTestScoreSaveRequest.model_validate(payload)
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    response = save_candidate_test_scores(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        payload=payload,
+    )
+    return response.model_dump()
+
+
+def get_booking_work_experiences(db: Session, user_id: int, booking_id: int) -> dict:
+    from app.services.work_experience_service import get_work_experiences
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return get_work_experiences(db, booking_id=booking_id, lead=lead).model_dump()
+
+
+def save_booking_work_experiences(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    payload,
+) -> dict:
+    from app.schemas.work_experience import WorkExperienceSaveRequest
+    from app.services.work_experience_service import save_work_experiences
+
+    if not isinstance(payload, WorkExperienceSaveRequest):
+        payload = WorkExperienceSaveRequest.model_validate(payload)
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return save_work_experiences(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        payload=payload,
+    ).model_dump()
+
+
+def get_booking_research_projects(db: Session, user_id: int, booking_id: int) -> dict:
+    from app.services.research_project_service import get_research_projects
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return get_research_projects(db, booking_id=booking_id, lead=lead).model_dump()
+
+
+def create_booking_research_project(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    payload,
+) -> dict:
+    from app.schemas.research_project import ResearchProjectInput
+    from app.services.research_project_service import create_research_project
+
+    if not isinstance(payload, ResearchProjectInput):
+        payload = ResearchProjectInput.model_validate(payload)
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return create_research_project(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        payload=payload,
+    ).model_dump()
+
+
+def update_booking_research_project(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    project_id: int,
+    payload,
+) -> dict:
+    from app.schemas.research_project import ResearchProjectInput
+    from app.services.research_project_service import update_research_project
+
+    if not isinstance(payload, ResearchProjectInput):
+        payload = ResearchProjectInput.model_validate(payload)
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return update_research_project(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        project_id=project_id,
+        payload=payload,
+    ).model_dump()
+
+
+def delete_booking_research_project(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    project_id: int,
+) -> dict:
+    from app.services.research_project_service import delete_research_project
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return delete_research_project(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        project_id=project_id,
+    ).model_dump()
+
+
+def get_booking_candidate_educations(db: Session, user_id: int, booking_id: int) -> dict:
+    from app.services.candidate_education_service import get_candidate_educations
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return get_candidate_educations(db, booking_id=booking_id, lead=lead).model_dump()
+
+
+def create_booking_candidate_education(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    payload,
+) -> dict:
+    from app.schemas.candidate_education import CandidateEducationInput
+    from app.services.candidate_education_service import create_candidate_education
+
+    if not isinstance(payload, CandidateEducationInput):
+        payload = CandidateEducationInput.model_validate(payload)
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return create_candidate_education(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        payload=payload,
+    ).model_dump()
+
+
+def update_booking_candidate_education(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    education_id: int,
+    payload,
+) -> dict:
+    from app.schemas.candidate_education import CandidateEducationInput
+    from app.services.candidate_education_service import update_candidate_education
+
+    if not isinstance(payload, CandidateEducationInput):
+        payload = CandidateEducationInput.model_validate(payload)
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return update_candidate_education(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        education_id=education_id,
+        payload=payload,
+    ).model_dump()
+
+
+def delete_booking_candidate_education(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    education_id: int,
+) -> dict:
+    from app.services.candidate_education_service import delete_candidate_education
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return delete_candidate_education(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        education_id=education_id,
+    ).model_dump()
+
+
+def get_booking_non_academic_activities(db: Session, user_id: int, booking_id: int) -> dict:
+    from app.services.non_academic_activity_service import get_non_academic_activities
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return get_non_academic_activities(db, booking_id=booking_id, lead=lead).model_dump()
+
+
+def create_booking_non_academic_activity(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    payload,
+) -> dict:
+    from app.schemas.non_academic_activity import NonAcademicActivityInput
+    from app.services.non_academic_activity_service import create_non_academic_activity
+
+    if not isinstance(payload, NonAcademicActivityInput):
+        payload = NonAcademicActivityInput.model_validate(payload)
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return create_non_academic_activity(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        payload=payload,
+    ).model_dump()
+
+
+def update_booking_non_academic_activity(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    activity_id: int,
+    payload,
+) -> dict:
+    from app.schemas.non_academic_activity import NonAcademicActivityInput
+    from app.services.non_academic_activity_service import update_non_academic_activity
+
+    if not isinstance(payload, NonAcademicActivityInput):
+        payload = NonAcademicActivityInput.model_validate(payload)
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return update_non_academic_activity(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        activity_id=activity_id,
+        payload=payload,
+    ).model_dump()
+
+
+def delete_booking_non_academic_activity(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    activity_id: int,
+) -> dict:
+    from app.services.non_academic_activity_service import delete_non_academic_activity
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return delete_non_academic_activity(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        activity_id=activity_id,
+    ).model_dump()
+
+
+def get_booking_digital_presence_links(db: Session, user_id: int, booking_id: int) -> dict:
+    from app.services.digital_presence_link_service import get_digital_presence_links
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return get_digital_presence_links(db, booking_id=booking_id, lead=lead).model_dump()
+
+
+def create_booking_digital_presence_link(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    payload,
+) -> dict:
+    from app.schemas.digital_presence_link import DigitalPresenceLinkInput
+    from app.services.digital_presence_link_service import create_digital_presence_link
+
+    if not isinstance(payload, DigitalPresenceLinkInput):
+        payload = DigitalPresenceLinkInput.model_validate(payload)
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return create_digital_presence_link(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        payload=payload,
+    ).model_dump()
+
+
+def update_booking_digital_presence_link(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    link_id: int,
+    payload,
+) -> dict:
+    from app.schemas.digital_presence_link import DigitalPresenceLinkInput
+    from app.services.digital_presence_link_service import update_digital_presence_link
+
+    if not isinstance(payload, DigitalPresenceLinkInput):
+        payload = DigitalPresenceLinkInput.model_validate(payload)
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return update_digital_presence_link(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        link_id=link_id,
+        payload=payload,
+    ).model_dump()
+
+
+def delete_booking_digital_presence_link(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    link_id: int,
+) -> dict:
+    from app.services.digital_presence_link_service import delete_digital_presence_link
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return delete_digital_presence_link(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        link_id=link_id,
+    ).model_dump()
 
 
 def update_my_booking_status(

@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.models.lead import LeadStage
 from app.services.admissions_intake_flow import (
     INTAKE_STEP_COMPLETE,
-    INTAKE_STEP_CURRENT_LOCATION,
     INTAKE_STEP_FULL_NAME,
+    INTAKE_STEP_TARGET_DEGREE,
     _looks_like_full_name,
     process_intake_message,
 )
@@ -34,6 +34,15 @@ def test_accept_intake_name_reply_accepts_single_name() -> None:
     assert _accept_intake_name_reply("a") is None
 
 
+def test_accept_intake_name_reply_rejects_greetings() -> None:
+    from app.services.admissions_intake_flow import _accept_intake_name_reply
+
+    assert _accept_intake_name_reply("hi") is None
+    assert _accept_intake_name_reply("Hello!") is None
+    assert _accept_intake_name_reply("hey") is None
+    assert _accept_intake_name_reply("Ishq") == "Ishq"
+
+
 def test_lead_has_real_name_accepts_single_name() -> None:
     from types import SimpleNamespace
 
@@ -50,7 +59,7 @@ def test_begin_whatsapp_intake_force_restart_clears_stale_location() -> None:
     from unittest.mock import MagicMock
 
     from app.services.admissions_intake_flow import (
-        INTAKE_STEP_FULL_NAME,
+        INTAKE_STEP_TARGET_DEGREE,
         begin_whatsapp_intake_session,
     )
 
@@ -64,10 +73,86 @@ def test_begin_whatsapp_intake_force_restart_clears_stale_location() -> None:
     )
     db = MagicMock()
     begin_whatsapp_intake_session(db, lead, force_full_restart=True)
-    assert lead.intake_step == INTAKE_STEP_FULL_NAME
+    assert lead.intake_step == INTAKE_STEP_TARGET_DEGREE
     assert lead.current_location is None
     assert lead.intake_context is None
     db.commit.assert_called_once()
+
+
+def test_greeting_on_degree_step_does_not_use_there_prefix() -> None:
+    async def _run() -> None:
+        lead = SimpleNamespace(
+            id=3,
+            full_name="WhatsApp Contact (+911234567890)",
+            intake_step=INTAKE_STEP_TARGET_DEGREE,
+            intake_context=None,
+            preferred_country=None,
+            current_location=None,
+            phone_number="+911234567890",
+            academic_summary=None,
+            consultation_scheduled_at=None,
+            wants_consultation_call=None,
+            additional_data=None,
+        )
+        db = MagicMock()
+        db.commit = MagicMock()
+
+        from app.config import settings
+
+        with patch.object(settings, "NEXUS_APPOINTMENTS_ONLY", True):
+            reply = await process_intake_message(
+                db,
+                lead,
+                "hello",
+                MagicMock(is_active=False),
+            )
+
+        assert lead.intake_step == INTAKE_STEP_TARGET_DEGREE
+        assert not reply.text.lower().startswith("there,")
+        assert "there," not in reply.text.lower()
+        assert "not recognized" not in reply.text.lower()
+        assert "degree" in reply.text.lower()
+        assert reply.list_picker is not None
+
+    asyncio.run(_run())
+
+
+def test_greeting_skips_full_name_and_asks_degree() -> None:
+    async def _run() -> None:
+        lead = SimpleNamespace(
+            id=1,
+            full_name="WhatsApp Contact (+911234567890)",
+            intake_step=INTAKE_STEP_FULL_NAME,
+            intake_context=None,
+            preferred_country=None,
+            current_location=None,
+            phone_number="+911234567890",
+            academic_summary=None,
+            consultation_scheduled_at=None,
+            wants_consultation_call=None,
+            additional_data=None,
+        )
+        db = MagicMock()
+        db.commit = MagicMock()
+
+        from app.config import settings
+
+        with patch.object(settings, "NEXUS_APPOINTMENTS_ONLY", True):
+            reply = await process_intake_message(
+                db,
+                lead,
+                "hi",
+                MagicMock(is_active=False),
+            )
+
+        assert lead.intake_step == INTAKE_STEP_TARGET_DEGREE
+        assert "full name" not in reply.text.lower()
+        assert "free study abroad consultation" not in reply.text.lower()
+        assert "there," not in reply.text.lower()
+        assert "program (degree)" in reply.text.lower() or "degree" in reply.text.lower()
+        assert reply.list_picker is not None
+
+    asyncio.run(_run())
 
 
 def test_find_lead_for_inbound_whatsapp_prefers_active_intake_over_handoff() -> None:
@@ -101,7 +186,7 @@ def test_find_lead_for_inbound_whatsapp_prefers_active_intake_over_handoff() -> 
     assert matched is outreach_lead
 
 
-def test_process_intake_full_name_advances_to_location() -> None:
+def test_process_intake_full_name_advances_to_degree() -> None:
     async def _run() -> None:
         lead = SimpleNamespace(
             id=1,
@@ -128,14 +213,15 @@ def test_process_intake_full_name_advances_to_location() -> None:
                 MagicMock(is_active=False),
             )
 
-        assert lead.intake_step == INTAKE_STEP_CURRENT_LOCATION
+        assert lead.intake_step == INTAKE_STEP_TARGET_DEGREE
         assert lead.full_name == "Priya Sharma"
-        assert "city and country" in reply.text.lower()
+        assert "program (degree)" in reply.text.lower()
+        assert "city and country" not in reply.text.lower()
 
     asyncio.run(_run())
 
 
-def test_process_intake_single_name_advances_to_location() -> None:
+def test_process_intake_single_name_advances_to_degree() -> None:
     async def _run() -> None:
         lead = SimpleNamespace(
             id=1,
@@ -162,9 +248,10 @@ def test_process_intake_single_name_advances_to_location() -> None:
                 MagicMock(is_active=False),
             )
 
-        assert lead.intake_step == INTAKE_STEP_CURRENT_LOCATION
+        assert lead.intake_step == INTAKE_STEP_TARGET_DEGREE
         assert lead.full_name == "Ishq"
-        assert "city and country" in reply.text.lower()
+        assert "program (degree)" in reply.text.lower()
+        assert "city and country" not in reply.text.lower()
         assert "full first and last name" not in reply.text.lower()
 
     asyncio.run(_run())
@@ -191,7 +278,7 @@ def test_handle_ai_active_inbound_processes_intake_before_inactive_agent_handoff
         db.commit = MagicMock()
 
         intake_reply = SimpleNamespace(
-            text="Thanks, Priya! Which city and country are you in right now?",
+            text="Thanks, Priya! Which program (degree) are you targeting?",
             confidence=1.0,
         )
 

@@ -10,8 +10,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@hookform/resolvers": "^5.4.0",
     "@tanstack/react-query": "^5.101.0",
     "@tanstack/react-virtual": "^3.14.3",
+    "@tiptap/extension-character-count": "^3.27.3",
+    "@tiptap/extension-link": "^3.27.3",
+    "@tiptap/pm": "^3.27.3",
+    "@tiptap/react": "^3.27.3",
+    "@tiptap/starter-kit": "^3.27.3",
     "@types/react-datepicker": "^6.2.0",
     "axios": "^1.16.1",
     "firebase": "^12.14.0",
@@ -21,8 +27,10 @@
     "react": "^19.2.6",
     "react-datepicker": "^9.1.0",
     "react-dom": "^19.2.6",
+    "react-hook-form": "^7.81.0",
     "react-router-dom": "^7.16.0",
-    "recharts": "^3.8.1"
+    "recharts": "^3.8.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -53,8 +53,9 @@ class Settings(BaseSettings):
     # Second Meta template for the intake prompt (recommended — session text often does not deliver).
     WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE: str | None = None
     WHATSAPP_OUTREACH_FOLLOWUP_TEMPLATE_LANGUAGE: str | None = None
-    # When true, skip the second WhatsApp send (welcome template body already includes the intake prompt).
-    WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP: bool = False
+    # When true, skip any second WhatsApp send after the welcome template.
+    # Default true: welcome only; student hi/hello starts intake questions.
+    WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP: bool = True
     # When true, refuse session-text fallback — require follow-up template or skip flag above.
     WHATSAPP_OUTREACH_REQUIRE_FOLLOWUP_TEMPLATE: bool = False
     # Comma-separated body placeholders to send: student, company. Empty = no parameters (static template).
@@ -111,11 +112,24 @@ class Settings(BaseSettings):
     # When true, scheduled failures are logged only — manual "Run audit" still sends alerts.
     SECURITY_AUDIT_ALERT_MANUAL_ONLY: bool = False
 
+    # Process-level kill switch for the uptime monitoring scheduler (DB MONITORING_STATUS still gates each run).
+    MONITORING_CHECK_ENABLED: bool = True
+    MONITORING_CHECK_INTERVAL_MINUTES: int = 5
+
     # Max pending + scheduled counselling appointments allowed at the same time slot
     MAX_COUNSELLING_BOOKINGS_PER_SLOT: int = 5
 
     # Max characters per chat message (team chat + internal messaging)
     CHAT_MAX_CHARS: int = 500
+
+    # Cloudflare R2 (S3-compatible) for institution logos, banners, and gallery images
+    R2_ACCOUNT_ID: str | None = None
+    R2_ACCESS_KEY_ID: str | None = None
+    R2_SECRET_ACCESS_KEY: str | None = None
+    R2_BUCKET_NAME: str | None = None
+    # Public CDN/custom domain base, e.g. https://assets.example.com (no trailing slash)
+    R2_PUBLIC_BASE_URL: str | None = None
+    R2_ENDPOINT_URL: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 

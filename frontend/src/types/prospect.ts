@@ -3,10 +3,27 @@ export type PlatformBadge = 'FB' | 'IG' | null;
 export type ProspectListItem = {
   id: number;
   full_name: string;
+  name?: string;
+  email?: string;
+  phone?: string | null;
+  phone_number?: string | null;
   stage: string;
+  status?: string;
   source?: string | null;
   platform_badge: PlatformBadge;
   received_at?: string | null;
+  updated_at?: string | null;
+  latest_interaction_time?: string | null;
+  preferred_country?: string | null;
+  preferred_course?: string | null;
+  target_program?: string | null;
+  target_degree?: string | null;
+  target_major?: string | null;
+  current_location?: string | null;
+  study_interest_complete?: boolean | null;
+  intake_step?: string | null;
+  intake_step_label?: string | null;
+  intake_complete?: boolean | null;
 };
 
 export type ProspectsListResponse = {
@@ -67,6 +84,7 @@ export type ProspectsFilters = {
   source: string;
   dateFrom: string;
   dateTo: string;
+  category: string;
 };
 
 export const DEFAULT_PROSPECTS_FILTERS: ProspectsFilters = {
@@ -74,4 +92,5 @@ export const DEFAULT_PROSPECTS_FILTERS: ProspectsFilters = {
   source: 'ALL',
   dateFrom: '',
   dateTo: '',
+  category: '',
 };

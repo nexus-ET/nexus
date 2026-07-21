@@ -45,6 +45,11 @@ export default defineConfig({
         secure: false,
         ws: true,
       },
+      '/uploads': {
+        target: `http://${bindHost}:${backendPort}`,
+        changeOrigin: true,
+        secure: false,
+      },
     },
   },
 });

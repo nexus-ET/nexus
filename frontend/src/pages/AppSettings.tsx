@@ -4,11 +4,12 @@ import PublicHolidayCalendar from '../components/PublicHolidayCalendar';
 import { apiFetch } from '../utils/api';
 import { clearBusinessTimezoneCache } from '../utils/timezone';
 import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
+import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 import { useCountries } from '../hooks/useCountries';
 
-type SettingValueType = 'text' | 'number' | 'boolean' | 'time' | 'working_days' | 'timezone';
+type SettingValueType = 'text' | 'number' | 'boolean' | 'time' | 'working_days' | 'timezone' | 'select';
 
-interface TimezoneOption {
+interface SettingOption {
   value: string;
   label: string;
 }
@@ -22,12 +23,18 @@ interface DynamicSetting {
   label: string;
   value_type: SettingValueType | string;
   description: string;
-  options?: TimezoneOption[] | null;
+  options?: SettingOption[] | null;
 }
 
 interface SettingsResponse {
   settings: DynamicSetting[];
 }
+
+const MONITORING_SETTING_ORDER = [
+  'MONITORING_STATUS',
+  'UPTIME_TARGET_URL',
+  'ALERT_EMAIL',
+] as const;
 
 interface BusinessProfile {
   business_id: number;
@@ -82,7 +89,7 @@ const EMPTY_BUSINESS_PROFILE_DRAFT: BusinessProfileDraft = {
 };
 
 const DOMAIN_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
-const OFFICE_PHONE_PATTERN = /^\+?[0-9()\-\s.]{7,50}$/;
+const OFFICE_PHONE_PATTERN = /^\+?[0-9a-zA-Z()\-\s.]{7,50}$/;
 
 const isValidWebUrl = (value: string): boolean => {
   try {
@@ -238,6 +245,17 @@ const AppSettings: React.FC = () => {
     [draftValues, settings]
   );
 
+  const { generalSettings, monitoringPanelSettings } = useMemo(() => {
+    const monitoringKeys = new Set<string>(MONITORING_SETTING_ORDER);
+    const byKey = new Map(settings.map(item => [item.key, item]));
+    return {
+      generalSettings: settings.filter(item => !monitoringKeys.has(item.key)),
+      monitoringPanelSettings: MONITORING_SETTING_ORDER.map(key => byKey.get(key)).filter(
+        (item): item is DynamicSetting => Boolean(item)
+      ),
+    };
+  }, [settings]);
+
   const savedBusinessProfileDraft = useMemo(
     () => businessProfileToDraft(businessProfile),
     [businessProfile]
@@ -249,6 +267,7 @@ const AppSettings: React.FC = () => {
   );
 
   const hasUnsavedChanges = dirtyKeys.length > 0 || isBusinessProfileDirty;
+  useUnsavedChanges(hasUnsavedChanges, 'app-settings');
 
   const handleDraftChange = (key: string, value: string) => {
     setDraftValues(prev => ({ ...prev, [key]: value }));
@@ -547,6 +566,28 @@ const AppSettings: React.FC = () => {
       );
     }
 
+    if (setting.value_type === 'select') {
+      const options = setting.options ?? [];
+      return (
+        <select
+          value={value}
+          onChange={event => handleDraftChange(setting.key, event.target.value)}
+          className="w-full max-w-md rounded-lg border border-border-subtle bg-surface-bg px-3 py-2 text-sm text-text-main focus:outline-none focus:border-accent focus:ring-4 focus:ring-accent/10"
+          aria-label={setting.label}
+        >
+          {options.length === 0 ? (
+            <option value={value}>{value || '—'}</option>
+          ) : (
+            options.map(option => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))
+          )}
+        </select>
+      );
+    }
+
     if (setting.value_type === 'boolean') {
       const enabled = value.toLowerCase() === 'true';
       return (
@@ -568,16 +609,86 @@ const AppSettings: React.FC = () => {
       );
     }
 
+    const inputType =
+      setting.key === 'ALERT_EMAIL'
+        ? 'text'
+        : setting.key === 'UPTIME_TARGET_URL'
+          ? 'url'
+          : setting.value_type === 'number'
+            ? 'number'
+            : setting.value_type === 'time'
+              ? 'time'
+              : 'text';
+
     return (
       <input
-        type={setting.value_type === 'number' ? 'number' : 'text'}
+        type={inputType}
         min={setting.value_type === 'number' ? 1 : undefined}
         value={value}
         onChange={event => handleDraftChange(setting.key, event.target.value)}
-        className="w-full max-w-md rounded-lg border border-border-subtle bg-surface-bg px-3 py-2 text-sm text-text-main focus:outline-none focus:border-accent focus:ring-4 focus:ring-accent/10"
+        placeholder={
+          setting.key === 'UPTIME_TARGET_URL'
+            ? 'https://example.com/health'
+            : setting.key === 'ALERT_EMAIL'
+              ? 'admin@example.com, ops@example.com'
+              : undefined
+        }
+        className={`w-full rounded-lg border border-border-subtle bg-surface-bg px-3 py-2 text-sm text-text-main focus:outline-none focus:border-accent focus:ring-4 focus:ring-accent/10 ${
+          setting.key === 'ALERT_EMAIL' ? 'max-w-2xl' : 'max-w-md'
+        }`}
       />
     );
   };
+
+  const renderSettingRow = (setting: DynamicSetting) => {
+    const isDirty = dirtyKeys.includes(setting.key);
+    return (
+      <tr
+        key={setting.key}
+        className={`border-b border-border-subtle/70 ${isDirty ? 'bg-accent/5' : ''}`}
+      >
+        <td className="px-4 py-4 align-top">
+          <div className="font-medium text-text-main">{setting.label}</div>
+          <div className="text-xs text-text-muted mt-1">{setting.description}</div>
+          <div className="text-[11px] text-text-muted mt-1 font-mono">{setting.key}</div>
+        </td>
+        <td className="px-4 py-4 align-top">{renderValueInput(setting)}</td>
+        <td className="px-4 py-4 align-top text-xs text-text-muted hidden lg:table-cell">
+          {setting.updated_at ? formatDateTime(setting.updated_at) : 'Not saved yet'}
+        </td>
+        <td className="px-4 py-4 align-top text-xs text-text-muted hidden lg:table-cell">
+          {formatModifiedBy(setting)}
+        </td>
+      </tr>
+    );
+  };
+
+  const renderActionButtons = (placement: 'top' | 'bottom') => (
+    <div
+      className={`flex items-center gap-2 ${
+        placement === 'top' ? 'self-start' : 'justify-end pt-2'
+      }`}
+    >
+      <button
+        type="button"
+        onClick={loadSettings}
+        disabled={loading || saving}
+        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border-subtle bg-card text-sm hover:bg-surface-bg disabled:opacity-60"
+      >
+        <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+        Refresh
+      </button>
+      <button
+        type="button"
+        onClick={handleSave}
+        disabled={saving || !hasUnsavedChanges}
+        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-text-dark-bg text-sm font-semibold hover:opacity-90 disabled:opacity-50"
+      >
+        {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+        Save Settings
+      </button>
+    </div>
+  );
 
   if (accessDenied) {
     return (
@@ -598,29 +709,10 @@ const AppSettings: React.FC = () => {
             Application Settings
           </h1>
           <p className="text-sm text-text-muted mt-1">
-            Manage business profile, counselling, bookings, office hours, business timezone, working days, and public holidays.
+            Manage business profile, counselling, bookings, office hours, business timezone, working days, public holidays, and uptime monitoring.
           </p>
         </div>
-        <div className="flex items-center gap-2 self-start">
-          <button
-            type="button"
-            onClick={loadSettings}
-            disabled={loading || saving}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border-subtle bg-card text-sm hover:bg-surface-bg disabled:opacity-60"
-          >
-            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saving || !hasUnsavedChanges}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-text-dark-bg text-sm font-semibold hover:opacity-90 disabled:opacity-50"
-          >
-            {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-            Save Changes
-          </button>
-        </div>
+        {renderActionButtons('top')}
       </div>
 
       {successMessage && (
@@ -755,30 +847,20 @@ const AppSettings: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {settings.map(setting => {
-                  const isDirty = dirtyKeys.includes(setting.key);
-                  return (
-                    <tr
-                      key={setting.key}
-                      className={`border-b border-border-subtle/70 ${isDirty ? 'bg-accent/5' : ''}`}
-                    >
-                      <td className="px-4 py-4 align-top">
-                        <div className="font-medium text-text-main">{setting.label}</div>
-                        <div className="text-xs text-text-muted mt-1">{setting.description}</div>
-                        <div className="text-[11px] text-text-muted mt-1 font-mono">{setting.key}</div>
-                      </td>
-                      <td className="px-4 py-4 align-top">{renderValueInput(setting)}</td>
-                      <td className="px-4 py-4 align-top text-xs text-text-muted hidden lg:table-cell">
-                        {setting.updated_at
-                          ? formatDateTime(setting.updated_at)
-                          : 'Not saved yet'}
-                      </td>
-                      <td className="px-4 py-4 align-top text-xs text-text-muted hidden lg:table-cell">
-                        {formatModifiedBy(setting)}
+                {generalSettings.map(setting => renderSettingRow(setting))}
+                {monitoringPanelSettings.length > 0 && (
+                  <>
+                    <tr className="border-b border-border-subtle/70 bg-surface-bg/80">
+                      <td colSpan={4} className="px-4 pt-4 pb-2">
+                        <div className="text-sm font-semibold text-text-main">Monitoring</div>
+                        <p className="text-xs text-text-muted mt-0.5">
+                          Uptime checks run only while Monitoring status is Active.
+                        </p>
                       </td>
                     </tr>
-                  );
-                })}
+                    {monitoringPanelSettings.map(setting => renderSettingRow(setting))}
+                  </>
+                )}
               </tbody>
             </table>
           </div>
@@ -788,11 +870,13 @@ const AppSettings: React.FC = () => {
       {hasUnsavedChanges && (
         <p className="text-xs text-text-muted">
           {(dirtyKeys.length + (isBusinessProfileDirty ? 1 : 0))} unsaved change
-          {dirtyKeys.length + (isBusinessProfileDirty ? 1 : 0) === 1 ? '' : 's'}. Click Save Changes to apply.
+          {dirtyKeys.length + (isBusinessProfileDirty ? 1 : 0) === 1 ? '' : 's'}. Click Save Settings to apply.
         </p>
       )}
 
       <PublicHolidayCalendar />
+
+      {renderActionButtons('bottom')}
     </div>
   );
 };

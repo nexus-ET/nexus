@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Mapping
 
 from sqlalchemy import or_
@@ -9,11 +8,50 @@ from sqlalchemy.orm import Session
 
 from app.models.lead import Lead
 
+# ITU E.161 / NANP vanity keypad mapping (e.g. CAREY -> 22739).
+_VANITY_KEYPAD = {
+    "a": "2",
+    "b": "2",
+    "c": "2",
+    "d": "3",
+    "e": "3",
+    "f": "3",
+    "g": "4",
+    "h": "4",
+    "i": "4",
+    "j": "5",
+    "k": "5",
+    "l": "5",
+    "m": "6",
+    "n": "6",
+    "o": "6",
+    "p": "7",
+    "q": "7",
+    "r": "7",
+    "s": "7",
+    "t": "8",
+    "u": "8",
+    "v": "8",
+    "w": "9",
+    "x": "9",
+    "y": "9",
+    "z": "9",
+}
+
 
 def digits_only(phone: str | None) -> str:
+    """Return keypad digits, converting vanity letters (e.g. CAREY -> 22739)."""
     if not phone:
         return ""
-    return re.sub(r"\D", "", str(phone).replace("whatsapp:", "", 1))
+    text = str(phone).replace("whatsapp:", "", 1)
+    mapped: list[str] = []
+    for char in text:
+        lower = char.lower()
+        if lower in _VANITY_KEYPAD:
+            mapped.append(_VANITY_KEYPAD[lower])
+        elif char.isdigit():
+            mapped.append(char)
+    return "".join(mapped)
 
 
 def clean_phone_number(raw_phone: str | None) -> str:

@@ -6,11 +6,13 @@ import {
   Expand,
   Mail,
   MessageCircle,
+  MessageSquare,
   Minimize2,
+  Sparkles,
   UserPlus,
   Users,
 } from 'lucide-react';
-import type { ProspectDetail, ProspectsSummary } from '../../types/prospect';
+import type { ProspectDetail } from '../../types/prospect';
 import type { ProspectDetailTab } from '../../utils/prospectsUrl';
 import {
   ACTOR_THEME,
@@ -19,27 +21,40 @@ import {
   formatProspectTime,
   platformBadgeStyle,
 } from '../../utils/prospectMessages';
-import { useUpdateProspectNotes, useUpdateProspectStatus } from '../../hooks/useProspects';
+import { useUpdateProspectNotes, useUpdateProspectStatus, useLeadProfileBooking } from '../../hooks/useProspects';
 import {
   useStatusDefinitions,
   useUpdateStudentStatus,
   useValidTransitions,
   ValidTransitionOption,
 } from '../../hooks/useStudentStatus';
+import { useQuery } from '@tanstack/react-query';
+import { apiFetch } from '../../utils/api';
+import type { CandidateProfile } from '../../types/candidateProfile';
+import { formatProfileFullName } from '../../utils/profilePulse';
+import { phoneLocalToDigits } from '../../utils/phoneCountry';
 import StudentJourneyPanel from '../StudentJourneyPanel';
+import InteractionLogDrawer from '../InteractionLogDrawer';
+import CounsellingSessionModal from '../CounsellingSessionModal';
+import CandidateProfilePanel from '../CandidateProfilePanel';
+import DigitalPresenceAdminSection from '../DigitalPresenceAdminSection';
+import AiActivePulseBoard, { type PulseLead } from '../AiActivePulseBoard';
 import { categoryBadgeClass } from '../../utils/statusBadges';
 
 type ProspectDetailPanelProps = {
   leadId: number | null;
   detail?: ProspectDetail;
   isLoading: boolean;
-  summary?: ProspectsSummary;
+  pulseLeads?: PulseLead[];
+  isPulseLoading?: boolean;
+  onSelectPulseLead?: (leadId: number) => void;
   activeTab: ProspectDetailTab;
   onTabChange: (tab: ProspectDetailTab) => void;
   onBack?: () => void;
   showBackButton?: boolean;
   isFocusMode?: boolean;
   onToggleFocus?: () => void;
+  studentProfileTabs?: boolean;
 };
 
 const STATUS_OPTIONS = [
@@ -89,13 +104,16 @@ export default function ProspectDetailPanel({
   leadId,
   detail,
   isLoading,
-  summary,
+  pulseLeads = [],
+  isPulseLoading = false,
+  onSelectPulseLead,
   activeTab,
   onTabChange,
   onBack,
   showBackButton = false,
   isFocusMode = false,
   onToggleFocus,
+  studentProfileTabs = false,
 }: ProspectDetailPanelProps) {
   const [notesDraft, setNotesDraft] = useState('');
   const [pipelineStatusId, setPipelineStatusId] = useState('');
@@ -103,12 +121,34 @@ export default function ProspectDetailPanel({
   const [expressTargetId, setExpressTargetId] = useState('');
   const [revertTargetId, setRevertTargetId] = useState('');
   const [journeyOpen, setJourneyOpen] = useState(false);
+  const [interactionBookingId, setInteractionBookingId] = useState<number | null>(null);
+  const [sessionOpen, setSessionOpen] = useState(false);
   const historyRef = useRef<HTMLDivElement | null>(null);
   const statusMutation = useUpdateProspectStatus();
   const notesMutation = useUpdateProspectNotes(leadId);
   const { data: statusDefinitionsData } = useStatusDefinitions();
   const { data: validTransitions } = useValidTransitions(leadId);
   const pipelineStatusMutation = useUpdateStudentStatus(leadId);
+  const profileBookingQuery = useLeadProfileBooking(leadId, studentProfileTabs);
+  const candidateProfileQuery = useQuery({
+    queryKey: ['bookings', 'candidate-profile-header', profileBookingQuery.data?.id],
+    queryFn: () =>
+      apiFetch(`bookings/mine/${profileBookingQuery.data!.id}/profile`) as Promise<{
+        profile: CandidateProfile;
+      }>,
+    enabled: studentProfileTabs && Boolean(profileBookingQuery.data?.id),
+    staleTime: 60_000,
+  });
+
+  const profileFullName = useMemo(
+    () => formatProfileFullName(candidateProfileQuery.data?.profile),
+    [candidateProfileQuery.data?.profile]
+  );
+  const metaReceivedName = useMemo(() => {
+    if (!detail) return '';
+    return (detail.full_name || detail.name || '').trim();
+  }, [detail]);
+  const counsellingDisplayName = profileFullName || metaReceivedName || 'Student';
 
   const statusDefinitions = statusDefinitionsData?.items ?? [];
   const forwardTransitions = validTransitions?.forward ?? [];
@@ -132,6 +172,8 @@ export default function ProspectDetailPanel({
 
   useEffect(() => {
     setJourneyOpen(false);
+    setInteractionBookingId(null);
+    setSessionOpen(false);
   }, [leadId]);
 
   useEffect(() => {
@@ -176,32 +218,13 @@ export default function ProspectDetailPanel({
 
   if (!leadId) {
     return (
-      <section className="prospects-detail-panel prospects-detail-panel--empty">
-        <div className="prospects-welcome">
-          <div className="prospects-welcome__icon">👥</div>
-          <h3>Select a lead to view details</h3>
-          <p>Choose a prospect from the list to review their profile, messages, and notes.</p>
-          {summary ? (
-            <div className="prospects-welcome__stats">
-              <div>
-                <strong>{summary.leads_today}</strong>
-                <span>Leads today</span>
-              </div>
-              <div>
-                <strong>{summary.total_leads}</strong>
-                <span>Total leads</span>
-              </div>
-              <div>
-                <strong>{summary.pending_handoff}</strong>
-                <span>Pending handoff</span>
-              </div>
-              <div>
-                <strong>{summary.meta_leads}</strong>
-                <span>Meta leads</span>
-              </div>
-            </div>
-          ) : null}
-        </div>
+      <section className="prospects-detail-panel prospects-detail-panel--pulse">
+        <AiActivePulseBoard
+          mode="prospects"
+          leads={pulseLeads}
+          isLoading={isPulseLoading}
+          onSelectLead={leadId => onSelectPulseLead?.(leadId)}
+        />
       </section>
     );
   }
@@ -276,7 +299,7 @@ export default function ProspectDetailPanel({
 
   const handleMessage = () => {
     if (phone && phone !== '—') {
-      window.open(`https://wa.me/${phone.replace(/\D/g, '')}`, '_blank', 'noopener,noreferrer');
+      window.open(`https://wa.me/${phoneLocalToDigits(phone)}`, '_blank', 'noopener,noreferrer');
       return;
     }
     if (detail.email) {
@@ -296,22 +319,66 @@ export default function ProspectDetailPanel({
                 Back
               </button>
             ) : null}
-            <div>
-              <h3>{detail.full_name || detail.name}</h3>
-              <div className="prospects-detail-panel__chips">
-                {detail.platform_badge ? (
-                  <span className="prospects-chip" style={badgeStyle}>
-                    {detail.platform_badge}
-                  </span>
-                ) : null}
-                <span className="prospects-chip prospects-chip--muted">
-                  {detail.stage || detail.status}
-                </span>
-              </div>
+            <div className={studentProfileTabs ? 'min-w-0 flex-1' : undefined}>
+              {studentProfileTabs ? (
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h3 className="text-xl font-bold text-text-main leading-tight">
+                      {counsellingDisplayName}
+                    </h3>
+                    {!profileFullName && metaReceivedName ? (
+                      <p className="text-[11px] text-text-muted mt-0.5">Meta received name</p>
+                    ) : null}
+                    <div className="prospects-detail-panel__chips mt-1.5">
+                      {detail.platform_badge ? (
+                        <span className="prospects-chip" style={badgeStyle}>
+                          {detail.platform_badge}
+                        </span>
+                      ) : null}
+                      <span className="prospects-chip prospects-chip--muted">
+                        {detail.stage || detail.status}
+                      </span>
+                    </div>
+                  </div>
+                  {detail.status_stage_name ? (
+                    <span
+                      className={`inline-flex shrink-0 items-center rounded-full border px-3 py-1.5 text-sm font-bold leading-tight text-right ${categoryBadgeClass(
+                        detail.status_category
+                      )}`}
+                    >
+                      {detail.status_stage_name}
+                    </span>
+                  ) : null}
+                </div>
+              ) : (
+                <>
+                  <h3>{detail.full_name || detail.name}</h3>
+                  <div className="prospects-detail-panel__chips">
+                    {detail.platform_badge ? (
+                      <span className="prospects-chip" style={badgeStyle}>
+                        {detail.platform_badge}
+                      </span>
+                    ) : null}
+                    <span className="prospects-chip prospects-chip--muted">
+                      {detail.stage || detail.status}
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
           <div className="prospects-detail-panel__actions">
+            {onBack ? (
+              <button
+                type="button"
+                className="prospects-action-btn"
+                onClick={onBack}
+                title="Back to prospects pulse overview"
+              >
+                Overview
+              </button>
+            ) : null}
             {onToggleFocus ? (
               <button
                 type="button"
@@ -322,10 +389,40 @@ export default function ProspectDetailPanel({
                 {isFocusMode ? <Minimize2 size={15} /> : <Expand size={15} />}
               </button>
             ) : null}
-            <button type="button" className="prospects-action-btn" onClick={handleMessage}>
-              <MessageCircle size={15} />
-              Message
-            </button>
+            {studentProfileTabs ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const bookingId = profileBookingQuery.data?.id;
+                    if (bookingId) setInteractionBookingId(bookingId);
+                  }}
+                  disabled={!profileBookingQuery.data?.id || profileBookingQuery.isLoading}
+                  className="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-xs font-semibold text-text-main hover:bg-accent/20 disabled:opacity-60"
+                >
+                  <MessageSquare size={14} />
+                  View Interaction
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSessionOpen(true)}
+                  disabled={!profileBookingQuery.data?.id || profileBookingQuery.isLoading}
+                  className="inline-flex items-center gap-1 rounded-lg border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-xs font-semibold text-violet-900 hover:bg-violet-100 disabled:opacity-60"
+                >
+                  <Sparkles size={14} />
+                  Session
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="prospects-action-btn"
+                onClick={handleMessage}
+              >
+                <MessageCircle size={15} />
+                Message
+              </button>
+            )}
             <button type="button" className="prospects-action-btn" onClick={() => setJourneyOpen(true)}>
               View Journey
             </button>
@@ -355,20 +452,39 @@ export default function ProspectDetailPanel({
           </div>
         </div>
 
-        <div className="prospects-detail-panel__tabs">
-          {(Object.keys(TAB_LABELS) as ProspectDetailTab[]).map(tab => (
-            <button
-              key={tab}
-              type="button"
-              className={activeTab === tab ? 'is-active' : ''}
-              onClick={() => onTabChange(tab)}
-            >
-              {TAB_LABELS[tab]}
-            </button>
-          ))}
-        </div>
+        {!studentProfileTabs ? (
+          <div className="prospects-detail-panel__tabs">
+            {(Object.keys(TAB_LABELS) as ProspectDetailTab[]).map(tab => (
+              <button
+                key={tab}
+                type="button"
+                className={activeTab === tab ? 'is-active' : ''}
+                onClick={() => onTabChange(tab)}
+              >
+                {TAB_LABELS[tab]}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
 
+      {studentProfileTabs ? (
+        profileBookingQuery.isLoading ? (
+          <div className="prospects-empty flex-1">Loading student profile...</div>
+        ) : profileBookingQuery.data ? (
+          <CandidateProfilePanel
+            key={profileBookingQuery.data.id}
+            booking={profileBookingQuery.data}
+            variant="embedded"
+          />
+        ) : (
+          <div className="prospects-empty flex-1">
+            {profileBookingQuery.error instanceof Error
+              ? profileBookingQuery.error.message
+              : 'No counselling booking is available for this student on your account.'}
+          </div>
+        )
+      ) : (
       <div className="prospects-detail-panel__body custom-scroll-region">
         <div className={`prospects-tab-pane${activeTab === 'overview' ? ' is-active' : ''}`}>
           <div className="prospects-pipeline-status">
@@ -556,6 +672,7 @@ export default function ProspectDetailPanel({
                 <p>{detail.academic_summary}</p>
               </div>
             ) : null}
+            {leadId ? <DigitalPresenceAdminSection leadId={leadId} /> : null}
           </div>
         </div>
 
@@ -622,6 +739,7 @@ export default function ProspectDetailPanel({
           </div>
         </div>
       </div>
+      )}
     </section>
 
     <StudentJourneyPanel
@@ -630,6 +748,26 @@ export default function ProspectDetailPanel({
       studentName={detail.full_name || detail.name}
       onClose={() => setJourneyOpen(false)}
     />
+
+    <InteractionLogDrawer
+      open={interactionBookingId !== null}
+      bookingId={interactionBookingId}
+      onClose={() => setInteractionBookingId(null)}
+    />
+
+    {studentProfileTabs && profileBookingQuery.data ? (
+      <CounsellingSessionModal
+        open={sessionOpen}
+        bookingId={profileBookingQuery.data.id}
+        candidateName={profileBookingQuery.data.candidate_name}
+        dateLabel={profileBookingQuery.data.date_label}
+        timeLabel={profileBookingQuery.data.time_label}
+        onClose={() => setSessionOpen(false)}
+        onStatusUpdated={() => {
+          void profileBookingQuery.refetch();
+        }}
+      />
+    ) : null}
     </>
   );
 }

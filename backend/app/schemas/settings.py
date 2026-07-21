@@ -3,10 +3,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-SettingValueType = Literal["text", "number", "boolean", "time", "working_days", "timezone"]
+SettingValueType = Literal["text", "number", "boolean", "time", "working_days", "timezone", "select"]
 
 
-class TimezoneOption(BaseModel):
+class SettingOption(BaseModel):
     value: str
     label: str
 
@@ -20,7 +20,7 @@ class DynamicSettingOut(BaseModel):
     label: str
     value_type: SettingValueType | str = "text"
     description: str = ""
-    options: list[TimezoneOption] | None = None
+    options: list[SettingOption] | None = None
 
 
 class BusinessTimezoneResponse(BaseModel):

@@ -5,8 +5,12 @@ import { useCreateOfflineLead, useOfflineLeadDuplicateCheck, useOfflineLeads, us
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useCountries } from '../hooks/useCountries';
 import { findEducationDegree, useEducationDegrees } from '../hooks/useEducationDegrees';
+import { useLevels } from '../hooks/useLevels';
+import { levelSelectOptions } from '../constants/levels';
 import { findGpaCgpaScore, useGpaCgpaScores } from '../hooks/useGpaCgpaScores';
 import { useTargetCourses, useTargetPrograms } from '../hooks/useTargetPrograms';
+import { useConfirmation } from '../context/ConfirmationContext';
+import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 import {
   buildEducationPayload,
   educationToFormFields,
@@ -18,8 +22,12 @@ import {
   computeAgeFromDob,
   formatPhoneCountryLabel,
   parseStoredPhone,
+  phoneLocalToDigits,
+  sanitizePhoneLocalDraft,
   validatePhoneWithCountry,
   validateDateOfBirth,
+  PHONE_LOCAL_DRAFT_MAX_LENGTH,
+  PHONE_LOCAL_PLACEHOLDER,
 } from '../utils/phoneCountry';
 import type { EducationDegreeRecord } from '../types/educationDegree';
 import type { GpaCgpaScoreRecord } from '../types/gpaCgpaScore';
@@ -210,6 +218,7 @@ function SortIcon({
 }
 
 export default function OfflineLeadsPage() {
+  const openConfirm = useConfirmation();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<TablePageSize>(() =>
     readStoredTablePageSize(OFFLINE_LEADS_PAGE_SIZE_KEY)
@@ -224,6 +233,10 @@ export default function OfflineLeadsPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [geoLoading, setGeoLoading] = useState(false);
   const [formBaseline, setFormBaseline] = useState('');
+  const formIsDirty =
+    modalOpen && Boolean(formBaseline) && serializeOfflineLeadForm(form) !== formBaseline;
+  useUnsavedChanges(formIsDirty, 'offline-leads-form');
+  const [educationLevelId, setEducationLevelId] = useState('');
 
   const debouncedSearch = useDebouncedValue(search, 350);
 
@@ -243,7 +256,14 @@ export default function OfflineLeadsPage() {
   const createMutation = useCreateOfflineLead();
   const updateMutation = useUpdateOfflineLead();
   const { countries } = useCountries();
-  const { degrees } = useEducationDegrees();
+  const { degrees: allDegrees } = useEducationDegrees();
+  const { levels } = useLevels();
+  const filteredDegrees = useMemo(() => {
+    if (!educationLevelId) return allDegrees;
+    return allDegrees.filter(
+      degree => degree.level_id === Number(educationLevelId)
+    );
+  }, [allDegrees, educationLevelId]);
   const { scores: gpaCgpaScores } = useGpaCgpaScores();
   const { programs } = useTargetPrograms();
   const { courses: targetCourses } = useTargetCourses(form.target_program_code);
@@ -252,8 +272,8 @@ export default function OfflineLeadsPage() {
   const maxDateOfBirth = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const isSaving = createMutation.isPending || updateMutation.isPending;
   const selectedDegree = useMemo(
-    () => findEducationDegree(degrees, form.education?.degree_code),
-    [degrees, form.education?.degree_code]
+    () => findEducationDegree(allDegrees, form.education?.degree_code),
+    [allDegrees, form.education?.degree_code]
   );
   const selectedGpaCgpa = useMemo(
     () => findGpaCgpaScore(gpaCgpaScores, form.education?.gpa_cgpa_code),
@@ -286,6 +306,7 @@ export default function OfflineLeadsPage() {
 
   const openCreateModal = async () => {
     setEditingLead(null);
+    setEducationLevelId('');
     setForm(EMPTY_FORM);
     setFormError(null);
     setFormBaseline(serializeOfflineLeadForm(EMPTY_FORM));
@@ -306,7 +327,9 @@ export default function OfflineLeadsPage() {
   };
 
   const openEditModal = (lead: OfflineLeadItem) => {
-    const nextForm = leadToForm(lead, countries, degrees, gpaCgpaScores);
+    const nextForm = leadToForm(lead, countries, allDegrees, gpaCgpaScores);
+    const degree = findEducationDegree(allDegrees, nextForm.education?.degree_code);
+    setEducationLevelId(degree ? String(degree.level_id) : '');
     setEditingLead(lead);
     setForm(nextForm);
     setFormError(null);
@@ -322,14 +345,19 @@ export default function OfflineLeadsPage() {
     setFormBaseline('');
   }, []);
 
-  const requestCloseModal = useCallback(() => {
+  const requestCloseModal = useCallback(async () => {
     if (formBaseline && serializeOfflineLeadForm(form) !== formBaseline) {
-      if (!window.confirm(UNSAVED_CLOSE_MESSAGE)) {
+      if (!(await openConfirm({
+        title: 'Leave without saving?',
+        message: UNSAVED_CLOSE_MESSAGE,
+        confirmLabel: 'Leave without saving',
+        variant: 'warning',
+      }))) {
         return;
       }
     }
     closeModal();
-  }, [closeModal, form, formBaseline]);
+  }, [closeModal, form, formBaseline, openConfirm]);
 
   useEffect(() => {
     if (!modalOpen) return;
@@ -408,7 +436,7 @@ export default function OfflineLeadsPage() {
       form.education?.degree_code,
       form.education?.degree_other,
       form.education?.major,
-      degrees,
+      allDegrees,
       form.education?.university,
       form.education?.graduation_year
     );
@@ -446,7 +474,7 @@ export default function OfflineLeadsPage() {
     const educationPayload = buildEducationPayload(
       form.education?.degree_code,
       form.education?.degree_other,
-      degrees,
+      allDegrees,
       {
         major: form.education?.major,
         university: form.education?.university,
@@ -462,7 +490,7 @@ export default function OfflineLeadsPage() {
       middle_name: form.middle_name?.trim() || undefined,
       last_name: form.last_name.trim(),
       phone_country_iso2: form.phone_country_iso2,
-      phone_local: form.phone_local.replace(/\D/g, ''),
+      phone_local: phoneLocalToDigits(form.phone_local),
       email: form.email.trim(),
       date_of_birth: form.date_of_birth,
       target_destination_iso2: form.target_destination_iso2,
@@ -766,11 +794,16 @@ export default function OfflineLeadsPage() {
                       <label htmlFor="ol-phone-local">Phone Number *</label>
                       <input
                         id="ol-phone-local"
-                        inputMode="numeric"
+                        type="tel"
+                        inputMode="text"
+                        autoCapitalize="characters"
+                        spellCheck={false}
                         value={form.phone_local}
-                        onChange={e => updateForm({ phone_local: e.target.value.replace(/\D/g, '') })}
-                        placeholder="10-digit number"
-                        maxLength={10}
+                        onChange={e =>
+                          updateForm({ phone_local: sanitizePhoneLocalDraft(e.target.value) })
+                        }
+                        placeholder={PHONE_LOCAL_PLACEHOLDER}
+                        maxLength={PHONE_LOCAL_DRAFT_MAX_LENGTH}
                         required
                       />
                       {phoneTaken && (
@@ -827,6 +860,38 @@ export default function OfflineLeadsPage() {
                 <section className="offline-leads-panel">
                   <h4 className="offline-leads-panel__title">Education</h4>
                   <div className="offline-leads-form-grid offline-leads-form-grid--3">
+                    <div className="offline-leads-field">
+                      <label htmlFor="ol-course-level">Course Level *</label>
+                      <select
+                        id="ol-course-level"
+                        value={educationLevelId}
+                        onChange={e => {
+                          const nextLevelId = e.target.value;
+                          setEducationLevelId(nextLevelId);
+                          if (form.education?.degree_code) {
+                            const degree = findEducationDegree(
+                              allDegrees,
+                              form.education.degree_code
+                            );
+                            if (
+                              degree &&
+                              nextLevelId &&
+                              degree.level_id !== Number(nextLevelId)
+                            ) {
+                              updateEducation({ degree_code: '', degree_other: '', major: '' });
+                            }
+                          }
+                        }}
+                        required
+                      >
+                        <option value="">Select course level</option>
+                        {levelSelectOptions(levels).map(option => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                     <div className="offline-leads-field offline-leads-field--full">
                       <div className="offline-leads-degree-row">
                         <div className="offline-leads-field">
@@ -834,9 +899,10 @@ export default function OfflineLeadsPage() {
                           <select
                             id="ol-degree"
                             value={form.education?.degree_code || ''}
+                            disabled={!educationLevelId}
                             onChange={e => {
                               const nextCode = e.target.value;
-                              const nextDegree = findEducationDegree(degrees, nextCode);
+                              const nextDegree = findEducationDegree(allDegrees, nextCode);
                               updateEducation({
                                 degree_code: nextCode,
                                 degree_other: nextDegree?.is_other
@@ -847,8 +913,12 @@ export default function OfflineLeadsPage() {
                             }}
                             required
                           >
-                            <option value="">Select degree</option>
-                            {degrees.map(degree => (
+                            <option value="">
+                              {educationLevelId
+                                ? 'Select degree'
+                                : 'Select course level first'}
+                            </option>
+                            {filteredDegrees.map(degree => (
                               <option key={degree.code} value={degree.code}>
                                 {degree.label}
                               </option>

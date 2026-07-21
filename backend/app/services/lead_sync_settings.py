@@ -55,18 +55,8 @@ INTERVAL_UNIT_LABELS: dict[LeadSyncIntervalUnit, str] = {
 
 
 def seed_lead_sync_settings(db: Session) -> None:
-    defaults = {
-        KEY_MODE: DEFAULT_MODE,
-        KEY_INTERVAL_VALUE: str(DEFAULT_INTERVAL_VALUE),
-        KEY_INTERVAL_UNIT: DEFAULT_INTERVAL_UNIT,
-    }
-    for key, value in defaults.items():
-        existing = db.query(DynamicSetting).filter(DynamicSetting.key == key).first()
-        if existing:
-            continue
-        db.add(DynamicSetting(key=key, value=value))
-    db.commit()
-    clear_settings_cache()
+    """Disabled — lead sync settings are managed via Admin UI, not startup seeds."""
+    return
 
 
 def _upsert_setting(db: Session, key: str, value: str, updated_by_user_id: int | None = None) -> None:

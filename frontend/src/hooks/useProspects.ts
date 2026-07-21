@@ -6,6 +6,7 @@ import type {
   ProspectsListResponse,
   ProspectsSummary,
 } from '../types/prospect';
+import type { BookingRowForProfile } from '../utils/candidateProfileLoader';
 
 function buildProspectsQuery(filters: ProspectsFilters, cursor?: string | null): string {
   const params = new URLSearchParams();
@@ -15,6 +16,7 @@ function buildProspectsQuery(filters: ProspectsFilters, cursor?: string | null):
   if (filters.source && filters.source !== 'ALL') params.set('source', filters.source);
   if (filters.dateFrom) params.set('date_from', filters.dateFrom);
   if (filters.dateTo) params.set('date_to', filters.dateTo);
+  if (filters.category.trim()) params.set('category', filters.category.trim());
   return `leads/prospects?${params.toString()}`;
 }
 
@@ -42,6 +44,15 @@ export function useProspectDetail(leadId: number | null) {
     enabled: leadId != null && !Number.isNaN(leadId),
     staleTime: 5 * 60_000,
     gcTime: 10 * 60_000,
+  });
+}
+
+export function useLeadProfileBooking(leadId: number | null, enabled = true) {
+  return useQuery<BookingRowForProfile>({
+    queryKey: ['leads', 'profile-booking', leadId],
+    queryFn: () => apiFetch(`leads/${leadId}/profile-booking`),
+    enabled: enabled && leadId != null && !Number.isNaN(leadId),
+    staleTime: 60_000,
   });
 }
 

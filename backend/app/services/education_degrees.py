@@ -1,71 +1,91 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models.education_degree import EducationDegree
 from app.schemas.offline_lead import OfflineLeadEducation
+from app.services.levels import get_level
 from app.services.gpa_cgpa_scores import apply_gpa_cgpa_fields
 
+LEVEL_CODE_TO_ID = {
+    "ENTRY": 1,
+    "FOUNDATIONAL": 1,
+    "UNDERGRAD": 2,
+    "GRADUATE": 3,
+    "DOCTORAL": 4,
+    "CERT": 4,
+}
+
 DEFAULT_EDUCATION_DEGREES: list[dict[str, str | int | bool]] = [
-    {"code": "HIGH_SCHOOL_DIPLOMA_GED", "label": "High School Diploma / GED", "sort_order": 1},
-    {"code": "ASSOCIATE_DEGREE", "label": "Associate Degree (AA/AS)", "sort_order": 2},
-    {"code": "BACHELORS_DEGREE", "label": "Bachelor's Degree (BA/BS/B.Tech)", "sort_order": 3},
-    {"code": "MASTERS_DEGREE", "label": "Master's Degree (MA/MS/MBA/M.Tech)", "sort_order": 4},
-    {"code": "DOCTORATE", "label": "Doctorate (PhD/EdD)", "sort_order": 5},
-    {"code": "PROFESSIONAL_DEGREE", "label": "Professional Degree (JD/MD)", "sort_order": 6},
+    {"code": "SECONDARY_SCHOOL", "label": "Secondary (Grade 9–10)", "sort_order": 1, "course_level": "ENTRY"},
+    {"code": "SENIOR_SECONDARY", "label": "Senior Secondary (Grade 11–12)", "sort_order": 2, "course_level": "UNDERGRAD"},
+    {"code": "HIGH_SCHOOL_DIPLOMA_GED", "label": "High School Diploma / GED", "sort_order": 3, "course_level": "UNDERGRAD"},
+    {"code": "SOME_COLLEGE_NO_DEGREE", "label": "Some College (No Degree)", "sort_order": 4, "course_level": "GRADUATE"},
+    {"code": "ASSOCIATE_DEGREE", "label": "Associate Degree (AA/AS)", "sort_order": 5, "course_level": "DOCTORAL"},
     {
         "code": "BACHELORS_3Y_INTERNATIONAL",
         "label": "Bachelor's (3-Year International)",
-        "sort_order": 7,
+        "sort_order": 6,
+        "course_level": "UNDERGRAD",
     },
     {
         "code": "BACHELORS_4Y_INTERNATIONAL",
         "label": "Bachelor's (4-Year International)",
-        "sort_order": 8,
+        "sort_order": 7,
+        "course_level": "UNDERGRAD",
     },
-    {"code": "POST_GRADUATE_DIPLOMA", "label": "Post-Graduate Diploma (PGD)", "sort_order": 9},
-    {"code": "INTEGRATED_MASTERS", "label": "Integrated Master's", "sort_order": 10},
-    {"code": "STEM_DESIGNATED", "label": "STEM-Designated Degree", "sort_order": 11},
-    {"code": "BOOTCAMP_GRADUATE", "label": "Bootcamp Graduate", "sort_order": 12},
+    {"code": "BACHELORS_DEGREE", "label": "Bachelor's Degree (BA/BS/B.Tech)", "sort_order": 8, "course_level": "UNDERGRAD"},
+    {"code": "INTEGRATED_MASTERS", "label": "Integrated Master's", "sort_order": 9, "course_level": "GRADUATE"},
+    {"code": "MASTERS_DEGREE", "label": "Master's Degree (MA/MS/MBA/M.Tech)", "sort_order": 10, "course_level": "GRADUATE"},
+    {"code": "POST_GRADUATE_DIPLOMA", "label": "Post-Graduate Diploma (PGD)", "sort_order": 11, "course_level": "UNDERGRAD"},
+    {"code": "PROFESSIONAL_DEGREE", "label": "Professional Degree (JD/MD)", "sort_order": 12, "course_level": "CERT"},
+    {"code": "DOCTORATE", "label": "Doctorate (PhD/EdD)", "sort_order": 13, "course_level": "CERT"},
+    {"code": "STEM_DESIGNATED", "label": "STEM-Designated Degree", "sort_order": 14, "course_level": "ENTRY"},
+    {"code": "BOOTCAMP_GRADUATE", "label": "Bootcamp Graduate", "sort_order": 15, "course_level": "ENTRY"},
     {
         "code": "PROFESSIONAL_CERTIFICATION_ONLY",
         "label": "Professional Certification Only",
-        "sort_order": 13,
+        "sort_order": 16,
+        "course_level": "ENTRY",
     },
-    {"code": "SOME_COLLEGE_NO_DEGREE", "label": "Some College (No Degree)", "sort_order": 14},
-    {"code": "OTHER", "label": "Other", "sort_order": 99, "is_other": True},
+    {"code": "OTHER", "label": "Other", "sort_order": 99, "is_other": True, "course_level": "ENTRY"},
 ]
 
 
+def _resolve_level_id(db: Session, level_code: str) -> int:
+    level_id = LEVEL_CODE_TO_ID.get((level_code or "").strip().upper())
+    if level_id is None or not get_level(db, level_id):
+        raise RuntimeError(f"Level '{level_code}' is not seeded.")
+    return level_id
+
+
 def seed_education_degrees(db: Session) -> None:
-    for item in DEFAULT_EDUCATION_DEGREES:
-        existing = db.query(EducationDegree).filter(EducationDegree.code == item["code"]).first()
-        if existing:
-            existing.label = str(item["label"])
-            existing.sort_order = int(item["sort_order"])
-            existing.is_other = bool(item.get("is_other", False))
-            existing.is_active = True
-            continue
-        db.add(
-            EducationDegree(
-                code=str(item["code"]),
-                label=str(item["label"]),
-                sort_order=int(item["sort_order"]),
-                is_other=bool(item.get("is_other", False)),
-                is_active=True,
-            )
-        )
-    db.commit()
+    """Disabled — education degrees are managed via Admin UI / migrations, not startup seeds."""
+    return
 
 
-def list_active_education_degrees(db: Session) -> list[EducationDegree]:
-    return (
+def list_active_education_degrees(
+    db: Session,
+    *,
+    level_id: int | None = None,
+    level_code: str | None = None,
+) -> list[EducationDegree]:
+    q = (
         db.query(EducationDegree)
+        .options(joinedload(EducationDegree.level))
         .filter(EducationDegree.is_active.is_(True))
         .order_by(EducationDegree.sort_order.asc(), EducationDegree.label.asc())
-        .all()
     )
+    if level_id is not None:
+        q = q.filter(EducationDegree.level_id == level_id)
+    elif level_code:
+        level_id = LEVEL_CODE_TO_ID.get(level_code.strip().upper())
+        if level_id is not None:
+            q = q.filter(EducationDegree.level_id == level_id)
+        else:
+            return []
+    return q.all()
 
 
 def get_education_degree_by_code(db: Session, code: str) -> EducationDegree | None:
@@ -74,6 +94,7 @@ def get_education_degree_by_code(db: Session, code: str) -> EducationDegree | No
         return None
     return (
         db.query(EducationDegree)
+        .options(joinedload(EducationDegree.level))
         .filter(EducationDegree.code == normalized, EducationDegree.is_active.is_(True))
         .first()
     )

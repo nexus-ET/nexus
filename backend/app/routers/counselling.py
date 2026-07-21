@@ -18,6 +18,7 @@ from app.schemas.counselling import (
     BookingInteractionLogResponse,
     BookingOut,
     BookingSwitchRequest,
+    BookingCandidateProfileResponse,
     BookingViewDetailResponse,
     MyBookingReassignRequest,
     MyBookingsDayResponse,
@@ -25,6 +26,35 @@ from app.schemas.counselling import (
     MyBookingsResponse,
     PendingBookingsResponse,
     ScheduleGridResponse,
+)
+from app.schemas.students_master import StudentMasterSaveRequest, StudentMasterSaveResponse
+from app.schemas.student_aspirations import (
+    StudentAspirationsResponse,
+    StudentAspirationsSaveRequest,
+)
+from app.schemas.candidate_test_scores import (
+    CandidateTestScoreSaveRequest,
+    CandidateTestScoresResponse,
+)
+from app.schemas.work_experience import (
+    WorkExperienceSaveRequest,
+    WorkExperiencesResponse,
+)
+from app.schemas.research_project import (
+    ResearchProjectInput,
+    ResearchProjectsResponse,
+)
+from app.schemas.non_academic_activity import (
+    NonAcademicActivitiesResponse,
+    NonAcademicActivityInput,
+)
+from app.schemas.candidate_education import (
+    CandidateEducationInput,
+    CandidateEducationsResponse,
+)
+from app.schemas.digital_presence_link import (
+    DigitalPresenceLinkInput,
+    DigitalPresenceLinksResponse,
 )
 from app.schemas.status_definition import (
     BookingStatusUpdateRequest,
@@ -145,6 +175,417 @@ def get_my_booking_view_detail(
     current_user: User = Depends(deps.get_current_active_user),
 ):
     return counselling_service.get_booking_view_detail(db, current_user.id, booking_id)
+
+
+@router.get("/bookings/mine/{booking_id}/profile", response_model=BookingCandidateProfileResponse)
+@router.get("/bookings/mine/{booking_id}/profile/", response_model=BookingCandidateProfileResponse)
+def get_my_booking_candidate_profile(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.get_booking_candidate_profile(db, current_user.id, booking_id)
+
+
+@router.post("/bookings/mine/{booking_id}/students-master", response_model=StudentMasterSaveResponse)
+@router.post("/bookings/mine/{booking_id}/students-master/", response_model=StudentMasterSaveResponse)
+def save_my_booking_students_master(
+    booking_id: int,
+    payload: StudentMasterSaveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.save_booking_students_master(db, current_user.id, booking_id, payload)
+
+
+@router.get("/bookings/mine/{booking_id}/aspirations", response_model=StudentAspirationsResponse)
+@router.get("/bookings/mine/{booking_id}/aspirations/", response_model=StudentAspirationsResponse)
+def get_my_booking_aspirations(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.get_booking_candidate_aspirations(db, current_user.id, booking_id)
+
+
+@router.put("/bookings/mine/{booking_id}/aspirations", response_model=StudentAspirationsResponse)
+@router.put("/bookings/mine/{booking_id}/aspirations/", response_model=StudentAspirationsResponse)
+def save_my_booking_aspirations(
+    booking_id: int,
+    payload: StudentAspirationsSaveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.save_booking_candidate_aspirations(
+        db,
+        current_user.id,
+        booking_id,
+        payload,
+    )
+
+
+@router.get("/bookings/mine/{booking_id}/test-scores", response_model=CandidateTestScoresResponse)
+@router.get("/bookings/mine/{booking_id}/test-scores/", response_model=CandidateTestScoresResponse)
+def get_my_booking_test_scores(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.get_booking_candidate_test_scores(db, current_user.id, booking_id)
+
+
+@router.post("/bookings/mine/{booking_id}/test-scores", response_model=CandidateTestScoresResponse)
+@router.post("/bookings/mine/{booking_id}/test-scores/", response_model=CandidateTestScoresResponse)
+def save_my_booking_test_scores(
+    booking_id: int,
+    payload: CandidateTestScoreSaveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.save_booking_candidate_test_scores(
+        db,
+        current_user.id,
+        booking_id,
+        payload,
+    )
+
+
+@router.get("/bookings/mine/{booking_id}/work-experiences", response_model=WorkExperiencesResponse)
+@router.get("/bookings/mine/{booking_id}/work-experiences/", response_model=WorkExperiencesResponse)
+def get_my_booking_work_experiences(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.get_booking_work_experiences(db, current_user.id, booking_id)
+
+
+@router.put("/bookings/mine/{booking_id}/work-experiences", response_model=WorkExperiencesResponse)
+@router.put("/bookings/mine/{booking_id}/work-experiences/", response_model=WorkExperiencesResponse)
+def save_my_booking_work_experiences(
+    booking_id: int,
+    payload: WorkExperienceSaveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.save_booking_work_experiences(
+        db,
+        current_user.id,
+        booking_id,
+        payload,
+    )
+
+
+@router.get("/bookings/mine/{booking_id}/research-projects", response_model=ResearchProjectsResponse)
+@router.get("/bookings/mine/{booking_id}/research-projects/", response_model=ResearchProjectsResponse)
+def get_my_booking_research_projects(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.get_booking_research_projects(db, current_user.id, booking_id)
+
+
+@router.post("/bookings/mine/{booking_id}/research-projects", response_model=ResearchProjectsResponse)
+@router.post("/bookings/mine/{booking_id}/research-projects/", response_model=ResearchProjectsResponse)
+def create_my_booking_research_project(
+    booking_id: int,
+    payload: ResearchProjectInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.create_booking_research_project(
+        db,
+        current_user.id,
+        booking_id,
+        payload,
+    )
+
+
+@router.put(
+    "/bookings/mine/{booking_id}/research-projects/{project_id}",
+    response_model=ResearchProjectsResponse,
+)
+@router.put(
+    "/bookings/mine/{booking_id}/research-projects/{project_id}/",
+    response_model=ResearchProjectsResponse,
+)
+def update_my_booking_research_project(
+    booking_id: int,
+    project_id: int,
+    payload: ResearchProjectInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.update_booking_research_project(
+        db,
+        current_user.id,
+        booking_id,
+        project_id,
+        payload,
+    )
+
+
+@router.delete(
+    "/bookings/mine/{booking_id}/research-projects/{project_id}",
+    response_model=ResearchProjectsResponse,
+)
+@router.delete(
+    "/bookings/mine/{booking_id}/research-projects/{project_id}/",
+    response_model=ResearchProjectsResponse,
+)
+def delete_my_booking_research_project(
+    booking_id: int,
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.delete_booking_research_project(
+        db,
+        current_user.id,
+        booking_id,
+        project_id,
+    )
+
+
+@router.get("/bookings/mine/{booking_id}/educations", response_model=CandidateEducationsResponse)
+@router.get("/bookings/mine/{booking_id}/educations/", response_model=CandidateEducationsResponse)
+def get_my_booking_candidate_educations(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.get_booking_candidate_educations(db, current_user.id, booking_id)
+
+
+@router.post("/bookings/mine/{booking_id}/educations", response_model=CandidateEducationsResponse)
+@router.post("/bookings/mine/{booking_id}/educations/", response_model=CandidateEducationsResponse)
+def create_my_booking_candidate_education(
+    booking_id: int,
+    payload: CandidateEducationInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.create_booking_candidate_education(
+        db,
+        current_user.id,
+        booking_id,
+        payload,
+    )
+
+
+@router.put(
+    "/bookings/mine/{booking_id}/educations/{education_id}",
+    response_model=CandidateEducationsResponse,
+)
+@router.put(
+    "/bookings/mine/{booking_id}/educations/{education_id}/",
+    response_model=CandidateEducationsResponse,
+)
+def update_my_booking_candidate_education(
+    booking_id: int,
+    education_id: int,
+    payload: CandidateEducationInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.update_booking_candidate_education(
+        db,
+        current_user.id,
+        booking_id,
+        education_id,
+        payload,
+    )
+
+
+@router.delete(
+    "/bookings/mine/{booking_id}/educations/{education_id}",
+    response_model=CandidateEducationsResponse,
+)
+@router.delete(
+    "/bookings/mine/{booking_id}/educations/{education_id}/",
+    response_model=CandidateEducationsResponse,
+)
+def delete_my_booking_candidate_education(
+    booking_id: int,
+    education_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.delete_booking_candidate_education(
+        db,
+        current_user.id,
+        booking_id,
+        education_id,
+    )
+
+
+@router.get(
+    "/bookings/mine/{booking_id}/non-academic-activities",
+    response_model=NonAcademicActivitiesResponse,
+)
+@router.get(
+    "/bookings/mine/{booking_id}/non-academic-activities/",
+    response_model=NonAcademicActivitiesResponse,
+)
+def get_my_booking_non_academic_activities(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.get_booking_non_academic_activities(db, current_user.id, booking_id)
+
+
+@router.post(
+    "/bookings/mine/{booking_id}/non-academic-activities",
+    response_model=NonAcademicActivitiesResponse,
+)
+@router.post(
+    "/bookings/mine/{booking_id}/non-academic-activities/",
+    response_model=NonAcademicActivitiesResponse,
+)
+def create_my_booking_non_academic_activity(
+    booking_id: int,
+    payload: NonAcademicActivityInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.create_booking_non_academic_activity(
+        db,
+        current_user.id,
+        booking_id,
+        payload,
+    )
+
+
+@router.put(
+    "/bookings/mine/{booking_id}/non-academic-activities/{activity_id}",
+    response_model=NonAcademicActivitiesResponse,
+)
+@router.put(
+    "/bookings/mine/{booking_id}/non-academic-activities/{activity_id}/",
+    response_model=NonAcademicActivitiesResponse,
+)
+def update_my_booking_non_academic_activity(
+    booking_id: int,
+    activity_id: int,
+    payload: NonAcademicActivityInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.update_booking_non_academic_activity(
+        db,
+        current_user.id,
+        booking_id,
+        activity_id,
+        payload,
+    )
+
+
+@router.delete(
+    "/bookings/mine/{booking_id}/non-academic-activities/{activity_id}",
+    response_model=NonAcademicActivitiesResponse,
+)
+@router.delete(
+    "/bookings/mine/{booking_id}/non-academic-activities/{activity_id}/",
+    response_model=NonAcademicActivitiesResponse,
+)
+def delete_my_booking_non_academic_activity(
+    booking_id: int,
+    activity_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.delete_booking_non_academic_activity(
+        db,
+        current_user.id,
+        booking_id,
+        activity_id,
+    )
+
+
+@router.get(
+    "/bookings/mine/{booking_id}/digital-presence-links",
+    response_model=DigitalPresenceLinksResponse,
+)
+@router.get(
+    "/bookings/mine/{booking_id}/digital-presence-links/",
+    response_model=DigitalPresenceLinksResponse,
+)
+def get_my_booking_digital_presence_links(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.get_booking_digital_presence_links(db, current_user.id, booking_id)
+
+
+@router.post(
+    "/bookings/mine/{booking_id}/digital-presence-links",
+    response_model=DigitalPresenceLinksResponse,
+)
+@router.post(
+    "/bookings/mine/{booking_id}/digital-presence-links/",
+    response_model=DigitalPresenceLinksResponse,
+)
+def create_my_booking_digital_presence_link(
+    booking_id: int,
+    payload: DigitalPresenceLinkInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.create_booking_digital_presence_link(
+        db,
+        current_user.id,
+        booking_id,
+        payload,
+    )
+
+
+@router.put(
+    "/bookings/mine/{booking_id}/digital-presence-links/{link_id}",
+    response_model=DigitalPresenceLinksResponse,
+)
+@router.put(
+    "/bookings/mine/{booking_id}/digital-presence-links/{link_id}/",
+    response_model=DigitalPresenceLinksResponse,
+)
+def update_my_booking_digital_presence_link(
+    booking_id: int,
+    link_id: int,
+    payload: DigitalPresenceLinkInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.update_booking_digital_presence_link(
+        db,
+        current_user.id,
+        booking_id,
+        link_id,
+        payload,
+    )
+
+
+@router.delete(
+    "/bookings/mine/{booking_id}/digital-presence-links/{link_id}",
+    response_model=DigitalPresenceLinksResponse,
+)
+@router.delete(
+    "/bookings/mine/{booking_id}/digital-presence-links/{link_id}/",
+    response_model=DigitalPresenceLinksResponse,
+)
+def delete_my_booking_digital_presence_link(
+    booking_id: int,
+    link_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.delete_booking_digital_presence_link(
+        db,
+        current_user.id,
+        booking_id,
+        link_id,
+    )
 
 
 @router.get("/bookings/mine/{booking_id}/communications", response_model=BookingCommunicationsResponse)

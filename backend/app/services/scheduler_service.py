@@ -53,6 +53,33 @@ def start_security_scheduler() -> BackgroundScheduler | None:
         max_instances=1,
         coalesce=True,
     )
+    _scheduler.add_job(
+        run_scheduled_calendar_intake_reminders,
+        trigger="cron",
+        hour=8,
+        minute=30,
+        id="nexus_daily_calendar_intake_reminders",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    if settings.MONITORING_CHECK_ENABLED:
+        interval_minutes = max(1, int(settings.MONITORING_CHECK_INTERVAL_MINUTES or 5))
+        _scheduler.add_job(
+            run_scheduled_uptime_monitoring_check,
+            trigger="interval",
+            minutes=interval_minutes,
+            id="nexus_uptime_monitoring_check",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info(
+            "Uptime monitoring job registered (every %s minute(s); gated by MONITORING_STATUS).",
+            interval_minutes,
+        )
+    else:
+        logger.info("Uptime monitoring scheduler disabled via MONITORING_CHECK_ENABLED.")
     _scheduler.start()
     logger.info(
         "Security audit scheduler started (daily at %02d:00 UTC).",
@@ -81,3 +108,27 @@ def run_scheduled_document_reminders() -> None:
         db.rollback()
     finally:
         db.close()
+
+
+def run_scheduled_calendar_intake_reminders() -> None:
+    from app.db.database import SessionLocal
+    from app.services.hierarchical_intake_service import process_calendar_intake_reminders
+
+    db = SessionLocal()
+    try:
+        created = process_calendar_intake_reminders(db)
+        logger.info("Calendar intake reminder job finished. alerts_created=%s", created)
+    except Exception:
+        logger.exception("Scheduled calendar intake reminder job failed.")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def run_scheduled_uptime_monitoring_check() -> None:
+    from app.services.monitoring_uptime_service import run_uptime_monitoring_check
+
+    try:
+        run_uptime_monitoring_check()
+    except Exception:
+        logger.exception("Scheduled uptime monitoring check failed.")

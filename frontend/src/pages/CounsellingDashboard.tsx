@@ -6,6 +6,7 @@ import { apiFetch, hasValidSession } from '../utils/api';
 import { computeFloatingMenuPosition } from '../utils/floatingMenuPosition';
 import SessionWrapUpDrawer from '../components/SessionWrapUpDrawer';
 import PipelineAnalyticsPanel, { PipelineAnalyticsData } from '../components/PipelineAnalyticsPanel';
+import { useConfirmation } from '../context/ConfirmationContext';
 
 const toIsoDate = (value: Date): string => {
   const year = value.getFullYear();
@@ -208,6 +209,7 @@ const formatCommunicationTime = (value: string): string => {
 };
 
 const CounsellingDashboard: React.FC = () => {
+  const openConfirm = useConfirmation();
   const [focusDate, setFocusDate] = useState<Date>(() => {
     const today = new Date();
     return new Date(today.getFullYear(), today.getMonth(), today.getDate());
@@ -565,7 +567,12 @@ const CounsellingDashboard: React.FC = () => {
   };
 
   const handleCancelBooking = async (bookingId: number) => {
-    if (!window.confirm('Cancel this booked counselling session?')) return;
+    if (!(await openConfirm({
+      title: 'Cancel booking?',
+      message: 'Cancel this booked counselling session?',
+      confirmLabel: 'Cancel booking',
+      variant: 'warning',
+    }))) return;
     try {
       setActionLoading(true);
       await apiFetch(`bookings/cancel/${bookingId}`, { method: 'POST' });

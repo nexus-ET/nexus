@@ -1,18 +1,20 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-from app.services.status_definitions_seed import seed_status_definitions_if_empty
-
-
-def test_seed_status_definitions_if_empty_skips_when_rows_exist():
-    db = MagicMock()
-    db.query.return_value.limit.return_value.first.return_value = 1
-    assert seed_status_definitions_if_empty(db) is False
-    db.execute.assert_not_called()
+from app.services.status_definitions_seed import (
+    ensure_status_definition_funnel_links,
+    seed_status_definitions_if_empty,
+)
 
 
-def test_seed_status_definitions_if_empty_inserts_when_table_empty():
+def test_seed_status_definitions_if_empty_is_disabled():
     db = MagicMock()
     db.query.return_value.limit.return_value.first.return_value = None
-    assert seed_status_definitions_if_empty(db) is True
-    assert db.execute.call_count >= 2
-    db.commit.assert_called_once()
+    assert seed_status_definitions_if_empty(db) is False
+    db.execute.assert_not_called()
+    db.commit.assert_not_called()
+
+
+def test_ensure_status_definition_funnel_links_is_disabled():
+    db = MagicMock()
+    assert ensure_status_definition_funnel_links(db) is False
+    db.commit.assert_not_called()

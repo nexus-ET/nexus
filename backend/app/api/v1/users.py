@@ -25,9 +25,19 @@ from app.schemas.user import (
     StatusChangeReasonType,
     AdminRoleRead,
 )
+from app.schemas.student_aspirations import (
+    StudentAspirationsResponse,
+    StudentAspirationsSaveRequest,
+)
+from app.services.student_aspirations_service import get_user_aspirations, save_user_aspirations
 from app.core.security import get_password_hash, verify_password
 from app.services.email_service import notify_super_admins_of_deactivation
-from app.services.status_change_reasons import get_create_reason, get_reason_by_type
+from app.services.status_change_reasons import (
+    ensure_initial_activation_reason,
+    get_activate_reason,
+    get_create_reason,
+    get_reason_by_type,
+)
 from app.services.admin_roles import (
     get_active_admin_roles,
     get_active_admin_role_ids,
@@ -180,6 +190,32 @@ def _apply_activation(user: UserModel, reason_id: int) -> None:
     user.activation_date = _now_utc_naive()
 
 
+def _backfill_user_lifecycle_fields(user: UserModel, db: Session) -> bool:
+    """Fill missing create/activate metadata for legacy accounts. Returns True if changed."""
+    changed = False
+
+    if user.creation_date is None or user.creation_reason is None:
+        create_reason = get_create_reason(db)
+        if create_reason and user.creation_reason is None:
+            user.creation_reason = create_reason.id
+            changed = True
+        if user.creation_date is None:
+            # Prefer an existing activation timestamp; otherwise record backfill time.
+            user.creation_date = user.activation_date or _now_utc_naive()
+            changed = True
+
+    if user.is_active and (user.activation_date is None or user.activation_reason is None):
+        activate_reason = ensure_initial_activation_reason(db) or get_activate_reason(db)
+        if activate_reason and user.activation_reason is None:
+            user.activation_reason = activate_reason.id
+            changed = True
+        if user.activation_date is None:
+            user.activation_date = user.creation_date or _now_utc_naive()
+            changed = True
+
+    return changed
+
+
 def _remaining_super_admin_count(db: Session, exclude_user_id: int) -> int:
     super_admin_role_ids = [
         role.id
@@ -226,6 +262,16 @@ def read_current_user(
     )
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
+    if _backfill_user_lifecycle_fields(user, db):
+        db.commit()
+        user = (
+            db.query(UserModel)
+            .options(*_user_load_options())
+            .filter(UserModel.id == current_user.id)
+            .first()
+        )
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found.")
     return _serialize_user(user)
 
 
@@ -257,6 +303,25 @@ def update_my_profile(
         .first()
     )
     return _serialize_user(refreshed)
+
+
+@router.get("/me/aspirations", response_model=StudentAspirationsResponse)
+@router.get("/me/aspirations/", response_model=StudentAspirationsResponse)
+def read_my_aspirations(
+    current_user: UserModel = Depends(deps.get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    return get_user_aspirations(db, current_user)
+
+
+@router.put("/me/aspirations", response_model=StudentAspirationsResponse)
+@router.put("/me/aspirations/", response_model=StudentAspirationsResponse)
+def save_my_aspirations(
+    payload: StudentAspirationsSaveRequest,
+    current_user: UserModel = Depends(deps.get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    return save_user_aspirations(db, current_user, payload)
 
 
 @router.post("/me/change-password")
@@ -350,6 +415,14 @@ def create_user(user_in: UserCreate, db: Session = Depends(get_db)):
         )
         _apply_admin_role(db_user, db, user_in.admin_role_id)
         _apply_creation(db_user, create_reason.id)
+        if db_user.is_active:
+            activate_reason = ensure_initial_activation_reason(db) or get_activate_reason(db)
+            if not activate_reason:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Activate status reason is not configured. Contact a system administrator.",
+                )
+            _apply_activation(db_user, activate_reason.id)
         db.add(db_user)
         db.commit()
         db.refresh(db_user)
