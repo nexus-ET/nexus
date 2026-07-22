@@ -36,10 +36,13 @@ load_dotenv(BACKEND_ROOT / ".env")
 
 from app.config import normalize_database_url, settings
 from app.core.security import get_password_hash
+from app.db.register_models import register_all_models
 from app.models.admin_role import AdminRole
 from app.models.user import User
 from app.services.admin_roles import DEFAULT_ADMIN_ROLES
 from app.services.business_profile_service import ensure_default_business
+
+register_all_models()
 
 # Keep in sync with the Super Admin accounts on develop / production.
 DEFAULT_STAGING_ADMINS: list[dict[str, str]] = [
