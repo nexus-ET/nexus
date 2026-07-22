@@ -102,6 +102,13 @@ if [[ "${FRONTEND_ONLY}" -eq 0 ]]; then
       python -m alembic upgrade head
     fi
     echo "    Alembic: $(python -m alembic current 2>/dev/null | head -1 || echo unknown)"
+    echo ""
+    echo "==> Staging login users..."
+    if python scripts/seed_staging_users.py; then
+      echo "    Staging users: OK"
+    else
+      echo "    WARNING: seed_staging_users.py failed — create an admin manually." >&2
+    fi
   else
     echo ""
     echo "==> Skipping migrations (--skip-migrations)."

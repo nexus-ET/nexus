@@ -354,6 +354,30 @@ def _seed_fresh_reference_data(engine) -> None:
     finally:
         db.close()
 
+    _seed_staging_login_users()
+
+
+def _seed_staging_login_users() -> None:
+    """Ensure at least one Super Admin exists for staging UI login."""
+    import os
+
+    cmd = [sys.executable, "scripts/seed_staging_users.py"]
+    source = (os.getenv("STAGING_USERS_SOURCE_URL") or "").strip()
+    if source:
+        cmd.extend(["--copy-from", source])
+        if (os.getenv("STAGING_ADMIN_PASSWORD") or "").strip():
+            cmd.append("--force-admin")
+    else:
+        os.environ.setdefault("STAGING_ADMIN_EMAIL", "admin@edutrust.in")
+        if not (os.getenv("STAGING_ADMIN_PASSWORD") or "").strip():
+            os.environ["STAGING_ADMIN_PASSWORD"] = "StagingAdmin!ChangeMe"
+            print(
+                "  Seeding default staging admin "
+                "(admin@edutrust.in / StagingAdmin!ChangeMe) — change after first login."
+            )
+    print("  Ensuring staging login users...")
+    subprocess.run(cmd, cwd=BACKEND_ROOT, check=False)
+
 
 def _bootstrap_fresh_database(engine) -> None:
     """
