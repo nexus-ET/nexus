@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """
-Ensure staging has login-ready users after a fresh Neon DB (e.g. Nexus-Dev-1).
+Ensure staging has login-ready Super Admin users after a fresh Neon DB.
+
+Canonical staging admins (match production/dev team):
+  1. ishq@edutrust.in      — Ishq Ahmed
+  2. arunpk@edutrust.in    — Arun Jai
+  3. admin@edutrust.in     — Chithranjan C
 
 Usage (VPS):
   cd /var/www/nexus/backend && source .venv/bin/activate
-  python scripts/seed_staging_users.py
-  python scripts/seed_staging_users.py --email you@edutrust.in --password 'YourSecurePass'
+  python scripts/seed_staging_users.py --password 'YourSecurePass'
   python scripts/seed_staging_users.py --copy-from "$STAGING_USERS_SOURCE_URL"
 
 Env (optional):
-  STAGING_ADMIN_EMAIL      default admin@edutrust.in
-  STAGING_ADMIN_PASSWORD   required unless --password / --copy-from
-  STAGING_USERS_SOURCE_URL optional Neon URL to copy users + admin_roles from
+  STAGING_ADMIN_PASSWORD     shared password when creating the 3 admins
+  STAGING_USERS_SOURCE_URL   copy users+roles from another Neon (keeps hashes/passwords)
 """
 
 from __future__ import annotations
@@ -37,6 +40,25 @@ from app.models.admin_role import AdminRole
 from app.models.user import User
 from app.services.admin_roles import DEFAULT_ADMIN_ROLES
 from app.services.business_profile_service import ensure_default_business
+
+# Keep in sync with the Super Admin accounts on develop / production.
+DEFAULT_STAGING_ADMINS: list[dict[str, str]] = [
+    {
+        "email": "ishq@edutrust.in",
+        "first_name": "Ishq",
+        "last_name": "Ahmed",
+    },
+    {
+        "email": "arunpk@edutrust.in",
+        "first_name": "Arun",
+        "last_name": "Jai",
+    },
+    {
+        "email": "admin@edutrust.in",
+        "first_name": "Chithranjan",
+        "last_name": "C",
+    },
+]
 
 
 def _summarize_url(url: str) -> str:
@@ -89,8 +111,8 @@ def _upsert_admin_user(
         user.is_active = True
         user.is_superuser = True
         user.admin_role_id = super_role.id
-        user.first_name = user.first_name or first_name
-        user.last_name = user.last_name or last_name
+        user.first_name = first_name or user.first_name
+        user.last_name = last_name or user.last_name
         user.business_id = user.business_id or 1
         action = "updated"
     else:
@@ -108,8 +130,22 @@ def _upsert_admin_user(
         action = "created"
     db.commit()
     db.refresh(user)
-    print(f"Staging admin {action}: {user.email} (id={user.id}, superuser=true)")
+    print(f"  Staging admin {action}: {user.email} (id={user.id})")
     return user
+
+
+def _seed_team_admins(db, *, password: str) -> None:
+    super_role = _ensure_admin_roles(db)
+    print(f"Seeding {len(DEFAULT_STAGING_ADMINS)} Super Admin accounts...")
+    for admin in DEFAULT_STAGING_ADMINS:
+        _upsert_admin_user(
+            db,
+            email=admin["email"],
+            password=password,
+            first_name=admin["first_name"],
+            last_name=admin["last_name"],
+            super_role=super_role,
+        )
 
 
 def _copy_users_from(source_url: str, target_url: str) -> int:
@@ -149,7 +185,6 @@ def _copy_users_from(source_url: str, target_url: str) -> int:
                 )
             )
 
-        # Ensure default business exists for FK
         dst.execute(
             text(
                 """
@@ -176,7 +211,6 @@ def _copy_users_from(source_url: str, target_url: str) -> int:
         copied = 0
         for row in users:
             payload = dict(row)
-            # Avoid FK failures if optional reason IDs don't exist on fresh DB
             for key in (
                 "creation_reason",
                 "deactivation_reason",
@@ -212,6 +246,7 @@ def _copy_users_from(source_url: str, target_url: str) -> int:
                 payload,
             )
             copied += 1
+            print(f"  Copied user: {payload['email']}")
 
         if users:
             dst.execute(
@@ -226,20 +261,28 @@ def _copy_users_from(source_url: str, target_url: str) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Seed staging login users")
-    parser.add_argument("--email", default=os.getenv("STAGING_ADMIN_EMAIL", "admin@edutrust.in"))
-    parser.add_argument("--password", default=os.getenv("STAGING_ADMIN_PASSWORD", ""))
-    parser.add_argument("--first-name", default=os.getenv("STAGING_ADMIN_FIRST_NAME", "Staging"))
-    parser.add_argument("--last-name", default=os.getenv("STAGING_ADMIN_LAST_NAME", "Admin"))
+    parser = argparse.ArgumentParser(description="Seed staging Super Admin login users")
+    parser.add_argument(
+        "--password",
+        default=os.getenv("STAGING_ADMIN_PASSWORD", ""),
+        help="Shared password for all 3 team admins (when not using --copy-from)",
+    )
+    parser.add_argument(
+        "--email",
+        default="",
+        help="Optional: seed only this email instead of the full team of 3",
+    )
+    parser.add_argument("--first-name", default="Staging")
+    parser.add_argument("--last-name", default="Admin")
     parser.add_argument(
         "--copy-from",
         default=os.getenv("STAGING_USERS_SOURCE_URL", ""),
         help="Copy users+roles from another DATABASE_URL (keeps same passwords)",
     )
     parser.add_argument(
-        "--force-admin",
+        "--force-password-reset",
         action="store_true",
-        help="Also upsert STAGING_ADMIN_* even when --copy-from is used",
+        help="After --copy-from, also set --password on all DEFAULT_STAGING_ADMINS",
     )
     args = parser.parse_args()
 
@@ -250,8 +293,8 @@ def main() -> int:
 
     if args.copy_from:
         _copy_users_from(args.copy_from, target_url)
-        if not args.force_admin and not args.password:
-            print("Done. Log in with a copied user email/password.")
+        if not args.force_password_reset:
+            print("Done. Log in with each copied user's existing password.")
             return 0
 
     password = (args.password or "").strip()
@@ -261,8 +304,9 @@ def main() -> int:
     try:
         existing_users = db.query(User).count()
         if not password:
-            if existing_users > 0 and not args.force_admin:
+            if existing_users > 0 and not args.force_password_reset and not args.email:
                 print(f"{existing_users} user(s) already present — nothing to do.")
+                print("Pass --password to reset the 3 team admins, or --copy-from to import.")
                 return 0
             password = "StagingAdmin!ChangeMe"
             print(
@@ -271,19 +315,24 @@ def main() -> int:
             )
 
         ensure_default_business(db)
-        super_role = _ensure_admin_roles(db)
-        _upsert_admin_user(
-            db,
-            email=args.email,
-            password=password,
-            first_name=args.first_name,
-            last_name=args.last_name,
-            super_role=super_role,
-        )
+        if args.email.strip():
+            super_role = _ensure_admin_roles(db)
+            _upsert_admin_user(
+                db,
+                email=args.email,
+                password=password,
+                first_name=args.first_name,
+                last_name=args.last_name,
+                super_role=super_role,
+            )
+        else:
+            _seed_team_admins(db, password=password)
     finally:
         db.close()
 
-    print(f"Login at staging with email={args.email.strip().lower()}")
+    print("Login emails:")
+    for admin in DEFAULT_STAGING_ADMINS:
+        print(f"  - {admin['email']}")
     return 0
 
 
