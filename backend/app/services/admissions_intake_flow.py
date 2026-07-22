@@ -578,6 +578,35 @@ def is_intake_complete(lead: Lead) -> bool:
     return get_intake_step(lead) == INTAKE_STEP_COMPLETE
 
 
+def _repair_intake_if_booking_already_active(db: Session, lead: Lead) -> bool:
+    """
+    If counselling already has an active booking but intake_step was left on
+    PICK_DATE/PICK_TIME (state drift), snap intake back to COMPLETE.
+
+    Prevents hi/hey (and other non-slot replies) from re-spamming the time picker.
+    """
+    step = get_intake_step(lead)
+    if step not in {INTAKE_STEP_PICK_DATE, INTAKE_STEP_PICK_TIME}:
+        return False
+    context = _load_context(lead)
+    if context.get("reschedule_in_progress"):
+        return False
+    booking = _get_active_consultation_booking(db, lead)
+    if booking is None and not lead.consultation_scheduled_at:
+        return False
+
+    if booking and booking.scheduled_time and not lead.consultation_scheduled_at:
+        lead.consultation_scheduled_at = booking.scheduled_time
+    lead.intake_step = INTAKE_STEP_COMPLETE
+    preferred_course = context.get("preferred_course")
+    lead.intake_context = (
+        json.dumps({"preferred_course": preferred_course}) if preferred_course else None
+    )
+    db.commit()
+    db.refresh(lead)
+    return True
+
+
 def ensure_consultation_slots(db: Session, days_ahead: int = 21) -> None:
     """Keep ConsultationSlot rows aligned with counselling schedule availability."""
     from app.services.counselling_service import get_bookable_slot_starts, list_whatsapp_bookable_dates
@@ -1323,6 +1352,18 @@ async def process_intake_message(
         if management_reply:
             return management_reply
 
+        if _repair_intake_if_booking_already_active(db, lead):
+            first = (lead.full_name or "there").split()[0]
+            return IntakeReply(
+                text=(
+                    f"{first}, you already have a *consultation booked*.\n"
+                    f"{format_booking_summary(lead, include_management_prompt=False, db=db)}"
+                ),
+                quick_reply=_build_appointment_management_quick_reply(
+                    _appointment_management_note()
+                ),
+            )
+
         dates = _offered_dates_for_lead(db, lead)
         if not dates:
             dates = _available_dates(db)
@@ -1379,6 +1420,18 @@ async def process_intake_message(
         if management_reply:
             return management_reply
 
+        if _repair_intake_if_booking_already_active(db, lead):
+            first = (lead.full_name or "there").split()[0]
+            return IntakeReply(
+                text=(
+                    f"{first}, you already have a *consultation booked*.\n"
+                    f"{format_booking_summary(lead, include_management_prompt=False, db=db)}"
+                ),
+                quick_reply=_build_appointment_management_quick_reply(
+                    _appointment_management_note()
+                ),
+            )
+
         context = _load_context(lead)
         selected_raw = context.get("selected_date")
         if not selected_raw:
@@ -1406,6 +1459,15 @@ async def process_intake_message(
             )
         choice = _parse_time_selection(text, slots, context)
         if choice is None:
+            # Greetings / chatter must NOT resend the full WhatsApp time menu.
+            if _is_continue_greeting(text):
+                return IntakeReply(
+                    text=(
+                        "Please *reply with the number* of your preferred consultation time "
+                        f"from the list we sent (1–{min(len(slots), 10)})."
+                    ),
+                    suppress_outbound=False,
+                )
             return await _intake_reply_for_time_step(
                 db,
                 lead,
