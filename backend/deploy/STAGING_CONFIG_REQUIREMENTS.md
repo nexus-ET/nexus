@@ -161,6 +161,32 @@ R2_ENDPOINT_URL=
 
 ---
 
+## Staging login users (fresh Nexus-Dev-1)
+
+Fresh DBs have no `users` rows. Bootstrap / this script creates a Super Admin:
+
+| Variable | Default |
+|----------|---------|
+| `STAGING_ADMIN_EMAIL` | `admin@edutrust.in` |
+| `STAGING_ADMIN_PASSWORD` | `StagingAdmin!ChangeMe` (change after first login) |
+
+Or copy existing accounts (same passwords) from another Neon:
+
+```env
+STAGING_USERS_SOURCE_URL=postgresql+psycopg://...@source-pooler.../neondb?sslmode=require
+```
+
+Manual (VPS):
+
+```bash
+cd /var/www/nexus/backend && source .venv/bin/activate
+python scripts/seed_staging_users.py --email you@edutrust.in --password 'YourSecurePass'
+# or copy from old DB:
+python scripts/seed_staging_users.py --copy-from "$STAGING_USERS_SOURCE_URL"
+```
+
+---
+
 ## Quick paste block (fill secrets on VPS)
 
 ```env
