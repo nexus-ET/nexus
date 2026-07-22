@@ -163,25 +163,23 @@ R2_ENDPOINT_URL=
 
 ## Staging login users (fresh Nexus-Dev-1)
 
-Fresh DBs have no `users` rows. Bootstrap / this script creates a Super Admin:
+Fresh DBs seed **all 3 Super Admins** (same accounts as develop):
 
-| Variable | Default |
+| Email | Name |
+|-------|------|
+| `ishq@edutrust.in` | Ishq Ahmed |
+| `arunpk@edutrust.in` | Arun Jai |
+| `admin@edutrust.in` | Chithranjan C |
+
+| Variable | Purpose |
 |----------|---------|
-| `STAGING_ADMIN_EMAIL` | `admin@edutrust.in` |
-| `STAGING_ADMIN_PASSWORD` | `StagingAdmin!ChangeMe` (change after first login) |
-
-Or copy existing accounts (same passwords) from another Neon:
-
-```env
-STAGING_USERS_SOURCE_URL=postgresql+psycopg://...@source-pooler.../neondb?sslmode=require
-```
-
-Manual (VPS):
+| `STAGING_ADMIN_PASSWORD` | Shared password for the 3 admins when not copying |
+| `STAGING_USERS_SOURCE_URL` | Optional: copy users from develop Neon (keeps real passwords) |
 
 ```bash
 cd /var/www/nexus/backend && source .venv/bin/activate
-python scripts/seed_staging_users.py --email you@edutrust.in --password 'YourSecurePass'
-# or copy from old DB:
+python scripts/seed_staging_users.py --password 'YourSecurePass'
+# or keep develop passwords:
 python scripts/seed_staging_users.py --copy-from "$STAGING_USERS_SOURCE_URL"
 ```
 

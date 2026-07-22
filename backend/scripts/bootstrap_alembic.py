@@ -368,12 +368,11 @@ def _seed_staging_login_users() -> None:
         if (os.getenv("STAGING_ADMIN_PASSWORD") or "").strip():
             cmd.append("--force-admin")
     else:
-        os.environ.setdefault("STAGING_ADMIN_EMAIL", "admin@edutrust.in")
         if not (os.getenv("STAGING_ADMIN_PASSWORD") or "").strip():
             os.environ["STAGING_ADMIN_PASSWORD"] = "StagingAdmin!ChangeMe"
             print(
-                "  Seeding default staging admin "
-                "(admin@edutrust.in / StagingAdmin!ChangeMe) — change after first login."
+                "  Seeding 3 Super Admins (ishq@ / arunpk@ / admin@ edutrust.in) "
+                "with StagingAdmin!ChangeMe — change after login."
             )
     print("  Ensuring staging login users...")
     subprocess.run(cmd, cwd=BACKEND_ROOT, check=False)
