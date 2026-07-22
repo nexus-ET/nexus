@@ -16,6 +16,7 @@ from app.services.admissions_intake_flow import (
     is_post_intake_management_command,
     process_flow_completion,
     process_intake_message,
+    _repair_intake_if_booking_already_active,
 )
 from app.services.agent_runtime import (
     RuntimeAgentConfig,
@@ -523,6 +524,10 @@ async def handle_ai_active_inbound(
             db.commit()
             return [flow_reply.text]
 
+    db.refresh(lead)
+
+    # Heal drift: active counselling booking but intake still on PICK_* .
+    _repair_intake_if_booking_already_active(db, lead)
     db.refresh(lead)
 
     if is_post_intake_management_command(cleaned_incoming):
