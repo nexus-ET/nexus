@@ -203,7 +203,7 @@ const localToday = (): Date => {
 
 const MyBookings: React.FC = () => {
   const [dateFilterMode, setDateFilterMode] = useState<DateFilterMode>('single');
-  const [startDate, setStartDate] = useState<Date>(() => localToday());
+  const [startDate, setStartDate] = useState<Date | null>(() => localToday());
   const [endDate, setEndDate] = useState<Date | null>(null);
   const [calendarToday, setCalendarToday] = useState('');
   const [groupedBookings, setGroupedBookings] = useState<MyBookingsGroupedResponse | null>(null);
@@ -371,6 +371,11 @@ const MyBookings: React.FC = () => {
     setEndDate(null);
     if (metric === 'today') {
       setStartDate(resolveTodayDate());
+    } else {
+      // Past / upcoming overview cards must list the full section. Keeping the
+      // currently selected calendar day (often "today") incorrectly filters the
+      // section to zero rows while the metric still shows a non-zero count.
+      setStartDate(null);
     }
   };
 

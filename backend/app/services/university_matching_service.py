@@ -6,6 +6,7 @@ confidence labels — not statistical admission probability.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -131,6 +132,8 @@ class ScoredCandidate:
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
+    if not math.isfinite(value):
+        return low
     return max(low, min(high, value))
 
 
