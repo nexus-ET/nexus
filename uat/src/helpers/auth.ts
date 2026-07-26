@@ -36,11 +36,22 @@ export async function loginViaUi(page: Page): Promise<void> {
 
 /**
  * Navigate within the authenticated SPA and assert we were not bounced to login.
+ * Staging can be slower than local — retry once on navigation timeout.
  */
 export async function gotoAppPath(page: Page, path: string): Promise<void> {
-  await page.goto(path);
-  await page.waitForLoadState('domcontentloaded');
-  await expect(page, `Expected authenticated navigation to ${path}`).not.toHaveURL(/\/login$/, {
-    timeout: 15_000,
-  });
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await page.goto(path, { waitUntil: 'domcontentloaded', timeout: 90_000 });
+      await expect(page, `Expected authenticated navigation to ${path}`).not.toHaveURL(/\/login$/, {
+        timeout: 20_000,
+      });
+      return;
+    } catch (err) {
+      lastError = err;
+      if (attempt === 2) break;
+      await page.waitForTimeout(1500);
+    }
+  }
+  throw lastError;
 }
