@@ -27,6 +27,8 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 LEGACY_BASELINE_REVISION = "d9a4b2c81f0e"
 # Legacy stamp chain used only for databases provisioned before Alembic tracking.
 # Fresh Neon projects (e.g. Nexus-Dev-1) take the "Fresh database" path → upgrade head.
+# Revisions AFTER this list (academia hub, matching, exception_logs, …) are handled by
+# plain `alembic upgrade head` — never require them in this list.
 ORDERED_REVISIONS: list[str] = [
     "d9a4b2c81f0e",
     "e1f3a8b92c4d",
@@ -76,12 +78,18 @@ def _load_database_url() -> str:
     return settings.DATABASE_URL
 
 
-def _revision_index(revision: str) -> int:
-    return ORDERED_REVISIONS.index(revision)
+def _revision_index(revision: str) -> int | None:
+    """Index in the legacy stamp chain, or None if the revision is past/outside it."""
+    try:
+        return ORDERED_REVISIONS.index(revision)
+    except ValueError:
+        return None
 
 
 def _next_revision(revision: str) -> str | None:
     index = _revision_index(revision)
+    if index is None:
+        return None
     if index + 1 >= len(ORDERED_REVISIONS):
         return None
     return ORDERED_REVISIONS[index + 1]
@@ -401,8 +409,24 @@ def _bootstrap_fresh_database(engine) -> None:
 
 def _stamp_if_behind_schema(inspector: Inspector, current: str | None) -> str | None:
     """Stamp forward when create_all() already applied tables/columns."""
+    # Already past the legacy stamp chain (e.g. c4d7… / f7y0…) — do not compare
+    # against ORDERED_REVISIONS; alembic upgrade head owns the rest.
+    if current and _revision_index(current) is None:
+        print(
+            f"Alembic at {current} (beyond legacy stamp chain ending "
+            f"{ORDERED_REVISIONS[-1]}); skipping schema-detection stamp."
+        )
+        return current
+
     detected = _detect_sequential_schema_revision(inspector)
-    if detected and (not current or _revision_index(detected) > _revision_index(current)):
+    if not detected:
+        return current
+
+    detected_idx = _revision_index(detected)
+    current_idx = _revision_index(current) if current else None
+    if detected_idx is None:
+        return current
+    if current_idx is None or detected_idx > current_idx:
         print(
             f"Schema already includes changes through {detected}; "
             f"stamping Alembic from {current or 'empty'}."
@@ -418,6 +442,9 @@ def _stamp_next_applied_revisions(inspector: Inspector) -> bool:
     while True:
         current = _current_alembic_revision()
         if not current or current == HEAD_REVISION:
+            break
+        # Outside legacy chain → nothing more to stamp via schema probes.
+        if _revision_index(current) is None:
             break
         next_revision = _next_revision(current)
         if not next_revision or not _revision_applied(inspector, next_revision):
@@ -435,6 +462,18 @@ def _migrate_to_head(inspector: Inspector) -> None:
     current = _current_alembic_revision()
     current = _stamp_if_behind_schema(inspector, current)
     _stamp_next_applied_revisions(inspector)
+    current = _current_alembic_revision()
+
+    # Post-legacy revisions: one upgrade is enough; no stamp-loop needed.
+    if current and _revision_index(current) is None and current != HEAD_REVISION:
+        print(f"Upgrading from {current} to head via Alembic…")
+        _run_alembic("upgrade", "head")
+        final = _current_alembic_revision()
+        if final != HEAD_REVISION:
+            raise RuntimeError(
+                f"Expected Alembic head {HEAD_REVISION}, got {final or 'empty'}"
+            )
+        return
 
     attempts = len(ORDERED_REVISIONS) + 2
     for _ in range(attempts):

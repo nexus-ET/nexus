@@ -139,6 +139,43 @@ students_master where lead_id=27 # Ishan Ahmed profile + aspirations
 
 ---
 
+## G. Release packaging, branch promotion & Alembic (2026-07-26 lessons)
+
+Real misses from the 2026-07-26 staging deploy. Treat each as a **preflight gate** for future releases.
+
+| # | Issue we hit | Prevention / verify |
+|---|--------------|---------------------|
+| G1 | **Dual migration sources.** Packaging produced both Alembic revisions *and* a consolidated `*_migration.sql`. Running both risks double-apply. | **Alembic is the single source of truth.** Any hand SQL file is **reference/DBA-fallback only** and must say so at the top. On staging run **`alembic upgrade head`** — never the SQL and Alembic together. If SQL was applied by hand, `alembic stamp head` instead of upgrade. |
+| G2 | **Branch divergence.** `develop` was behind `staging` (old merge-base); promote was **not** a fast-forward and needed a real merge in the staging worktree. | Before promote: `git fetch`, then `git merge-base origin/staging origin/develop` and `git log --oneline origin/staging..origin/develop` / `origin/develop..origin/staging`. Expect and plan a **merge** (use the `E:\NEXUS-staging` worktree), not a push of `develop:staging`. Resolve/inspect, push `staging` only when clean. |
+| G3 | **Multiple Alembic heads risk.** New revisions branched off a mid-chain revision (`c4d7e0f53g6h`) while staging carried many more migrations. | After merge, verify a **single linear head**: `python -m alembic heads` (or scan `down_revision` graph). Must be exactly **1 head, 0 branch points** before deploy. |
+| G4 | **`bootstrap_alembic.py` used to break on new revisions.** `ORDERED_REVISIONS` legacy stamp list did not contain post-`s5p8q1r54s0m` revisions → `ValueError: '<rev>' is not in list` inside `deploy.sh`. | **Fixed (2026-07-26):** revisions outside the legacy list skip stamp comparison and fall through to `alembic upgrade head`. On an already-migrated staging DB you can still prefer plain `alembic upgrade head`; `bootstrap_alembic.py` remains safe for both fresh and post-legacy DBs. |
+| G5 | **New nav page invisible.** Exception Report (`/reports/exceptions`) shipped but the menu link was missing until `navigation_pages` / `role_page_permissions` were seeded. | **Any new navigation route requires an RBAC seed.** Add the route to `DEFAULT_NAVIGATION_PAGES` + `DEFAULT_ROLE_PAGE_ACCESS`, then run `python scripts/ensure_navigation_rbac.py` as a **mandatory post-deploy step** whenever nav changed. Hard-refresh / re-login to pick it up. |
+| G6 | **Debug / PII in logs.** `print()` "radar" dumps (incl. WhatsApp message bodies), a LOGIN DEBUG print, and leftover preview tooling reached the release branch. | QA scan must grep for `print(`, `console.log(`, `breakpoint(`, `pdb`, `TODO/FIXME/HACK`, hardcoded tunnels/IPs, and **PII in logs**. Route diagnostics through `logging`, never stdout message bodies. Re-scan after the final commit. |
+| G7 | **Deploy docs must match the real mechanism.** Generic "run the SQL / restart" steps didn't match `deploy.sh` + `bootstrap_alembic.py` + nav seed reality. | `DEPLOYMENT_INSTRUCTIONS.md` must reflect the **actual** path: promote → `deploy.sh` (or manual pull+build) → `alembic upgrade head` → `ensure_navigation_rbac.py` → config/env → restart → verify. Call out G4 explicitly. |
+
+### Promote (develop → staging) — exact sequence
+
+```powershell
+# From E:\NEXUS (develop). Staging lives in the E:\NEXUS-staging worktree.
+git -C E:\NEXUS push origin develop
+git -C E:\NEXUS-staging fetch origin develop staging
+git -C E:\NEXUS-staging merge --no-ff origin/develop -m "Merge develop into staging: <release>"
+# Resolve if needed, then verify single alembic head BEFORE pushing:
+cd E:\NEXUS-staging\backend; python -m alembic heads    # expect exactly 1 head
+git -C E:\NEXUS-staging push origin staging
+```
+
+### Migrate on the VPS (already-tracked staging DB)
+
+```bash
+cd /var/www/nexus/backend && source .venv/bin/activate
+alembic upgrade head        # NOT the consolidated SQL; NOT bootstrap on a tracked DB
+alembic current             # expect the release head
+python scripts/ensure_navigation_rbac.py   # if nav changed (new pages/links)
+```
+
+---
+
 ## Required staging `.env` shape (verify, don’t dump secrets)
 
 Confirm these **keys** exist and are staging-correct (print names + non-secret values only):
@@ -181,11 +218,25 @@ R2_PUBLIC_BASE_URL=…   # private S3 host OK → app uses media proxy
 - [ ] Confirm target branch `staging` and VPS path `/var/www/nexus`
 - [ ] Confirm Neon project is Nexus-Dev-1 (not old exhausted project)
 - [ ] Confirm local develop `.env` will not be overwritten
+- [ ] **Branch divergence (G2):** `git fetch` + check `git merge-base` / `git log origin/staging..origin/develop` — expect a **merge**, not fast-forward
+- [ ] **Single Alembic head (G3):** after merging, `python -m alembic heads` → exactly 1 head, 0 branch points
+- [ ] **One migration source (G1):** deploy via `alembic upgrade head`; any `*_migration.sql` is fallback-only, never both
+- [ ] **Nav changes (G5):** if new routes/pages, they are in `DEFAULT_NAVIGATION_PAGES` + `DEFAULT_ROLE_PAGE_ACCESS`, and `ensure_navigation_rbac.py` is in the deploy plan
+- [ ] **QA scan (G6):** no `print(` / `console.log` / debug / PII-in-logs / hardcoded tunnels or IDs left in the diff
 - [ ] List new Alembic revisions since last staging deploy; note if DB is empty → bootstrap path
+
+### 1b. Promote develop → staging (G2)
+
+- [ ] Push `develop`; merge `origin/develop` into the `E:\NEXUS-staging` worktree (`--no-ff`)
+- [ ] Verify single Alembic head (G3) **before** pushing `staging`
+- [ ] Push `staging` only when merge is clean
 
 ### 2. Code deploy
 
 - [ ] Pull/promote to staging; run Hostinger deploy script if used
+- [ ] **Migrations (G1/G4):** on a tracked staging DB prefer **`alembic upgrade head`** (not the SQL). `bootstrap_alembic.py` (used by `deploy.sh`) now tolerates post-legacy revisions and falls through to upgrade head — no longer crashes with `ValueError: '<rev>' is not in list`.
+- [ ] **`alembic current`** → matches the release head
+- [ ] **Nav RBAC (G5):** `python scripts/ensure_navigation_rbac.py` if nav changed; hard-refresh / re-login
 - [ ] `sudo systemctl restart nexus-backend` after env or code changes
 - [ ] Wait until `curl -sS http://127.0.0.1:8002/` succeeds
 
@@ -328,12 +379,13 @@ Staging deploy is **not done** until:
 
 1. API health OK on `:8002` and public site loads  
 2. Admin can log in (seeded Nexus users)  
-3. Top nav is visible (navigation RBAC seeded)  
+3. Top nav is visible (navigation RBAC seeded) — **including any new pages from this release (G5)**  
 4. Settings/company profile loads  
 5. **SMTP configured** and monitoring Active + staging uptime URL + `ALERT_EMAIL`  
 6. **Default data present:** Levels, Programs, Majors, Courses, Countries, States, Cities, institutions + wizard drafts (course mappings)  
 7. **Default student lead id 27** copied (Ishan Ahmed + related lead/profile data)  
 8. R2 staging bucket receives a test upload  
 9. WhatsApp public URL points at `nexus-dev.edutrust.in` (not a tunnel)  
+10. **`alembic current` == release head, single head (G1/G3)**, and the consolidated SQL was **not** run alongside Alembic  
 
 If any item fails, **do not** report success — fix or list blockers with the exact command to run next.
