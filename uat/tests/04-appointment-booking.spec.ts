@@ -41,7 +41,10 @@ test.describe('Appointment booking', () => {
     page,
   }) => {
     await gotoAppPath(page, '/my-bookings');
-    await page.waitForTimeout(1500);
+    await expect(page.getByRole('heading', { name: /My Bookings/i })).toBeVisible({
+      timeout: 60_000,
+    });
+    await expect(page.getByText(/^Loading…$/)).toHaveCount(0, { timeout: 60_000 });
 
     const action = page.getByRole('button', {
       name: /Session|Outcome|Journey|View|Reschedule|Cancel|Notes|Profile|Interaction/i,
@@ -50,13 +53,10 @@ test.describe('Appointment booking', () => {
       /Past bookings|Today's bookings|Upcoming bookings|Period agenda|appointment|My Bookings/i
     );
 
-    const hasActions = await action.first().isVisible().catch(() => false);
-    const hasShell = await metricOrList.first().isVisible().catch(() => false);
-
-    expect(
-      hasActions || hasShell,
+    await expect(
+      action.first().or(metricOrList.first()),
       'Expected booking actions or the My Bookings overview shell'
-    ).toBeTruthy();
+    ).toBeVisible({ timeout: 45_000 });
   });
 
   test('schedule grid exposes bookable slot / pending appointment surfaces for counselors', async ({
