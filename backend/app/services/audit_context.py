@@ -11,6 +11,7 @@ EXPLICIT_AUDIT_API_PREFIXES: tuple[str, ...] = (
     "/api/v1/settings/public-holidays",
     "/api/v1/admin/quarantine",
     "/api/v1/admin/audit-logs/retention",
+    "/api/v1/reports/exception-logs/retention",
     "/api/v1/chat/",
     "/api/v1/command-center",
     "/api/v1/bookings",
@@ -36,6 +37,7 @@ _FRONTEND_ROUTE_LABELS: dict[str, str] = {
     "/settings": "Cockpit > Application Settings",
     "/reports/meta-leads": "Reports > Meta Leads",
     "/reports/audit-logs": "Reports > Audit Logs",
+    "/reports/exceptions": "Reports > Exception Report",
     "/quarantine": "Manage Leads > Lead Quarantine",
     "/security-audit": "Cockpit > Security Audit",
 }
@@ -71,6 +73,11 @@ _API_AUDIT_RULES: list[tuple[str, dict[str, str]]] = [
         "page": "Reports > Audit Logs",
         "menu": "Reports > Audit Logs",
         "action": "Update audit log retention",
+    }),
+    ("/api/v1/reports/exception-logs/retention", {
+        "page": "Reports > Exception Report",
+        "menu": "Reports > Exception Report",
+        "action": "Update exception log retention",
     }),
     ("/api/v1/admin/quarantine", {
         "page": "Manage Leads > Lead Quarantine",

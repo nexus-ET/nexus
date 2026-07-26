@@ -749,3 +749,151 @@ async def initiate_ai_outreach(
 
     db.refresh(lead)
     return sent_messages
+
+
+def _delete_lead_booking_details(db: Session, lead: Lead) -> tuple[int, list[dict]]:
+    """Release consultation slots and permanently remove counselling bookings for a lead."""
+    from app.models.consultation_slot import ConsultationSlot
+    from app.models.counselling_booking import CounsellingBooking
+    from app.services.counselling_service import SCHEDULED_STATUS
+
+    for slot in db.query(ConsultationSlot).filter(ConsultationSlot.lead_id == lead.id).all():
+        slot.lead_id = None
+
+    bookings = (
+        db.query(CounsellingBooking)
+        .filter(CounsellingBooking.lead_id == lead.id)
+        .all()
+    )
+    alert_snapshots: list[dict] = []
+    for booking in bookings:
+        if booking.admin_id and booking.status == SCHEDULED_STATUS:
+            alert_snapshots.append(
+                {
+                    "admin_id": booking.admin_id,
+                    "candidate_name": booking.candidate_name,
+                    "scheduled_time": booking.scheduled_time,
+                    "booking_id": booking.id,
+                    "lead_id": booking.lead_id,
+                    "alert_reason": "reset",
+                }
+            )
+
+    deleted_bookings = (
+        db.query(CounsellingBooking)
+        .filter(CounsellingBooking.lead_id == lead.id)
+        .delete(synchronize_session=False)
+    )
+    return int(deleted_bookings or 0), alert_snapshots
+
+
+def _wipe_lead_intake_profile(lead: Lead) -> None:
+    """Clear every chat-collected intake / booking profile field on the lead."""
+    from app.services.admissions_intake_flow import INTAKE_STEP_TARGET_DEGREE
+    from app.services.lead_study_interest import clear_study_interest_sources
+
+    lead.stage = LeadStage.AI_ACTIVE
+    lead.is_human_locked = False
+    lead.admission_stage = None
+    lead.admission_stage_entered_at = None
+    lead.current_location = None
+    lead.preferred_country = None
+    lead.budget_tier = None
+    lead.test_scores = None
+    lead.academic_summary = None
+    lead.english_test_scores = None
+    lead.gre_score = None
+    lead.gmat_score = None
+    lead.wants_consultation_call = None
+    lead.consultation_scheduled_at = None
+    lead.calendar_booking_id = None
+    lead.intake_context = None
+    lead.intake_step = INTAKE_STEP_TARGET_DEGREE
+    clear_study_interest_sources(lead)
+
+
+def reset_whatsapp_conversation(db: Session, lead: Lead) -> dict:
+    """Clear WhatsApp chat history, bookings, and intake session so outreach can start fresh."""
+    from datetime import datetime
+
+    from sqlalchemy import inspect as sa_inspect
+
+    from app.models.message_history import MessageHistory
+    from app.services.counselling_service import dispatch_admin_booking_release_alerts
+    from app.services.status_definition_service import (
+        STAGE_LEAD_NEW,
+        STATUS_LEAD_NEW,
+        resolve_status_id_by_name,
+    )
+    from app.services.student_status_service import update_student_status
+
+    # Status helpers refresh the ORM row (Session autoflush is False), so they must
+    # run before we wipe intake fields — otherwise refresh restores the old answers.
+    new_status_id = (
+        resolve_status_id_by_name(db, STAGE_LEAD_NEW, fallback=STATUS_LEAD_NEW)
+        or STATUS_LEAD_NEW
+    )
+    status_result = update_student_status(
+        db,
+        student_id=lead.id,
+        status_id=new_status_id,
+        changed_by_type="system",
+        comments="WhatsApp conversation reset — pipeline returned to Lead: New.",
+        allow_override=True,
+        transition_type="backward",
+        commit=False,
+    )
+    if status_result.get("blocked") or (
+        not status_result.get("changed") and not status_result.get("skipped")
+    ):
+        lead.status_definition_id = new_status_id
+        lead.status_entered_at = datetime.utcnow()
+
+    deleted_bookings, alert_snapshots = _delete_lead_booking_details(db, lead)
+
+    deleted_messages = (
+        db.query(Message)
+        .filter(Message.lead_id == lead.id)
+        .delete(synchronize_session=False)
+    )
+
+    deleted_history = 0
+    try:
+        bind = db.get_bind()
+        if sa_inspect(bind).has_table(MessageHistory.__tablename__):
+            deleted_history = (
+                db.query(MessageHistory)
+                .filter(MessageHistory.lead_id == lead.id)
+                .delete(synchronize_session=False)
+            )
+    except Exception:
+        logger.exception(
+            "Unable to clear message_history for lead_id=%s; continuing with messages reset",
+            lead.id,
+        )
+
+    # Re-load the same row after status refresh, then wipe profile last.
+    lead = db.query(Lead).filter(Lead.id == lead.id).first() or lead
+    _wipe_lead_intake_profile(lead)
+    touch_lead_activity(db, lead)
+    db.flush()
+    db.commit()
+    db.refresh(lead)
+    dispatch_admin_booking_release_alerts(alert_snapshots)
+
+    logger.info(
+        "Reset WhatsApp conversation for lead_id=%s (messages=%s history=%s bookings=%s "
+        "country=%s wants_call=%s scheduled=%s)",
+        lead.id,
+        deleted_messages,
+        deleted_history,
+        deleted_bookings,
+        lead.preferred_country,
+        lead.wants_consultation_call,
+        lead.consultation_scheduled_at,
+    )
+    return {
+        "deleted_messages": int(deleted_messages or 0),
+        "deleted_history": int(deleted_history or 0),
+        "deleted_bookings": int(deleted_bookings or 0),
+    }

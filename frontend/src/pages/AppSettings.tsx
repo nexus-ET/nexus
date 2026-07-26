@@ -854,6 +854,8 @@ const AppSettings: React.FC = () => {
                       <td colSpan={4} className="px-4 pt-4 pb-2">
                         <div className="text-sm font-semibold text-text-main">Monitoring</div>
                         <p className="text-xs text-text-muted mt-0.5">
+                          Alert emails receive Exception Report notifications and
+                          auto-resolution confirmations immediately.
                           Uptime checks run only while Monitoring status is Active.
                         </p>
                       </td>

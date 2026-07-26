@@ -14,7 +14,7 @@ import {
 
   Loader2,
 
-  Map,
+  Map as MapIcon,
 
   MessageSquare,
 
@@ -39,6 +39,7 @@ import InteractionLogDrawer from '../components/InteractionLogDrawer';
 import CounsellingSessionModal from '../components/CounsellingSessionModal';
 
 import StudentJourneyPanel from '../components/StudentJourneyPanel';
+import PeriodAgendaShell, { type PeriodDaySummary } from '../components/PeriodAgendaShell';
 
 
 
@@ -193,8 +194,17 @@ const METRIC_LABELS: Record<BookingMetricKey, string> = {
   upcoming: 'Upcoming bookings',
 };
 
+type DateFilterMode = 'single' | 'multiple';
+
+const localToday = (): Date => {
+  const today = new Date();
+  return new Date(today.getFullYear(), today.getMonth(), today.getDate());
+};
+
 const MyBookings: React.FC = () => {
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [dateFilterMode, setDateFilterMode] = useState<DateFilterMode>('single');
+  const [startDate, setStartDate] = useState<Date>(() => localToday());
+  const [endDate, setEndDate] = useState<Date | null>(null);
   const [calendarToday, setCalendarToday] = useState('');
   const [groupedBookings, setGroupedBookings] = useState<MyBookingsGroupedResponse | null>(null);
   const [currentUserId, setCurrentUserId] = useState<number | null>(null);
@@ -205,8 +215,11 @@ const MyBookings: React.FC = () => {
   const [sessionBooking, setSessionBooking] = useState<MyBooking | null>(null);
   const [journeyPanel, setJourneyPanel] = useState<JourneyPanelState | null>(null);
   const [activeMetric, setActiveMetric] = useState<BookingMetricKey>('today');
+  const [periodFocusDate, setPeriodFocusDate] = useState<string | null>(null);
 
   const viewAllBookings = groupedBookings?.view_all_bookings ?? false;
+  const isMultipleDates = dateFilterMode === 'multiple';
+  const hasDateFilter = isMultipleDates ? Boolean(endDate) || Boolean(startDate) : Boolean(startDate);
 
   const overview = useMemo(
     () =>
@@ -238,62 +251,211 @@ const MyBookings: React.FC = () => {
     }
   }, []);
 
+  useEffect(() => {
+    if (!calendarToday || dateFilterMode !== 'single') return;
+    setStartDate(prev => {
+      // Align initial local today with the office calendar day from the API.
+      if (toIsoDate(prev) === toIsoDate(localToday())) {
+        return parseIsoDate(calendarToday);
+      }
+      return prev;
+    });
+  }, [calendarToday, dateFilterMode]);
+
   const bookings = useMemo(() => {
     if (!groupedBookings) return [];
+
+    if (isMultipleDates && (startDate || endDate)) {
+      const inRange = (booking: MyBooking): boolean => {
+        const day = booking.scheduled_time.slice(0, 10);
+        if (!day) return false;
+        if (startDate && day < toIsoDate(startDate)) return false;
+        if (endDate && day > toIsoDate(endDate)) return false;
+        return true;
+      };
+      return [...groupedBookings.past, ...groupedBookings.today, ...groupedBookings.upcoming]
+        .filter(inRange)
+        .sort((a, b) => a.scheduled_time.localeCompare(b.scheduled_time));
+    }
+
     const sectionBookings = groupedBookings[activeMetric] ?? [];
-    if (!selectedDate) return sectionBookings;
-    return sectionBookings.filter(booking => booking.scheduled_time.startsWith(selectedDate));
-  }, [groupedBookings, activeMetric, selectedDate]);
+    if (!startDate) return sectionBookings;
+    const selected = toIsoDate(startDate);
+    return sectionBookings.filter(booking => booking.scheduled_time.startsWith(selected));
+  }, [groupedBookings, activeMetric, isMultipleDates, startDate, endDate]);
 
+  const bookingsByDay = useMemo(() => {
+    const groups = new Map<string, { date: string; label: string; bookings: MyBooking[] }>();
+    for (const booking of bookings) {
+      const date = booking.scheduled_time.slice(0, 10);
+      if (!date) continue;
+      const existing = groups.get(date);
+      if (existing) {
+        existing.bookings.push(booking);
+      } else {
+        groups.set(date, {
+          date,
+          label:
+            booking.date_label ||
+            parseIsoDate(date).toLocaleDateString(undefined, {
+              weekday: 'short',
+              day: 'numeric',
+              month: 'short',
+            }),
+          bookings: [booking],
+        });
+      }
+    }
+    return Array.from(groups.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [bookings]);
 
+  const periodDaySummaries: PeriodDaySummary[] = useMemo(
+    () =>
+      bookingsByDay.map(group => ({
+        date: group.date,
+        label: group.label,
+        count: group.bookings.length,
+        bookedCount: group.bookings.filter(item => item.status === 'SCHEDULED').length,
+        pendingCount: group.bookings.filter(item => item.status === 'PENDING').length,
+      })),
+    [bookingsByDay]
+  );
+
+  const periodStats = useMemo(() => {
+    const scheduled = bookings.filter(item => item.status === 'SCHEDULED').length;
+    const completed = bookings.filter(item => item.status === 'COMPLETED').length;
+    const pending = bookings.filter(item => item.status === 'PENDING').length;
+    return [
+      { label: 'Total', value: bookings.length, tone: 'default' as const },
+      { label: 'Scheduled', value: scheduled, tone: 'emerald' as const },
+      { label: 'Completed', value: completed, tone: 'sky' as const },
+      { label: 'Pending', value: pending, tone: 'amber' as const },
+    ];
+  }, [bookings]);
+
+  const visiblePeriodDays = useMemo(() => {
+    if (!periodFocusDate) return bookingsByDay;
+    return bookingsByDay.filter(group => group.date === periodFocusDate);
+  }, [bookingsByDay, periodFocusDate]);
 
   useEffect(() => {
+    if (!isMultipleDates) {
+      setPeriodFocusDate(null);
+      return;
+    }
+    if (periodFocusDate && !bookingsByDay.some(group => group.date === periodFocusDate)) {
+      setPeriodFocusDate(null);
+    }
+  }, [isMultipleDates, periodFocusDate, bookingsByDay]);
 
+  useEffect(() => {
     if (!hasValidSession()) return;
 
     apiFetch('users/me')
-
       .then(user => setCurrentUserId((user as CurrentUser).id))
-
       .catch(() => setError('Failed to load your profile.'));
-
   }, []);
-
-
 
   useEffect(() => {
     loadBookings();
   }, [loadBookings]);
 
+  const resolveTodayDate = useCallback((): Date => {
+    if (calendarToday) return parseIsoDate(calendarToday);
+    return localToday();
+  }, [calendarToday]);
+
   const handleMetricClick = (metric: BookingMetricKey) => {
     setActiveMetric(metric);
-    setSelectedDate(null);
-  };
-
-  const handleDateChange = (date: Date | null) => {
-    if (!date) return;
-    setSelectedDate(toIsoDate(date));
-  };
-
-  const jumpToToday = () => {
-    if (calendarToday) {
-      setActiveMetric('today');
-      setSelectedDate(calendarToday);
+    setDateFilterMode('single');
+    setEndDate(null);
+    if (metric === 'today') {
+      setStartDate(resolveTodayDate());
     }
   };
 
+  const handleDateFilterModeChange = (mode: DateFilterMode) => {
+    if (mode === dateFilterMode) return;
+    setDateFilterMode(mode);
+    if (mode === 'single') {
+      setEndDate(null);
+      setStartDate(prev => prev ?? resolveTodayDate());
+    } else if (startDate && !endDate) {
+      setEndDate(startDate);
+    }
+  };
 
+  const handleStartDateChange = (date: Date | null) => {
+    const next = date ?? resolveTodayDate();
+    setStartDate(next);
+    if (isMultipleDates && endDate && next > endDate) {
+      setEndDate(next);
+    }
+    if (!isMultipleDates) {
+      setEndDate(null);
+      if (calendarToday) {
+        const iso = toIsoDate(next);
+        if (iso < calendarToday) setActiveMetric('past');
+        else if (iso > calendarToday) setActiveMetric('upcoming');
+        else setActiveMetric('today');
+      }
+    }
+  };
 
-  const selectedDateLabel = selectedDate
-    ? parseIsoDate(selectedDate).toLocaleDateString(undefined, {
-        weekday: 'long',
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric',
-      })
-    : METRIC_LABELS[activeMetric];
+  const handleEndDateChange = (date: Date | null) => {
+    if (!isMultipleDates) return;
+    setEndDate(date);
+    if (date && startDate && date < startDate) {
+      setStartDate(date);
+    }
+  };
 
-  const isToday = Boolean(selectedDate && calendarToday && selectedDate === calendarToday);
+  const clearDateFilter = () => {
+    setDateFilterMode('single');
+    setActiveMetric('today');
+    setStartDate(resolveTodayDate());
+    setEndDate(null);
+  };
+
+  const jumpToToday = () => {
+    setActiveMetric('today');
+    setDateFilterMode('single');
+    setStartDate(resolveTodayDate());
+    setEndDate(null);
+  };
+
+  const dateFilterLabel = useMemo(() => {
+    if (!hasDateFilter) return METRIC_LABELS[activeMetric];
+    if (isMultipleDates) {
+      const startLabel = startDate
+        ? startDate.toLocaleDateString(undefined, {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+          })
+        : 'Any';
+      const endLabel = endDate
+        ? endDate.toLocaleDateString(undefined, {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+          })
+        : 'Any';
+      return `${startLabel} → ${endLabel}`;
+    }
+    return startDate
+      ? startDate.toLocaleDateString(undefined, {
+          weekday: 'long',
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+        })
+      : METRIC_LABELS[activeMetric];
+  }, [hasDateFilter, isMultipleDates, startDate, endDate, activeMetric]);
+
+  const isToday = Boolean(
+    !isMultipleDates && startDate && calendarToday && toIsoDate(startDate) === calendarToday
+  );
 
 
 
@@ -415,7 +577,7 @@ const MyBookings: React.FC = () => {
 
       <span
 
-        className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${categoryBadgeClass(
+        className={`inline-flex items-center rounded-full border px-2.5 py-1 text-sm font-semibold ${categoryBadgeClass(
 
           category
 
@@ -443,7 +605,7 @@ const MyBookings: React.FC = () => {
 
         onClick={() => setInteractionBookingId(booking.id)}
 
-        className="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-xs font-semibold text-text-main hover:bg-accent/20"
+        className="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-sm font-semibold text-text-main hover:bg-accent/20"
 
       >
 
@@ -471,11 +633,11 @@ const MyBookings: React.FC = () => {
 
           }
 
-          className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100"
+          className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-sm font-semibold text-slate-800 hover:bg-slate-100"
 
         >
 
-          <Map size={14} />
+          <MapIcon size={14} />
 
           View Journey
 
@@ -489,7 +651,7 @@ const MyBookings: React.FC = () => {
 
         onClick={() => setSessionBooking(booking)}
 
-        className="inline-flex items-center gap-1 rounded-lg border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-xs font-semibold text-violet-900 hover:bg-violet-100"
+        className="inline-flex items-center gap-1 rounded-lg border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-sm font-semibold text-violet-900 hover:bg-violet-100"
 
       >
 
@@ -507,7 +669,7 @@ const MyBookings: React.FC = () => {
 
           onClick={() => openReassignModal(booking)}
 
-          className="inline-flex items-center gap-1 rounded-lg border border-border-subtle bg-surface-bg px-2.5 py-1.5 text-xs font-semibold text-text-main hover:bg-card"
+          className="inline-flex items-center gap-1 rounded-lg border border-border-subtle bg-surface-bg px-2.5 py-1.5 text-sm font-semibold text-text-main hover:bg-card"
 
         >
 
@@ -529,7 +691,8 @@ const MyBookings: React.FC = () => {
 
     <div className="absolute inset-0 min-h-0 overflow-hidden flex flex-col">
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar p-4 md:p-5 space-y-4">
+      <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar p-4 md:p-5">
+      <div className="space-y-4 pb-10">
 
       <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
 
@@ -545,8 +708,8 @@ const MyBookings: React.FC = () => {
 
           <p className="text-sm text-text-muted mt-1">
             {viewAllBookings
-              ? 'All counselling sessions handled across the team. Use the overview cards to browse past, today, and upcoming bookings.'
-              : 'Counselling sessions you have handled. Use the overview cards to browse past, today, and upcoming bookings.'}
+              ? 'All counselling sessions handled across the team. Use single or multiple dates, or the overview cards for past, today, and upcoming.'
+              : 'Counselling sessions you have handled. Use single or multiple dates, or the overview cards for past, today, and upcoming.'}
           </p>
 
         </div>
@@ -571,62 +734,97 @@ const MyBookings: React.FC = () => {
 
       </div>
 
+      <div className="rounded-xl border border-border-subtle bg-card p-4">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <span className="text-sm font-semibold uppercase tracking-wide text-text-muted flex items-center gap-1.5 shrink-0">
+            <Calendar size={14} />
+            Date filter
+          </span>
+          <label className="inline-flex items-center gap-2 text-sm text-text-main cursor-pointer shrink-0">
+            <input
+              type="radio"
+              name="my-bookings-date-mode"
+              checked={!isMultipleDates}
+              onChange={() => handleDateFilterModeChange('single')}
+              className="accent-accent"
+            />
+            Single date
+          </label>
+          <label className="inline-flex items-center gap-2 text-sm text-text-main cursor-pointer shrink-0">
+            <input
+              type="radio"
+              name="my-bookings-date-mode"
+              checked={isMultipleDates}
+              onChange={() => handleDateFilterModeChange('multiple')}
+              className="accent-accent"
+            />
+            Multiple dates
+          </label>
 
+          <div className="flex flex-nowrap items-center gap-2 shrink-0">
+            <div className="shrink-0 [&_.react-datepicker-wrapper]:block [&_.react-datepicker__input-container]:block">
+              <DatePicker
+                selected={startDate}
+                onChange={handleStartDateChange}
+                selectsStart={isMultipleDates}
+                startDate={startDate}
+                endDate={isMultipleDates ? endDate : null}
+                maxDate={isMultipleDates && endDate ? endDate : undefined}
+                placeholderText={isMultipleDates ? 'Start date' : 'Select date'}
+                dateFormat="EEE, d MMM yyyy"
+                className="w-[200px] rounded-lg border border-border-subtle bg-surface-bg px-3 py-2 text-sm text-text-main"
+                calendarClassName="nexus-roster-datepicker"
+                popperClassName="nexus-datepicker-popper"
+                portalId="nexus-datepicker-portal"
+                withPortal
+                popperPlacement="bottom-start"
+                popperProps={{ strategy: 'fixed' }}
+              />
+            </div>
+            <span className="text-sm text-text-muted shrink-0">to</span>
+            <div className="shrink-0 [&_.react-datepicker-wrapper]:block [&_.react-datepicker__input-container]:block">
+              <DatePicker
+                selected={isMultipleDates ? endDate : null}
+                onChange={handleEndDateChange}
+                selectsEnd
+                startDate={startDate}
+                endDate={endDate}
+                minDate={startDate || undefined}
+                placeholderText="End date"
+                dateFormat="EEE, d MMM yyyy"
+                className="w-[200px] rounded-lg border border-border-subtle bg-surface-bg px-3 py-2 text-sm text-text-main disabled:opacity-50 disabled:cursor-not-allowed"
+                calendarClassName="nexus-roster-datepicker"
+                popperClassName="nexus-datepicker-popper"
+                portalId="nexus-datepicker-portal"
+                withPortal
+                popperPlacement="bottom-start"
+                popperProps={{ strategy: 'fixed' }}
+                disabled={!isMultipleDates}
+                isClearable={isMultipleDates}
+              />
+            </div>
+          </div>
 
-      <div className="rounded-xl border border-border-subtle bg-card p-4 flex flex-col sm:flex-row sm:items-center gap-3">
-
-        <label className="text-xs font-semibold uppercase tracking-wide text-text-muted flex items-center gap-1.5 whitespace-nowrap">
-
-          <Calendar size={14} />
-
-          Select date
-
-        </label>
-
-        <DatePicker
-
-          selected={selectedDate ? parseIsoDate(selectedDate) : null}
-
-          onChange={handleDateChange}
-
-          dateFormat="EEE, d MMM yyyy"
-
-          className="w-full sm:w-[220px] rounded-lg border border-border-subtle bg-surface-bg px-3 py-2 text-sm text-text-main"
-
-          calendarClassName="nexus-roster-datepicker"
-
-          popperClassName="nexus-datepicker-popper"
-
-          portalId="nexus-datepicker-portal"
-
-          popperPlacement="bottom-start"
-
-          popperProps={{ strategy: 'fixed' }}
-
-        />
-
-        {selectedDate ? (
-          <button
-            type="button"
-            onClick={() => setSelectedDate(null)}
-            className="text-xs font-semibold text-accent hover:underline whitespace-nowrap"
-          >
-            Show all in section
-          </button>
-        ) : null}
-
-        {!isToday && selectedDate ? (
-          <button
-            type="button"
-            onClick={jumpToToday}
-            className="text-xs font-semibold text-accent hover:underline whitespace-nowrap"
-          >
-            Jump to today
-          </button>
-        ) : null}
-
-        <span className="text-sm text-text-muted sm:ml-auto">{selectedDateLabel}</span>
-
+          {hasDateFilter ? (
+            <button
+              type="button"
+              onClick={clearDateFilter}
+              className="text-sm font-semibold text-accent hover:underline whitespace-nowrap shrink-0"
+            >
+              Clear dates
+            </button>
+          ) : null}
+          {!isToday && !isMultipleDates ? (
+            <button
+              type="button"
+              onClick={jumpToToday}
+              className="text-sm font-semibold text-accent hover:underline whitespace-nowrap shrink-0"
+            >
+              Jump to today
+            </button>
+          ) : null}
+          <span className="text-sm text-text-muted sm:ml-auto shrink-0">{dateFilterLabel}</span>
+        </div>
       </div>
 
 
@@ -653,7 +851,7 @@ const MyBookings: React.FC = () => {
 
 
 
-      <div className="rounded-2xl border border-border-subtle bg-card overflow-hidden">
+      <div className="rounded-2xl border border-border-subtle bg-card shrink-0">
 
         {loading ? (
 
@@ -672,13 +870,15 @@ const MyBookings: React.FC = () => {
             <Calendar size={28} className="mx-auto text-text-muted mb-3" />
 
             <p className="text-sm font-medium text-text-main">
-              {selectedDate
-                ? `No bookings on ${selectedDateLabel}`
+              {hasDateFilter
+                ? `No bookings for ${dateFilterLabel}`
                 : `No ${METRIC_LABELS[activeMetric].toLowerCase()}`}
             </p>
             <p className="text-xs text-text-muted mt-1">
-              {selectedDate
-                ? `Try another date or clear the date filter to see all ${METRIC_LABELS[activeMetric].toLowerCase()}.`
+              {hasDateFilter
+                ? isMultipleDates
+                  ? 'Try another date range or clear the date filter.'
+                  : `Try another date or clear the date filter to see all ${METRIC_LABELS[activeMetric].toLowerCase()}.`
                 : viewAllBookings
                   ? 'Assigned counselling sessions will appear here once they are recorded.'
                   : 'Sessions you have handled will appear here once they are assigned to you.'}
@@ -686,6 +886,65 @@ const MyBookings: React.FC = () => {
 
           </div>
 
+        ) : isMultipleDates && hasDateFilter ? (
+          <div className="p-4 md:p-5">
+            <PeriodAgendaShell
+              periodLabel={dateFilterLabel}
+              totalCount={bookings.length}
+              days={periodDaySummaries}
+              activeDate={periodFocusDate}
+              onSelectDate={setPeriodFocusDate}
+              stats={periodStats}
+              emptyMessage="No bookings in this date period."
+            >
+              <div className="space-y-4">
+                {visiblePeriodDays.map(group => (
+                  <section
+                    key={group.date}
+                    id={`my-bookings-day-${group.date}`}
+                    className="rounded-xl border border-border-subtle overflow-hidden"
+                  >
+                    <div className="flex items-center justify-between gap-3 px-4 py-2.5 bg-surface-bg border-b border-border-subtle">
+                      <div>
+                        <h4 className="text-sm font-semibold text-text-main">{group.label}</h4>
+                        <p className="text-[11px] text-text-muted">
+                          {group.bookings.length} session{group.bookings.length === 1 ? '' : 's'}
+                        </p>
+                      </div>
+                      <span className="text-[11px] font-semibold text-text-muted tabular-nums">
+                        {group.date}
+                      </span>
+                    </div>
+                    <div className="divide-y divide-border-subtle">
+                      {group.bookings.map(booking => (
+                        <div
+                          key={booking.id}
+                          className="flex flex-col lg:flex-row lg:items-center gap-3 px-4 py-3 hover:bg-surface-bg/40"
+                        >
+                          <div className="w-full lg:w-28 shrink-0">
+                            <p className="text-sm font-bold text-text-main">{booking.time_label}</p>
+                            <p className="text-[11px] text-text-muted mt-0.5">{booking.date_label}</p>
+                          </div>
+                          <div className="min-w-0 flex-1 space-y-1">
+                            <p className="text-sm font-semibold text-text-main truncate">
+                              {booking.candidate_name}
+                            </p>
+                            <p className="text-xs text-text-muted truncate">
+                              {formatLocationCountry(booking)}
+                              {booking.course_interest ? ` · ${booking.course_interest}` : ''}
+                              {booking.admin_name ? ` · Counsellor: ${booking.admin_name}` : ''}
+                            </p>
+                          </div>
+                          <div className="shrink-0">{renderStatusBadge(booking)}</div>
+                          <div className="shrink-0 lg:ml-auto">{renderActions(booking)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </PeriodAgendaShell>
+          </div>
         ) : (
 
           <div className="overflow-x-auto">
@@ -694,10 +953,10 @@ const MyBookings: React.FC = () => {
 
               <thead className="bg-surface-bg/80 border-b border-border-subtle">
 
-                <tr className="text-left text-xs font-semibold uppercase tracking-wide text-text-muted">
+                <tr className="text-left text-sm font-semibold uppercase tracking-wide text-text-muted">
 
                   <th className="px-4 py-3">Candidate</th>
-                  {viewAllBookings ? <th className="px-4 py-3">Counsellor</th> : null}
+                  <th className="px-4 py-3">Counsellor</th>
                   <th className="px-4 py-3">Location &amp; Country</th>
 
                   <th className="px-4 py-3">Course Interest</th>
@@ -725,9 +984,7 @@ const MyBookings: React.FC = () => {
                   >
 
                     <td className="px-4 py-3 font-medium text-text-main">{booking.candidate_name}</td>
-                    {viewAllBookings ? (
-                      <td className="px-4 py-3 text-text-muted">{booking.admin_name || '—'}</td>
-                    ) : null}
+                    <td className="px-4 py-3 text-text-muted">{booking.admin_name || '—'}</td>
                     <td className="px-4 py-3 text-text-muted">{formatLocationCountry(booking)}</td>
 
                     <td className="px-4 py-3 text-text-muted">{booking.course_interest || '—'}</td>
@@ -922,6 +1179,7 @@ const MyBookings: React.FC = () => {
 
 
 
+      </div>
       </div>
 
     </div>

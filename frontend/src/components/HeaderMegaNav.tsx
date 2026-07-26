@@ -1,7 +1,8 @@
-import React, { useEffect, useId, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { ChevronDown } from 'lucide-react';
 import {
+  findModuleForPath,
   getAppNavModules,
   isModuleActive,
   type NavAccessContext,
@@ -13,13 +14,21 @@ import { isRouteActive, normalizePath } from '../utils/routeAccess';
 interface HeaderMegaNavProps {
   allowedRoutes: string[] | null;
   currentUser: NavAccessContext['currentUser'];
+  /** Currently selected top-level module shown in the left nav. */
+  activeModuleId: string | null;
+  onModuleSelect: (moduleId: string) => void;
 }
 
 /**
- * GitHub-style header mega menu: top labels open a wide panel with a
- * featured column (icon + title + description) and grouped link columns.
+ * GitHub-style header mega menu: top labels open a wide panel, and also
+ * load that module's sub-menus into the left sidebar.
  */
-const HeaderMegaNav: React.FC<HeaderMegaNavProps> = ({ allowedRoutes, currentUser }) => {
+const HeaderMegaNav: React.FC<HeaderMegaNavProps> = ({
+  allowedRoutes,
+  currentUser,
+  activeModuleId,
+  onModuleSelect,
+}) => {
   const location = useLocation();
   const currentPath = normalizePath(location.pathname);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -27,11 +36,15 @@ const HeaderMegaNav: React.FC<HeaderMegaNavProps> = ({ allowedRoutes, currentUse
   const baseId = useId();
 
   const roleName = currentUser?.admin_role?.name || currentUser?.role || '';
-  const modules = getAppNavModules({
-    allowedRoutes,
-    roleName,
-    currentUser,
-  });
+  const modules = useMemo(
+    () =>
+      getAppNavModules({
+        allowedRoutes,
+        roleName,
+        currentUser,
+      }),
+    [allowedRoutes, roleName, currentUser]
+  );
 
   useEffect(() => {
     setOpenId(null);
@@ -61,12 +74,21 @@ const HeaderMegaNav: React.FC<HeaderMegaNavProps> = ({ allowedRoutes, currentUse
     return null;
   }
 
+  const pathModule = findModuleForPath(modules, currentPath);
+  const selectedId = activeModuleId ?? pathModule?.id ?? null;
   const openModule = modules.find(module => module.id === openId) ?? null;
+
+  const handleModuleClick = (moduleId: string) => {
+    const nextOpen = openId === moduleId ? null : moduleId;
+    setOpenId(nextOpen);
+    onModuleSelect(moduleId);
+  };
 
   return (
     <nav ref={rootRef} className="relative hidden lg:flex items-center gap-0.5" aria-label="Primary">
       {modules.map(module => {
         const isOpen = openId === module.id;
+        const isSelected = selectedId === module.id;
         const isActive = isModuleActive(module, currentPath);
         const panelId = `${baseId}-${module.id}-panel`;
 
@@ -77,9 +99,10 @@ const HeaderMegaNav: React.FC<HeaderMegaNavProps> = ({ allowedRoutes, currentUse
               aria-expanded={isOpen}
               aria-controls={panelId}
               aria-haspopup="true"
-              onClick={() => setOpenId(isOpen ? null : module.id)}
+              aria-pressed={isSelected}
+              onClick={() => handleModuleClick(module.id)}
               className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-base font-medium transition-colors ${
-                isOpen || isActive
+                isOpen || isSelected || isActive
                   ? 'bg-white/15 text-white'
                   : 'text-white/85 hover:bg-white/10 hover:text-white'
               }`}
@@ -96,7 +119,11 @@ const HeaderMegaNav: React.FC<HeaderMegaNavProps> = ({ allowedRoutes, currentUse
 
       {openModule && (
         <>
-          <div className="fixed inset-0 top-16 z-30 bg-black/20" aria-hidden onClick={() => setOpenId(null)} />
+          <div
+            className="fixed inset-0 top-16 z-30 bg-black/20"
+            aria-hidden
+            onClick={() => setOpenId(null)}
+          />
           <div
             id={`${baseId}-${openModule.id}-panel`}
             role="region"

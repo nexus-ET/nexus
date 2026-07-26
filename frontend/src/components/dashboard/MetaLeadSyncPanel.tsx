@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, CloudDownload, Loader2, Save } from 'lucide-react';
-import { apiFetch, API_SYNC_TIMEOUT_MS } from '../../utils/api';
+import { CheckCircle2, CloudDownload, Loader2, Save, X } from 'lucide-react';
+import { apiFetch } from '../../utils/api';
 import { useBusinessTimezone } from '../../context/BusinessTimezoneContext';
 
 type LeadSyncMode = 'automated' | 'manual';
@@ -30,12 +30,70 @@ interface LeadSyncConfig {
   next_scheduled_run_at?: string | null;
 }
 
+interface LeadSyncStartResponse {
+  accepted: boolean;
+  status: string;
+  sync_log_id: number;
+  message?: string;
+}
+
+interface LeadSyncRunStatus {
+  sync_log_id: number;
+  status: string;
+  message?: string | null;
+  forms_processed: number;
+  leads_seen: number;
+  leads_created: number;
+  leads_skipped: number;
+  errors: string[];
+  run_at?: string | null;
+  completed_at?: string | null;
+}
+
 const LEAD_SYNC_INTERVAL_OPTIONS: Array<{ value: LeadSyncIntervalUnit; label: string }> = [
   { value: 'minutes', label: 'Minutes' },
   { value: 'hours', label: 'Hours' },
   { value: 'days', label: 'Days' },
   { value: 'weeks', label: 'Weeks' },
 ];
+
+const SYNC_POLL_INTERVAL_MS = 2_000;
+const SYNC_POLL_TIMEOUT_MS = 10 * 60_000;
+const SYNC_START_TIMEOUT_MS = 30_000;
+
+const META_RATE_LIMIT_USER_MESSAGE =
+  'Meta Graph rate limit reached (#4). Facebook temporarily blocked Lead Ads API calls. Wait 15–60 minutes, then try Sync Now again. Details are in Reports → Meta Leads / Exception Report.';
+
+const sleep = (ms: number) => new Promise<void>(resolve => window.setTimeout(resolve, ms));
+
+function isMetaRateLimitError(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return (
+    /\(#4\)/.test(text) ||
+    /Application request limit reached/i.test(text) ||
+    /"code"\s*:\s*4\b/.test(text) ||
+    /Meta Graph rate limit reached/i.test(text)
+  );
+}
+
+function formatLeadSyncFailure(message?: string | null, errors?: string[] | null): string {
+  const candidates = [message, ...(errors || [])].filter(
+    (item): item is string => Boolean(item && item.trim())
+  );
+  if (candidates.some(isMetaRateLimitError)) {
+    return META_RATE_LIMIT_USER_MESSAGE;
+  }
+  if (candidates.length === 0) {
+    return 'Meta lead sync failed. See Reports → Meta Leads for details.';
+  }
+  const primary = candidates[0].trim();
+  return primary.length > 500 ? `${primary.slice(0, 500)}…` : primary;
+}
+
+function failureFromLastRun(summary: LeadSyncLastRunSummary | null | undefined): string | null {
+  if (!summary?.errors?.length) return null;
+  return formatLeadSyncFailure(summary.errors.join('; '), summary.errors);
+}
 
 const MetaLeadSyncPanel: React.FC = () => {
   const { formatDateTime } = useBusinessTimezone();
@@ -66,7 +124,9 @@ const MetaLeadSyncPanel: React.FC = () => {
         interval_value: leadSyncData.interval_value,
         interval_unit: leadSyncData.interval_unit,
       });
-      setLeadSyncError(null);
+      // Never clear a visible failure on settings refresh — hydrate from last run instead.
+      const lastFailure = failureFromLastRun(leadSyncData.last_run_summary);
+      setLeadSyncError(prev => prev ?? lastFailure);
     } catch (err: unknown) {
       setLeadSyncConfig(null);
       const message = err instanceof Error ? err.message : 'Failed to load lead sync settings.';
@@ -141,7 +201,6 @@ const MetaLeadSyncPanel: React.FC = () => {
 
   const handleSaveLeadSyncSettings = async () => {
     setLeadSyncSaving(true);
-    setLeadSyncError(null);
     setLeadSyncMessage(null);
     try {
       const updated = (await apiFetch('settings/lead-sync', {
@@ -169,42 +228,78 @@ const MetaLeadSyncPanel: React.FC = () => {
   const handleRunLeadSync = async () => {
     setLeadSyncRunning(true);
     setLeadSyncError(null);
-    setLeadSyncMessage(null);
+    setLeadSyncMessage('Starting Meta lead sync…');
     try {
-      const result = (await apiFetch('settings/lead-sync/run', {
+      const started = (await apiFetch('settings/lead-sync/run', {
         method: 'POST',
-        timeoutMs: API_SYNC_TIMEOUT_MS,
-      })) as LeadSyncLastRunSummary & {
-        run_at: string;
-        delta_since_label?: string | null;
-        delta_is_initial_backfill?: boolean;
-      };
-      setLeadSyncConfig(prev =>
-        prev
-          ? {
-              ...prev,
-              last_run_at: result.run_at,
-              last_run_summary: {
-                forms_processed: result.forms_processed,
-                leads_seen: result.leads_seen,
-                leads_created: result.leads_created,
-                leads_skipped: result.leads_skipped,
-                errors: result.errors,
-              },
-            }
-          : prev
-      );
-      const deltaHint =
-        result.delta_since_label && result.delta_is_initial_backfill
-          ? ` (initial window from ${result.delta_since_label})`
-          : result.delta_since_label
-            ? ` (delta since ${result.delta_since_label})`
-            : '';
+        timeoutMs: SYNC_START_TIMEOUT_MS,
+      })) as LeadSyncStartResponse;
+
       setLeadSyncMessage(
-        `Sync complete${deltaHint}: ${result.leads_created ?? 0} new, ${result.leads_skipped ?? 0} already in Nexus.`
+        started.message ||
+          `Sync running (log #${started.sync_log_id}). Waiting for Meta to finish…`
       );
+
+      const deadline = Date.now() + SYNC_POLL_TIMEOUT_MS;
+      let finalStatus: LeadSyncRunStatus | null = null;
+
+      while (Date.now() < deadline) {
+        await sleep(SYNC_POLL_INTERVAL_MS);
+        const status = (await apiFetch(`settings/lead-sync/runs/${started.sync_log_id}`, {
+          timeoutMs: 30_000,
+        })) as LeadSyncRunStatus;
+        finalStatus = status;
+        if (status.status !== 'IN_PROGRESS') {
+          break;
+        }
+        setLeadSyncMessage(
+          `Sync running (log #${started.sync_log_id})… ${status.leads_seen || 0} leads seen so far. Check Reports → Meta Leads for details.`
+        );
+      }
+
+      if (!finalStatus || finalStatus.status === 'IN_PROGRESS') {
+        setLeadSyncMessage(
+          `Sync is still running in the background (log #${started.sync_log_id}). Open Reports → Meta Leads to confirm when it finishes.`
+        );
+        await loadLeadSyncSettings({ silent: true });
+        return;
+      }
+
+      if (finalStatus.status === 'FAILED') {
+        setLeadSyncError(formatLeadSyncFailure(finalStatus.message, finalStatus.errors));
+        setLeadSyncMessage(null);
+      } else {
+        setLeadSyncError(null);
+        setLeadSyncConfig(prev =>
+          prev
+            ? {
+                ...prev,
+                last_run_at: finalStatus.completed_at || finalStatus.run_at || prev.last_run_at,
+                last_run_summary: {
+                  forms_processed: finalStatus.forms_processed,
+                  leads_seen: finalStatus.leads_seen,
+                  leads_created: finalStatus.leads_created,
+                  leads_skipped: finalStatus.leads_skipped,
+                  errors: finalStatus.errors,
+                },
+              }
+            : prev
+        );
+        setLeadSyncMessage(
+          `Sync complete: ${finalStatus.leads_created ?? 0} new, ${finalStatus.leads_skipped ?? 0} already in Nexus.`
+        );
+      }
+      await loadLeadSyncSettings({ silent: true });
     } catch (err: unknown) {
-      setLeadSyncError(err instanceof Error ? err.message : 'Lead sync failed.');
+      const message = err instanceof Error ? err.message : 'Lead sync failed.';
+      if (/timed out/i.test(message)) {
+        setLeadSyncError(
+          `${message} Open Reports → Meta Leads to see whether the sync still completed.`
+        );
+      } else {
+        setLeadSyncError(formatLeadSyncFailure(message));
+      }
+      setLeadSyncMessage(null);
     } finally {
       setLeadSyncRunning(false);
     }
@@ -329,7 +424,7 @@ const MetaLeadSyncPanel: React.FC = () => {
                     Sync Now
                   </button>
                   <p className="text-[10px] text-text-muted leading-snug min-w-0 flex-1">
-                    Delta sync — new leads only since last import.
+                    Delta sync — new leads only since last import. Runs in the background so staging proxies cannot time it out.
                   </p>
                   {isLeadSyncDirty ? (
                     <button
@@ -348,16 +443,28 @@ const MetaLeadSyncPanel: React.FC = () => {
               {leadSyncConfig?.last_run_summary ? (
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-text-muted md:ml-auto">
                   <span>
-                    Forms <strong className="text-text-main">{leadSyncConfig.last_run_summary.forms_processed ?? 0}</strong>
+                    Forms{' '}
+                    <strong className="text-text-main">
+                      {leadSyncConfig.last_run_summary.forms_processed ?? 0}
+                    </strong>
                   </span>
                   <span>
-                    Seen <strong className="text-text-main">{leadSyncConfig.last_run_summary.leads_seen ?? 0}</strong>
+                    Seen{' '}
+                    <strong className="text-text-main">
+                      {leadSyncConfig.last_run_summary.leads_seen ?? 0}
+                    </strong>
                   </span>
                   <span>
-                    New <strong className="text-text-main">{leadSyncConfig.last_run_summary.leads_created ?? 0}</strong>
+                    New{' '}
+                    <strong className="text-text-main">
+                      {leadSyncConfig.last_run_summary.leads_created ?? 0}
+                    </strong>
                   </span>
                   <span>
-                    Skipped <strong className="text-text-main">{leadSyncConfig.last_run_summary.leads_skipped ?? 0}</strong>
+                    Skipped{' '}
+                    <strong className="text-text-main">
+                      {leadSyncConfig.last_run_summary.leads_skipped ?? 0}
+                    </strong>
                   </span>
                   {(leadSyncConfig.last_run_summary.errors?.length ?? 0) > 0 ? (
                     <span className="text-amber-700">
@@ -376,8 +483,17 @@ const MetaLeadSyncPanel: React.FC = () => {
             ) : null}
 
             {leadSyncError ? (
-              <div className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs text-red-700">
-                {leadSyncError}
+              <div className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs text-red-700 flex items-start gap-2">
+                <p className="flex-1 min-w-0 leading-snug">{leadSyncError}</p>
+                <button
+                  type="button"
+                  onClick={() => setLeadSyncError(null)}
+                  className="shrink-0 rounded p-0.5 text-red-500 hover:bg-red-100 hover:text-red-800"
+                  aria-label="Dismiss sync error"
+                  title="Dismiss"
+                >
+                  <X size={14} />
+                </button>
               </div>
             ) : null}
           </div>

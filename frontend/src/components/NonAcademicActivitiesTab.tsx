@@ -6,6 +6,7 @@ import { apiFetch } from '../utils/api';
 import { useConfirmation } from '../context/ConfirmationContext';
 import EmptyListMessage from './ui/EmptyListMessage';
 import { formatLocalIsoDate, parseLocalIsoDate } from '../types/candidateProfile';
+import { nexusDatePickerPortalProps } from '../utils/nexusDatePickerPortal';
 import {
   DESCRIPTION_MAX_LENGTH,
   NAME_MAX_LENGTH,
@@ -23,20 +24,17 @@ import {
   type NonAcademicActivityFormState,
   type NonAcademicActivityRecord,
 } from '../types/nonAcademicActivity';
+import {
+  studentInfoFieldErrorClass as fieldErrorClass,
+  studentInfoInputClass as inputClass,
+  studentInfoLabelClass as labelClass,
+  studentInfoSectionClass as sectionClass,
+} from './studentInfoFormStyles';
 
 interface NonAcademicActivitiesTabProps {
   bookingId: number;
   compact?: boolean;
 }
-
-const inputClass =
-  'w-full rounded-md border border-border-subtle bg-card px-2.5 py-1.5 text-xs text-text-main focus:outline-none focus:ring-1 focus:ring-sky-400/40 min-h-[32px]';
-
-const labelClass = 'block text-[11px] font-bold text-text-main mb-1';
-
-const sectionClass = 'rounded-lg border border-border-subtle bg-card/80 p-3 space-y-3';
-
-const fieldErrorClass = 'mt-1 text-[10px] text-red-600';
 
 const fieldClass = (hasError: boolean) =>
   `${inputClass}${hasError ? ' border-red-400 ring-1 ring-red-200' : ''}`;
@@ -242,12 +240,12 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
     <div className={compact ? 'flex flex-1 min-h-0 flex-col' : 'space-y-4'}>
       <div className={compact ? 'flex-1 min-h-0 overflow-y-auto custom-scrollbar space-y-4' : 'space-y-4'}>
         {error ? (
-          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
             {error}
           </div>
         ) : null}
         {success ? (
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
             {success}
           </div>
         ) : null}
@@ -255,7 +253,7 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
         <section className={sectionClass}>
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-1.5">
-              <h3 className="text-xs font-bold text-text-main uppercase tracking-wide">
+              <h3 className="text-sm font-bold text-text-main uppercase tracking-wide">
                 Non-Academic Activities (Optional)
               </h3>
               <div className="relative">
@@ -271,7 +269,7 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
                   <Info size={13} />
                 </button>
                 {showTooltip ? (
-                  <div className="absolute left-0 top-full z-10 mt-1 w-64 rounded-md border border-border-subtle bg-card px-2.5 py-2 text-[10px] text-text-muted shadow-sm">
+                  <div className="absolute left-0 top-full z-10 mt-1 w-64 rounded-md border border-border-subtle bg-card px-2.5 py-2 text-xs text-text-muted shadow-sm">
                     Optional: Share clubs, sports, volunteering, and other experiences outside
                     academics.
                   </div>
@@ -282,7 +280,7 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
               <button
                 type="button"
                 onClick={handleAddAnother}
-                className="inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-[11px] font-semibold text-sky-800 hover:bg-sky-100"
+                className="inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-sm font-semibold text-sky-800 hover:bg-sky-100"
               >
                 <Plus size={12} />
                 Add Another Activity
@@ -290,7 +288,7 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
             ) : null}
           </div>
 
-          <p className="text-xs text-text-muted">
+          <p className="text-sm text-text-muted">
             Build your extracurricular profile over time. All fields are optional.
           </p>
 
@@ -300,13 +298,13 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
               className="rounded-md border border-border-subtle bg-surface-bg/30 p-3 space-y-3"
             >
               <div className="flex items-center justify-between gap-2">
-                <p className="text-xs font-bold text-text-main">
+                <p className="text-sm font-bold text-text-main">
                   {editingId ? 'Edit Activity' : 'New Activity'}
                 </p>
                 <button
                   type="button"
                   onClick={handleCancelForm}
-                  className="text-[11px] text-text-muted hover:text-text-main"
+                  className="text-sm text-text-muted hover:text-text-main"
                 >
                   Cancel
                 </button>
@@ -337,13 +335,13 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
                 {showCategoryDropdown ? (
                   <div className="absolute z-20 mt-1 max-h-48 w-full overflow-y-auto rounded-md border border-border-subtle bg-card shadow-sm">
                     {filteredCategoryOptions.length === 0 ? (
-                      <p className="px-2.5 py-2 text-[11px] text-text-muted">No matches found.</p>
+                      <p className="px-2.5 py-2 text-sm text-text-muted">No matches found.</p>
                     ) : (
                       filteredCategoryOptions.map(option => (
                         <button
                           key={option.value}
                           type="button"
-                          className="block w-full px-2.5 py-2 text-left text-xs text-text-main hover:bg-surface-bg"
+                          className="block w-full px-2.5 py-2 text-left text-sm text-text-main hover:bg-surface-bg"
                           onClick={() => handleSelectCategory(option.value, option.label)}
                         >
                           {option.label}
@@ -402,6 +400,7 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
                     className={inputClass}
                     wrapperClassName="w-full"
                     isClearable
+                    {...nexusDatePickerPortalProps}
                   />
                 </div>
                 <div>
@@ -416,6 +415,7 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
                     className={fieldClass(Boolean(fieldErrors.end_date || validationErrors.end_date))}
                     wrapperClassName="w-full"
                     isClearable
+                    {...nexusDatePickerPortalProps}
                   />
                   {fieldErrors.end_date || validationErrors.end_date ? (
                     <p className={fieldErrorClass}>
@@ -437,7 +437,7 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
                   onChange={e => updateForm({ description: e.target.value })}
                   placeholder="What you did and what you gained (optional)"
                 />
-                <p className="mt-1 text-[10px] text-text-muted text-right">
+                <p className="mt-1 text-xs text-text-muted text-right">
                   {form.description.length}/{DESCRIPTION_MAX_LENGTH}
                 </p>
                 {fieldErrors.description ? (
@@ -449,7 +449,7 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
                 <button
                   type="submit"
                   disabled={!canSave}
-                  className="rounded-md bg-sky-700 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-800 disabled:opacity-60 inline-flex items-center gap-2"
+                  className="rounded-md bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800 disabled:opacity-60 inline-flex items-center gap-2"
                 >
                   {saving ? <Loader2 size={14} className="animate-spin" /> : null}
                   {editingId ? 'Update Activity' : 'Save Activity'}
@@ -472,7 +472,7 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         {activity.activity_category_label ? (
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-sky-800">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-sky-800">
                             {activity.activity_category_label}
                           </p>
                         ) : null}
@@ -484,7 +484,7 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
                         <button
                           type="button"
                           onClick={() => handleEdit(activity)}
-                          className="inline-flex items-center gap-1 text-[11px] text-sky-700 hover:text-sky-900"
+                          className="inline-flex items-center gap-1 text-sm text-sky-700 hover:text-sky-900"
                         >
                           <Pencil size={12} />
                           Edit
@@ -493,7 +493,7 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
                           type="button"
                           onClick={() => handleDelete(activity.id)}
                           disabled={deletingId === activity.id}
-                          className="inline-flex items-center gap-1 text-[11px] text-red-600 hover:text-red-700 disabled:opacity-60"
+                          className="inline-flex items-center gap-1 text-sm text-red-600 hover:text-red-700 disabled:opacity-60"
                         >
                           {deletingId === activity.id ? (
                             <Loader2 size={12} className="animate-spin" />
@@ -506,18 +506,18 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
                     </div>
 
                     {activity.role_or_title ? (
-                      <p className="text-[11px] text-text-muted">
+                      <p className="text-sm text-text-muted">
                         <span className="font-bold text-text-main">Role:</span>{' '}
                         {activity.role_or_title}
                       </p>
                     ) : null}
 
                     {dateRange ? (
-                      <p className="text-[11px] text-text-muted">{dateRange}</p>
+                      <p className="text-sm text-text-muted">{dateRange}</p>
                     ) : null}
 
                     {activity.description ? (
-                      <p className="text-xs text-text-main whitespace-pre-wrap">
+                      <p className="text-sm text-text-main whitespace-pre-wrap">
                         {activity.description}
                       </p>
                     ) : null}
@@ -532,7 +532,7 @@ const NonAcademicActivitiesTab: React.FC<NonAcademicActivitiesTabProps> = ({
               <button
                 type="button"
                 onClick={handleAddAnother}
-                className="inline-flex items-center gap-1 rounded-md border border-border-subtle px-3 py-1.5 text-[11px] font-semibold text-text-main hover:bg-card"
+                className="inline-flex items-center gap-1 rounded-md border border-border-subtle px-3 py-1.5 text-sm font-semibold text-text-main hover:bg-card"
               >
                 <Plus size={12} />
                 Add Another Activity

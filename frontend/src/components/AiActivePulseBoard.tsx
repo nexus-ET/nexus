@@ -8,6 +8,7 @@ import {
   Sparkles,
   UserPlus,
 } from 'lucide-react';
+import HeadlessScrollArea from './HeadlessScrollArea';
 
 export interface PulseLead {
   id: number;
@@ -34,13 +35,15 @@ export interface PulseLead {
   consultation_session_date?: string | null;
   consultation_session_time?: string | null;
   assigned_counsellor_name?: string | null;
+  appointment_status?: string | null;
   status?: string;
   updated_at?: string;
   latest_interaction_time?: string;
   unread_count?: number;
   total_messages_received?: number;
   has_ai_messages?: boolean;
-  messages?: { sender?: string; created_at?: string }[];
+  has_messages?: boolean;
+  messages?: { sender?: string; created_at?: string; senderName?: string }[];
 }
 
 export type PulseBoardMode = 'ai-active' | 'handoffs' | 'prospects';
@@ -107,6 +110,13 @@ interface NamedCluster {
   leads: PulseLead[];
 }
 
+interface CountryProgramCluster {
+  key: string;
+  label: string;
+  leads: PulseLead[];
+  programs: NamedCluster[];
+}
+
 interface PreviewState {
   lead: PulseLead;
   left: number;
@@ -115,6 +125,7 @@ interface PreviewState {
 
 const COUNTRY_PALETTE = ['#03045e', '#023e8a', '#0077b6', '#0096c7', '#00b4d8', '#48cae4'];
 const PROGRAM_PALETTE = ['#386fa4', '#3d5a80', '#5c7cfa', '#748ffc', '#91a7ff', '#bac8ff'];
+const TBD_ACCENT = '#64748b';
 const CLUSTER_PREVIEW_LIMIT = 6;
 const POPUP_WIDTH = 460;
 const POPUP_MAX_HEIGHT = 640;
@@ -132,17 +143,31 @@ function initials(name?: string | null): string {
   return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
 }
 
+const TBD_COUNTRY = 'Country TBD';
+const TBD_PROGRAM = 'Program TBD';
+
+function normalizeClusterLabel(raw: string): string {
+  return raw.trim().replace(/\s+/g, ' ');
+}
+
+function isTbdClusterLabel(label: string): boolean {
+  return label === TBD_COUNTRY || label === TBD_PROGRAM;
+}
+
 function programLabel(lead: PulseLead): string {
-  return (
+  const named =
     lead.target_program?.trim() ||
     lead.target_degree?.trim() ||
     lead.target_major?.trim() ||
-    'Program TBD'
-  );
+    lead.preferred_course?.trim() ||
+    '';
+  return named ? normalizeClusterLabel(named) : TBD_PROGRAM;
 }
 
 function countryLabel(lead: PulseLead): string {
-  return lead.preferred_country?.trim() || 'Country TBD';
+  // Target destination only — not current_location (home/city), which admins confuse with study country.
+  const preferred = lead.preferred_country?.trim();
+  return preferred ? normalizeClusterLabel(preferred) : TBD_COUNTRY;
 }
 
 function phoneOf(lead: PulseLead): string {
@@ -160,24 +185,72 @@ function lastActivityMs(lead: PulseLead): number {
   );
 }
 
+/** True only when the candidate has actually replied (inbound chat), not merely updated/created. */
+function hasCandidateReply(lead: PulseLead): boolean {
+  if ((lead.unread_count || 0) > 0) return true;
+  if ((lead.total_messages_received || 0) > 0) return true;
+  return (lead.messages || []).some(msg => {
+    const sender = (msg.sender || '').toLowerCase();
+    return sender === 'candidate' || sender === 'student';
+  });
+}
+
+function lastReplyMs(lead: PulseLead): number {
+  const fromInbound = (lead.messages || [])
+    .filter(msg => {
+      const sender = (msg.sender || '').toLowerCase();
+      return sender === 'candidate' || sender === 'student';
+    })
+    .map(msg => timestampMs(msg.created_at))
+    .reduce((max, value) => Math.max(max, value), 0);
+  if (fromInbound > 0) return fromInbound;
+  if (hasCandidateReply(lead)) {
+    return Math.max(timestampMs(lead.latest_interaction_time), timestampMs(lead.updated_at));
+  }
+  return 0;
+}
+
 function buildClusters(
   leads: PulseLead[],
   getLabel: (lead: PulseLead) => string
 ): NamedCluster[] {
-  const map = new Map<string, PulseLead[]>();
+  // key → { display label, leads }. Case-insensitive merge so "france" and "France" stay one bucket.
+  const map = new Map<string, { label: string; leads: PulseLead[] }>();
   leads.forEach(lead => {
     const label = getLabel(lead);
-    const bucket = map.get(label) || [];
-    bucket.push(lead);
-    map.set(label, bucket);
+    const key = label.toLowerCase();
+    const existing = map.get(key);
+    if (existing) {
+      existing.leads.push(lead);
+      return;
+    }
+    map.set(key, { label, leads: [lead] });
   });
   return Array.from(map.entries())
-    .map(([label, group]) => ({
-      key: label,
-      label,
-      leads: group.sort((a, b) => lastActivityMs(b) - lastActivityMs(a)),
+    .map(([key, group]) => ({
+      key,
+      label: group.label,
+      leads: group.leads.sort((a, b) => lastActivityMs(b) - lastActivityMs(a)),
     }))
-    .sort((a, b) => b.leads.length - a.leads.length || a.label.localeCompare(b.label));
+    .sort((a, b) => {
+      // Keep TBD / catch-all buckets visible at the bottom so named countries aren't buried —
+      // but never drop them (admins must still see every lead).
+      const aTbd = isTbdClusterLabel(a.label) ? 1 : 0;
+      const bTbd = isTbdClusterLabel(b.label) ? 1 : 0;
+      if (aTbd !== bTbd) return aTbd - bTbd;
+      return b.leads.length - a.leads.length || a.label.localeCompare(b.label);
+    });
+}
+
+function clusterLeadCount(clusters: NamedCluster[]): number {
+  return clusters.reduce((sum, cluster) => sum + cluster.leads.length, 0);
+}
+
+function buildCountryProgramClusters(leads: PulseLead[]): CountryProgramCluster[] {
+  return buildClusters(leads, countryLabel).map(country => ({
+    ...country,
+    programs: buildClusters(country.leads, programLabel),
+  }));
 }
 
 function relativeLabel(ms: number): string {
@@ -219,36 +292,106 @@ function placePopup(anchor: DOMRect): { left: number; top: number } {
   return { left, top };
 }
 
+function appointmentStatusLabel(lead: PulseLead): string {
+  const explicit = (lead.appointment_status || '').trim();
+  if (explicit) return explicit;
+  if (
+    lead.consultation_scheduled_at ||
+    (lead.consultation_session_date &&
+      lead.consultation_session_time &&
+      lead.consultation_session_time !== 'Pending selection')
+  ) {
+    return 'Booked';
+  }
+  if (lead.consultation_session_date || lead.wants_consultation_call === true) {
+    return 'Pending';
+  }
+  if (lead.wants_consultation_call === false) {
+    return 'Declined';
+  }
+  return 'Not booked';
+}
+
 function LeadPreviewCard({ lead }: { lead: PulseLead }) {
+  const appointment = appointmentStatusLabel(lead);
+  const hasIntakeAnswers = Boolean(
+    lead.preferred_country ||
+      lead.target_program ||
+      lead.target_degree ||
+      lead.target_major ||
+      lead.preferred_course ||
+      lead.current_location ||
+      lead.english_test_scores ||
+      lead.test_scores ||
+      lead.gre_score ||
+      lead.gmat_score ||
+      lead.wants_consultation_call != null ||
+      lead.consultation_session_date ||
+      lead.consultation_session_time ||
+      lead.consultation_scheduled_at ||
+      lead.assigned_counsellor_name
+  );
+
   const rows: Array<[string, string]> = [
     ['Email', displayValue(lead.email)],
     ['Phone', displayValue(phoneOf(lead))],
-    ['Target country', displayValue(lead.preferred_country)],
-    ['Target program', displayValue(lead.target_program || lead.target_degree)],
-    ['Major / course', displayValue(lead.target_major || lead.preferred_course)],
+  ];
+
+  if (hasIntakeAnswers) {
+    rows.push(
+      ['Current location', displayValue(lead.current_location)],
+      ['Target country', displayValue(lead.preferred_country)],
+      ['Target program', displayValue(lead.target_program || lead.target_degree)],
+      ['Major / course', displayValue(lead.target_major || lead.preferred_course)],
+      ['English scores', displayValue(lead.english_test_scores || lead.test_scores)],
+      ['GRE', displayValue(lead.gre_score)],
+      ['GMAT', displayValue(lead.gmat_score)],
+      ['Appointment', appointment],
+      ['Wants consultation', displayValue(lead.wants_consultation_call)],
+      ['Consultation date', displayValue(lead.consultation_session_date)],
+      ['Consultation time', displayValue(lead.consultation_session_time)],
+      ['Scheduled at', displayValue(lead.consultation_scheduled_at)],
+      ['Assigned counsellor', displayValue(lead.assigned_counsellor_name)]
+    );
+  } else {
+    rows.push(['Appointment', 'Not booked']);
+  }
+
+  rows.push(
     ['Intake step', displayValue(lead.intake_step_label || lead.intake_step)],
     ['Intake complete', displayValue(lead.intake_complete)],
-    ['Study interest complete', displayValue(lead.study_interest_complete)],
-    ['English scores', displayValue(lead.english_test_scores || lead.test_scores)],
-    ['GRE', displayValue(lead.gre_score)],
-    ['GMAT', displayValue(lead.gmat_score)],
-    ['Wants consultation', displayValue(lead.wants_consultation_call)],
-    ['Consultation date', displayValue(lead.consultation_session_date)],
-    ['Consultation time', displayValue(lead.consultation_session_time)],
-    ['Scheduled at', displayValue(lead.consultation_scheduled_at)],
-    ['Assigned counsellor', displayValue(lead.assigned_counsellor_name)],
     ['Messages received', displayValue(String(lead.total_messages_received ?? 0))],
     ['Unread', displayValue(String(lead.unread_count ?? 0))],
     ['AI conversation', displayValue(Boolean(lead.has_ai_messages))],
     ['Last activity', relativeLabel(lastActivityMs(lead))],
-    ['Updated', relativeLabel(timestampMs(lead.updated_at))],
-  ];
+    ['Updated', relativeLabel(timestampMs(lead.updated_at))]
+  );
 
   return (
     <>
       <div className="ai-pulse-tooltip-head">
         <strong>{lead.name}</strong>
         <span>{displayValue(lead.status || 'AI_ACTIVE')}</span>
+      </div>
+      <div
+        className={`ai-pulse-tooltip-appointment${
+          appointment === 'Booked'
+            ? ' is-booked'
+            : appointment === 'Pending'
+              ? ' is-pending'
+              : ''
+        }`}
+      >
+        <em>Appointment</em>
+        <strong>{appointment}</strong>
+        <span>
+          {[lead.consultation_session_date, lead.consultation_session_time]
+            .filter(Boolean)
+            .join(' · ') ||
+            (lead.consultation_scheduled_at
+              ? relativeLabel(timestampMs(lead.consultation_scheduled_at))
+              : 'No session scheduled')}
+        </span>
       </div>
       <dl className="ai-pulse-tooltip-grid">
         {rows.map(([label, value]) => (
@@ -292,6 +435,11 @@ const AiActivePulseBoard: React.FC<AiActivePulseBoardProps> = ({
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const hideTimerRef = useRef<number | null>(null);
 
+  const livePreviewLead = useMemo(() => {
+    if (!preview) return null;
+    return leads.find(lead => lead.id === preview.lead.id) ?? preview.lead;
+  }, [preview, leads]);
+
   const clearHideTimer = useCallback(() => {
     if (hideTimerRef.current != null) {
       window.clearTimeout(hideTimerRef.current);
@@ -329,22 +477,29 @@ const AiActivePulseBoard: React.FC<AiActivePulseBoardProps> = ({
             .slice(0, 12);
 
     const recentlyReplied = [...leads]
-      .filter(lead =>
-        mode === 'handoffs' || mode === 'prospects'
-          ? (lead.unread_count || 0) > 0 || lastActivityMs(lead) > 0
-          : (lead.unread_count || 0) > 0 || Boolean(lead.has_ai_messages)
-      )
+      .filter(hasCandidateReply)
       .sort((a, b) => {
         const unreadDiff = (b.unread_count || 0) - (a.unread_count || 0);
         if (unreadDiff !== 0) return unreadDiff;
-        return lastActivityMs(b) - lastActivityMs(a);
+        return lastReplyMs(b) - lastReplyMs(a);
       })
       .slice(0, 12);
 
-    const countries = buildClusters(leads, countryLabel).slice(0, 8);
-    const programs = buildClusters(leads, programLabel).slice(0, 8);
+    // Show EVERY country/program present in the queue (plus TBD catch-alls).
+    // Previously .slice(0, 8) hid France/Russia/etc. whenever more than 8 buckets existed.
+    const countries = buildClusters(leads, countryLabel);
+    const programs = buildClusters(leads, programLabel);
+    const byCountryProgram = buildCountryProgramClusters(leads);
 
-    return { newlyAdded, recentlyReplied, countries, programs };
+    return {
+      newlyAdded,
+      recentlyReplied,
+      countries,
+      programs,
+      byCountryProgram,
+      countryLeadCount: clusterLeadCount(countries),
+      programLeadCount: clusterLeadCount(programs),
+    };
   }, [leads, mode]);
 
   if (isLoading) {
@@ -447,19 +602,34 @@ const AiActivePulseBoard: React.FC<AiActivePulseBoardProps> = ({
           <div className="ai-pulse-section-head">
             <Globe2 size={16} />
             <h4>Target countries</h4>
+            <span title="Every lead in this queue is in exactly one country bucket (named or Country TBD)">
+              {insights.countryLeadCount}/{leads.length} · {insights.countries.length}
+            </span>
           </div>
+          {insights.countryLeadCount !== leads.length ? (
+            <p className="ai-pulse-muted ai-pulse-coverage-warn">
+              Country coverage mismatch — some leads are missing from the country list.
+            </p>
+          ) : null}
           <div className="ai-pulse-cluster-stack">
-            {insights.countries.map((cluster, clusterIndex) => (
+            <HeadlessScrollArea className="ai-pulse-cluster-stack__scroll">
+              {insights.countries.map((cluster, clusterIndex) => (
               <ClusterCard
                 key={`country-${cluster.key}`}
                 title={cluster.label}
-                accent={COUNTRY_PALETTE[clusterIndex % COUNTRY_PALETTE.length]}
+                accent={
+                  isTbdClusterLabel(cluster.label)
+                    ? TBD_ACCENT
+                    : COUNTRY_PALETTE[clusterIndex % COUNTRY_PALETTE.length]
+                }
                 leads={cluster.leads}
+                muted={isTbdClusterLabel(cluster.label)}
                 onSelect={onSelectLead}
                 onPreview={showPreview}
                 onPreviewLeave={scheduleHidePreview}
               />
             ))}
+            </HeadlessScrollArea>
           </div>
         </section>
 
@@ -467,24 +637,122 @@ const AiActivePulseBoard: React.FC<AiActivePulseBoardProps> = ({
           <div className="ai-pulse-section-head">
             <GraduationCap size={16} />
             <h4>Target programs</h4>
+            <span title="Every lead in this queue is in exactly one program bucket (named or Program TBD)">
+              {insights.programLeadCount}/{leads.length} · {insights.programs.length}
+            </span>
           </div>
+          {insights.programLeadCount !== leads.length ? (
+            <p className="ai-pulse-muted ai-pulse-coverage-warn">
+              Program coverage mismatch — some leads are missing from the program list.
+            </p>
+          ) : null}
           <div className="ai-pulse-cluster-stack">
-            {insights.programs.map((cluster, clusterIndex) => (
+            <HeadlessScrollArea className="ai-pulse-cluster-stack__scroll">
+              {insights.programs.map((cluster, clusterIndex) => (
               <ClusterCard
                 key={`program-${cluster.key}`}
                 title={cluster.label}
-                accent={PROGRAM_PALETTE[clusterIndex % PROGRAM_PALETTE.length]}
+                accent={
+                  isTbdClusterLabel(cluster.label)
+                    ? TBD_ACCENT
+                    : PROGRAM_PALETTE[clusterIndex % PROGRAM_PALETTE.length]
+                }
                 leads={cluster.leads}
+                muted={isTbdClusterLabel(cluster.label)}
                 onSelect={onSelectLead}
                 onPreview={showPreview}
                 onPreviewLeave={scheduleHidePreview}
               />
             ))}
+            </HeadlessScrollArea>
           </div>
         </section>
       </div>
 
+      <section className="ai-pulse-section ai-pulse-section--panel ai-pulse-section--cp">
+        <div className="ai-pulse-section-head">
+          <Globe2 size={16} />
+          <h4>By country → program</h4>
+          <span>
+            {leads.length} leads · {insights.byCountryProgram.length} countries
+          </span>
+        </div>
+        <p className="ai-pulse-muted" style={{ marginBottom: 10 }}>
+          Circles under each program. Hover for details, click to open.
+        </p>
+        <div className="ai-pulse-cp-grid">
+          {insights.byCountryProgram.map((country, countryIndex) => {
+            const accent = isTbdClusterLabel(country.label)
+              ? TBD_ACCENT
+              : COUNTRY_PALETTE[countryIndex % COUNTRY_PALETTE.length];
+            return (
+              <div
+                key={`cp-country-${country.key}`}
+                className={`ai-pulse-cp-country${
+                  isTbdClusterLabel(country.label) ? ' ai-pulse-cp-country--tbd' : ''
+                }`}
+                style={{ '--cluster-accent': accent } as React.CSSProperties}
+              >
+                <div className="ai-pulse-cp-country-head">
+                  <strong>
+                    <Globe2 size={13} /> {country.label}
+                  </strong>
+                  <span>
+                    {country.leads.length} · {country.programs.length} prog
+                  </span>
+                </div>
+                <div className="ai-pulse-cp-programs">
+                  {country.programs.map((program, programIndex) => {
+                    const programAccent = isTbdClusterLabel(program.label)
+                      ? TBD_ACCENT
+                      : PROGRAM_PALETTE[programIndex % PROGRAM_PALETTE.length];
+                    return (
+                      <div
+                        key={`cp-program-${country.key}-${program.key}`}
+                        className={`ai-pulse-cp-program${
+                          isTbdClusterLabel(program.label) ? ' ai-pulse-cp-program--tbd' : ''
+                        }`}
+                        style={
+                          { '--cluster-accent': programAccent } as React.CSSProperties
+                        }
+                      >
+                        <div className="ai-pulse-cp-program-head">
+                          <strong>
+                            <GraduationCap size={12} /> {program.label}
+                          </strong>
+                          <span>{program.leads.length}</span>
+                        </div>
+                        <div className="ai-pulse-cluster-dots">
+                          {program.leads.map(lead => (
+                            <button
+                              key={lead.id}
+                              type="button"
+                              className="ai-pulse-dot"
+                              aria-label={lead.name}
+                              onClick={() => onSelectLead(lead.id)}
+                              onMouseEnter={event =>
+                                showPreview(lead, event.currentTarget)
+                              }
+                              onMouseLeave={scheduleHidePreview}
+                              onFocus={event => showPreview(lead, event.currentTarget)}
+                              onBlur={scheduleHidePreview}
+                            >
+                              {initials(lead.name)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
       {preview &&
+        livePreviewLead &&
         createPortal(
           <div
             className="ai-pulse-tooltip"
@@ -492,7 +760,7 @@ const AiActivePulseBoard: React.FC<AiActivePulseBoardProps> = ({
             onMouseEnter={clearHideTimer}
             onMouseLeave={scheduleHidePreview}
           >
-            <LeadPreviewCard lead={preview.lead} />
+            <LeadPreviewCard lead={livePreviewLead} />
           </div>,
           document.body
         )}
@@ -546,6 +814,7 @@ function ClusterCard({
   title,
   accent,
   leads,
+  muted = false,
   onSelect,
   onPreview,
   onPreviewLeave,
@@ -553,6 +822,7 @@ function ClusterCard({
   title: string;
   accent: string;
   leads: PulseLead[];
+  muted?: boolean;
   onSelect: (leadId: number) => void;
   onPreview: (lead: PulseLead, el: HTMLElement) => void;
   onPreviewLeave: () => void;
@@ -562,7 +832,10 @@ function ClusterCard({
   const hiddenCount = Math.max(0, leads.length - CLUSTER_PREVIEW_LIMIT);
 
   return (
-    <div className="ai-pulse-cluster" style={{ '--cluster-accent': accent } as React.CSSProperties}>
+    <div
+      className={`ai-pulse-cluster${muted ? ' ai-pulse-cluster--tbd' : ''}`}
+      style={{ '--cluster-accent': accent } as React.CSSProperties}
+    >
       <div className="ai-pulse-cluster-top">
         <strong>{title}</strong>
         <span>{leads.length}</span>
@@ -805,6 +1078,44 @@ const PULSE_STYLES = `
     text-transform: uppercase;
     color: #0077b6;
   }
+  .ai-pulse-tooltip-appointment {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2px 10px;
+    margin: 0 0 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+  }
+  .ai-pulse-tooltip-appointment.is-booked {
+    background: #ecfdf5;
+    border-color: #bbf7d0;
+  }
+  .ai-pulse-tooltip-appointment.is-pending {
+    background: #fffbeb;
+    border-color: #fde68a;
+  }
+  .ai-pulse-tooltip-appointment em {
+    grid-column: 1;
+    font-style: normal;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #64748b;
+  }
+  .ai-pulse-tooltip-appointment strong {
+    grid-column: 2;
+    justify-self: end;
+    font-size: 12px;
+    color: #0f172a;
+  }
+  .ai-pulse-tooltip-appointment span {
+    grid-column: 1 / -1;
+    font-size: 12px;
+    color: #334155;
+  }
   .ai-pulse-tooltip-grid {
     margin: 0;
     display: grid;
@@ -827,24 +1138,118 @@ const PULSE_STYLES = `
     word-break: break-word;
     white-space: normal;
   }
+  .ai-pulse-cp-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+  }
+  .ai-pulse-cp-country {
+    padding: 12px;
+    border-radius: 12px;
+    background: #ffffff;
+    border: 1px solid color-mix(in srgb, var(--cluster-accent) 22%, #e2e8f0);
+  }
+  .ai-pulse-cp-country--tbd {
+    background: #f8fafc;
+    border-style: dashed;
+  }
+  .ai-pulse-cp-country-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .ai-pulse-cp-country-head strong {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #03045e;
+  }
+  .ai-pulse-cp-country-head span {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--cluster-accent);
+    flex-shrink: 0;
+  }
+  .ai-pulse-cp-programs {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ai-pulse-cp-program {
+    padding: 8px 9px;
+    border-radius: 10px;
+    background: #f8fafc;
+    border: 1px solid color-mix(in srgb, var(--cluster-accent) 18%, #e2e8f0);
+  }
+  .ai-pulse-cp-program--tbd {
+    border-style: dashed;
+  }
+  .ai-pulse-cp-program-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .ai-pulse-cp-program-head strong {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    font-size: 12px;
+    font-weight: 700;
+    color: #03045e;
+  }
+  .ai-pulse-cp-program-head span {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--cluster-accent);
+    flex-shrink: 0;
+  }
   .ai-pulse-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 14px;
+    margin-bottom: 16px;
   }
   @media (max-width: 1100px) {
     .ai-pulse-grid { grid-template-columns: 1fr; }
   }
+  .ai-pulse-section--cp {
+    margin-top: 4px;
+    margin-bottom: 0;
+  }
   .ai-pulse-cluster-stack {
     display: flex;
     flex-direction: column;
+    min-height: 0;
+  }
+  .ai-pulse-cluster-stack__scroll {
+    max-height: min(70vh, 720px);
+  }
+  .ai-pulse-cluster-stack__scroll .headless-scroll-viewport {
+    display: flex;
+    flex-direction: column;
     gap: 10px;
+    padding-right: 2px;
+  }
+  .ai-pulse-coverage-warn {
+    color: #b45309 !important;
+    margin: 0 0 8px;
   }
   .ai-pulse-cluster {
     padding: 10px 12px;
     border-radius: 12px;
     background: #ffffff;
     border: 1px solid color-mix(in srgb, var(--cluster-accent) 22%, #e2e8f0);
+  }
+  .ai-pulse-cluster--tbd {
+    background: #f8fafc;
+    border-style: dashed;
   }
   .ai-pulse-cluster-top {
     display: flex;

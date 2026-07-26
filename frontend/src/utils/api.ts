@@ -1,5 +1,7 @@
 // src/utils/api.ts
 
+import { reportApiFailure } from './exceptionReporter';
+
 /**
  * Dynamically resolves the API gateway base URL from the current window location.
  * Completely free of hardcoded host domains, ports, or protocols.
@@ -110,6 +112,18 @@ const formatApiErrorDetail = (detail: unknown): string => {
 const API_FETCH_TIMEOUT_MS = 60_000;
 export const API_SYNC_TIMEOUT_MS = 10 * 60_000;
 
+function buildClientTimeoutMessage(): string {
+  const host = typeof window !== 'undefined' ? window.location.hostname : '';
+  const isLocalDev = /^(localhost|127\.0\.0\.1)$/i.test(host);
+  if (isLocalDev) {
+    return 'Request timed out. Confirm the NEXUS backend is running (dev proxy: port 8002 in vite.config.js).';
+  }
+  return (
+    'Request timed out. The server took too long to respond. ' +
+    'If this was Meta lead sync, open Reports → Meta Leads — the sync may still have completed in the background.'
+  );
+}
+
 export type ApiFetchOptions = RequestInit & {
   /** Override the default 60s client timeout (e.g. long-running Meta sync). */
   timeoutMs?: number;
@@ -173,10 +187,18 @@ export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
       if (callerSignal?.aborted) {
         throw error;
       }
-      throw new Error(
-        'Request timed out. Confirm the NEXUS backend is running (dev proxy: port 8002 in vite.config.js).'
-      );
+      reportApiFailure({
+        endpoint: cleanEndpoint,
+        kind: 'timeout',
+        timeoutMs,
+      });
+      throw new Error(buildClientTimeoutMessage());
     }
+    reportApiFailure({
+      endpoint: cleanEndpoint,
+      kind: 'network',
+      detail: error instanceof Error ? error.message : 'Network request failed',
+    });
     throw error;
   } finally {
     window.clearTimeout(timeoutId);
@@ -194,6 +216,13 @@ export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
     } catch {
       if (errorText) detail = errorText;
     }
+
+    reportApiFailure({
+      endpoint: cleanEndpoint,
+      kind: 'http',
+      status: response.status,
+      detail: typeof detail === 'string' ? detail.slice(0, 500) : undefined,
+    });
 
     if (response.status === 401) {
       redirectToLogin();
@@ -263,10 +292,20 @@ export async function apiFetchBlob(endpoint: string, options?: ApiFetchOptions):
       if (callerSignal?.aborted) {
         throw error;
       }
+      reportApiFailure({
+        endpoint: cleanEndpoint,
+        kind: 'timeout',
+        timeoutMs,
+      });
       throw new Error(
         'PDF export timed out. Try narrowing the date range or ask an admin to run a background export.'
       );
     }
+    reportApiFailure({
+      endpoint: cleanEndpoint,
+      kind: 'network',
+      detail: error instanceof Error ? error.message : 'Network request failed',
+    });
     throw error;
   } finally {
     window.clearTimeout(timeoutId);
@@ -283,6 +322,13 @@ export async function apiFetchBlob(endpoint: string, options?: ApiFetchOptions):
     } catch {
       if (errorText) detail = errorText;
     }
+
+    reportApiFailure({
+      endpoint: cleanEndpoint,
+      kind: 'http',
+      status: response.status,
+      detail: typeof detail === 'string' ? detail.slice(0, 500) : undefined,
+    });
 
     if (response.status === 401) {
       redirectToLogin();

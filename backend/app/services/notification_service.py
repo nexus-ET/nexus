@@ -97,6 +97,39 @@ def _whatsapp_message(candidate_name: str, admin_name: str, scheduled_time: date
     )
 
 
+def _display_value(value: object | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    cleaned = str(value).strip()
+    return cleaned or None
+
+
+def _join_list(values: list | None, *, limit: int = 6) -> str | None:
+    items = [str(item).strip() for item in (values or []) if str(item).strip()]
+    if not items:
+        return None
+    if len(items) > limit:
+        remaining = len(items) - limit
+        return f"{', '.join(items[:limit])} (+{remaining} more)"
+    return ", ".join(items)
+
+
+def _build_admin_assignment_whatsapp_message(
+    db: Session,
+    *,
+    admin_name: str,
+    booking: CounsellingBooking,
+    lead: Lead | None,
+) -> str:
+    """Lean instant assign alert — profile depth lives in Nexus, not WhatsApp."""
+    from app.services.admin_session_reminders import build_assignment_alert_message
+
+    _ = db, lead  # reserved for future enrichment without changing call sites
+    return build_assignment_alert_message(admin_name=admin_name, booking=booking)
+
+
 async def _send_whatsapp_appointment_management_followup(
     db: Session,
     *,
@@ -463,6 +496,64 @@ class NotificationService:
         )
         return final_status
 
+    async def send_whatsapp_admin_assignment(
+        self,
+        *,
+        booking: CounsellingBooking,
+        admin: User,
+        admin_name: str,
+        lead: Lead | None,
+    ) -> str:
+        """WhatsApp the assigned counsellor with a lean booking alert."""
+        from app.services.admin_session_reminders import ASSIGN_TITLE
+        from app.services.settings_service import get_bool_setting
+
+        if not get_bool_setting(self.db, "ADMIN_BOOKING_ALERTS_ENABLED", True):
+            return "disabled"
+
+        message = _build_admin_assignment_whatsapp_message(
+            self.db,
+            admin_name=admin_name,
+            booking=booking,
+            lead=lead,
+        )
+        admin_phone = _display_value(getattr(admin, "phone_number", None))
+        if not admin_phone:
+            logger.info(
+                "Skipping counsellor WhatsApp for booking %s — admin %s has no phone_number.",
+                booking.id,
+                admin.id,
+            )
+            self._log_attempt(
+                booking_id=booking.id,
+                user_id=admin.id,
+                channel="whatsapp_admin",
+                status="skipped",
+                title=ASSIGN_TITLE,
+                message=message,
+                priority="important",
+            )
+            return "skipped"
+
+        sent = await send_message(admin_phone, message)
+        status = "sent" if sent else "failed"
+        self._log_attempt(
+            booking_id=booking.id,
+            user_id=admin.id,
+            channel="whatsapp_admin",
+            status=status,
+            title=ASSIGN_TITLE,
+            message=message,
+            priority="important",
+        )
+        if not sent:
+            logger.warning(
+                "Failed to WhatsApp counsellor %s for booking %s.",
+                admin.id,
+                booking.id,
+            )
+        return status
+
     async def send_booking_assignment_notifications(self, booking_id: int) -> dict[str, str]:
         booking = self.db.query(CounsellingBooking).filter(CounsellingBooking.id == booking_id).first()
         if not booking or not booking.admin_id:
@@ -473,6 +564,11 @@ class NotificationService:
             raise ValueError("Assigned admin record was not found.")
 
         admin_name = _format_admin_name(admin)
+        lead = _resolve_lead_for_booking_notification(
+            self.db,
+            lead_id=booking.lead_id,
+            candidate_phone=booking.candidate_phone,
+        )
         whatsapp_status = await self.send_whatsapp_confirmation(
             booking_id=booking.id,
             candidate_name=booking.candidate_name,
@@ -488,6 +584,12 @@ class NotificationService:
             scheduled_time=booking.scheduled_time,
             candidate_email=booking.candidate_email,
         )
+        admin_whatsapp_status = await self.send_whatsapp_admin_assignment(
+            booking=booking,
+            admin=admin,
+            admin_name=admin_name,
+            lead=lead,
+        )
         push_status = await self.send_push_assignment(
             booking_id=booking.id,
             admin=admin,
@@ -495,7 +597,12 @@ class NotificationService:
             scheduled_time=booking.scheduled_time,
         )
         _create_in_app_assignment_notification(self.db, booking=booking, admin=admin)
-        return {"whatsapp": whatsapp_status, "email": email_status, "push": push_status}
+        return {
+            "whatsapp": whatsapp_status,
+            "email": email_status,
+            "whatsapp_admin": admin_whatsapp_status,
+            "push": push_status,
+        }
 
     async def send_urgent_alert(self, title: str, message: str) -> dict[str, int]:
         super_admins = (

@@ -1,11 +1,15 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
-import { Calendar, Loader2, RefreshCw, UserPlus, XCircle, ArrowRightLeft, X, Bot, UserRound, MessageSquare, CheckCircle2 } from 'lucide-react';
+import { Calendar, Loader2, RefreshCw, UserPlus, XCircle, ArrowRightLeft, X, Bot, UserRound, MessageSquare, CheckCircle2, Sparkles, Map as MapIcon } from 'lucide-react';
 import { apiFetch, hasValidSession } from '../utils/api';
 import { computeFloatingMenuPosition } from '../utils/floatingMenuPosition';
 import SessionWrapUpDrawer from '../components/SessionWrapUpDrawer';
+import InteractionLogDrawer from '../components/InteractionLogDrawer';
+import CounsellingSessionModal from '../components/CounsellingSessionModal';
+import StudentJourneyPanel from '../components/StudentJourneyPanel';
 import PipelineAnalyticsPanel, { PipelineAnalyticsData } from '../components/PipelineAnalyticsPanel';
+import PeriodAgendaShell, { type PeriodDaySummary } from '../components/PeriodAgendaShell';
 import { useConfirmation } from '../context/ConfirmationContext';
 
 const toIsoDate = (value: Date): string => {
@@ -25,6 +29,7 @@ interface GridPendingBooking {
   candidate_name: string;
   scheduled_time: string;
   notes?: string | null;
+  lead_id?: number | null;
 }
 
 interface GridPendingQueueSlot {
@@ -34,10 +39,12 @@ interface GridPendingQueueSlot {
 
 interface GridAdminCell {
   admin_id: number;
+  admin_name?: string | null;
   status: 'available' | 'booked' | 'past' | 'complete';
   label: string;
   candidate_name?: string | null;
   booking_id?: number | null;
+  lead_id?: number | null;
 }
 
 interface GridRow {
@@ -90,6 +97,7 @@ interface PendingPanelBooking {
   candidate_phone?: string | null;
   notes?: string | null;
   status: string;
+  lead_id?: number | null;
 }
 
 interface PendingBookingsResponse {
@@ -112,6 +120,7 @@ interface ContextMenuState {
   bookingId: number;
   candidateName: string;
   scheduledTime: string;
+  leadId?: number | null;
   currentAdminId?: number;
   x: number;
   y: number;
@@ -208,12 +217,16 @@ const formatCommunicationTime = (value: string): string => {
   });
 };
 
+type DateFilterMode = 'single' | 'multiple';
+
 const CounsellingDashboard: React.FC = () => {
   const openConfirm = useConfirmation();
-  const [focusDate, setFocusDate] = useState<Date>(() => {
+  const [dateFilterMode, setDateFilterMode] = useState<DateFilterMode>('single');
+  const [startDate, setStartDate] = useState<Date>(() => {
     const today = new Date();
     return new Date(today.getFullYear(), today.getMonth(), today.getDate());
   });
+  const [endDate, setEndDate] = useState<Date | null>(null);
   const [schedule, setSchedule] = useState<ScheduleGridResponse>({
     days: [],
     legend: {},
@@ -239,26 +252,60 @@ const CounsellingDashboard: React.FC = () => {
   const [pipelineAnalytics, setPipelineAnalytics] = useState<PipelineAnalyticsData | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [wrapUpDrawer, setWrapUpDrawer] = useState<{ bookingId: number; candidateName: string } | null>(null);
+  const [interactionBookingId, setInteractionBookingId] = useState<number | null>(null);
+  const [journeyPanel, setJourneyPanel] = useState<{
+    studentId: number;
+    studentName: string;
+  } | null>(null);
+  const [sessionModal, setSessionModal] = useState<{
+    bookingId: number;
+    candidateName: string;
+    dateLabel?: string | null;
+    timeLabel?: string | null;
+  } | null>(null);
+  const [periodFocusDate, setPeriodFocusDate] = useState<string | null>(null);
+  const [periodShowGrid, setPeriodShowGrid] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
   const communicationsEndRef = useRef<HTMLDivElement | null>(null);
-  const focusDateRef = useRef(focusDate);
-  focusDateRef.current = focusDate;
+  const startDateRef = useRef(startDate);
+  const endDateRef = useRef(endDate);
+  const dateFilterModeRef = useRef(dateFilterMode);
+  const suppressScheduleLoadRef = useRef(false);
+  startDateRef.current = startDate;
+  endDateRef.current = endDate;
+  dateFilterModeRef.current = dateFilterMode;
 
-  const loadSchedule = useCallback(async (date: Date, showSpinner = true) => {
-    if (!hasValidSession()) return;
-    try {
-      if (showSpinner) setLoading(true);
-      setError(null);
-      const params = new URLSearchParams({ date: toIsoDate(date) });
-      const data = (await apiFetch(`bookings/grid?${params.toString()}`)) as ScheduleGridResponse;
-      setSchedule(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load counselling schedule.');
-    } finally {
-      if (showSpinner) setLoading(false);
-    }
-  }, []);
+  const isMultipleDates = dateFilterMode === 'multiple';
+
+  const loadSchedule = useCallback(
+    async (
+      date: Date,
+      showSpinner = true,
+      options?: { mode?: DateFilterMode; end?: Date | null }
+    ) => {
+      if (!hasValidSession()) return;
+      try {
+        if (showSpinner) setLoading(true);
+        setError(null);
+        const params = new URLSearchParams();
+        const mode = options?.mode ?? 'single';
+        if (mode === 'multiple') {
+          params.set('start_date', toIsoDate(date));
+          params.set('end_date', toIsoDate(options?.end ?? date));
+        } else {
+          params.set('date', toIsoDate(date));
+        }
+        const data = (await apiFetch(`bookings/grid?${params.toString()}`)) as ScheduleGridResponse;
+        setSchedule(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load counselling schedule.');
+      } finally {
+        if (showSpinner) setLoading(false);
+      }
+    },
+    []
+  );
 
   const loadPendingBookings = useCallback(async () => {
     if (!hasValidSession()) return;
@@ -287,14 +334,27 @@ const CounsellingDashboard: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    loadSchedule(focusDate);
     loadPendingBookings();
     loadPipelineAnalytics();
-  }, [focusDate, loadSchedule, loadPendingBookings, loadPipelineAnalytics]);
+  }, [loadPendingBookings, loadPipelineAnalytics]);
+
+  useEffect(() => {
+    if (suppressScheduleLoadRef.current) {
+      suppressScheduleLoadRef.current = false;
+      return;
+    }
+    loadSchedule(startDate, true, {
+      mode: dateFilterModeRef.current,
+      end: endDate,
+    });
+  }, [startDate, endDate, loadSchedule]);
 
   useEffect(() => {
     const interval = setInterval(() => {
-      loadSchedule(focusDateRef.current, false);
+      loadSchedule(startDateRef.current, false, {
+        mode: dateFilterModeRef.current,
+        end: endDateRef.current,
+      });
       loadPendingBookings();
       loadPipelineAnalytics();
     }, 15000);
@@ -384,18 +444,202 @@ const CounsellingDashboard: React.FC = () => {
   );
 
   const dayBookingCount = useMemo(() => {
-    const day = schedule.days[0];
-    if (!day) return 0;
-
-    return day.rows.reduce((sum, row) => {
-      const queued =
-        row.pending_queue.filter(slot => slot.booking).length + row.hidden_pending_count;
-      const assigned = row.admin_cells.filter(
-        cell => cell.status === 'booked' || cell.status === 'complete'
-      ).length;
-      return sum + queued + assigned;
+    return schedule.days.reduce((daySum, day) => {
+      return (
+        daySum +
+        day.rows.reduce((sum, row) => {
+          const queued =
+            row.pending_queue.filter(slot => slot.booking).length + row.hidden_pending_count;
+          const assigned = row.admin_cells.filter(
+            cell => cell.status === 'booked' || cell.status === 'complete'
+          ).length;
+          return sum + queued + assigned;
+        }, 0)
+      );
     }, 0);
   }, [schedule.days]);
+
+  type PeriodAppointment = {
+    key: string;
+    dayDate: string;
+    dayLabel: string;
+    timeLabel: string;
+    startTime: string;
+    candidateName: string;
+    kind: 'pending' | 'booked' | 'complete';
+    adminName?: string | null;
+    bookingId?: number | null;
+    leadId?: number | null;
+    notes?: string | null;
+    queuePosition?: number;
+  };
+
+  const periodAppointments = useMemo(() => {
+    const items: PeriodAppointment[] = [];
+    for (const day of schedule.days) {
+      const adminNameById = new Map(day.admins.map(admin => [admin.id, admin.name]));
+      for (const row of day.rows) {
+        for (const slot of row.pending_queue) {
+          if (!slot.booking) continue;
+          items.push({
+            key: `pending-${slot.booking.id}`,
+            dayDate: day.date,
+            dayLabel: day.label,
+            timeLabel: row.time_label,
+            startTime: row.start_time,
+            candidateName: slot.booking.candidate_name,
+            kind: 'pending',
+            bookingId: slot.booking.id,
+            leadId: slot.booking.lead_id ?? null,
+            notes: slot.booking.notes,
+            queuePosition: slot.queue_position,
+          });
+        }
+        for (const cell of row.admin_cells) {
+          if ((cell.status !== 'booked' && cell.status !== 'complete') || !cell.booking_id) continue;
+          items.push({
+            key: `${cell.status}-${cell.booking_id}`,
+            dayDate: day.date,
+            dayLabel: day.label,
+            timeLabel: row.time_label,
+            startTime: row.start_time,
+            candidateName: cell.candidate_name || 'Candidate',
+            kind: cell.status === 'complete' ? 'complete' : 'booked',
+            adminName: cell.admin_name || adminNameById.get(cell.admin_id) || null,
+            bookingId: cell.booking_id,
+            leadId: cell.lead_id ?? null,
+          });
+        }
+      }
+    }
+    return items.sort((a, b) => {
+      const dayCmp = a.dayDate.localeCompare(b.dayDate);
+      if (dayCmp !== 0) return dayCmp;
+      return a.startTime.localeCompare(b.startTime);
+    });
+  }, [schedule.days]);
+
+  const periodDaySummaries: PeriodDaySummary[] = useMemo(() => {
+    return schedule.days.map(day => {
+      const dayItems = periodAppointments.filter(item => item.dayDate === day.date);
+      return {
+        date: day.date,
+        label: day.label,
+        count: dayItems.length,
+        pendingCount: dayItems.filter(item => item.kind === 'pending').length,
+        bookedCount: dayItems.filter(item => item.kind === 'booked' || item.kind === 'complete')
+          .length,
+      };
+    });
+  }, [schedule.days, periodAppointments]);
+
+  const periodAgendaStats = useMemo(() => {
+    const pending = periodAppointments.filter(item => item.kind === 'pending').length;
+    const booked = periodAppointments.filter(item => item.kind === 'booked').length;
+    const complete = periodAppointments.filter(item => item.kind === 'complete').length;
+    return [
+      { label: 'Total', value: periodAppointments.length, tone: 'default' as const },
+      { label: 'Assigned', value: booked, tone: 'emerald' as const },
+      { label: 'Complete', value: complete, tone: 'sky' as const },
+      { label: 'In queue', value: pending, tone: 'amber' as const },
+    ];
+  }, [periodAppointments]);
+
+  const visiblePeriodAppointments = useMemo(() => {
+    if (!periodFocusDate) return periodAppointments;
+    return periodAppointments.filter(item => item.dayDate === periodFocusDate);
+  }, [periodAppointments, periodFocusDate]);
+
+  const periodAppointmentsByDay = useMemo(() => {
+    const groups = new Map<string, { date: string; label: string; items: PeriodAppointment[] }>();
+    for (const item of visiblePeriodAppointments) {
+      const existing = groups.get(item.dayDate);
+      if (existing) {
+        existing.items.push(item);
+      } else {
+        groups.set(item.dayDate, {
+          date: item.dayDate,
+          label: item.dayLabel,
+          items: [item],
+        });
+      }
+    }
+    return Array.from(groups.values());
+  }, [visiblePeriodAppointments]);
+
+  useEffect(() => {
+    if (!isMultipleDates) {
+      setPeriodFocusDate(null);
+      setPeriodShowGrid(false);
+    }
+  }, [isMultipleDates]);
+
+  const dateFilterLabel = useMemo(() => {
+    if (isMultipleDates) {
+      const startLabel = startDate.toLocaleDateString(undefined, {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      });
+      const endLabel = (endDate ?? startDate).toLocaleDateString(undefined, {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      });
+      return `${startLabel} → ${endLabel}`;
+    }
+    return startDate.toLocaleDateString(undefined, {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+  }, [isMultipleDates, startDate, endDate]);
+
+  const handleDateFilterModeChange = (mode: DateFilterMode) => {
+    if (mode === dateFilterMode) return;
+
+    if (mode === 'multiple') {
+      // Keep the same day visible — do not refetch / flash the grid.
+      suppressScheduleLoadRef.current = true;
+      setDateFilterMode('multiple');
+      setEndDate(prev => prev ?? startDate);
+      return;
+    }
+
+    const wasMultiDay = Boolean(endDate && toIsoDate(endDate) !== toIsoDate(startDate));
+    suppressScheduleLoadRef.current = true;
+    setDateFilterMode('single');
+    setEndDate(null);
+    if (wasMultiDay) {
+      void loadSchedule(startDate, false, { mode: 'single' });
+    }
+  };
+
+  const handleStartDateChange = (date: Date | null) => {
+    if (!date) return;
+    setStartDate(date);
+    if (isMultipleDates && endDate && date > endDate) {
+      setEndDate(date);
+    }
+    if (!isMultipleDates) {
+      setEndDate(null);
+    }
+  };
+
+  const handleEndDateChange = (date: Date | null) => {
+    if (!isMultipleDates || !date) return;
+    setEndDate(date);
+    if (date < startDate) {
+      setStartDate(date);
+    }
+  };
+
+  const reloadScheduleQuietly = () =>
+    loadSchedule(startDateRef.current, false, {
+      mode: dateFilterModeRef.current,
+      end: endDateRef.current,
+    });
 
   const getFirstQueuedBooking = (row: GridRow): GridPendingBooking | null => {
     for (const slot of row.pending_queue) {
@@ -429,6 +673,7 @@ const CounsellingDashboard: React.FC = () => {
       bookingId: booking.id,
       candidateName: booking.candidate_name,
       scheduledTime: booking.scheduled_time,
+      leadId: booking.lead_id ?? null,
       x: event.clientX,
       y: event.clientY,
       admins: [],
@@ -461,6 +706,7 @@ const CounsellingDashboard: React.FC = () => {
       bookingId: cell.booking_id,
       candidateName: cell.candidate_name || 'Candidate',
       scheduledTime: row.start_time,
+      leadId: cell.lead_id ?? null,
       currentAdminId: cell.admin_id,
       x: event.clientX,
       y: event.clientY,
@@ -531,6 +777,43 @@ const CounsellingDashboard: React.FC = () => {
           Pending
         </span>
       </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation();
+            setInteractionBookingId(booking.id);
+          }}
+          className="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-white/80 px-2.5 py-1.5 text-xs font-semibold text-text-main hover:bg-white"
+        >
+          <MessageSquare size={12} />
+          View Interaction
+        </button>
+        {booking.lead_id ? (
+          <button
+            type="button"
+            onClick={event => {
+              event.stopPropagation();
+              setJourneyPanel({
+                studentId: booking.lead_id!,
+                studentName: booking.candidate_name,
+              });
+            }}
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white/80 px-2.5 py-1.5 text-xs font-semibold text-slate-800 hover:bg-white"
+          >
+            <MapIcon size={12} />
+            View Journey
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={event => openAssignMenu(event, booking)}
+          className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-amber-950 hover:bg-amber-100"
+        >
+          <UserPlus size={12} />
+          Assign
+        </button>
+      </div>
     </div>
   );
 
@@ -542,7 +825,7 @@ const CounsellingDashboard: React.FC = () => {
         body: JSON.stringify({ booking_id: bookingId, admin_id: adminId }),
       });
       setContextMenu(null);
-      await Promise.all([loadSchedule(focusDateRef.current, false), loadPendingBookings()]);
+      await Promise.all([reloadScheduleQuietly(), loadPendingBookings()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to assign admin.');
     } finally {
@@ -558,7 +841,7 @@ const CounsellingDashboard: React.FC = () => {
         body: JSON.stringify({ booking_id: bookingId, target_admin_id: adminId }),
       });
       setContextMenu(null);
-      await Promise.all([loadSchedule(focusDateRef.current, false), loadPendingBookings()]);
+      await Promise.all([reloadScheduleQuietly(), loadPendingBookings()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to switch admin.');
     } finally {
@@ -577,7 +860,7 @@ const CounsellingDashboard: React.FC = () => {
       setActionLoading(true);
       await apiFetch(`bookings/cancel/${bookingId}`, { method: 'POST' });
       setContextMenu(null);
-      await Promise.all([loadSchedule(focusDateRef.current, false), loadPendingBookings()]);
+      await Promise.all([reloadScheduleQuietly(), loadPendingBookings()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to cancel booking.');
     } finally {
@@ -587,7 +870,7 @@ const CounsellingDashboard: React.FC = () => {
 
   const handleRefreshAll = async () => {
     await Promise.all([
-      loadSchedule(focusDate),
+      loadSchedule(startDate, true, { mode: dateFilterMode, end: endDate }),
       loadPendingBookings(),
       loadPipelineAnalytics(),
     ]);
@@ -596,7 +879,7 @@ const CounsellingDashboard: React.FC = () => {
   const handleWrapUpSubmitted = async () => {
     setContextMenu(null);
     await Promise.all([
-      loadSchedule(focusDateRef.current, false),
+      reloadScheduleQuietly(),
       loadPendingBookings(),
       loadPipelineAnalytics(),
     ]);
@@ -613,7 +896,7 @@ const CounsellingDashboard: React.FC = () => {
             <col className="w-[72px]" />
             <col className="w-[44px]" />
             {day.admins.map(admin => (
-              <col key={admin.id} className="w-[72px]" />
+              <col key={admin.id} className="w-[110px]" />
             ))}
           </colgroup>
           <thead>
@@ -703,10 +986,17 @@ const CounsellingDashboard: React.FC = () => {
                             : cell.label
                         }
                       >
-                        {cell.status === 'booked' ? (
-                          <div className="flex items-center justify-between gap-1 min-w-0">
-                            <span className="truncate font-semibold">{cell.candidate_name || 'Candidate'}</span>
-                            <span className="shrink-0 text-[9px] uppercase tracking-wide opacity-90">Booked</span>
+                        {cell.status === 'booked' || cell.status === 'complete' ? (
+                          <div className="flex flex-col gap-0.5 min-w-0">
+                            <div className="flex items-center justify-between gap-1 min-w-0">
+                              <span className="truncate font-semibold">{cell.candidate_name || 'Candidate'}</span>
+                              <span className="shrink-0 text-[9px] uppercase tracking-wide opacity-90">
+                                {cell.status === 'complete' ? 'Done' : 'Booked'}
+                              </span>
+                            </div>
+                            <div className="truncate text-[9px] opacity-80" title={cell.admin_name || undefined}>
+                              {cell.admin_name || day.admins.find(admin => admin.id === cell.admin_id)?.name || 'Counsellor'}
+                            </div>
                           </div>
                         ) : (
                           <>
@@ -729,26 +1019,32 @@ const CounsellingDashboard: React.FC = () => {
   );
 
   const selectedDay = schedule.days[0] ?? null;
-  const isRealToday = schedule.focus_date === schedule.calendar_today;
+  const isRealToday = !isMultipleDates && schedule.focus_date === schedule.calendar_today;
 
   const computedNav = useMemo(() => {
-    const past = new Date(focusDate);
+    const past = new Date(startDate);
     past.setDate(past.getDate() - 1);
-    const upcoming = new Date(focusDate);
+    const upcoming = new Date(startDate);
     upcoming.setDate(upcoming.getDate() + 1);
     return {
       past: toIsoDate(past),
-      selected: toIsoDate(focusDate),
+      selected: toIsoDate(startDate),
       upcoming: toIsoDate(upcoming),
     };
-  }, [focusDate]);
+  }, [startDate]);
 
   const navLinkClass = (targetDate: string) =>
-    `inline-flex items-center rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
-      toIsoDate(focusDate) === targetDate
+    `inline-flex items-center rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+      !isMultipleDates && toIsoDate(startDate) === targetDate
         ? 'border-accent bg-accent/10 text-accent'
         : 'border-border-subtle bg-card text-text-main hover:bg-surface-bg'
     }`;
+
+  const jumpToNavDate = (isoDate: string) => {
+    setDateFilterMode('single');
+    setEndDate(null);
+    setStartDate(parseIsoDate(isoDate));
+  };
 
   return (
     <div className="p-6 md:p-8 space-y-6">
@@ -850,11 +1146,15 @@ const CounsellingDashboard: React.FC = () => {
         <div className="flex flex-col gap-4 pb-4 border-b border-border-subtle/70">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <h2 className="text-lg font-semibold text-text-main">Schedule Grid</h2>
-            {selectedDay && isRealToday && (
+            {isMultipleDates ? (
+              <span className="inline-flex w-fit items-center rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent">
+                Multiple dates · {dateFilterLabel}
+              </span>
+            ) : selectedDay && isRealToday ? (
               <span className="inline-flex w-fit items-center rounded-lg border border-border-subtle bg-surface-bg px-2.5 py-1 text-[11px] font-medium text-text-muted">
                 Calendar today
               </span>
-            )}
+            ) : null}
           </div>
 
           <div className="flex flex-wrap gap-3">
@@ -862,9 +1162,11 @@ const CounsellingDashboard: React.FC = () => {
               <p className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Bookings</p>
               <p className="text-2xl font-bold text-text-main mt-1 leading-none">{dayBookingCount}</p>
               <p className="text-xs text-text-muted mt-1.5">
-                {selectedDay
-                  ? `${dayBookingCount === 1 ? 'booking' : 'bookings'} on ${selectedDay.label}`
-                  : 'No date selected'}
+                {isMultipleDates
+                  ? `${dayBookingCount === 1 ? 'booking' : 'bookings'} in ${dateFilterLabel}`
+                  : selectedDay
+                    ? `${dayBookingCount === 1 ? 'booking' : 'bookings'} on ${selectedDay.label}`
+                    : 'No date selected'}
               </p>
             </div>
 
@@ -877,57 +1179,110 @@ const CounsellingDashboard: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex flex-col lg:flex-row lg:items-center gap-3">
-            <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-              <label className="text-xs font-semibold uppercase tracking-wide text-text-muted whitespace-nowrap">
-                Select date
-              </label>
-              <DatePicker
-                selected={focusDate}
-                onChange={date => {
-                  if (date) setFocusDate(date);
-                }}
-                dateFormat="EEE, d MMM yyyy"
-                className="w-full sm:w-[200px] rounded-lg border border-border-subtle bg-surface-bg px-3 py-1.5 text-sm text-text-main"
-                calendarClassName="nexus-roster-datepicker"
-                popperClassName="nexus-datepicker-popper"
-                portalId="nexus-datepicker-portal"
-                popperPlacement="bottom-start"
-                popperProps={{ strategy: 'fixed' }}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-text-muted shrink-0">
+              Date filter
+            </span>
+            <label className="inline-flex items-center gap-2 text-sm text-text-main cursor-pointer shrink-0">
+              <input
+                type="radio"
+                name="counselling-date-mode"
+                checked={!isMultipleDates}
+                onChange={() => handleDateFilterModeChange('single')}
+                className="accent-accent"
               />
-              {!isRealToday && (
+              Single date
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-text-main cursor-pointer shrink-0">
+              <input
+                type="radio"
+                name="counselling-date-mode"
+                checked={isMultipleDates}
+                onChange={() => handleDateFilterModeChange('multiple')}
+                className="accent-accent"
+              />
+              Multiple dates
+            </label>
+
+            <div className="flex flex-nowrap items-center gap-2 shrink-0">
+              <div className="shrink-0 [&_.react-datepicker-wrapper]:block [&_.react-datepicker__input-container]:block">
+                <DatePicker
+                  selected={startDate}
+                  onChange={handleStartDateChange}
+                  selectsStart={isMultipleDates}
+                  startDate={startDate}
+                  endDate={isMultipleDates ? endDate : null}
+                  maxDate={isMultipleDates && endDate ? endDate : undefined}
+                  placeholderText={isMultipleDates ? 'Start date' : 'Select date'}
+                  dateFormat="EEE, d MMM yyyy"
+                  className="w-[180px] rounded-lg border border-border-subtle bg-surface-bg px-3 py-1.5 text-sm text-text-main"
+                  calendarClassName="nexus-roster-datepicker"
+                  popperClassName="nexus-datepicker-popper"
+                  portalId="nexus-datepicker-portal"
+                  withPortal
+                  popperPlacement="bottom-start"
+                  popperProps={{ strategy: 'fixed' }}
+                />
+              </div>
+              <span className="text-xs text-text-muted shrink-0">to</span>
+              <div className="shrink-0 [&_.react-datepicker-wrapper]:block [&_.react-datepicker__input-container]:block">
+                <DatePicker
+                  selected={isMultipleDates ? endDate : null}
+                  onChange={handleEndDateChange}
+                  selectsEnd
+                  startDate={startDate}
+                  endDate={endDate}
+                  minDate={startDate}
+                  placeholderText="End date"
+                  dateFormat="EEE, d MMM yyyy"
+                  className="w-[180px] rounded-lg border border-border-subtle bg-surface-bg px-3 py-1.5 text-sm text-text-main disabled:opacity-50 disabled:cursor-not-allowed"
+                  calendarClassName="nexus-roster-datepicker"
+                  popperClassName="nexus-datepicker-popper"
+                  portalId="nexus-datepicker-portal"
+                  withPortal
+                  popperPlacement="bottom-start"
+                  popperProps={{ strategy: 'fixed' }}
+                  disabled={!isMultipleDates}
+                />
+              </div>
+              {!isRealToday && !isMultipleDates && (
                 <button
                   type="button"
-                  onClick={() => setFocusDate(parseIsoDate(schedule.calendar_today))}
-                  className="text-xs text-accent hover:underline whitespace-nowrap"
+                  onClick={() => jumpToNavDate(schedule.calendar_today)}
+                  className="text-xs text-accent hover:underline whitespace-nowrap shrink-0"
                 >
                   Jump to today
                 </button>
               )}
             </div>
 
+            <span className="text-xs text-text-muted shrink-0">{dateFilterLabel}</span>
+
             <div className="flex flex-wrap items-center gap-2 lg:ml-auto">
               <button
                 type="button"
-                onClick={() => setFocusDate(parseIsoDate(computedNav.past))}
+                onClick={() => jumpToNavDate(computedNav.past)}
                 className={navLinkClass(computedNav.past)}
                 title={schedule.navigation.past.label || computedNav.past}
+                disabled={isMultipleDates}
               >
                 Past Booking
               </button>
               <button
                 type="button"
-                onClick={() => setFocusDate(parseIsoDate(computedNav.selected))}
+                onClick={() => jumpToNavDate(computedNav.selected)}
                 className={navLinkClass(computedNav.selected)}
                 title={schedule.navigation.selected.label || computedNav.selected}
+                disabled={isMultipleDates}
               >
                 Today&apos;s Booking
               </button>
               <button
                 type="button"
-                onClick={() => setFocusDate(parseIsoDate(computedNav.upcoming))}
+                onClick={() => jumpToNavDate(computedNav.upcoming)}
                 className={navLinkClass(computedNav.upcoming)}
                 title={schedule.navigation.upcoming.label || computedNav.upcoming}
+                disabled={isMultipleDates}
               >
                 Upcoming Bookings
               </button>
@@ -940,10 +1295,203 @@ const CounsellingDashboard: React.FC = () => {
             <Loader2 size={24} className="animate-spin mr-2" />
             Loading schedule...
           </div>
-        ) : !selectedDay ? (
-          <p className="text-sm text-text-muted italic">No counselling schedule data for this date.</p>
+        ) : schedule.days.length === 0 ? (
+          <p className="text-sm text-text-muted italic">
+            {isMultipleDates
+              ? 'No counselling schedule data for this date period.'
+              : 'No counselling schedule data for this date.'}
+          </p>
+        ) : isMultipleDates ? (
+          <div className="space-y-4">
+            <PeriodAgendaShell
+              periodLabel={dateFilterLabel}
+              totalCount={periodAppointments.length}
+              days={periodDaySummaries}
+              activeDate={periodFocusDate}
+              onSelectDate={date => {
+                setPeriodFocusDate(date);
+                setPeriodShowGrid(false);
+              }}
+              stats={periodAgendaStats}
+              emptyMessage="No appointments found in this date period."
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-text-muted">
+                  {periodFocusDate
+                    ? 'Showing one day from the selected period. Switch back to All days anytime.'
+                    : 'Chronological agenda for the whole period. Pick a day chip to focus.'}
+                </p>
+                {periodFocusDate ? (
+                  <button
+                    type="button"
+                    onClick={() => setPeriodShowGrid(prev => !prev)}
+                    className="text-xs font-semibold text-accent hover:underline"
+                  >
+                    {periodShowGrid ? 'Hide day grid' : 'Show day grid'}
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="space-y-4 mt-3">
+                {periodAppointmentsByDay.map(group => (
+                  <section
+                    key={group.date}
+                    className="rounded-xl border border-border-subtle overflow-hidden"
+                  >
+                    <div className="flex items-center justify-between gap-3 px-4 py-2.5 bg-surface-bg border-b border-border-subtle">
+                      <div>
+                        <h4 className="text-sm font-semibold text-text-main">{group.label}</h4>
+                        <p className="text-[11px] text-text-muted">
+                          {group.items.length} appointment{group.items.length === 1 ? '' : 's'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPeriodFocusDate(group.date);
+                          setPeriodShowGrid(true);
+                        }}
+                        className="text-[11px] font-semibold text-accent hover:underline"
+                      >
+                        Open grid
+                      </button>
+                    </div>
+                    <div className="divide-y divide-border-subtle">
+                      {group.items.map(item => (
+                        <div
+                          key={item.key}
+                          className="flex flex-col lg:flex-row lg:items-center gap-3 px-4 py-3 hover:bg-surface-bg/50"
+                        >
+                          <div className="w-full lg:w-36 shrink-0">
+                            <p className="text-sm font-bold text-text-main">{item.timeLabel}</p>
+                            <p className="text-[11px] text-text-muted mt-0.5">{item.dayLabel}</p>
+                          </div>
+                          <div className="min-w-0 flex-1 space-y-1">
+                            <p className="text-sm font-semibold text-text-main truncate">
+                              {item.candidateName}
+                            </p>
+                            <p className="text-xs text-text-muted truncate">
+                              {item.kind === 'pending'
+                                ? `Queue #${item.queuePosition ?? '—'}${
+                                    item.notes ? ` · ${item.notes}` : ''
+                                  }`
+                                : item.adminName
+                                  ? `Counsellor: ${item.adminName}`
+                                  : 'Counsellor: Unassigned'}
+                            </p>
+                          </div>
+                          <span
+                            className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
+                              item.kind === 'pending'
+                                ? 'border-amber-200 bg-amber-50 text-amber-900'
+                                : item.kind === 'complete'
+                                  ? 'border-sky-200 bg-sky-50 text-sky-900'
+                                  : 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                            }`}
+                          >
+                            {item.kind === 'pending'
+                              ? 'In queue'
+                              : item.kind === 'complete'
+                                ? 'Complete'
+                                : 'Booked'}
+                          </span>
+                          <div className="flex flex-wrap items-center gap-2 shrink-0 lg:ml-auto">
+                            {item.bookingId ? (
+                              <button
+                                type="button"
+                                onClick={() => setInteractionBookingId(item.bookingId!)}
+                                className="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-xs font-semibold text-text-main hover:bg-accent/20"
+                              >
+                                <MessageSquare size={12} />
+                                View Interaction
+                              </button>
+                            ) : null}
+                            {item.leadId ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setJourneyPanel({
+                                    studentId: item.leadId!,
+                                    studentName: item.candidateName,
+                                  })
+                                }
+                                className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100"
+                              >
+                                <MapIcon size={12} />
+                                View Journey
+                              </button>
+                            ) : null}
+                            {item.bookingId && (item.kind === 'booked' || item.kind === 'complete') ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setSessionModal({
+                                      bookingId: item.bookingId!,
+                                      candidateName: item.candidateName,
+                                      dateLabel: item.dayLabel,
+                                      timeLabel: item.timeLabel,
+                                    })
+                                  }
+                                  className="inline-flex items-center gap-1 rounded-lg border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-xs font-semibold text-violet-900 hover:bg-violet-100"
+                                >
+                                  <Sparkles size={12} />
+                                  Session
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    openCommunicationsModal(item.bookingId!, item.candidateName)
+                                  }
+                                  className="inline-flex items-center gap-1 rounded-lg border border-border-subtle bg-card px-2.5 py-1.5 text-xs font-semibold text-text-main hover:bg-surface-bg"
+                                >
+                                  <MessageSquare size={12} />
+                                  Chat
+                                </button>
+                              </>
+                            ) : null}
+                            {item.bookingId && item.kind === 'pending' ? (
+                              <button
+                                type="button"
+                                onClick={event =>
+                                  openAssignMenu(event, {
+                                    id: item.bookingId!,
+                                    candidate_name: item.candidateName,
+                                    scheduled_time: item.startTime,
+                                    notes: item.notes,
+                                    lead_id: item.leadId,
+                                  })
+                                }
+                                className="inline-flex items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-950 hover:bg-amber-100"
+                              >
+                                <UserPlus size={12} />
+                                Assign
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </PeriodAgendaShell>
+
+            {periodShowGrid && periodFocusDate
+              ? schedule.days
+                  .filter(day => day.date === periodFocusDate)
+                  .map(day => (
+                    <div key={`grid-${day.date}`} className="space-y-2 pt-2">
+                      <h3 className="text-sm font-semibold text-text-main">
+                        Grid · {day.label}
+                      </h3>
+                      {renderDayTable(day)}
+                    </div>
+                  ))
+              : null}
+          </div>
         ) : (
-          renderDayTable(selectedDay)
+          renderDayTable(schedule.days[0])
         )}
       </div>
 
@@ -1062,8 +1610,86 @@ const CounsellingDashboard: React.FC = () => {
             )}
           </div>
 
+          {contextMenu.mode === 'assign' && (
+            <div className="shrink-0">
+              <button
+                type="button"
+                disabled={actionLoading}
+                onClick={() => {
+                  setInteractionBookingId(contextMenu.bookingId);
+                  setContextMenu(null);
+                }}
+                className="w-full text-left px-3 py-2.5 text-sm text-text-main hover:bg-surface-bg disabled:opacity-60 flex items-center gap-2 border-b border-border-subtle"
+              >
+                <MessageSquare size={15} />
+                View Interaction
+              </button>
+              {contextMenu.leadId ? (
+                <button
+                  type="button"
+                  disabled={actionLoading}
+                  onClick={() => {
+                    setJourneyPanel({
+                      studentId: contextMenu.leadId!,
+                      studentName: contextMenu.candidateName,
+                    });
+                    setContextMenu(null);
+                  }}
+                  className="w-full text-left px-3 py-2.5 text-sm text-slate-800 hover:bg-slate-50 disabled:opacity-60 flex items-center gap-2 border-b border-border-subtle"
+                >
+                  <MapIcon size={15} />
+                  View Journey
+                </button>
+              ) : null}
+            </div>
+          )}
+
           {contextMenu.mode === 'manage' && (
             <div className="shrink-0">
+              <button
+                type="button"
+                disabled={actionLoading}
+                onClick={() => {
+                  setInteractionBookingId(contextMenu.bookingId);
+                  setContextMenu(null);
+                }}
+                className="w-full text-left px-3 py-2.5 text-sm text-text-main hover:bg-surface-bg disabled:opacity-60 flex items-center gap-2 border-b border-border-subtle"
+              >
+                <MessageSquare size={15} />
+                View Interaction
+              </button>
+              {contextMenu.leadId ? (
+                <button
+                  type="button"
+                  disabled={actionLoading}
+                  onClick={() => {
+                    setJourneyPanel({
+                      studentId: contextMenu.leadId!,
+                      studentName: contextMenu.candidateName,
+                    });
+                    setContextMenu(null);
+                  }}
+                  className="w-full text-left px-3 py-2.5 text-sm text-slate-800 hover:bg-slate-50 disabled:opacity-60 flex items-center gap-2 border-b border-border-subtle"
+                >
+                  <MapIcon size={15} />
+                  View Journey
+                </button>
+              ) : null}
+              <button
+                type="button"
+                disabled={actionLoading}
+                onClick={() => {
+                  setSessionModal({
+                    bookingId: contextMenu.bookingId,
+                    candidateName: contextMenu.candidateName,
+                  });
+                  setContextMenu(null);
+                }}
+                className="w-full text-left px-3 py-2.5 text-sm text-violet-800 hover:bg-violet-50 disabled:opacity-60 flex items-center gap-2 border-b border-border-subtle"
+              >
+                <Sparkles size={15} />
+                Session
+              </button>
               <button
                 type="button"
                 disabled={actionLoading}
@@ -1148,6 +1774,32 @@ const CounsellingDashboard: React.FC = () => {
         candidateName={wrapUpDrawer?.candidateName ?? 'Candidate'}
         onClose={() => setWrapUpDrawer(null)}
         onSubmitted={handleWrapUpSubmitted}
+      />
+
+      <InteractionLogDrawer
+        open={interactionBookingId !== null}
+        bookingId={interactionBookingId}
+        scope="schedule"
+        onClose={() => setInteractionBookingId(null)}
+      />
+
+      <StudentJourneyPanel
+        open={journeyPanel !== null}
+        studentId={journeyPanel?.studentId ?? null}
+        studentName={journeyPanel?.studentName}
+        onClose={() => setJourneyPanel(null)}
+      />
+
+      <CounsellingSessionModal
+        open={sessionModal !== null}
+        bookingId={sessionModal?.bookingId ?? null}
+        candidateName={sessionModal?.candidateName ?? ''}
+        dateLabel={sessionModal?.dateLabel}
+        timeLabel={sessionModal?.timeLabel}
+        onClose={() => setSessionModal(null)}
+        onStatusUpdated={() => {
+          void Promise.all([reloadScheduleQuietly(), loadPendingBookings(), loadPipelineAnalytics()]);
+        }}
       />
     </div>
   );

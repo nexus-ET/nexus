@@ -282,6 +282,15 @@ def normalize_lead_row(lead_data: dict[str, Any]) -> dict[str, Any]:
         row["additional_data"] = additional_data
     preferred_country = _optional_str(lead_data.get("preferred_country"))
     if preferred_country:
+        # DB column is String(100); Meta free-text answers can be much longer.
+        if len(preferred_country) > 100:
+            extras = row.get("additional_data")
+            if not isinstance(extras, dict):
+                extras = {}
+            extras = dict(extras)
+            extras["preferred_country_full"] = preferred_country
+            row["additional_data"] = extras
+            preferred_country = preferred_country[:100]
         row["preferred_country"] = preferred_country
     intake_context = lead_data.get("intake_context")
     if isinstance(intake_context, str) and intake_context.strip():
@@ -289,6 +298,12 @@ def normalize_lead_row(lead_data: dict[str, Any]) -> dict[str, Any]:
     created_at = lead_data.get("created_at")
     if isinstance(created_at, datetime):
         row["created_at"] = _as_utc_datetime(created_at).replace(tzinfo=None)
+    elif isinstance(created_at, str) and created_at.strip():
+        try:
+            parsed = datetime.fromisoformat(created_at.strip().replace("Z", "+00:00"))
+            row["created_at"] = _as_utc_datetime(parsed).replace(tzinfo=None)
+        except ValueError:
+            pass
     return row
 
 

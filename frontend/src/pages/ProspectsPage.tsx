@@ -6,16 +6,18 @@ import ProspectDetailPanel from '../components/prospects/ProspectDetailPanel';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
   useProspectDetail,
-  useProspectsInfinite,
+  useProspectsPage,
 } from '../hooks/useProspects';
 import {
   buildProspectsPath,
   parseLeadIdParam,
+  PROSPECTS_PAGE_SIZE_KEY,
   prospectsScrollStorageKey,
   readDetailTab,
   readFilters,
   type ProspectDetailTab,
 } from '../utils/prospectsUrl';
+import { isTablePageSize, storeTablePageSize } from '../utils/tablePageSize';
 import './ProspectsPage.css';
 
 export type ProspectsPageProps = {
@@ -69,14 +71,19 @@ export default function ProspectsPage({
     }
   }, [searchParams, leadIdParam, filters, activeTab, navigate, basePath]);
 
-  const listQuery = useProspectsInfinite(debouncedFilters);
+  const listQuery = useProspectsPage(debouncedFilters);
   const detailQuery = useProspectDetail(selectedLeadId);
 
-  const items = useMemo(
-    () => listQuery.data?.pages.flatMap(page => page.items) ?? [],
-    [listQuery.data]
-  );
-  const filteredTotal = listQuery.data?.pages[0]?.filtered_total ?? 0;
+  const items = listQuery.data?.items ?? [];
+  const filteredTotal = listQuery.data?.filtered_total ?? 0;
+  const hasMorePages = Boolean(listQuery.data?.has_more);
+  const page = Math.max(1, filters.page || 1);
+  const pageSize = filters.pageSize || 50;
+  const totalPages = Math.max(1, Math.ceil(filteredTotal / pageSize) || 1);
+  const rangeStart = filteredTotal === 0 ? 0 : (page - 1) * pageSize + 1;
+  const rangeEnd = Math.min(page * pageSize, filteredTotal);
+  const rangeLabel =
+    filteredTotal > 0 ? `${rangeStart}–${rangeEnd}` : null;
 
   const pulseLeads = useMemo(
     () =>
@@ -96,15 +103,34 @@ export default function ProspectsPage({
         intake_step: item.intake_step ?? undefined,
         intake_step_label: item.intake_step_label ?? undefined,
         intake_complete: item.intake_complete ?? undefined,
+        wants_consultation_call: item.wants_consultation_call ?? undefined,
+        consultation_scheduled_at: item.consultation_scheduled_at ?? undefined,
+        consultation_session_date: item.consultation_session_date ?? undefined,
+        consultation_session_time: item.consultation_session_time ?? undefined,
+        assigned_counsellor_name: item.assigned_counsellor_name ?? undefined,
+        appointment_status: item.appointment_status ?? undefined,
+        english_test_scores: item.english_test_scores ?? undefined,
+        gre_score: item.gre_score ?? undefined,
+        gmat_score: item.gmat_score ?? undefined,
+        test_scores: item.test_scores ?? undefined,
         status: item.status || item.stage,
         updated_at: item.updated_at || item.received_at || undefined,
-        latest_interaction_time: item.latest_interaction_time || item.updated_at || item.received_at || undefined,
+        // Do not fall back to updated_at/received_at — that made never-contacted
+        // leads show up under "Recently replied".
+        latest_interaction_time: item.latest_interaction_time || undefined,
+        total_messages_received: item.total_messages_received ?? 0,
+        unread_count: item.unread_count ?? 0,
+        has_ai_messages: Boolean(item.has_ai_messages),
+        has_messages: Boolean(item.has_messages),
       })),
     [items]
   );
 
   const updateFilters = (next: Partial<typeof filters>) => {
     const merged = { ...filters, ...next, category: statusCategory || next.category || filters.category };
+    if (next.pageSize != null && isTablePageSize(next.pageSize)) {
+      storeTablePageSize(PROSPECTS_PAGE_SIZE_KEY, next.pageSize);
+    }
     navigate(buildProspectsPath(selectedLeadId, merged, activeTab, basePath), { replace: true });
   };
 
@@ -140,7 +166,14 @@ export default function ProspectsPage({
         filters={filters}
         onChange={updateFilters}
         filteredTotal={filteredTotal}
+        rangeLabel={rangeLabel}
+        rangeStart={rangeStart}
+        rangeEnd={rangeEnd}
         title={pageTitle}
+        page={page}
+        totalPages={totalPages}
+        hasMorePages={hasMorePages}
+        isLoading={listQuery.isLoading}
       />
 
       <div className="prospects-page__panels">
@@ -149,9 +182,11 @@ export default function ProspectsPage({
           selectedLeadId={selectedLeadId}
           onSelect={handleSelectLead}
           isLoading={listQuery.isLoading}
-          isFetchingNextPage={listQuery.isFetchingNextPage}
-          hasNextPage={Boolean(listQuery.hasNextPage)}
-          fetchNextPage={() => listQuery.fetchNextPage()}
+          page={page}
+          totalPages={totalPages}
+          hasMorePages={hasMorePages}
+          onPageChange={nextPage => updateFilters({ page: nextPage })}
+          filteredTotal={filteredTotal}
           errorMessage={listError}
           scrollStorageKey={scrollStorageKey}
           hidden={focusMode}

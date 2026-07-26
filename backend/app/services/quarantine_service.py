@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.models.lead_quarantine import LeadQuarantine
-from app.services.lead_ingestion_pipeline import reprocess_quarantine_record
+from app.services.lead_ingestion_pipeline import _json_safe, reprocess_quarantine_record
 
 
 def list_quarantine_records(
@@ -34,7 +34,7 @@ def update_quarantine_payload(
     record: LeadQuarantine,
     normalized_payload: dict,
 ) -> LeadQuarantine:
-    record.normalized_payload = normalized_payload
+    record.normalized_payload = _json_safe(normalized_payload)
     db.commit()
     db.refresh(record)
     return record

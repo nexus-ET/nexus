@@ -44,6 +44,7 @@ CANCELLED_STATUS = "CANCELLED"
 COMPLETED_STATUS = "COMPLETED"
 SCHEDULE_DAYS = 14
 VISIBLE_PENDING_COLUMNS = 3
+MAX_SCHEDULE_GRID_RANGE_DAYS = 31
 MY_BOOKINGS_ADMIN_ROLE_NAMES = {"Super Admin", "Web Admin"}
 
 ADMIN_CELL_LABELS = {
@@ -237,6 +238,7 @@ def _serialize_pending_booking(booking: CounsellingBooking) -> dict:
         "candidate_name": booking.candidate_name,
         "scheduled_time": booking.scheduled_time,
         "notes": booking.notes,
+        "lead_id": booking.lead_id,
     }
 
 
@@ -341,7 +343,13 @@ def create_pending_booking(
     return booking
 
 
-def cancel_active_counselling_bookings_for_lead(db: Session, lead_id: int, *, commit: bool = True) -> None:
+def cancel_active_counselling_bookings_for_lead(
+    db: Session,
+    lead_id: int,
+    *,
+    commit: bool = True,
+    alert_reason: str = "cancelled",
+) -> list[dict]:
     bookings = (
         db.query(CounsellingBooking)
         .filter(
@@ -350,11 +358,53 @@ def cancel_active_counselling_bookings_for_lead(db: Session, lead_id: int, *, co
         )
         .all()
     )
+    alert_snapshots: list[dict] = []
     for booking in bookings:
+        if booking.admin_id and booking.status == SCHEDULED_STATUS:
+            alert_snapshots.append(
+                {
+                    "admin_id": booking.admin_id,
+                    "candidate_name": booking.candidate_name,
+                    "scheduled_time": booking.scheduled_time,
+                    "booking_id": booking.id,
+                    "lead_id": booking.lead_id,
+                    "alert_reason": alert_reason,
+                }
+            )
         booking.status = CANCELLED_STATUS
         booking.updated_at = datetime.utcnow()
     if commit and bookings:
         db.commit()
+    return alert_snapshots
+
+
+def dispatch_admin_booking_release_alerts(snapshots: list[dict]) -> None:
+    """Fire cancel/reschedule WhatsApp alerts after bookings are released."""
+    if not snapshots:
+        return
+    from app.services.admin_session_reminders import (
+        run_admin_cancel_alert,
+        run_admin_reschedule_alert,
+    )
+
+    for snapshot in snapshots:
+        reason = snapshot.pop("alert_reason", "cancelled")
+        if reason == "rescheduled":
+            run_admin_reschedule_alert(
+                admin_id=snapshot["admin_id"],
+                candidate_name=snapshot["candidate_name"],
+                previous_time=snapshot["scheduled_time"],
+                booking_id=snapshot["booking_id"],
+                lead_id=snapshot.get("lead_id"),
+            )
+        else:
+            run_admin_cancel_alert(
+                admin_id=snapshot["admin_id"],
+                candidate_name=snapshot["candidate_name"],
+                scheduled_time=snapshot["scheduled_time"],
+                booking_id=snapshot["booking_id"],
+                lead_id=snapshot.get("lead_id"),
+            )
 
 
 def upsert_pending_booking_for_lead(
@@ -474,6 +524,7 @@ def get_pending_bookings(db: Session) -> dict:
             "candidate_phone": booking.candidate_phone,
             "notes": booking.notes,
             "status": booking.status,
+            "lead_id": booking.lead_id,
         }
         booking_date = booking.scheduled_time.date()
         if booking_date == today:
@@ -574,31 +625,38 @@ def _build_day_grid(db: Session, target_date: date, focus_date: date) -> dict:
                 status = "complete"
                 candidate_name = scheduled.candidate_name
                 booking_id = scheduled.id
+                lead_id = scheduled.lead_id
             elif slot_start < now:
                 if scheduled:
                     status = "complete"
                     candidate_name = scheduled.candidate_name
                     booking_id = scheduled.id
+                    lead_id = scheduled.lead_id
                 else:
                     status = "past"
                     candidate_name = None
                     booking_id = None
+                    lead_id = None
             elif scheduled:
                 status = "booked"
                 candidate_name = scheduled.candidate_name
                 booking_id = scheduled.id
+                lead_id = scheduled.lead_id
             else:
                 status = "available"
                 candidate_name = None
                 booking_id = None
+                lead_id = None
 
             admin_cells.append(
                 {
                     "admin_id": admin.id,
+                    "admin_name": _format_admin_name(admin),
                     "status": status,
                     "label": ADMIN_CELL_LABELS[status],
                     "candidate_name": candidate_name,
                     "booking_id": booking_id,
+                    "lead_id": lead_id,
                 }
             )
 
@@ -621,12 +679,52 @@ def _build_day_grid(db: Session, target_date: date, focus_date: date) -> dict:
     }
 
 
-def get_schedule_grid(db: Session, focus_date: date | None = None) -> dict:
+def get_schedule_grid(
+    db: Session,
+    focus_date: date | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict:
     sync_pending_bookings_from_leads(db)
-    selected = focus_date or office_today(db)
+    calendar_today = office_today(db)
+
+    if start_date is not None or end_date is not None:
+        range_start = start_date or end_date
+        range_end = end_date or start_date
+        assert range_start is not None and range_end is not None
+        if range_start > range_end:
+            range_start, range_end = range_end, range_start
+        day_count = (range_end - range_start).days + 1
+        if day_count > MAX_SCHEDULE_GRID_RANGE_DAYS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Date period cannot exceed {MAX_SCHEDULE_GRID_RANGE_DAYS} days.",
+            )
+        days = []
+        current = range_start
+        while current <= range_end:
+            days.append(_build_day_grid(db, current, range_start))
+            current += timedelta(days=1)
+        selected = range_start
+        past_date = selected - timedelta(days=1)
+        upcoming_date = selected + timedelta(days=1)
+        return {
+            "days": days,
+            "legend": ADMIN_CELL_LABELS,
+            "max_bookings_per_slot": get_max_bookings_per_slot(db),
+            "visible_pending_columns": VISIBLE_PENDING_COLUMNS,
+            "focus_date": selected,
+            "calendar_today": calendar_today,
+            "navigation": {
+                "past": {"date": past_date, "label": _format_day_label(past_date)},
+                "selected": {"date": selected, "label": _format_day_label(selected)},
+                "upcoming": {"date": upcoming_date, "label": _format_day_label(upcoming_date)},
+            },
+        }
+
+    selected = focus_date or calendar_today
     past_date = selected - timedelta(days=1)
     upcoming_date = selected + timedelta(days=1)
-    calendar_today = office_today(db)
 
     return {
         "days": [_build_day_grid(db, selected, selected)],
@@ -866,6 +964,13 @@ def get_lead_profile_booking_context(db: Session, user: User, lead_id: int) -> d
         "status_category": payload.get("status_category"),
         "date_label": payload.get("date_label"),
         "time_label": payload.get("time_label"),
+        "status": payload.get("status"),
+        "session_status_label": payload.get("session_status_label"),
+        "admin_id": payload.get("admin_id"),
+        "admin_name": payload.get("admin_name"),
+        "scheduled_time": (
+            booking.scheduled_time.isoformat() if booking.scheduled_time else None
+        ),
     }
 
 
@@ -1234,6 +1339,16 @@ def get_booking_interaction_log(db: Session, user_id: int, booking_id: int) -> d
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
     booking = _get_viewable_booking(db, user, booking_id)
+    return _build_booking_interaction_log_payload(db, booking)
+
+
+def get_schedule_booking_interaction_log(db: Session, booking_id: int) -> dict:
+    """Interaction log for Manage Appointments — works before counsellor assignment."""
+    booking, _admin = get_booking_with_admin(db, booking_id)
+    return _build_booking_interaction_log_payload(db, booking)
+
+
+def _build_booking_interaction_log_payload(db: Session, booking: CounsellingBooking) -> dict:
     admin = db.query(User).filter(User.id == booking.admin_id).first() if booking.admin_id else None
     lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
     calendar_today = office_today(db)
@@ -1907,6 +2022,16 @@ def cancel_booking(db: Session, booking_id: int) -> CounsellingBooking:
     if booking.status == CANCELLED_STATUS:
         raise HTTPException(status_code=400, detail="Booking is already cancelled.")
 
+    alert_snapshot = None
+    if booking.admin_id and booking.status == SCHEDULED_STATUS:
+        alert_snapshot = {
+            "admin_id": booking.admin_id,
+            "candidate_name": booking.candidate_name,
+            "scheduled_time": booking.scheduled_time,
+            "booking_id": booking.id,
+            "lead_id": booking.lead_id,
+        }
+
     if booking.lead_id:
         lead = db.query(Lead).filter(Lead.id == booking.lead_id).first()
         if lead:
@@ -1929,6 +2054,12 @@ def cancel_booking(db: Session, booking_id: int) -> CounsellingBooking:
     booking.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(booking)
+
+    if alert_snapshot:
+        from app.services.admin_session_reminders import run_admin_cancel_alert
+
+        run_admin_cancel_alert(**alert_snapshot)
+
     return booking
 
 
@@ -1996,6 +2127,21 @@ def get_booking_with_admin(db: Session, booking_id: int) -> tuple[CounsellingBoo
 
 def _normalize_message_text(text: str | None) -> str:
     return " ".join((text or "").split()).strip().lower()
+
+
+def _message_timestamps_near(
+    left: datetime | None,
+    right: datetime | None,
+    *,
+    window_seconds: float = 30.0,
+) -> bool:
+    """True when two message timestamps are close enough to be the same event."""
+    if left is None or right is None:
+        return False
+    # Compare as naive UTC-ish values; DB timestamps are stored without tz.
+    left_naive = left.replace(tzinfo=None) if getattr(left, "tzinfo", None) else left
+    right_naive = right.replace(tzinfo=None) if getattr(right, "tzinfo", None) else right
+    return abs((left_naive - right_naive).total_seconds()) <= window_seconds
 
 
 def _resolve_handoff_admin_name(
@@ -2078,7 +2224,9 @@ def get_booking_communications(db: Session, booking_id: int) -> dict:
     }
 
     serialized: list[dict] = []
-    seen_message_keys: set[tuple[str, str]] = set()
+    # Track (normalized_text, created_at) so Message + MessageHistory copies of the
+    # same WhatsApp event (often a few ms apart) collapse to one timeline row.
+    seen_message_events: list[tuple[str, datetime]] = []
     handoff_started = False
 
     def append_message(
@@ -2093,11 +2241,12 @@ def get_booking_communications(db: Session, booking_id: int) -> dict:
     ) -> None:
         clean_text = text or ""
         timestamp = created_at or datetime.utcnow()
-        dedupe_key = (_normalize_message_text(clean_text), timestamp.isoformat())
-        if clean_text and dedupe_key in seen_message_keys:
-            return
-        if clean_text:
-            seen_message_keys.add(dedupe_key)
+        normalized = _normalize_message_text(clean_text)
+        if normalized:
+            for seen_text, seen_at in seen_message_events:
+                if seen_text == normalized and _message_timestamps_near(seen_at, timestamp):
+                    return
+            seen_message_events.append((normalized, timestamp))
 
         serialized.append(
             {
@@ -2154,23 +2303,28 @@ def get_booking_communications(db: Session, booking_id: int) -> dict:
                 file_name=message.file_name,
             )
 
-    for row in history_rows:
-        if row.role == "user":
-            append_message(
-                message_id=f"history-user-{row.id}",
-                participant="candidate",
-                participant_label=lead.full_name or candidate_name,
-                text=row.message_text,
-                created_at=row.created_at,
-            )
-        elif row.role == "ai":
-            append_message(
-                message_id=f"history-ai-{row.id}",
-                participant="ai_agent",
-                participant_label="AI Agent",
-                text=row.message_text,
-                created_at=row.created_at,
-            )
+    # Inbound WhatsApp always writes both Message and MessageHistory. Prefer the
+    # live messages table for the UI timeline so reset/retest cannot resurface
+    # the same bubble twice. Fall back to history only for legacy leads with no
+    # Message rows.
+    if not messages:
+        for row in history_rows:
+            if row.role == "user":
+                append_message(
+                    message_id=f"history-user-{row.id}",
+                    participant="candidate",
+                    participant_label=lead.full_name or candidate_name,
+                    text=row.message_text,
+                    created_at=row.created_at,
+                )
+            elif row.role == "ai":
+                append_message(
+                    message_id=f"history-ai-{row.id}",
+                    participant="ai_agent",
+                    participant_label="AI Agent",
+                    text=row.message_text,
+                    created_at=row.created_at,
+                )
 
     serialized.sort(key=lambda item: (item["created_at"], str(item["id"])))
     candidate_stage, candidate_stage_label = _resolve_candidate_stage(lead)

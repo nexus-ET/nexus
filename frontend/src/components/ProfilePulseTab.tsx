@@ -69,7 +69,7 @@ const ProfilePulseTab: React.FC<ProfilePulseTabProps> = ({
     <div className="flex flex-1 min-h-0 flex-col overflow-y-auto custom-scrollbar px-3 py-4 sm:px-4">
       <div className="mx-auto w-full max-w-5xl space-y-4">
         <section className="rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-card p-4 sm:p-5 shadow-sm">
-          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-sky-800">
+          <p className="text-sm font-bold uppercase tracking-[0.18em] text-sky-800">
             Personal Vision Statement
           </p>
           <p className="mt-2 text-base sm:text-lg font-semibold leading-relaxed text-text-main">
@@ -81,8 +81,8 @@ const ProfilePulseTab: React.FC<ProfilePulseTabProps> = ({
           <section className="rounded-xl border border-border-subtle bg-card p-4 sm:p-5 shadow-sm">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h3 className="text-sm font-bold text-text-main">Profile Completeness</h3>
-                <p className="text-xs text-text-muted mt-1">
+                <h3 className="text-base font-bold text-text-main">Profile Completeness</h3>
+                <p className="text-sm text-text-muted mt-1">
                   Based on mandatory fields across all profile sections.
                 </p>
               </div>
@@ -96,10 +96,10 @@ const ProfilePulseTab: React.FC<ProfilePulseTabProps> = ({
             </div>
             {actionSections.length > 0 ? (
               <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5">
-                <p className="text-xs font-bold text-amber-900">
+                <p className="text-sm font-bold text-amber-900">
                   {actionSections.length} section{actionSections.length === 1 ? '' : 's'} need attention
                 </p>
-                <p className="text-[11px] text-amber-800 mt-1">
+                <p className="text-xs text-amber-800 mt-1">
                   Complete highlighted items below to improve admission readiness.
                 </p>
               </div>
@@ -107,22 +107,22 @@ const ProfilePulseTab: React.FC<ProfilePulseTabProps> = ({
           </section>
 
           <section className="rounded-xl border border-border-subtle bg-card p-4 sm:p-5 shadow-sm">
-            <h3 className="text-sm font-bold text-text-main">Application Timeline</h3>
-            <p className="text-xs text-text-muted mt-1 mb-4">Where you are in the admissions journey.</p>
+            <h3 className="text-base font-bold text-text-main">Application Timeline</h3>
+            <p className="text-sm text-text-muted mt-1 mb-4">Where you are in the admissions journey.</p>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {data.timeline.map(milestone => (
-                <div
-                  key={milestone.id}
-                  className={`rounded-lg border px-2 py-2 text-center ${
-                    milestone.state === 'current'
-                      ? 'border-sky-400 bg-sky-50'
-                      : milestone.state === 'complete'
-                        ? 'border-emerald-200 bg-emerald-50/70'
-                        : 'border-border-subtle bg-surface-bg/50'
-                  }`}
-                >
+              {data.timeline.map(milestone => {
+                const canOpenShortlist =
+                  milestone.id === 'university_shortlisting' && Boolean(onNavigateTab);
+                const className = `rounded-lg border px-2 py-2 text-center ${
+                  milestone.state === 'current'
+                    ? 'border-sky-400 bg-sky-50'
+                    : milestone.state === 'complete'
+                      ? 'border-emerald-200 bg-emerald-50/70'
+                      : 'border-border-subtle bg-surface-bg/50'
+                }${canOpenShortlist ? ' cursor-pointer hover:border-sky-400 hover:bg-sky-50/80' : ''}`;
+                const label = (
                   <p
-                    className={`text-[10px] font-bold leading-tight ${
+                    className={`text-xs font-bold leading-tight ${
                       milestone.state === 'current'
                         ? 'text-sky-900'
                         : milestone.state === 'complete'
@@ -132,8 +132,25 @@ const ProfilePulseTab: React.FC<ProfilePulseTabProps> = ({
                   >
                     {milestone.label}
                   </p>
-                </div>
-              ))}
+                );
+                if (canOpenShortlist) {
+                  return (
+                    <button
+                      key={milestone.id}
+                      type="button"
+                      className={className}
+                      onClick={() => onNavigateTab?.('university_shortlist')}
+                    >
+                      {label}
+                    </button>
+                  );
+                }
+                return (
+                  <div key={milestone.id} className={className}>
+                    {label}
+                  </div>
+                );
+              })}
             </div>
           </section>
         </div>
@@ -141,14 +158,14 @@ const ProfilePulseTab: React.FC<ProfilePulseTabProps> = ({
         <section className="rounded-xl border border-border-subtle bg-card p-4 sm:p-5 shadow-sm">
           <div className="flex items-center justify-between gap-3 mb-4">
             <div>
-              <h3 className="text-sm font-bold text-text-main">Status Tracker</h3>
-              <p className="text-xs text-text-muted mt-1">Quick gist from each profile section.</p>
+              <h3 className="text-base font-bold text-text-main">Status Tracker</h3>
+              <p className="text-sm text-text-muted mt-1">Quick gist from each profile section.</p>
             </div>
             <button
               type="button"
               onClick={() => void refetch()}
               disabled={isFetching}
-              className="text-[11px] font-semibold text-sky-700 hover:text-sky-900 disabled:opacity-60"
+              className="text-xs font-semibold text-sky-700 hover:text-sky-900 disabled:opacity-60"
             >
               {isFetching ? 'Refreshing…' : 'Refresh'}
             </button>
@@ -170,11 +187,11 @@ const ProfilePulseTab: React.FC<ProfilePulseTabProps> = ({
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="text-xs font-bold text-text-main">{section.label}</p>
-                      <p className="text-[11px] text-text-muted mt-1 line-clamp-2">{section.gist}</p>
+                      <p className="text-sm font-bold text-text-main">{section.label}</p>
+                      <p className="text-sm text-text-muted mt-1 line-clamp-2">{section.gist}</p>
                     </div>
                     <span
-                      className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${meta.badgeClass}`}
+                      className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold ${meta.badgeClass}`}
                     >
                       {meta.icon}
                       {meta.label}
@@ -182,7 +199,7 @@ const ProfilePulseTab: React.FC<ProfilePulseTabProps> = ({
                   </div>
                   {section.actionHint ? (
                     <p
-                      className={`mt-2 text-[10px] leading-snug ${
+                      className={`mt-2 text-xs leading-snug ${
                         section.status === 'action_required' ? 'text-amber-900 font-medium' : 'text-text-muted'
                       }`}
                     >

@@ -4,12 +4,23 @@ import { apiFetch } from '../utils/api';
 import LeadStudyInterestPanel from '../components/LeadStudyInterestPanel';
 import StudentJourneyPanel from '../components/StudentJourneyPanel';
 import LeadQueueSidebarFilters from '../components/LeadQueueSidebarFilters';
+import QueuePaginationControls from '../components/QueuePaginationControls';
 import AiActivePulseBoard from '../components/AiActivePulseBoard';
+import HeadlessScrollArea, {
+  type HeadlessScrollAreaHandle,
+} from '../components/HeadlessScrollArea';
 import {
   buildLeadQueueQueryParams,
+  DEFAULT_CONTACT_STATUS,
   DEFAULT_INTERACTION_DAYS,
+  formatViewingRecordsLabel,
+  HANDOFFS_PAGE_SIZE_KEY,
   interactionDaysEmptyLabel,
+  persistLeadQueuePageSize,
+  readLeadQueuePageSize,
+  type ContactStatusFilter,
   type InteractionDaysFilter,
+  type LeadQueuePageSize,
 } from '../utils/leadQueueFilters';
 
 interface MessagePayload {
@@ -37,12 +48,30 @@ interface Lead {
   preferred_country?: string | null;
   preferred_course?: string | null;
   target_program?: string | null;
+  target_degree?: string | null;
+  target_major?: string | null;
+  current_location?: string | null;
   study_interest_complete?: boolean;
+  intake_step?: string;
+  intake_step_label?: string;
+  intake_complete?: boolean;
+  wants_consultation_call?: boolean | null;
+  consultation_scheduled_at?: string | null;
+  consultation_session_date?: string | null;
+  consultation_session_time?: string | null;
+  assigned_counsellor_name?: string | null;
+  appointment_status?: string | null;
+  english_test_scores?: string | null;
+  gre_score?: string | null;
+  gmat_score?: string | null;
+  test_scores?: string | null;
   messages?: MessagePayload[];
   updated_at?: string;
   latest_interaction_time?: string;
   total_messages_received: number;
   unread_count?: number;
+  has_ai_messages?: boolean;
+  has_messages?: boolean;
 }
 
 const formatStatusLabel = (stage?: string): string => {
@@ -105,12 +134,35 @@ const mapLeadFromApi = (lead: Record<string, unknown>): Lead => {
     preferred_country: (lead.preferred_country as string | null | undefined) ?? null,
     preferred_course: (lead.preferred_course as string | null | undefined) ?? null,
     target_program: (lead.target_program as string | null | undefined) ?? null,
+    target_degree: (lead.target_degree as string | null | undefined) ?? null,
+    target_major: (lead.target_major as string | null | undefined) ?? null,
+    current_location: (lead.current_location as string | null | undefined) ?? null,
     study_interest_complete: Boolean(lead.study_interest_complete),
+    intake_step: lead.intake_step as string | undefined,
+    intake_step_label: lead.intake_step_label as string | undefined,
+    intake_complete: Boolean(lead.intake_complete),
+    wants_consultation_call: (lead.wants_consultation_call as boolean | null | undefined) ?? null,
+    consultation_scheduled_at: (lead.consultation_scheduled_at as string | null | undefined) ?? null,
+    consultation_session_date: (lead.consultation_session_date as string | null | undefined) ?? null,
+    consultation_session_time: (lead.consultation_session_time as string | null | undefined) ?? null,
+    assigned_counsellor_name: (lead.assigned_counsellor_name as string | null | undefined) ?? null,
+    appointment_status: (lead.appointment_status as string | null | undefined) ?? null,
+    english_test_scores: (lead.english_test_scores as string | null | undefined) ?? null,
+    gre_score: (lead.gre_score as string | null | undefined) ?? null,
+    gmat_score: (lead.gmat_score as string | null | undefined) ?? null,
+    test_scores: (lead.test_scores as string | null | undefined) ?? null,
     messages: rawMessages.map(normalizeMessage),
     updated_at: lead.updated_at as string | undefined,
     latest_interaction_time: lead.latest_interaction_time as string | undefined,
     total_messages_received: Number(lead.total_messages_received ?? 0),
     unread_count: Number(lead.unread_count ?? 0),
+    has_ai_messages: Boolean(lead.has_ai_messages),
+    has_messages:
+      typeof lead.has_messages === 'boolean'
+        ? Boolean(lead.has_messages)
+        : Boolean(lead.has_ai_messages) ||
+          Number(lead.total_messages_received ?? 0) > 0 ||
+          rawMessages.length > 0,
   };
 };
 
@@ -137,6 +189,14 @@ const getLeadActivityTime = (lead: Lead): number => {
 };
 
 const sortHandoffLeads = (a: Lead, b: Lead): number => {
+  const aContacted = Number(
+    Boolean(a.has_messages ?? a.has_ai_messages ?? (a.messages?.length ?? 0) > 0)
+  );
+  const bContacted = Number(
+    Boolean(b.has_messages ?? b.has_ai_messages ?? (b.messages?.length ?? 0) > 0)
+  );
+  if (bContacted !== aContacted) return bContacted - aContacted;
+
   const unreadDiff = getUnreadCount(b) - getUnreadCount(a);
   if (unreadDiff !== 0) return unreadDiff;
   const dateDiff = getLeadActivityTime(b) - getLeadActivityTime(a);
@@ -172,6 +232,13 @@ export default function HandoffsView() {
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [interactionDays, setInteractionDays] = useState<InteractionDaysFilter>(DEFAULT_INTERACTION_DAYS);
+  const [contactStatus, setContactStatus] = useState<ContactStatusFilter>(DEFAULT_CONTACT_STATUS);
+  const [pageSize, setPageSize] = useState<LeadQueuePageSize>(() =>
+    readLeadQueuePageSize(HANDOFFS_PAGE_SIZE_KEY)
+  );
+  const [page, setPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const [hasMorePages, setHasMorePages] = useState(false);
   const [messageText, setMessageText] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -186,7 +253,7 @@ export default function HandoffsView() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
-  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HeadlessScrollAreaHandle | null>(null);
   const chatInputRef = useRef<HTMLInputElement>(null);
 
   const pollingTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -215,6 +282,21 @@ export default function HandoffsView() {
     return () => window.clearTimeout(timer);
   }, [searchQuery]);
 
+  useEffect(() => {
+    setPage(1);
+    setLeadsQueue([]);
+    setTotalCount(0);
+  }, [pageSize, interactionDays, contactStatus, debouncedSearch]);
+
+  const handlePageSizeChange = useCallback((next: LeadQueuePageSize) => {
+    persistLeadQueuePageSize(HANDOFFS_PAGE_SIZE_KEY, next);
+    setPageSize(next);
+  }, []);
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize) || 1);
+  const rangeStart = totalCount === 0 ? 0 : (page - 1) * pageSize + 1;
+  const rangeEnd = Math.min(page * pageSize, totalCount);
+
   const emptyQueueMessage = useMemo(() => {
     if (debouncedSearch) return 'No matching candidates found.';
     if (interactionDays === 0) return 'No candidates in the handoff queue.';
@@ -223,13 +305,43 @@ export default function HandoffsView() {
 
   const fetchHandoffQueue = useCallback(async (signal?: AbortSignal) => {
     try {
-      const query = buildLeadQueueQueryParams(interactionDays, debouncedSearch);
-      const data = await apiFetch(`leads/queue?${query}`, { signal });
-      const handoffOnly = (Array.isArray(data) ? data : [])
-        .map(mapLeadFromApi)
+      const query = new URLSearchParams(
+        buildLeadQueueQueryParams(interactionDays, debouncedSearch, contactStatus)
+      );
+      const safePage = Math.max(1, page);
+      const offset = (safePage - 1) * pageSize;
+      query.set('limit', String(pageSize));
+      query.set('offset', String(offset));
+      const data = await apiFetch(`leads/queue?${query.toString()}`, { signal });
+      if (signal?.aborted) return;
+
+      let rows: unknown[] = [];
+      let nextTotal = 0;
+      let nextHasMore = false;
+      if (Array.isArray(data)) {
+        rows = data;
+        nextTotal = data.length;
+        nextHasMore = false;
+      } else if (data && typeof data === 'object') {
+        const payload = data as {
+          items?: unknown[];
+          total_count?: number;
+          has_more?: boolean;
+        };
+        rows = Array.isArray(payload.items) ? payload.items : [];
+        nextTotal = Number(payload.total_count ?? rows.length) || 0;
+        nextHasMore = Boolean(payload.has_more ?? offset + rows.length < nextTotal);
+      }
+
+      const handoffOnly = rows
+        .map(item => mapLeadFromApi(item as Record<string, unknown>))
         .filter(isHandoffLead)
         .sort(sortHandoffLeads);
+      if (signal?.aborted) return;
+
       setLeadsQueue(handoffOnly);
+      setTotalCount(nextTotal);
+      setHasMorePages(nextHasMore);
       setLoadError(null);
 
       setSelectedLead(prev => {
@@ -247,13 +359,15 @@ export default function HandoffsView() {
       });
     } catch (error: unknown) {
       if (error instanceof Error && error.name !== 'AbortError') {
-        console.error('Queue sync breakdown error:', error);
+        console.error('Failed to fetch handoff queue:', error);
         setLoadError(error.message || 'Failed to load handoff queue.');
       }
     } finally {
-      setIsLoading(false);
+      if (!signal?.aborted) {
+        setIsLoading(false);
+      }
     }
-  }, [interactionDays, debouncedSearch]);
+  }, [interactionDays, contactStatus, debouncedSearch, page, pageSize]);
 
   useEffect(() => {
     let isActive = true;
@@ -368,7 +482,7 @@ export default function HandoffsView() {
   };
 
   const forceScrollToAbsoluteBottom = () => {
-    const container = chatContainerRef.current;
+    const container = chatContainerRef.current?.getViewport();
     if (!container) return null;
 
     container.scrollTop = container.scrollHeight;
@@ -390,7 +504,7 @@ export default function HandoffsView() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    const container = chatContainerRef.current;
+    const container = chatContainerRef.current?.getViewport();
     if (!container) return;
 
     let timerId = forceScrollToAbsoluteBottom();
@@ -715,10 +829,6 @@ export default function HandoffsView() {
       
       <style>{`
         html, body, #root { overflow: hidden !important; }
-        .custom-scroll-region::-webkit-scrollbar { width: 6px; height: 6px; }
-        .custom-scroll-region::-webkit-scrollbar-track { background: transparent; }
-        .custom-scroll-region::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 20px; }
-        .custom-scroll-region::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
         
         .emoji-grid-btn { 
           background: none; 
@@ -787,18 +897,51 @@ export default function HandoffsView() {
       
       <div style={styles.leftSidebarPanel}>
         <div style={styles.sidebarHeader}>
-          <h2 style={styles.sidebarTitle}>Queue</h2>
-          <span style={styles.activeCounterBadge}>{leadsQueue.length}</span>
+          <div style={styles.sidebarHeaderText}>
+            <h2 style={styles.sidebarTitle}>Queue</h2>
+            <p
+              style={styles.viewingRecordsLabel}
+              title={
+                totalCount > 0
+                  ? formatViewingRecordsLabel(rangeStart, rangeEnd, totalCount)
+                  : 'No candidates in the filtered queue'
+              }
+            >
+              {formatViewingRecordsLabel(rangeStart, rangeEnd, totalCount)}
+            </p>
+          </div>
+          <span style={styles.activeCounterBadge}>
+            {totalCount > 0 ? `${rangeStart}–${rangeEnd}/${totalCount}` : 0}
+          </span>
         </div>
+
+        {!isLoading && !loadError && (totalCount > 0 || leadsQueue.length > 0) ? (
+          <QueuePaginationControls
+            page={page}
+            totalPages={totalPages}
+            hasMorePages={hasMorePages}
+            disabled={isLoading}
+            onPageChange={setPage}
+            style={styles.sidebarPaginationHeader}
+          />
+        ) : null}
 
         <LeadQueueSidebarFilters
           interactionDays={interactionDays}
           onInteractionDaysChange={setInteractionDays}
+          contactStatus={contactStatus}
+          onContactStatusChange={setContactStatus}
           searchQuery={searchQuery}
           onSearchQueryChange={setSearchQuery}
+          pageSize={pageSize}
+          onPageSizeChange={handlePageSizeChange}
         />
         
-        <div className="custom-scroll-region" style={styles.leadScrollList}>
+        <HeadlessScrollArea
+          className="flex-1 min-h-0"
+          style={styles.leadScrollList}
+          viewportStyle={styles.leadScrollViewport}
+        >
           {isLoading ? (
             <div style={styles.emptyListPlaceholder}>Loading handoff queue...</div>
           ) : loadError ? (
@@ -806,7 +949,8 @@ export default function HandoffsView() {
           ) : leadsQueue.length === 0 ? (
             <div style={styles.emptyListPlaceholder}>{emptyQueueMessage}</div>
           ) : (
-            leadsQueue.map((lead) => {
+            <>
+            {leadsQueue.map((lead) => {
               const isSelected = selectedLead?.id === lead.id;
               const badgeStyle = getStatusBadgeStyle(lead.stage);
               const unreadCount = getUnreadCount(lead);
@@ -875,9 +1019,21 @@ export default function HandoffsView() {
                   </div>
                 </div>
               );
-            })
+            })}
+            </>
           )}
-        </div>
+        </HeadlessScrollArea>
+
+        {!isLoading && !loadError && (totalCount > 0 || leadsQueue.length > 0) ? (
+          <QueuePaginationControls
+            page={page}
+            totalPages={totalPages}
+            hasMorePages={hasMorePages}
+            disabled={isLoading}
+            onPageChange={setPage}
+            style={styles.sidebarPagination}
+          />
+        ) : null}
       </div>
 
       <div style={styles.rightChatPanel}>
@@ -923,7 +1079,12 @@ export default function HandoffsView() {
 
             <LeadStudyInterestPanel lead={selectedLead} compact />
 
-            <div ref={chatContainerRef} className="custom-scroll-region" style={styles.whatsappChatFeedSurface}>
+            <HeadlessScrollArea
+              ref={chatContainerRef}
+              className="flex-1 min-h-0"
+              style={styles.whatsappChatFeedShell}
+              viewportStyle={styles.whatsappChatFeedSurface}
+            >
               <div ref={chatTopRef} style={{ height: '1px', width: '100%', }} />
 
               {hasNoMessages ? (
@@ -983,7 +1144,7 @@ export default function HandoffsView() {
                 ))
               )}
               <div ref={chatEndRef} style={{ height: '1px', width: '100%' }} />
-            </div>
+            </HeadlessScrollArea>
 
             <form onSubmit={handleSendMessage} style={styles.footerInputFormBar}>
               
@@ -1070,12 +1231,29 @@ export default function HandoffsView() {
               preferred_country: lead.preferred_country,
               preferred_course: lead.preferred_course,
               target_program: lead.target_program,
+              target_degree: lead.target_degree,
+              target_major: lead.target_major,
+              current_location: lead.current_location,
               study_interest_complete: lead.study_interest_complete,
+              intake_step: lead.intake_step,
+              intake_step_label: lead.intake_step_label,
+              intake_complete: lead.intake_complete,
+              wants_consultation_call: lead.wants_consultation_call,
+              consultation_scheduled_at: lead.consultation_scheduled_at,
+              consultation_session_date: lead.consultation_session_date,
+              consultation_session_time: lead.consultation_session_time,
+              assigned_counsellor_name: lead.assigned_counsellor_name,
+              appointment_status: lead.appointment_status,
+              english_test_scores: lead.english_test_scores,
+              gre_score: lead.gre_score,
+              gmat_score: lead.gmat_score,
+              test_scores: lead.test_scores,
               status: lead.stage,
               updated_at: lead.updated_at,
               latest_interaction_time: lead.latest_interaction_time,
               unread_count: lead.unread_count,
               total_messages_received: lead.total_messages_received,
+              has_ai_messages: lead.has_ai_messages,
               messages: lead.messages,
             }))}
             isLoading={isLoading}
@@ -1101,12 +1279,48 @@ export default function HandoffsView() {
 const styles = {
   workspaceContainer: { display: 'flex', width: '100%', height: '100%', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#f8fafc', overflow: 'hidden', boxSizing: 'border-box', fontFamily: 'system-ui, -apple-system, sans-serif' } as React.CSSProperties,
   leftSidebarPanel: { width: '20%', minWidth: '280px', maxWidth: '20%', height: '100%', borderRight: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', backgroundColor: '#ffffff', overflow: 'hidden', boxSizing: 'border-box' } as React.CSSProperties,
-  sidebarHeader: { padding: '16px 20px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 } as React.CSSProperties,
+  sidebarHeader: { padding: '16px 20px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexShrink: 0, gap: '10px' } as React.CSSProperties,
+  sidebarHeaderText: { display: 'flex', flexDirection: 'column', gap: '4px', minWidth: 0, flex: 1 } as React.CSSProperties,
   sidebarTitle: { margin: 0, fontSize: '16px', fontWeight: '700', color: '#0f172a' } as React.CSSProperties,
-  activeCounterBadge: { backgroundColor: '#fee2e2', color: '#dc2626', padding: '2px 8px', borderRadius: '10px', fontSize: '11px', fontWeight: '600' } as React.CSSProperties,
+  viewingRecordsLabel: {
+    margin: 0,
+    fontSize: '12px',
+    fontWeight: 700,
+    color: '#0f172a',
+    lineHeight: 1.35,
+  } as React.CSSProperties,
+  activeCounterBadge: { backgroundColor: '#fee2e2', color: '#dc2626', padding: '2px 8px', borderRadius: '10px', fontSize: '11px', fontWeight: '700', flexShrink: 0 } as React.CSSProperties,
+  sidebarPagination: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '8px',
+    margin: 0,
+    padding: '10px 12px',
+    borderTop: '1px solid #e2e8f0',
+    backgroundColor: '#f8fafc',
+    flexShrink: 0,
+  } as React.CSSProperties,
+  sidebarPaginationHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '8px',
+    margin: 0,
+    padding: '8px 12px',
+    borderBottom: '1px solid #e2e8f0',
+    backgroundColor: '#f8fafc',
+    flexShrink: 0,
+  } as React.CSSProperties,
   searchHeaderSection: { padding: '12px', borderBottom: '1px solid #e2e8f0', flexShrink: 0 } as React.CSSProperties,
   searchBarInput: { width: '100%', boxSizing: 'border-box', padding: '10px 12px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', color: '#0f172a', fontSize: '13px', outline: 'none' } as React.CSSProperties,
-  leadScrollList: { flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '8px', display: 'flex', flexDirection: 'column', gap: '6px' } as React.CSSProperties,
+  leadScrollList: { flex: 1, minHeight: 0 } as React.CSSProperties,
+  leadScrollViewport: {
+    padding: '8px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+  } as React.CSSProperties,
   emptyListPlaceholder: { textAlign: 'center', padding: '40px 20px', color: '#94a3b8', fontSize: '13px' } as React.CSSProperties,
   leadInteractionCard: { padding: '8px 10px', borderRadius: '6px', border: '1px solid', transition: 'all 0.2s ease', flexShrink: 0, width: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '2px' } as React.CSSProperties,
   cardTopRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' } as React.CSSProperties,
@@ -1149,7 +1363,7 @@ const styles = {
   activeChatInterface: { display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden' } as React.CSSProperties,
   chatHeaderBar: { padding: '14px 24px', backgroundColor: '#f0f2f5', borderBottom: '1px solid #e3e6e9', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', flexShrink: 0 } as React.CSSProperties,
   headerProfileName: { margin: 0, fontSize: '16px', fontWeight: '600', color: '#111b21' } as React.CSSProperties,
-  headerProfileMeta: { margin: '2px 0 0 0', fontSize: '12px', color: '#667781' } as React.CSSProperties,
+  headerProfileMeta: { margin: '2px 0 0 0', fontSize: '14px', color: '#667781' } as React.CSSProperties,
   jumpToNewestButton: { background: 'none', border: 'none', color: '#0284c7', fontSize: '13px', fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', padding: '6px 12px', borderRadius: '6px', transition: 'background-color 0.15s ease' } as React.CSSProperties,
   headerActionGroup: {
     display: 'flex',
@@ -1161,7 +1375,7 @@ const styles = {
     backgroundColor: '#ffffff',
     border: '1px solid #cbd5e1',
     color: '#334155',
-    fontSize: '12px',
+    fontSize: '14px',
     fontWeight: '600',
     cursor: 'pointer',
     display: 'inline-flex',
@@ -1172,7 +1386,17 @@ const styles = {
     flexShrink: 0,
   } as React.CSSProperties,
   arrowIconString: { fontSize: '10px', color: '#0284c7' } as React.CSSProperties,
-  whatsappChatFeedSurface: { flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '20px 4%', display: 'flex', flexDirection: 'column', gap: '8px', backgroundImage: 'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")', backgroundColor: '#efeae2', backgroundRepeat: 'repeat' } as React.CSSProperties,
+  whatsappChatFeedShell: { flex: 1, minHeight: 0 } as React.CSSProperties,
+  whatsappChatFeedSurface: {
+    padding: '20px 4%',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    backgroundImage:
+      'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")',
+    backgroundColor: '#efeae2',
+    backgroundRepeat: 'repeat',
+  } as React.CSSProperties,
   timelineDividerCenter: { display: 'flex', justifyContent: 'center', width: '100%', margin: '14px 0' } as React.CSSProperties,
   timelineBadgeBubble: { backgroundColor: '#ffffff', color: '#54656f', fontSize: '12px', padding: '5px 12px', borderRadius: '7px', boxShadow: '0 1px 1px rgba(0,0,0,0.08)', textTransform: 'capitalize' } as React.CSSProperties,
   systemLogCentralRow: { display: 'flex', justifyContent: 'center', width: '100%', margin: '6px 0', fontSize: '12px', color: '#54656f', fontStyle: 'italic' } as React.CSSProperties,

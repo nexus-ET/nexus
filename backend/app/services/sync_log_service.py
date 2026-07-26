@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 from datetime import datetime, timezone
@@ -13,6 +14,8 @@ from app.models.sync_log import SyncLog
 from app.models.user import User
 from app.schemas.sync_log import SyncLogOut
 from app.services.lead_sync_errors import sanitize_stored_sync_error
+
+logger = logging.getLogger(__name__)
 
 SYNC_MODE_AUTOMATED = "AUTOMATED"
 SYNC_MODE_MANUAL = "MANUAL"
@@ -229,11 +232,67 @@ def finalize_sync_transaction(
     row.completed_at = _utcnow_naive()
     db.commit()
     db.refresh(row)
+
+    # Mirror FAILED outcomes into Exception Report (including Meta Graph errors
+    # that finish via finalize rather than fail_sync_transaction).
+    if row.status == STATUS_FAILED and not fatal_error:
+        _mirror_sync_failure_to_exception_report(
+            db,
+            log_id=log_id,
+            error=row.message or (error_items[0] if error_items else "Meta lead sync failed"),
+            triggered_by_user=row.triggered_by_user,
+            triggered_by_user_id=row.triggered_by_user_id,
+            details=error_items[:5],
+        )
     return row
 
 
+def _mirror_sync_failure_to_exception_report(
+    db: Session,
+    *,
+    log_id: int,
+    error: str,
+    triggered_by_user: str | None,
+    triggered_by_user_id: int | None,
+    details: list[str] | None = None,
+) -> None:
+    try:
+        from app.services.exception_log_service import (
+            SEVERITY_ERROR,
+            record_exception_event,
+        )
+
+        detail_items = [f"sync_log_id={log_id}"]
+        for item in details or []:
+            detail_items.append(str(item)[:500])
+
+        record_exception_event(
+            db,
+            severity=SEVERITY_ERROR,
+            source="meta_lead_sync",
+            category="lead_sync_failure",
+            message=(error or "Meta lead sync failed")[:4000],
+            details=detail_items[:20],
+            related_resource="sync_log",
+            related_id=str(log_id),
+            triggered_by_user=triggered_by_user or "SYSTEM",
+            triggered_by_user_id=triggered_by_user_id,
+            commit=True,
+        )
+    except Exception:
+        logger.exception("Failed to mirror sync failure into Exception Report (sync_log_id=%s).", log_id)
+
+
 def fail_sync_transaction(db: Session, log_id: int, *, error: str) -> SyncLog | None:
-    return finalize_sync_transaction(db, log_id, fatal_error=error)
+    row = finalize_sync_transaction(db, log_id, fatal_error=error)
+    _mirror_sync_failure_to_exception_report(
+        db,
+        log_id=log_id,
+        error=error,
+        triggered_by_user=row.triggered_by_user if row else "SYSTEM",
+        triggered_by_user_id=row.triggered_by_user_id if row else None,
+    )
+    return row
 
 
 def record_skipped_sync_transaction(

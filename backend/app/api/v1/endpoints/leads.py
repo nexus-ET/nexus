@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import cast, String, or_, func
+from sqlalchemy import cast, String, or_, func, case, exists, select
 from sqlalchemy.orm import Session, joinedload
 
 # 🔗 CRITICAL TWILIO IMPORTS
@@ -32,7 +32,10 @@ from app.services.phone_utils import (
     extract_inbound_whatsapp_text,
     find_lead_by_phone,
 )
-from app.services.admissions_intake_flow import build_intake_profile_summary
+from app.services.admissions_intake_flow import (
+    build_intake_profile_summary,
+    _load_active_consultation_bookings_map,
+)
 from app.services.prospects_service import get_prospects_summary, list_prospects_keyset, resolve_platform_badge
 from app.schemas.offline_lead import (
     OfflineLeadCreate,
@@ -49,7 +52,7 @@ from app.services.offline_leads_service import (
     update_offline_lead,
 )
 from app.services.messaging import WhatsAppDeliveryError
-from app.services.twilio_ai_conversation import initiate_ai_outreach
+from app.services.twilio_ai_conversation import initiate_ai_outreach, reset_whatsapp_conversation
 from app.services.twilio_outbound import dispatch_live_whatsapp_message
 from app.api import deps
 from app.models.user import User
@@ -118,6 +121,12 @@ def _apply_lead_queue_search(query, q: str | None):
     digits = re.sub(r"\D", "", term)
     if digits:
         filters.append(Lead.phone_number.like(f"%{digits}%"))
+        # Exact lead id match when the query is numeric (e.g. "27").
+        if digits == term or term.isdigit():
+            try:
+                filters.append(Lead.id == int(digits))
+            except ValueError:
+                pass
     return query.filter(or_(*filters))
 
 
@@ -126,16 +135,78 @@ def _apply_lead_interaction_window(query, db: Session, days: int | None):
         return query
 
     cutoff = datetime.utcnow() - timedelta(days=days)
-    latest_msg = (
-        db.query(
-            Message.lead_id.label("lead_id"),
-            func.max(Message.created_at).label("latest_at"),
+    has_recent_message = (
+        db.query(Message.id)
+        .filter(
+            Message.lead_id == Lead.id,
+            Message.created_at >= cutoff,
         )
-        .group_by(Message.lead_id)
-        .subquery()
+        .exists()
     )
-    activity_at = func.coalesce(latest_msg.c.latest_at, Lead.updated_at, Lead.created_at)
-    return query.outerjoin(latest_msg, Lead.id == latest_msg.c.lead_id).filter(activity_at >= cutoff)
+    # Avoid grouping the entire messages table on every 10-second queue poll.
+    # The correlated EXISTS can use the existing Message.lead_id index and only
+    # checks messages belonging to the already-filtered lead rows.
+    return query.filter(
+        or_(
+            Lead.updated_at >= cutoff,
+            Lead.created_at >= cutoff,
+            has_recent_message,
+        )
+    )
+
+
+def _normalize_contact_status(contact_status: str | None) -> str:
+    """Return all | started | not_started for chat/contact filtering."""
+    raw = (contact_status or "all").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw in {"started", "chat_started", "contacted", "active"}:
+        return "started"
+    if raw in {"not_started", "not_contacted", "pending", "new"}:
+        return "not_started"
+    return "all"
+
+
+def _apply_contact_status_filter(query, db: Session, contact_status: str | None):
+    """
+    Filter by whether WhatsApp/chat communication has started.
+
+    started      = at least one message exists (welcome/outreach or reply)
+    not_started  = no messages yet
+    """
+    status = _normalize_contact_status(contact_status)
+    if status == "all":
+        return query
+
+    has_any_message = db.query(Message.id).filter(Message.lead_id == Lead.id).exists()
+    if status == "started":
+        return query.filter(has_any_message)
+    return query.filter(~has_any_message)
+
+
+def _lead_has_message_exists():
+    return exists().where(Message.lead_id == Lead.id)
+
+
+def _lead_latest_message_at():
+    return (
+        select(func.max(Message.created_at))
+        .where(Message.lead_id == Lead.id)
+        .correlate(Lead)
+        .scalar_subquery()
+    )
+
+
+def _order_leads_contact_then_activity(query):
+    """
+    Chat started first, then not contacted.
+    Within each group, most recent communication / activity first.
+    """
+    contacted_rank = case((_lead_has_message_exists(), 0), else_=1)
+    return query.order_by(
+        contacted_rank.asc(),
+        _lead_latest_message_at().desc().nulls_last(),
+        Lead.updated_at.desc(),
+        Lead.id.desc(),
+    )
 
 
 def _build_handoff_leads_query(db: Session):
@@ -165,11 +236,18 @@ async def get_handoff_queue(
     db: Session = Depends(get_db),
     days: int = Query(5, ge=0, le=365),
     q: str | None = Query(None, max_length=120),
+    contact_status: str | None = Query(
+        "all",
+        description="all | started | not_started — filter by whether chat has begun",
+    ),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
 ):
     """
     Fetches leads flagged as HANDOFF or manually locked by a human.
     Default: activity within the last 5 days. Pass days=0 for all time.
     When q is set, the activity window is ignored and all matching candidates are returned.
+    Paginated with limit/offset for large All Days queues.
     """
     try:
         query = _build_handoff_leads_query(db)
@@ -179,12 +257,31 @@ async def get_handoff_queue(
             query = _apply_lead_interaction_window(
                 query, db, _normalize_queue_interaction_days(days)
             )
-        handoff_list = query.order_by(Lead.updated_at.desc()).all()
+        query = _apply_contact_status_filter(query, db, contact_status)
+        total_count = int(query.order_by(None).count())
+        handoff_list = (
+            _order_leads_contact_then_activity(query).offset(offset).limit(limit).all()
+        )
         stats_by_id = _load_message_stats_for_leads(db, [lead.id for lead in handoff_list])
-        return [
-            build_handoff_queue_item(lead, stats_by_id.get(lead.id, {}))
+        bookings_by_lead = _load_active_consultation_bookings_map(
+            db, [lead.id for lead in handoff_list]
+        )
+        items = [
+            build_handoff_queue_item(
+                lead,
+                stats_by_id.get(lead.id, {}),
+                db=db,
+                active_booking=bookings_by_lead.get(lead.id),
+            )
             for lead in handoff_list
         ]
+        return {
+            "items": items,
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset,
+            "has_more": (offset + len(items)) < total_count,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -298,6 +395,9 @@ def build_universal_lead_payload(lead: Lead, db: Session) -> dict:
         "latest_message": fallback_text,
         "unread_count": unread_count,
         "total_messages_received": total_received,
+        "has_ai_messages": any(
+            m.sender in ("advisor", "system") for m in all_msgs
+        ),
         "latest_interaction_time": latest_msg.created_at.isoformat() if latest_msg and latest_msg.created_at else base_time,
         "updated_at": updated_time,
         "created_at": base_time,
@@ -342,6 +442,7 @@ def _load_message_stats_for_leads(db: Session, lead_ids: list[int]) -> dict[int,
             func.count()
             .filter(Message.sender.in_(["advisor", "system"]))
             .label("ai_msg_count"),
+            func.count().label("msg_count"),
         )
         .filter(Message.lead_id.in_(lead_ids))
         .group_by(Message.lead_id)
@@ -356,6 +457,7 @@ def _load_message_stats_for_leads(db: Session, lead_ids: list[int]) -> dict[int,
                 row.latest_msg_at.isoformat() if row.latest_msg_at else None
             ),
             "has_ai_messages": int(row.ai_msg_count or 0) > 0,
+            "has_messages": int(row.msg_count or 0) > 0,
         }
         for row in rows
     }
@@ -367,6 +469,7 @@ def build_active_queue_item(
     db: Session | None = None,
     *,
     status_by_id: dict | None = None,
+    active_booking=None,
 ) -> dict:
     """Lightweight AI Active list payload without full message history."""
     stats = stats or {}
@@ -428,6 +531,7 @@ def build_active_queue_item(
         "unread_count": stats.get("unread_count", 0),
         "total_messages_received": stats.get("total_messages_received", 0),
         "has_ai_messages": stats.get("has_ai_messages", False),
+        "has_messages": stats.get("has_messages", False),
         "latest_interaction_time": latest_time,
         "updated_at": updated_time,
         "created_at": base_time,
@@ -440,7 +544,8 @@ def build_active_queue_item(
                 db,
                 refresh_lead=False,
                 include_booking_options=False,
-                include_session_fields=False,
+                include_session_fields=True,
+                active_booking=active_booking,
             ).items()
             if key
             not in {
@@ -451,7 +556,13 @@ def build_active_queue_item(
     }
 
 
-def build_handoff_queue_item(lead: Lead, stats: dict | None = None) -> dict:
+def build_handoff_queue_item(
+    lead: Lead,
+    stats: dict | None = None,
+    db: Session | None = None,
+    *,
+    active_booking=None,
+) -> dict:
     """Lightweight handoff queue payload without full message history."""
     stats = stats or {}
     raw_stage = lead.stage or LeadStage.HANDOFF
@@ -483,6 +594,8 @@ def build_handoff_queue_item(lead: Lead, stats: dict | None = None) -> dict:
         "human_locked": getattr(lead, "is_human_locked", False),
         "unread_count": stats.get("unread_count", 0),
         "total_messages_received": stats.get("total_messages_received", 0),
+        "has_ai_messages": stats.get("has_ai_messages", False),
+        "has_messages": stats.get("has_messages", False),
         "latest_interaction_time": latest_time,
         "updated_at": updated_time,
         "created_at": base_time,
@@ -494,7 +607,14 @@ def build_handoff_queue_item(lead: Lead, stats: dict | None = None) -> dict:
         "messages": [],
         **{
             key: value
-            for key, value in build_intake_profile_summary(lead, db=None).items()
+            for key, value in build_intake_profile_summary(
+                lead,
+                db,
+                refresh_lead=False,
+                include_booking_options=False,
+                include_session_fields=True,
+                active_booking=active_booking,
+            ).items()
             if key
             not in {
                 "available_consultation_dates",
@@ -677,6 +797,47 @@ async def start_ai_whatsapp_outreach(
         "lead": build_universal_lead_payload(refreshed, db),
     }
 
+
+@router.post("/{lead_id}/reset-whatsapp")
+@router.post("/{lead_id}/reset-whatsapp/")
+@router.post("/{lead_id}/whatsapp-conversation/reset")
+@router.post("/{lead_id}/whatsapp-conversation/reset/")
+def reset_ai_whatsapp_conversation(
+    lead_id: int,
+    db: Session = Depends(get_db),
+):
+    """Clear WhatsApp messages and booking details so the conversation can start fresh."""
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead profile not found.")
+
+    if normalize_lead_stage(lead.stage) != "AI_ACTIVE":
+        raise HTTPException(status_code=400, detail="Lead is not in AI Active status.")
+
+    try:
+        result = reset_whatsapp_conversation(db, lead)
+    except Exception:
+        logger.exception("Failed to reset WhatsApp conversation for lead_id=%s", lead_id)
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to reset WhatsApp conversation.") from None
+
+    # Expire cached relationship rows so the payload reflects the wiped conversation.
+    db.expire_all()
+    refreshed = (
+        db.query(Lead)
+        .options(joinedload(Lead.messages))
+        .filter(Lead.id == lead_id)
+        .first()
+    )
+    return {
+        "status": "success",
+        "deleted_messages": result["deleted_messages"],
+        "deleted_history": result["deleted_history"],
+        "deleted_bookings": result.get("deleted_bookings", 0),
+        "lead": build_universal_lead_payload(refreshed, db),
+    }
+
+
 @router.post("/webhook/social-ingress")
 @router.post("/webhook/social-ingress/")
 async def handle_external_social_webhook(request: Request, db: Session = Depends(get_db)):
@@ -805,8 +966,18 @@ def get_active_leads_queue(
     db: Session = Depends(get_db),
     days: int = Query(5, ge=0, le=365),
     q: str | None = Query(None, max_length=120),
+    contact_status: str | None = Query(
+        "all",
+        description="all | started | not_started — filter by whether chat has begun",
+    ),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
 ):
-    """Returns leads currently managed by the AI agent (not in handoff)."""
+    """Returns leads currently managed by the AI agent (not in handoff).
+
+    Paginated with limit/offset so All Days (and large windows) can be browsed
+    beyond the first page.
+    """
     try:
         query = _build_active_leads_query(db)
         if q and q.strip():
@@ -815,20 +986,34 @@ def get_active_leads_queue(
             query = _apply_lead_interaction_window(
                 query, db, _normalize_queue_interaction_days(days)
             )
-        active_leads = query.order_by(Lead.updated_at.desc()).all()
+        query = _apply_contact_status_filter(query, db, contact_status)
+        total_count = int(query.order_by(None).count())
+        ordered_query = _order_leads_contact_then_activity(query)
+        active_leads = ordered_query.offset(offset).limit(limit).all()
         stats_by_id = _load_message_stats_for_leads(db, [lead.id for lead in active_leads])
         status_by_id = {
             row.id: row for row in db.query(StatusDefinition).all()
         }
-        return [
+        bookings_by_lead = _load_active_consultation_bookings_map(
+            db, [lead.id for lead in active_leads]
+        )
+        items = [
             build_active_queue_item(
                 lead,
                 stats_by_id.get(lead.id, {}),
                 db,
                 status_by_id=status_by_id,
+                active_booking=bookings_by_lead.get(lead.id),
             )
             for lead in active_leads
         ]
+        return {
+            "items": items,
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset,
+            "has_more": (offset + len(items)) < total_count,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -853,24 +1038,31 @@ async def get_prospects_paginated(
     db: Session = Depends(get_db),
     limit: int = 50,
     cursor: str | None = None,
+    offset: int = Query(0, ge=0),
     q: str | None = None,
     source: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     stage: str | None = None,
     category: str | None = None,
+    contact_status: str | None = Query(
+        "all",
+        description="all | started | not_started — filter by whether chat has begun",
+    ),
 ):
     try:
         return list_prospects_keyset(
             db,
             limit=limit,
             cursor=cursor,
+            offset=offset,
             q=q,
             source=source,
             date_from=date_from,
             date_to=date_to,
             stage=stage,
             category=category,
+            contact_status=contact_status,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

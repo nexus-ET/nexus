@@ -73,10 +73,40 @@ SETTING_DEFINITIONS: dict[str, dict[str, str]] = {
         "value_type": "number",
         "description": "Audit log entries older than this are permanently removed by the daily cleanup job.",
     },
+    "EXCEPTION_LOG_RETENTION_DAYS": {
+        "label": "Exception log retention (days)",
+        "value_type": "number",
+        "description": "Exception Report entries older than this are permanently removed by the daily cleanup job.",
+    },
     "CALENDAR_INTAKE_ADVANCE_DAYS": {
         "label": "Calendar intake advance notification (days)",
         "value_type": "number",
         "description": "How many days before the next term class start date admins are alerted to configure intakes.",
+    },
+    "ADMIN_SESSION_DIGEST_ENABLED": {
+        "label": "Counsellor morning digest (WhatsApp)",
+        "value_type": "boolean",
+        "description": "Send each counsellor one consolidated WhatsApp listing today's assigned sessions.",
+    },
+    "ADMIN_SESSION_DIGEST_TIME": {
+        "label": "Counsellor morning digest time",
+        "value_type": "time",
+        "description": "Business-timezone time to send the daily counsellor WhatsApp digest (24h HH:MM).",
+    },
+    "ADMIN_SESSION_NUDGE_ENABLED": {
+        "label": "Counsellor pre-session nudge (WhatsApp)",
+        "value_type": "boolean",
+        "description": "WhatsApp each counsellor shortly before an assigned session starts.",
+    },
+    "ADMIN_SESSION_NUDGE_MINUTES": {
+        "label": "Counsellor pre-session nudge (minutes)",
+        "value_type": "number",
+        "description": "Minutes before each session to send the counsellor WhatsApp nudge (default 15).",
+    },
+    "ADMIN_BOOKING_ALERTS_ENABLED": {
+        "label": "Counsellor booking change alerts (WhatsApp)",
+        "value_type": "boolean",
+        "description": "WhatsApp counsellors immediately when an assigned session is cancelled or rescheduled.",
     },
     "MONITORING_STATUS": {
         "label": "Monitoring status",
@@ -92,11 +122,13 @@ SETTING_DEFINITIONS: dict[str, dict[str, str]] = {
         "description": "HTTPS health-check URL pinged while monitoring is Active (e.g. https://example.com/health).",
     },
     "ALERT_EMAIL": {
-        "label": "Monitoring alert emails (enter multiple addresses, separated by commas)",
+        "label": "Alert emails (enter multiple addresses, separated by commas)",
         "value_type": "text",
         "description": (
-            "One or more email addresses that receive downtime notifications when a "
-            "health check fails. Separate multiple addresses with commas."
+            "One or more email addresses that receive quick alerts for Exception Report "
+            "events (errors/exceptions), auto-resolution confirmations, and uptime "
+            "downtime when Monitoring status is Active. Separate multiple addresses "
+            "with commas."
         ),
     },
 }
@@ -110,7 +142,13 @@ DEFAULT_SETTING_VALUES: dict[str, str] = {
     "MAX_BOOKINGS_PER_SLOT": "5",
     "BUSINESS_TIMEZONE": "UTC",
     "AUDIT_LOG_RETENTION_DAYS": "90",
+    "EXCEPTION_LOG_RETENTION_DAYS": "90",
     "CALENDAR_INTAKE_ADVANCE_DAYS": "60",
+    "ADMIN_SESSION_DIGEST_ENABLED": "true",
+    "ADMIN_SESSION_DIGEST_TIME": "08:00",
+    "ADMIN_SESSION_NUDGE_ENABLED": "true",
+    "ADMIN_SESSION_NUDGE_MINUTES": "15",
+    "ADMIN_BOOKING_ALERTS_ENABLED": "true",
     "MONITORING_STATUS": "Inactive",
     "UPTIME_TARGET_URL": "",
     "ALERT_EMAIL": "",

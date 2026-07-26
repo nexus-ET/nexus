@@ -14,6 +14,11 @@ export interface BookingRowForProfile {
   status_category?: string | null;
   date_label?: string | null;
   time_label?: string | null;
+  status?: string | null;
+  session_status_label?: string | null;
+  admin_id?: number | null;
+  admin_name?: string | null;
+  scheduled_time?: string | null;
 }
 
 function splitName(fullName: string): {

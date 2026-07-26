@@ -56,6 +56,11 @@ from app.schemas.digital_presence_link import (
     DigitalPresenceLinkInput,
     DigitalPresenceLinksResponse,
 )
+from app.schemas.university_matching import (
+    MatchingWeightProfileOut,
+    UniversityShortlistGenerateRequest,
+    UniversityShortlistResponse,
+)
 from app.schemas.status_definition import (
     BookingStatusUpdateRequest,
     BookingStatusUpdateResponse,
@@ -75,6 +80,7 @@ from app.schemas.pipeline import (
 )
 from app.services import counselling_service
 from app.services import counselling_note_service
+from app.services import university_matching_service
 from app.services.audit_service import log_action
 from app.services.notification_service import run_assignment_notifications
 from app.services.pipeline_service import complete_session, get_pipeline_analytics, get_pipeline_config
@@ -101,10 +107,12 @@ def list_pending_bookings(
 @router.get("/bookings/grid/", response_model=ScheduleGridResponse)
 def get_schedule_grid(
     date: date | None = Query(default=None, description="Focus date (T) for the schedule grid"),
+    start_date: date | None = Query(default=None, description="Inclusive start of date period"),
+    end_date: date | None = Query(default=None, description="Inclusive end of date period"),
     db: Session = Depends(get_db),
     _: User = Depends(deps.require_counselling_admin),
 ):
-    return counselling_service.get_schedule_grid(db, date)
+    return counselling_service.get_schedule_grid(db, date, start_date, end_date)
 
 
 @router.get("/bookings/mine", response_model=MyBookingsResponse)
@@ -165,6 +173,17 @@ def get_my_booking_interaction_log(
     current_user: User = Depends(deps.get_current_active_user),
 ):
     return counselling_service.get_booking_interaction_log(db, current_user.id, booking_id)
+
+
+@router.get("/bookings/{booking_id}/interactions", response_model=BookingInteractionLogResponse)
+@router.get("/bookings/{booking_id}/interactions/", response_model=BookingInteractionLogResponse)
+def get_schedule_booking_interaction_log(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.require_counselling_admin),
+):
+    """Manage Appointments interaction log — available before counsellor assignment."""
+    return counselling_service.get_schedule_booking_interaction_log(db, booking_id)
 
 
 @router.get("/bookings/mine/{booking_id}/view", response_model=BookingViewDetailResponse)
@@ -356,6 +375,82 @@ def get_my_booking_candidate_educations(
     current_user: User = Depends(deps.get_current_active_user),
 ):
     return counselling_service.get_booking_candidate_educations(db, current_user.id, booking_id)
+
+
+@router.get(
+    "/bookings/matching/weight-profiles",
+    response_model=list[MatchingWeightProfileOut],
+)
+@router.get(
+    "/bookings/matching/weight-profiles/",
+    response_model=list[MatchingWeightProfileOut],
+)
+def list_matching_weight_profiles(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return university_matching_service.list_weight_profiles(db)
+
+
+@router.get(
+    "/bookings/mine/{booking_id}/university-shortlist",
+    response_model=UniversityShortlistResponse,
+)
+@router.get(
+    "/bookings/mine/{booking_id}/university-shortlist/",
+    response_model=UniversityShortlistResponse,
+)
+def get_my_booking_university_shortlist(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return university_matching_service.get_university_shortlist_for_booking(
+        db, current_user, booking_id
+    )
+
+
+@router.get(
+    "/bookings/mine/{booking_id}/university-shortlist/{run_id}",
+    response_model=UniversityShortlistResponse,
+)
+@router.get(
+    "/bookings/mine/{booking_id}/university-shortlist/{run_id}/",
+    response_model=UniversityShortlistResponse,
+)
+def get_my_booking_university_shortlist_run(
+    booking_id: int,
+    run_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return university_matching_service.get_university_shortlist_for_booking(
+        db, current_user, booking_id, run_id=run_id
+    )
+
+
+@router.post(
+    "/bookings/mine/{booking_id}/university-shortlist",
+    response_model=UniversityShortlistResponse,
+)
+@router.post(
+    "/bookings/mine/{booking_id}/university-shortlist/",
+    response_model=UniversityShortlistResponse,
+)
+def generate_my_booking_university_shortlist(
+    booking_id: int,
+    payload: UniversityShortlistGenerateRequest | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    body = payload or UniversityShortlistGenerateRequest()
+    return university_matching_service.generate_university_shortlist_for_booking(
+        db,
+        current_user.id,
+        booking_id,
+        weight_profile_code=body.weight_profile_code,
+        limit=body.limit,
+    )
 
 
 @router.post("/bookings/mine/{booking_id}/educations", response_model=CandidateEducationsResponse)

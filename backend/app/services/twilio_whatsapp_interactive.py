@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Literal
@@ -10,6 +11,15 @@ from app.services.twilio_outbound import get_twilio_client, resolve_whatsapp_add
 logger = logging.getLogger(__name__)
 
 PickerKind = Literal["date", "time", "consent"]
+
+_REPLY_NUMBER_PROMPT_RE = re.compile(
+    r"(?:\n+\s*)?Reply with the number of your choice:?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _clean_interactive_body(text: str) -> str:
+    return _REPLY_NUMBER_PROMPT_RE.sub("", (text or "").strip()).strip()
 
 
 def _create_content_template(client, friendly_name: str, types_payload: dict) -> str | None:
@@ -196,8 +206,11 @@ def _build_types_payload(payload: InteractivePayload) -> dict | None:
 
 
 def build_text_fallback(payload: InteractivePayload) -> str:
-    lines = [payload.body, "Reply with the number of your choice:\n"]
+    # Quick-reply bodies already say to tap the buttons (e.g. Yes, please / No thanks).
+    if isinstance(payload, QuickReplyPayload):
+        return _clean_interactive_body(payload.body)
 
+    lines = [_clean_interactive_body(payload.body)]
     if isinstance(payload, ListPickerPayload):
         for index, item in enumerate(payload.items, start=1):
             label = item.get("item") or item.get("title") or f"Option {index}"
@@ -207,8 +220,7 @@ def build_text_fallback(payload: InteractivePayload) -> str:
             label = action.get("title") or action.get("item") or f"Option {index}"
             lines.append(f"{index}. {label}")
 
-    lines.append("\nExample: reply *1* for the first option.")
-    return "\n".join(lines)
+    return "\n".join(line for line in lines if line)
 
 
 def _build_text_fallback(payload: InteractivePayload) -> str:

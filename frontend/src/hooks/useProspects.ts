@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../utils/api';
 import type {
   ProspectDetail,
@@ -8,15 +8,21 @@ import type {
 } from '../types/prospect';
 import type { BookingRowForProfile } from '../utils/candidateProfileLoader';
 
-function buildProspectsQuery(filters: ProspectsFilters, cursor?: string | null): string {
+function buildProspectsQuery(filters: ProspectsFilters): string {
   const params = new URLSearchParams();
-  params.set('limit', '50');
-  if (cursor) params.set('cursor', cursor);
+  const pageSize = filters.pageSize || 50;
+  const page = Math.max(1, filters.page || 1);
+  const offset = (page - 1) * pageSize;
+  params.set('limit', String(pageSize));
+  params.set('offset', String(offset));
   if (filters.q.trim()) params.set('q', filters.q.trim());
   if (filters.source && filters.source !== 'ALL') params.set('source', filters.source);
   if (filters.dateFrom) params.set('date_from', filters.dateFrom);
   if (filters.dateTo) params.set('date_to', filters.dateTo);
   if (filters.category.trim()) params.set('category', filters.category.trim());
+  if (filters.contactStatus) {
+    params.set('contact_status', filters.contactStatus);
+  }
   return `leads/prospects?${params.toString()}`;
 }
 
@@ -28,12 +34,11 @@ export function useProspectsSummary() {
   });
 }
 
-export function useProspectsInfinite(filters: ProspectsFilters) {
-  return useInfiniteQuery<ProspectsListResponse>({
+export function useProspectsPage(filters: ProspectsFilters) {
+  return useQuery<ProspectsListResponse>({
     queryKey: ['prospects', 'list', filters],
-    initialPageParam: null as string | null,
-    queryFn: ({ pageParam }) => apiFetch(buildProspectsQuery(filters, pageParam)),
-    getNextPageParam: lastPage => lastPage.next_cursor ?? undefined,
+    queryFn: () => apiFetch(buildProspectsQuery(filters)),
+    placeholderData: previous => previous,
   });
 }
 

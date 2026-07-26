@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -27,6 +27,21 @@ class StageLeadResult:
 
 def _utcnow_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert values so PostgreSQL JSONB / stdlib json can serialize them."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, set):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def raw_leadgen_already_handled(db: Session, leadgen_id: str) -> bool:
@@ -61,17 +76,19 @@ def stage_meta_lead_raw(
     if raw_leadgen_already_handled(db, leadgen_id):
         return StageLeadResult(raw=None, created=False, skipped=True)
 
-    payload = {
-        "event": event.raw_value,
-        "event_meta": {
-            "leadgen_id": event.leadgen_id,
-            "form_id": event.form_id,
-            "page_id": event.page_id,
-            "ad_id": event.ad_id,
-            "created_time": event.created_time,
-        },
-        "details": details,
-    }
+    payload = _json_safe(
+        {
+            "event": event.raw_value,
+            "event_meta": {
+                "leadgen_id": event.leadgen_id,
+                "form_id": event.form_id,
+                "page_id": event.page_id,
+                "ad_id": event.ad_id,
+                "created_time": event.created_time,
+            },
+            "details": details,
+        }
+    )
     row = RawIncomingLead(
         meta_leadgen_id=leadgen_id,
         raw_payload=payload,
@@ -121,11 +138,12 @@ def _move_to_quarantine(
     errors: list[str],
 ) -> LeadQuarantine:
     reason = "; ".join(errors)
+    safe_payload = _json_safe(dict(lead_data))
     row = LeadQuarantine(
         raw_incoming_lead_id=raw.id,
         meta_leadgen_id=raw.meta_leadgen_id,
-        original_payload=lead_data,
-        normalized_payload=dict(lead_data),
+        original_payload=safe_payload,
+        normalized_payload=dict(safe_payload),
         error_reason=reason,
         error_code=primary_error_code(errors),
         source=raw.source,
@@ -182,7 +200,17 @@ def process_one_raw_lead(db: Session, raw: RawIncomingLead):
     errors = validate_lead_payload(lead_data)
     if errors:
         return _move_to_quarantine(db, raw, lead_data, errors)
-    return _promote_to_leads(db, raw, lead_data)
+    try:
+        return _promote_to_leads(db, raw, lead_data)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to promote raw lead id=%s; moving to quarantine.", raw.id)
+        return _move_to_quarantine(
+            db,
+            raw,
+            lead_data,
+            [f"Promote error: {exc}"],
+        )
 
 
 def process_raw_leads(db: Session, *, batch_size: int = DEFAULT_BATCH_SIZE) -> dict[str, int]:
@@ -232,7 +260,7 @@ def reprocess_quarantine_record(
         payload["leadgen_id"] = quarantine.meta_leadgen_id
 
     errors = validate_lead_payload(payload)
-    quarantine.normalized_payload = payload
+    quarantine.normalized_payload = _json_safe(payload)
     quarantine.updated_at = _utcnow_naive()
 
     if errors:
@@ -247,6 +275,7 @@ def reprocess_quarantine_record(
     quarantine.reprocessed_at = _utcnow_naive()
     quarantine.error_reason = ""
     quarantine.error_code = "reprocessed"
+    quarantine.normalized_payload = _json_safe(payload)
     db.commit()
     db.refresh(quarantine)
     return result

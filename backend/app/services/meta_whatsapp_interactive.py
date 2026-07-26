@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -26,6 +27,16 @@ from app.services.whatsapp_config import resolve_whatsapp_phone_number_id
 
 logger = logging.getLogger(__name__)
 
+_REPLY_NUMBER_PROMPT_RE = re.compile(
+    r"(?:\n+\s*)?Reply with the number of your choice:?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_reply_number_prompt(text: str) -> str:
+    cleaned = _REPLY_NUMBER_PROMPT_RE.sub("", (text or "").strip())
+    return cleaned.strip()
+
 
 def _graph_headers() -> dict[str, str]:
     token = (settings.WHATSAPP_ACCESS_TOKEN or "").strip()
@@ -40,18 +51,38 @@ def _messages_url() -> str:
 
 
 def compose_intake_message_text(reply: IntakeReply) -> str:
-    """Plain-text body with numbered options when a picker is attached."""
+    """Human-facing prompt for intake replies (no numbered 'reply with N' fallback text)."""
+    intro = (reply.text or "").strip()
     interactive: InteractivePayload | None = reply.quick_reply or reply.list_picker
     if not interactive:
-        return (reply.text or "Please reply to continue.").strip()
+        return _strip_reply_number_prompt(intro or "Please reply to continue.")
 
-    fallback = build_text_fallback(interactive)
-    intro = (reply.text or "").strip()
-    if intro and intro not in fallback:
-        lines = fallback.split("\n")
-        option_lines = lines[1:] if len(lines) > 1 else lines
-        return f"{intro}\n\n" + "\n".join(option_lines).strip()
-    return fallback
+    # Prefer the agent/template prompt. Interactive buttons/lists carry the choices.
+    body = intro or (interactive.body or "").strip()
+    return _strip_reply_number_prompt(body or "Please reply to continue.")
+
+
+def compose_intake_plain_text_fallback(reply: IntakeReply) -> str:
+    """Numbered plain-text fallback used only when interactive send is unavailable."""
+    interactive: InteractivePayload | None = reply.quick_reply or reply.list_picker
+    prompt = compose_intake_message_text(reply)
+    if not interactive:
+        return prompt
+
+    if isinstance(interactive, QuickReplyPayload):
+        payload: InteractivePayload = QuickReplyPayload(
+            kind=interactive.kind,
+            body=prompt,
+            actions=interactive.actions,
+        )
+    else:
+        payload = ListPickerPayload(
+            kind=interactive.kind,
+            body=prompt,
+            button=interactive.button,
+            items=interactive.items,
+        )
+    return build_text_fallback(payload)
 
 
 def _build_list_payload(to_number: str, picker: ListPickerPayload) -> dict[str, Any]:
@@ -148,20 +179,20 @@ async def deliver_meta_intake_reply(to_number: str, reply: IntakeReply) -> str:
     Returns the text stored in the message history table.
     """
     interactive: InteractivePayload | None = reply.quick_reply or reply.list_picker
-    stored_text = compose_intake_message_text(reply)
+    prompt_text = compose_intake_message_text(reply)
 
     if interactive:
         payload: InteractivePayload = interactive
         if isinstance(payload, QuickReplyPayload):
             payload = QuickReplyPayload(
                 kind=payload.kind,
-                body=stored_text[:1024],
+                body=prompt_text[:1024],
                 actions=payload.actions,
             )
         elif isinstance(payload, ListPickerPayload):
             payload = ListPickerPayload(
                 kind=payload.kind,
-                body=stored_text[:1024],
+                body=prompt_text[:1024],
                 button=payload.button,
                 items=payload.items,
             )
@@ -169,7 +200,7 @@ async def deliver_meta_intake_reply(to_number: str, reply: IntakeReply) -> str:
         try:
             sent = await send_meta_interactive(to_number, payload)
             if sent:
-                return stored_text
+                return prompt_text
             logger.warning(
                 "Meta interactive intake had no sendable actions; falling back to plain text for %s",
                 to_number,
@@ -177,5 +208,6 @@ async def deliver_meta_intake_reply(to_number: str, reply: IntakeReply) -> str:
         except WhatsAppDeliveryError as exc:
             logger.warning("Meta interactive intake send failed, using text fallback: %s", exc)
 
-    await _send_plain_text(to_number, stored_text)
-    return stored_text
+    fallback_text = compose_intake_plain_text_fallback(reply)
+    await _send_plain_text(to_number, fallback_text)
+    return fallback_text

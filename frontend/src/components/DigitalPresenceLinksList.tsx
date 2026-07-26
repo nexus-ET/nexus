@@ -25,10 +25,10 @@ import EmptyListMessage from './ui/EmptyListMessage';
 const cardClass = 'rounded-md border border-border-subtle bg-surface-bg/40 p-3 space-y-2';
 
 const categoryBadgeClass =
-  'inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-semibold text-sky-800';
+  'inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-xs font-semibold text-sky-800';
 
 const filterButtonClass = (active: boolean) =>
-  `rounded-md border px-2.5 py-1 text-[10px] font-semibold transition-colors ${
+  `rounded-md border px-2.5 py-1 text-sm font-semibold transition-colors ${
     active
       ? 'border-sky-300 bg-sky-100 text-sky-900'
       : 'border-border-subtle bg-card text-text-muted hover:text-text-main hover:bg-surface-bg'
@@ -128,7 +128,7 @@ const DigitalPresenceLinksList: React.FC<DigitalPresenceLinksListProps> = ({
                   </span>
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-xs font-bold text-text-main">
+                      <p className="text-sm font-bold text-text-main">
                         {link.platform_label || 'Platform'}
                       </p>
                       {link.category_label ? (
@@ -140,13 +140,13 @@ const DigitalPresenceLinksList: React.FC<DigitalPresenceLinksListProps> = ({
                         href={link.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-[11px] text-sky-700 hover:text-sky-900 break-all"
+                        className="text-sm text-sky-700 hover:text-sky-900 break-all"
                       >
                         {link.url}
                       </a>
                     ) : null}
                     {link.admission_value_note ? (
-                      <p className="text-[11px] text-text-muted mt-2">
+                      <p className="text-sm text-text-muted mt-2">
                         <span className="font-semibold text-text-main">Value to Admission: </span>
                         {link.admission_value_note}
                       </p>
@@ -159,7 +159,7 @@ const DigitalPresenceLinksList: React.FC<DigitalPresenceLinksListProps> = ({
                       href={link.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 rounded-md border border-border-subtle bg-card px-2.5 py-1 text-[10px] font-semibold text-sky-700 hover:bg-sky-50"
+                      className="inline-flex items-center gap-1 rounded-md border border-border-subtle bg-card px-2.5 py-1 text-sm font-semibold text-sky-700 hover:bg-sky-50"
                     >
                       <ExternalLink size={12} />
                       Visit Link
@@ -170,7 +170,7 @@ const DigitalPresenceLinksList: React.FC<DigitalPresenceLinksListProps> = ({
                       <button
                         type="button"
                         onClick={() => onEdit(link)}
-                        className="inline-flex items-center gap-1 text-[11px] text-sky-700 hover:text-sky-900"
+                        className="inline-flex items-center gap-1 text-sm text-sky-700 hover:text-sky-900"
                       >
                         <Pencil size={12} />
                         Edit
@@ -179,7 +179,7 @@ const DigitalPresenceLinksList: React.FC<DigitalPresenceLinksListProps> = ({
                         type="button"
                         onClick={() => onDelete(link.id)}
                         disabled={deletingId === link.id}
-                        className="inline-flex items-center gap-1 text-[11px] text-red-600 hover:text-red-700 disabled:opacity-60"
+                        className="inline-flex items-center gap-1 text-sm text-red-600 hover:text-red-700 disabled:opacity-60"
                       >
                         {deletingId === link.id ? (
                           <Loader2 size={12} className="animate-spin" />

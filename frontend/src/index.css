@@ -51,6 +51,12 @@
 }
 
 /* Headless scroll: native bar hidden, custom thumb rendered in JS */
+.headless-scroll-area {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .headless-scroll-viewport {
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -101,15 +107,31 @@
 
 #nexus-datepicker-portal {
   position: relative;
-  z-index: 9999;
+  z-index: 200000;
 }
 
-.nexus-datepicker-popper {
-  z-index: 9999 !important;
+/* withPortal overlay + floating popper must sit above sticky action bars */
+.react-datepicker__portal {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 200000 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: rgba(15, 23, 42, 0.35) !important;
+  padding: 16px !important;
 }
 
-.nexus-datepicker-popper .react-datepicker-popper {
-  z-index: 9999 !important;
+.nexus-datepicker-popper,
+.react-datepicker-popper,
+.nexus-datepicker-popper.react-datepicker-popper {
+  z-index: 200001 !important;
+}
+
+.react-datepicker__portal .react-datepicker,
+.react-datepicker__portal .nexus-roster-datepicker {
+  z-index: 200002 !important;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.28);
 }
 
 @keyframes counselling-booking-blink {

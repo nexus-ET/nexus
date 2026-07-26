@@ -187,6 +187,24 @@ def hydrate_lead_study_interest(
     return changed
 
 
+def clear_study_interest_sources(lead: Lead) -> None:
+    """Remove study-interest answers so intake/profile cannot resurface them after a chat reset."""
+    lead.preferred_country = None
+    if not isinstance(lead.additional_data, dict):
+        return
+
+    drop_keys = {
+        *_COUNTRY_KEYS,
+        *_COURSE_KEYS,
+        *_PROGRAM_KEYS,
+        "target_degree",
+        "target_major",
+        "pending_country",
+    }
+    cleaned = {key: value for key, value in lead.additional_data.items() if key not in drop_keys}
+    lead.additional_data = cleaned or None
+
+
 def study_interest_profile_fields(lead: Lead) -> dict[str, Any]:
     study = resolve_lead_study_interest(lead)
     context = _load_intake_context(lead)

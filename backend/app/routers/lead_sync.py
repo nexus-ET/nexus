@@ -1,22 +1,28 @@
 from __future__ import annotations
 
-import asyncio
-
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.api import deps
 from app.core.rate_limit import STRICT_RATE_LIMIT, limiter
 from app.db.database import get_db
 from app.models.user import User
-from app.schemas.lead_sync import LeadSyncConfigOut, LeadSyncConfigUpdateRequest, LeadSyncRunResponse
+from app.schemas.lead_sync import (
+    LeadSyncConfigOut,
+    LeadSyncConfigUpdateRequest,
+    LeadSyncRunStatusOut,
+    LeadSyncStartResponse,
+)
+from app.services.audit_context import build_audit_details
+from app.services.audit_logger import write_audit_log
 from app.services.audit_service import log_action
 from app.services.lead_sync_settings import (
     get_lead_sync_config_for_api,
-    run_lead_sync_isolated,
+    get_manual_lead_sync_status,
     save_lead_sync_config,
+    start_manual_lead_sync_background,
 )
-from app.services.sync_log_service import SOURCE_MANUAL_API, SYNC_MODE_MANUAL, format_user_label
+from app.services.sync_log_service import format_user_label
 
 router = APIRouter()
 
@@ -56,21 +62,78 @@ def update_lead_sync_settings(
     return LeadSyncConfigOut(**updated)
 
 
-@router.post("/settings/lead-sync/run", response_model=LeadSyncRunResponse)
-@router.post("/settings/lead-sync/run/", response_model=LeadSyncRunResponse)
+@router.post("/settings/lead-sync/run", response_model=LeadSyncStartResponse)
+@router.post("/settings/lead-sync/run/", response_model=LeadSyncStartResponse)
 @limiter.limit(STRICT_RATE_LIMIT)
-@log_action("run_lead_sync", "meta_leads")
-async def trigger_lead_sync(
+def trigger_lead_sync(
     request: Request,
+    db: Session = Depends(get_db),
     current_user: User = Depends(deps.require_super_admin),
 ):
+    """
+    Start Meta lead sync in the background and return immediately.
+
+    Long Graph API work continues server-side; clients should poll
+    ``GET /settings/lead-sync/runs/{sync_log_id}`` (and Sync Logs) for completion.
+    """
     user_label = format_user_label(current_user)
     user_id = current_user.id
-    result = await asyncio.to_thread(
-        run_lead_sync_isolated,
-        sync_mode=SYNC_MODE_MANUAL,
-        triggered_by_user=user_label,
-        triggered_by_user_id=user_id,
-        source=SOURCE_MANUAL_API,
+
+    try:
+        started = start_manual_lead_sync_background(
+            triggered_by_user=user_label,
+            triggered_by_user_id=user_id,
+        )
+    except HTTPException as exc:
+        write_audit_log(
+            db,
+            user_id=user_id,
+            action_type="run_lead_sync",
+            target_resource="meta_leads",
+            request=request,
+            status="failed",
+            details=build_audit_details(
+                method=request.method,
+                api_path=str(request.url.path),
+                status_code=exc.status_code,
+                action_type="run_lead_sync",
+                referer=request.headers.get("referer"),
+                ui_page_header=request.headers.get("x-nexus-page"),
+                extra={"error": str(exc.detail)},
+            ),
+        )
+        raise
+
+    write_audit_log(
+        db,
+        user_id=user_id,
+        action_type="run_lead_sync",
+        target_resource="meta_leads",
+        resource_id=str(started["sync_log_id"]),
+        request=request,
+        status="success",
+        details=build_audit_details(
+            method=request.method,
+            api_path=str(request.url.path),
+            status_code=202,
+            action_type="run_lead_sync",
+            referer=request.headers.get("referer"),
+            ui_page_header=request.headers.get("x-nexus-page"),
+            extra={
+                "sync_log_id": started["sync_log_id"],
+                "accepted": True,
+                "note": "Sync accepted for background execution",
+            },
+        ),
     )
-    return LeadSyncRunResponse(**result)
+    return LeadSyncStartResponse(**started)
+
+
+@router.get("/settings/lead-sync/runs/{sync_log_id}", response_model=LeadSyncRunStatusOut)
+@router.get("/settings/lead-sync/runs/{sync_log_id}/", response_model=LeadSyncRunStatusOut)
+def read_lead_sync_run_status(
+    sync_log_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.require_super_admin),
+):
+    return LeadSyncRunStatusOut(**get_manual_lead_sync_status(db, sync_log_id))

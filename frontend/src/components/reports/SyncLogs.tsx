@@ -225,7 +225,13 @@ const SyncLogs: React.FC = () => {
   const errorMessage =
     error instanceof Error
       ? /not found/i.test(error.message)
-        ? 'Reports API is unavailable. Restart the NEXUS backend on port 8002 (see vite.config.js proxy).'
+        ? (() => {
+            const host = typeof window !== 'undefined' ? window.location.hostname : '';
+            const isLocalDev = /^(localhost|127\.0\.0\.1)$/i.test(host);
+            return isLocalDev
+              ? 'Reports API route not found. Restart the NEXUS backend so new report endpoints are loaded (dev: port 8002).'
+              : 'Reports API route not found. Redeploy/restart the NEXUS backend so the latest report endpoints are available.';
+          })()
         : error.message
       : null;
 

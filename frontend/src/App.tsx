@@ -26,6 +26,7 @@ import MyProfile from './pages/MyProfile';
 import AppSettings from './pages/AppSettings';
 import ReportsLayout from './pages/ReportsLayout';
 import MetaLeadsReportPage from './pages/MetaLeadsReportPage';
+import ExceptionReportPage from './pages/ExceptionReportPage';
 import QuarantinePage from './pages/QuarantinePage';
 import SecurityAuditDashboard from './pages/SecurityAuditDashboard';
 import AuditLogsPage from './pages/AuditLogsPage';
@@ -50,6 +51,7 @@ import InstitutionWizardPage from './components/academia/wizard/InstitutionWizar
 import InstitutionHistoryPage from './components/academia/wizard/InstitutionHistoryPage';
 import Login from './pages/Login';
 import ProtectedRoute from './components/ProtectedRoute';
+import GlobalExceptionCapture from './components/GlobalExceptionCapture';
 import { ConfirmationProvider } from './context/ConfirmationContext';
 import {
   UnsavedChangesNavigationGuard,
@@ -60,6 +62,7 @@ function AppRoot() {
   return (
     <NexusSessionRoot>
       <UnsavedChangesProvider>
+        <GlobalExceptionCapture />
         <UnsavedChangesNavigationGuard />
         <Outlet />
       </UnsavedChangesProvider>
@@ -104,6 +107,7 @@ const router = createBrowserRouter(
         <Route path="reports" element={<ReportsLayout />}>
           <Route index element={<Navigate to="meta-leads" replace />} />
           <Route path="meta-leads" element={<MetaLeadsReportPage />} />
+          <Route path="exceptions" element={<ExceptionReportPage />} />
           <Route path="audit-logs" element={<AuditLogsPage />} />
         </Route>
         <Route path="audit-logs" element={<Navigate to="/reports/audit-logs" replace />} />

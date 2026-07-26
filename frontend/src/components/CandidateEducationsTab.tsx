@@ -20,20 +20,17 @@ import {
   type CandidateEducationRecord,
   type CandidateEducationsResponse,
 } from '../types/candidateEducation';
+import {
+  studentInfoFieldErrorClass as fieldErrorClass,
+  studentInfoInputClass as inputClass,
+  studentInfoLabelClass as labelClass,
+  studentInfoSectionClass as sectionClass,
+} from './studentInfoFormStyles';
 
 interface CandidateEducationsTabProps {
   bookingId: number;
   compact?: boolean;
 }
-
-const inputClass =
-  'w-full rounded-md border border-border-subtle bg-card px-2.5 py-1.5 text-xs text-text-main focus:outline-none focus:ring-1 focus:ring-sky-400/40 min-h-[32px]';
-
-const labelClass = 'block text-[11px] font-bold text-text-main mb-1';
-
-const sectionClass = 'rounded-lg border border-border-subtle bg-card/80 p-3 space-y-3';
-
-const fieldErrorClass = 'mt-1 text-[10px] text-red-600';
 
 const fieldClass = (hasError: boolean) =>
   `${inputClass}${hasError ? ' border-red-400 ring-1 ring-red-200' : ''}`;
@@ -249,12 +246,12 @@ const CandidateEducationsTab: React.FC<CandidateEducationsTabProps> = ({
     <div className={compact ? 'flex flex-1 min-h-0 flex-col' : 'space-y-4'}>
       <div className={compact ? 'flex-1 min-h-0 overflow-y-auto custom-scrollbar space-y-4' : 'space-y-4'}>
         {error ? (
-          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
             {error}
           </div>
         ) : null}
         {success ? (
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
             {success}
           </div>
         ) : null}
@@ -262,8 +259,8 @@ const CandidateEducationsTab: React.FC<CandidateEducationsTabProps> = ({
         <section className={sectionClass}>
           <div className="flex items-start justify-between gap-2">
             <div>
-              <h3 className="text-xs font-bold text-text-main uppercase tracking-wide">Education</h3>
-              <p className="text-xs text-text-muted mt-1">
+              <h3 className="text-sm font-bold text-text-main uppercase tracking-wide">Education</h3>
+              <p className="text-sm text-text-muted mt-1">
                 Add each degree or program as a separate education record.
               </p>
             </div>
@@ -271,7 +268,7 @@ const CandidateEducationsTab: React.FC<CandidateEducationsTabProps> = ({
               <button
                 type="button"
                 onClick={handleAddEducation}
-                className="inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-[11px] font-semibold text-sky-800 hover:bg-sky-100"
+                className="inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-sm font-semibold text-sky-800 hover:bg-sky-100"
               >
                 <Plus size={12} />
                 Add Education
@@ -285,13 +282,13 @@ const CandidateEducationsTab: React.FC<CandidateEducationsTabProps> = ({
               className="rounded-md border border-border-subtle bg-surface-bg/30 p-3 space-y-3"
             >
               <div className="flex items-center justify-between gap-2">
-                <p className="text-xs font-bold text-text-main">
+                <p className="text-sm font-bold text-text-main">
                   {editingId ? 'Edit Education' : 'New Education'}
                 </p>
                 <button
                   type="button"
                   onClick={handleCancelForm}
-                  className="text-[11px] text-text-muted hover:text-text-main"
+                  className="text-sm text-text-muted hover:text-text-main"
                 >
                   Cancel
                 </button>
@@ -519,7 +516,7 @@ const CandidateEducationsTab: React.FC<CandidateEducationsTabProps> = ({
                 <button
                   type="submit"
                   disabled={!canSave}
-                  className="rounded-md bg-sky-700 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-800 disabled:opacity-60 inline-flex items-center gap-2"
+                  className="rounded-md bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800 disabled:opacity-60 inline-flex items-center gap-2"
                 >
                   {saving ? <Loader2 size={14} className="animate-spin" /> : null}
                   {editingId ? 'Update Education' : 'Save Education'}
@@ -539,19 +536,19 @@ const CandidateEducationsTab: React.FC<CandidateEducationsTabProps> = ({
                 <div key={education.id} className={cardClass}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="text-xs font-bold text-text-main">
+                      <p className="text-sm font-bold text-text-main">
                         {education.degree_label || education.degree_code || 'Degree'}
                         {education.major ? ` · ${education.major}` : ''}
                       </p>
-                      <p className="text-[11px] text-text-main mt-0.5">
+                      <p className="text-sm text-text-main mt-0.5">
                         {education.university_name || 'University not specified'}
                       </p>
                       {education.university_affiliation ? (
-                        <p className="text-[10px] text-text-muted">
+                        <p className="text-sm text-text-muted">
                           Affiliation: {education.university_affiliation}
                         </p>
                       ) : null}
-                      <p className="text-[10px] text-text-muted mt-1">
+                      <p className="text-sm text-text-muted mt-1">
                         Graduated:{' '}
                         {formatGraduationPeriod(
                           education.graduation_month,
@@ -564,7 +561,7 @@ const CandidateEducationsTab: React.FC<CandidateEducationsTabProps> = ({
                       <button
                         type="button"
                         onClick={() => handleEdit(education)}
-                        className="inline-flex items-center gap-1 text-[11px] text-sky-700 hover:text-sky-900"
+                        className="inline-flex items-center gap-1 text-sm text-sky-700 hover:text-sky-900"
                       >
                         <Pencil size={12} />
                         Edit
@@ -573,7 +570,7 @@ const CandidateEducationsTab: React.FC<CandidateEducationsTabProps> = ({
                         type="button"
                         onClick={() => handleDelete(education.id)}
                         disabled={deletingId === education.id}
-                        className="inline-flex items-center gap-1 text-[11px] text-red-600 hover:text-red-700 disabled:opacity-60"
+                        className="inline-flex items-center gap-1 text-sm text-red-600 hover:text-red-700 disabled:opacity-60"
                       >
                         {deletingId === education.id ? (
                           <Loader2 size={12} className="animate-spin" />
@@ -594,7 +591,7 @@ const CandidateEducationsTab: React.FC<CandidateEducationsTabProps> = ({
               <button
                 type="button"
                 onClick={handleAddEducation}
-                className="inline-flex items-center gap-1 rounded-md border border-border-subtle px-3 py-1.5 text-[11px] font-semibold text-text-main hover:bg-card"
+                className="inline-flex items-center gap-1 rounded-md border border-border-subtle px-3 py-1.5 text-sm font-semibold text-text-main hover:bg-card"
               >
                 <Plus size={12} />
                 Add Another Education
