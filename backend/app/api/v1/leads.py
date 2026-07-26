@@ -5,7 +5,7 @@ from app.db.database import get_db
 from app.models.lead import Lead
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
-import traceback
+import logging
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 def clean_phone_number(raw_phone: str) -> str:
@@ -26,16 +27,8 @@ def clean_phone_number(raw_phone: str) -> str:
 
 def dispatch_live_whatsapp_message(to_phone: str, message_body: str):
     """ Sends an actual outbound WhatsApp message using Twilio's API environment values. """
-    import os
-    from twilio.rest import Client
-    from dotenv import load_dotenv
-    from pathlib import Path
-
-    # Resolves path from endpoints -> v1 -> api -> app to find backend/.env cleanly
     base_dir = Path(__file__).resolve().parents[3]
     env_path = base_dir / ".env"
-    
-    print(f"\n🔍 Searching for .env file configuration at: {env_path}")
     load_dotenv(dotenv_path=env_path)
 
     account_sid = os.getenv("TWILIO_ACCOUNT_SID")
@@ -48,17 +41,9 @@ def dispatch_live_whatsapp_message(to_phone: str, message_body: str):
         os.getenv("TWILIO_FROM_NUMBER")
     )
 
-    print("\n=================== 📡 TWILIO OUTBOUND RADAR ===================")
-    print(f"   TWILIO_ACCOUNT_SID Loaded: { '✅ YES (' + account_sid[:8] + '...)' if account_sid else '❌ MISSING' }")
-    print(f"   TWILIO_AUTH_TOKEN Loaded:  { '✅ YES (... masked ...)' if auth_token else '❌ MISSING' }")
-    print(f"   TWILIO_WHATSAPP_NUMBER:    { '✅ YES (' + str(sender_number) + ')' if sender_number else '❌ MISSING' }")
-    print(f"   Target Phone (Candidate):  [ {to_phone} ]")
-    print(f"   Message Content:           \"{message_body}\"")
-    print("================================================================\n")
-
     try:
         if not account_sid or not auth_token or not sender_number:
-            print("❌ [ABORTED] Twilio transmission killed. Fix your .env variables to restore outbound flow.")
+            logger.warning("Twilio outbound skipped: missing account SID, auth token, or sender number")
             return False
             
         client = Client(account_sid, auth_token)
@@ -68,20 +53,17 @@ def dispatch_live_whatsapp_message(to_phone: str, message_body: str):
 
         formatted_to = clean_target if clean_target.startswith("whatsapp:") else f"whatsapp:{clean_target}"
         formatted_from = clean_sender if clean_sender.startswith("whatsapp:") else f"whatsapp:{clean_sender}"
-        
-        print(f"📡 Forwarding message payload to Twilio Network Matrix: {formatted_from} -> {formatted_to}...")
 
         message = client.messages.create(
             from_=formatted_from,
             body=message_body,
             to=formatted_to
         )
-        print(f"🚀 Outbound WhatsApp Dispatched Cleanly via Twilio API Matrix! SID: {message.sid}")
+        logger.info("Twilio WhatsApp outbound sent sid=%s", message.sid)
         return True
     except Exception as twilio_err:
-        print(f"❌ Twilio Engine Outbound Failure: {str(twilio_err)}")
+        logger.exception("Twilio WhatsApp outbound failed: %s", twilio_err)
         return False
-
 
 class LeadCreate(BaseModel):
     full_name: str
@@ -190,8 +172,7 @@ async def handle_inbound_whatsapp_reply(request: Request, db: Session = Depends(
         sender_phone_clean = sender_phone_raw.replace("whatsapp:", "").strip()
         sender_phone_clean = clean_phone_number(sender_phone_clean)
         
-        print(f"📥 INBOUND WHATSAPP RAW SENDER: {sender_phone_raw} -> CLEANED: {sender_phone_clean}")
-        print(f"📥 MESSAGE TEXT RECEIVED: \"{incoming_msg_raw}\"")
+        logger.info("Twilio inbound WhatsApp from %s", sender_phone_clean)
         
         if not incoming_msg_raw:
             return Response(content="No body parsed", media_type="text/plain")
@@ -205,7 +186,7 @@ async def handle_inbound_whatsapp_reply(request: Request, db: Session = Depends(
         ).first()
         
         if not lead:
-            print(f"⚠️ No profile matched for {sender_phone_clean}. Auto-generating organic fallback lead row.")
+            logger.info("No lead for %s; creating organic WhatsApp prospect", sender_phone_clean)
             safe_email_slug = sender_phone_clean.replace("+", "")
             lead = Lead(
                 full_name=f"Organic WA Prospect ({sender_phone_clean[-4:]})",
@@ -261,11 +242,11 @@ async def handle_inbound_whatsapp_reply(request: Request, db: Session = Depends(
 
         twiml_response = MessagingResponse()
         twiml_response.message(ai_agent_response)
-        print(f"🤖 AUTONOMOUS DISPATCH SENT BACK TO TWILIO XML: \"{ai_agent_response}\"")
+        logger.info("Twilio inbound reply dispatched for lead_id=%s", getattr(lead, "id", None))
         return Response(content=str(twiml_response), media_type="application/xml")
     except Exception as err:
         db.rollback() 
-        print(f"❌ Error inside WhatsApp Inbound Webhook Loop: {traceback.format_exc()}")
+        logger.exception("Twilio inbound WhatsApp webhook failed: %s", err)
         return Response(content=f"Internal Server Error: {str(err)}", status_code=500)
 
 
@@ -291,7 +272,7 @@ async def handle_external_social_webhook(request: Request, db: Session = Depends
 
         if "Manual Advisor Intervention" in institution:
             advisor_message_body = data.get("message") or data.get("body") or data.get("text") or data.get("name")
-            print(f"📡 [Manual Advisor Outbound Send Triggered] Dispatching text to: {clean_phone}")
+            logger.info("Manual advisor Twilio outbound to %s", clean_phone)
             
             lead = db.query(Lead).filter(or_(Lead.phone_number == clean_phone, Lead.email == email)).first()
             if lead:
@@ -306,7 +287,7 @@ async def handle_external_social_webhook(request: Request, db: Session = Depends
         existing_lead = db.query(Lead).filter(or_(Lead.phone_number == clean_phone, Lead.email == email)).first()
 
         if existing_lead:
-            print(f"♻️ Existing student lead discovered for {clean_phone}. Recycling tracking reference.")
+            logger.info("Social ingress recycled existing lead for %s", clean_phone)
             if hasattr(existing_lead, 'stage'): existing_lead.stage = "HANDOFF"
             if hasattr(existing_lead, 'is_human_locked'): existing_lead.is_human_locked = True
             
@@ -350,7 +331,7 @@ async def handle_external_social_webhook(request: Request, db: Session = Depends
         raise http_err
     except Exception as e:
         db.rollback()
-        print(f"❌ CRITICAL SOCIAL-INGRESS FAILURE: {traceback.format_exc()}")
+        logger.exception("Social ingress webhook failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Database operational crash: {str(e)}")
 
 
@@ -447,7 +428,7 @@ async def get_archived_leads_ledger(archive_status: Optional[str] = None, db: Se
 @router.put("/takeover/{lead_id}")
 async def universal_human_takeover_override(lead_id: int, db: Session = Depends(get_db)):
     try:
-        print(f"🔒 [Override Call Caught] Human Intercept Triggered for Lead ID: {lead_id}")
+        logger.info("Human takeover override for lead_id=%s", lead_id)
         
         lead = db.query(Lead).filter(Lead.id == lead_id).first()
         if not lead:
@@ -473,7 +454,7 @@ async def universal_human_takeover_override(lead_id: int, db: Session = Depends(
             )
             dispatch_live_whatsapp_message(to_phone=clean_target_phone, message_body=takeover_notification)
 
-        print(f"✅ [Override Confirmed] Lead ID {lead_id} successfully under human admin lock parameters.")
+        logger.info("Human takeover confirmed for lead_id=%s", lead_id)
         return {
             "status": "success",
             "message": "AI agent paused cleanly. Live chat channels assigned to manual agent desktop workspace view.",
@@ -483,5 +464,5 @@ async def universal_human_takeover_override(lead_id: int, db: Session = Depends(
         raise http_err
     except Exception as e:
         db.rollback()
-        print(f"❌ Takeover Endpoint processing failure: {traceback.format_exc()}")
+        logger.exception("Takeover endpoint failed for lead_id=%s: %s", lead_id, e)
         raise HTTPException(status_code=500, detail=str(e))

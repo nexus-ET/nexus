@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -24,11 +25,14 @@ from app.services.leads import (
 from app.services.settings_service import clear_settings_cache, get_setting
 from app.services.sync_log_service import (
     SOURCE_MANUAL_API,
+    STATUS_IN_PROGRESS,
     STATUS_SUCCESS,
     SYNC_MODE_MANUAL,
     begin_sync_transaction,
     fail_sync_transaction,
     finalize_sync_transaction,
+    get_sync_log,
+    normalize_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -285,6 +289,21 @@ def run_lead_sync(
 
     ensure_db_connection(db)
     payload = _persist_last_run(db, result)
+    if not result.errors:
+        try:
+            from app.services.exception_log_service import (
+                auto_resolve_lead_sync_failure_exceptions,
+            )
+
+            auto_resolve_lead_sync_failure_exceptions(
+                db,
+                detail=(
+                    f"Sync log #{log_row.id} completed "
+                    f"({result.forms_processed} forms, {result.leads_seen} leads seen)."
+                ),
+            )
+        except Exception:
+            logger.exception("Failed to auto-resolve Meta lead-sync failure exceptions.")
     logger.info(
         "Meta lead sync finished (mode=%s, triggered_by=%s): forms=%s seen=%s saved=%s skipped=%s errors=%s",
         sync_mode,
@@ -308,7 +327,11 @@ def run_lead_sync_isolated(**kwargs: Any) -> dict[str, Any]:
         if raise_http_errors:
             raise HTTPException(
                 status_code=409,
-                detail="A Meta lead sync is already in progress. Try again when it finishes.",
+                detail=(
+                    "A Meta lead sync is already in progress. "
+                    "If this persists with no active row in Reports → Meta Leads, "
+                    "restart the NEXUS backend to clear a stranded sync lock."
+                ),
             )
         return {"skipped": True, "error": "sync already in progress"}
     try:
@@ -316,3 +339,135 @@ def run_lead_sync_isolated(**kwargs: Any) -> dict[str, Any]:
     finally:
         release_lead_sync(db)
         safe_close_session(db)
+
+
+def start_manual_lead_sync_background(
+    *,
+    triggered_by_user: str,
+    triggered_by_user_id: int | None = None,
+    source: str = SOURCE_MANUAL_API,
+) -> dict[str, Any]:
+    """
+    Accept Sync Now immediately: create the sync-log row, then run Meta sync on a worker thread.
+
+    Returns quickly so staging reverse proxies / browsers do not time out while Graph API work runs.
+    """
+    from app.services.lead_sync_coordinator import recover_orphaned_lead_sync_locks
+
+    probe_db = SessionLocal()
+    try:
+        recover_orphaned_lead_sync_locks(probe_db, stale_after_minutes=10)
+    finally:
+        safe_close_session(probe_db)
+
+    started = threading.Event()
+    holder: dict[str, Any] = {}
+
+    def worker() -> None:
+        db = SessionLocal()
+        if not try_acquire_lead_sync(db):
+            holder["error"] = (
+                "A Meta lead sync is already in progress. "
+                "If this persists with no active row in Reports → Meta Leads, "
+                "restart the NEXUS backend to clear a stranded sync lock."
+            )
+            holder["status_code"] = 409
+            started.set()
+            safe_close_session(db)
+            return
+
+        log_id: int | None = None
+        try:
+            log_row = begin_sync_transaction(
+                db,
+                sync_mode=SYNC_MODE_MANUAL,
+                triggered_by_user=triggered_by_user,
+                triggered_by_user_id=triggered_by_user_id,
+                source=source,
+            )
+            log_id = log_row.id
+            holder["sync_log_id"] = log_id
+            started.set()
+            run_lead_sync(
+                db,
+                sync_mode=SYNC_MODE_MANUAL,
+                triggered_by_user=triggered_by_user,
+                triggered_by_user_id=triggered_by_user_id,
+                source=source,
+                sync_log_id=log_id,
+                raise_http_errors=False,
+            )
+        except Exception as exc:
+            logger.exception("Background Meta lead sync failed.")
+            if log_id is not None:
+                try:
+                    fail_sync_transaction(db, log_id, error=f"Lead sync failed: {exc}")
+                except Exception:
+                    logger.exception("Failed to mark sync log %s as failed.", log_id)
+            if "sync_log_id" not in holder:
+                holder["error"] = str(exc)
+                holder["status_code"] = 500
+                started.set()
+        finally:
+            release_lead_sync(db)
+            safe_close_session(db)
+
+    thread = threading.Thread(
+        target=worker,
+        name="meta-lead-sync-manual",
+        daemon=True,
+    )
+    thread.start()
+
+    if not started.wait(timeout=15):
+        raise HTTPException(
+            status_code=504,
+            detail="Meta lead sync did not start in time. Check Reports → Meta Leads and try again.",
+        )
+
+    if holder.get("error"):
+        raise HTTPException(
+            status_code=int(holder.get("status_code") or 500),
+            detail=str(holder["error"]),
+        )
+
+    sync_log_id = int(holder["sync_log_id"])
+    return {
+        "accepted": True,
+        "status": STATUS_IN_PROGRESS,
+        "sync_log_id": sync_log_id,
+        "message": "Meta lead sync started. Status will appear in Reports → Meta Leads when finished.",
+    }
+
+
+def get_manual_lead_sync_status(db: Session, sync_log_id: int) -> dict[str, Any]:
+    from app.services.lead_sync_errors import format_user_facing_sync_error
+
+    log = get_sync_log(db, sync_log_id)
+    if log is None:
+        raise HTTPException(status_code=404, detail="Sync log not found.")
+
+    completed_at = None
+    if log.completed_at is not None:
+        completed_at = log.completed_at.isoformat()
+
+    run_at = None
+    if log.attempt_timestamp is not None:
+        run_at = log.attempt_timestamp.isoformat()
+
+    errors = list(log.errors or [])
+    raw_message = log.message
+    message = format_user_facing_sync_error(raw_message or (errors[0] if errors else None))
+
+    return {
+        "sync_log_id": log.id,
+        "status": normalize_status(log.status),
+        "message": message,
+        "forms_processed": log.forms_processed,
+        "leads_seen": log.leads_seen,
+        "leads_created": log.leads_created,
+        "leads_skipped": log.leads_skipped,
+        "errors": errors,
+        "run_at": run_at,
+        "completed_at": completed_at,
+    }

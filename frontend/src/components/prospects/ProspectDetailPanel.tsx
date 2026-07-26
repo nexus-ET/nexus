@@ -3,6 +3,7 @@ import {
   Archive,
   ArrowLeft,
   Bot,
+  CalendarClock,
   Expand,
   Mail,
   MessageCircle,
@@ -10,6 +11,7 @@ import {
   Minimize2,
   Sparkles,
   UserPlus,
+  UserRound,
   Users,
 } from 'lucide-react';
 import type { ProspectDetail } from '../../types/prospect';
@@ -39,6 +41,7 @@ import CounsellingSessionModal from '../CounsellingSessionModal';
 import CandidateProfilePanel from '../CandidateProfilePanel';
 import DigitalPresenceAdminSection from '../DigitalPresenceAdminSection';
 import AiActivePulseBoard, { type PulseLead } from '../AiActivePulseBoard';
+import HeadlessScrollArea from '../HeadlessScrollArea';
 import { categoryBadgeClass } from '../../utils/statusBadges';
 
 type ProspectDetailPanelProps = {
@@ -149,6 +152,27 @@ export default function ProspectDetailPanel({
     return (detail.full_name || detail.name || '').trim();
   }, [detail]);
   const counsellingDisplayName = profileFullName || metaReceivedName || 'Student';
+
+  const scheduledAppointment = useMemo(() => {
+    const booking = profileBookingQuery.data;
+    if (!booking) return null;
+    const status = (booking.status || '').toUpperCase();
+    const isScheduled = status === 'SCHEDULED' || status === 'PENDING';
+    if (!isScheduled) return null;
+    if (!booking.date_label && !booking.time_label && !booking.scheduled_time) return null;
+    const rawStatusLabel =
+      booking.session_status_label?.trim() || (status === 'SCHEDULED' ? 'Scheduled' : 'Pending');
+    // session_status_label is already "Counselling: Scheduled" — don't prefix again.
+    const headingLabel = /^counselling\b/i.test(rawStatusLabel)
+      ? rawStatusLabel.replace(/^counselling\b/i, 'Counselling')
+      : `Counselling ${rawStatusLabel.toLowerCase()}`;
+    return {
+      dateLabel: booking.date_label?.trim() || null,
+      timeLabel: booking.time_label?.trim() || null,
+      counsellorName: booking.admin_name?.trim() || null,
+      statusLabel: headingLabel,
+    };
+  }, [profileBookingQuery.data]);
 
   const statusDefinitions = statusDefinitionsData?.items ?? [];
   const forwardTransitions = validTransitions?.forward ?? [];
@@ -327,7 +351,7 @@ export default function ProspectDetailPanel({
                       {counsellingDisplayName}
                     </h3>
                     {!profileFullName && metaReceivedName ? (
-                      <p className="text-[11px] text-text-muted mt-0.5">Meta received name</p>
+                      <p className="text-xs text-text-muted mt-0.5">Meta received name</p>
                     ) : null}
                     <div className="prospects-detail-panel__chips mt-1.5">
                       {detail.platform_badge ? (
@@ -339,6 +363,33 @@ export default function ProspectDetailPanel({
                         {detail.stage || detail.status}
                       </span>
                     </div>
+                    {scheduledAppointment ? (
+                      <div className="mt-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-950">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <span className="inline-flex items-center gap-1.5 font-semibold">
+                            <CalendarClock size={15} className="shrink-0 text-emerald-700" />
+                            {scheduledAppointment.statusLabel}
+                          </span>
+                          {(scheduledAppointment.dateLabel || scheduledAppointment.timeLabel) ? (
+                            <span className="text-emerald-900">
+                              {[scheduledAppointment.dateLabel, scheduledAppointment.timeLabel]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </span>
+                          ) : null}
+                        </div>
+                        {scheduledAppointment.counsellorName ? (
+                          <div className="mt-1 inline-flex items-center gap-1.5 text-emerald-900">
+                            <UserRound size={14} className="shrink-0 text-emerald-700" />
+                            Counsellor: <strong className="font-semibold">{scheduledAppointment.counsellorName}</strong>
+                          </div>
+                        ) : (
+                          <div className="mt-1 text-emerald-800/80 text-xs">
+                            Counsellor not assigned yet
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                   {detail.status_stage_name ? (
                     <span
@@ -398,18 +449,18 @@ export default function ProspectDetailPanel({
                     if (bookingId) setInteractionBookingId(bookingId);
                   }}
                   disabled={!profileBookingQuery.data?.id || profileBookingQuery.isLoading}
-                  className="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-xs font-semibold text-text-main hover:bg-accent/20 disabled:opacity-60"
+                  className="prospects-action-btn prospects-action-btn--interaction"
                 >
-                  <MessageSquare size={14} />
+                  <MessageSquare size={16} />
                   View Interaction
                 </button>
                 <button
                   type="button"
                   onClick={() => setSessionOpen(true)}
                   disabled={!profileBookingQuery.data?.id || profileBookingQuery.isLoading}
-                  className="inline-flex items-center gap-1 rounded-lg border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-xs font-semibold text-violet-900 hover:bg-violet-100 disabled:opacity-60"
+                  className="prospects-action-btn prospects-action-btn--session"
                 >
-                  <Sparkles size={14} />
+                  <Sparkles size={16} />
                   Session
                 </button>
               </>
@@ -419,7 +470,7 @@ export default function ProspectDetailPanel({
                 className="prospects-action-btn"
                 onClick={handleMessage}
               >
-                <MessageCircle size={15} />
+                <MessageCircle size={16} />
                 Message
               </button>
             )}
@@ -427,7 +478,7 @@ export default function ProspectDetailPanel({
               View Journey
             </button>
             <button type="button" className="prospects-action-btn" onClick={() => handleStatus('handoff')}>
-              <UserPlus size={15} />
+              <UserPlus size={16} />
               Assign
             </button>
             <div className="prospects-action-dropdown">
@@ -442,7 +493,7 @@ export default function ProspectDetailPanel({
                       onClick={() => handleStatus(option.key)}
                       disabled={statusMutation.isPending}
                     >
-                      <Icon size={14} />
+                      <Icon size={16} />
                       {option.label}
                     </button>
                   );
@@ -485,7 +536,7 @@ export default function ProspectDetailPanel({
           </div>
         )
       ) : (
-      <div className="prospects-detail-panel__body custom-scroll-region">
+      <HeadlessScrollArea className="prospects-detail-panel__body">
         <div className={`prospects-tab-pane${activeTab === 'overview' ? ' is-active' : ''}`}>
           <div className="prospects-pipeline-status">
             <div className="prospects-pipeline-status__header">
@@ -738,7 +789,7 @@ export default function ProspectDetailPanel({
             </button>
           </div>
         </div>
-      </div>
+      </HeadlessScrollArea>
       )}
     </section>
 

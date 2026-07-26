@@ -14,6 +14,10 @@ export type ProspectListItem = {
   received_at?: string | null;
   updated_at?: string | null;
   latest_interaction_time?: string | null;
+  total_messages_received?: number;
+  unread_count?: number;
+  has_ai_messages?: boolean;
+  has_messages?: boolean;
   preferred_country?: string | null;
   preferred_course?: string | null;
   target_program?: string | null;
@@ -24,12 +28,25 @@ export type ProspectListItem = {
   intake_step?: string | null;
   intake_step_label?: string | null;
   intake_complete?: boolean | null;
+  wants_consultation_call?: boolean | null;
+  consultation_scheduled_at?: string | null;
+  consultation_session_date?: string | null;
+  consultation_session_time?: string | null;
+  assigned_counsellor_name?: string | null;
+  appointment_status?: string | null;
+  english_test_scores?: string | null;
+  gre_score?: string | null;
+  gmat_score?: string | null;
+  test_scores?: string | null;
 };
 
 export type ProspectsListResponse = {
   items: ProspectListItem[];
   next_cursor: string | null;
   filtered_total: number;
+  limit?: number;
+  offset?: number;
+  has_more?: boolean;
 };
 
 export type ProspectsSummary = {
@@ -85,6 +102,12 @@ export type ProspectsFilters = {
   dateFrom: string;
   dateTo: string;
   category: string;
+  /** all | started | not_started — whether WhatsApp chat has begun. */
+  contactStatus: 'all' | 'started' | 'not_started';
+  /** Current page (1-based) for offset pagination. */
+  page: number;
+  /** Rows per page (25 | 50 | 100). */
+  pageSize: 25 | 50 | 100;
 };
 
 export const DEFAULT_PROSPECTS_FILTERS: ProspectsFilters = {
@@ -93,4 +116,7 @@ export const DEFAULT_PROSPECTS_FILTERS: ProspectsFilters = {
   dateFrom: '',
   dateTo: '',
   category: '',
+  contactStatus: 'all',
+  page: 1,
+  pageSize: 50,
 };

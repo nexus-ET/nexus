@@ -32,10 +32,11 @@ DEFAULT_NAVIGATION_PAGES: list[dict[str, str | int | bool]] = [
     {"name": "Access Control", "route": "/access-control", "icon": "ShieldCheck", "sort_order": 22},
     {"name": "Security Audit", "route": "/security-audit", "icon": "ShieldAlert", "sort_order": 23},
     {"name": "Meta Leads", "route": "/reports/meta-leads", "icon": "FileText", "sort_order": 24},
-    {"name": "Analytics", "route": "/analytics", "icon": "BarChart3", "sort_order": 25},
-    {"name": "Audit Logs", "route": "/reports/audit-logs", "icon": "ScrollText", "sort_order": 26},
-    {"name": "Lead Quarantine", "route": "/quarantine", "icon": "ShieldAlert", "sort_order": 27},
-    {"name": "Academia Hub", "route": "/academia", "icon": "GraduationCap", "sort_order": 28},
+    {"name": "Exception Report", "route": "/reports/exceptions", "icon": "ShieldAlert", "sort_order": 25},
+    {"name": "Analytics", "route": "/analytics", "icon": "BarChart3", "sort_order": 26},
+    {"name": "Audit Logs", "route": "/reports/audit-logs", "icon": "ScrollText", "sort_order": 27},
+    {"name": "Lead Quarantine", "route": "/quarantine", "icon": "ShieldAlert", "sort_order": 28},
+    {"name": "Academia Hub", "route": "/academia", "icon": "GraduationCap", "sort_order": 29},
 ]
 
 STUDENT_PIPELINE_PAGE_ROUTES: list[str] = [
@@ -125,6 +126,8 @@ API_ROUTE_TO_PAGE: list[tuple[str, str]] = [
     ("/api/v1/settings/business-timezone", "/"),
     ("/api/v1/settings/business-email-domain", "/users"),
     ("/api/v1/security-audit", "/security-audit"),
+    ("/api/v1/reports/export/exception-logs", "/reports/exceptions"),
+    ("/api/v1/reports/exception-logs", "/reports/exceptions"),
     ("/api/v1/reports", "/reports/meta-leads"),
     ("/api/v1/admin/quarantine", "/quarantine"),
     ("/api/v1/admin/audit-logs", "/reports/audit-logs"),
@@ -165,17 +168,93 @@ RBAC_PUBLIC_AUTH_PREFIXES = (
     "/api/v1/gpa-cgpa-scores",
     "/api/v1/target-programs",
     "/api/v1/audit-events",
+    # Authenticated clients may POST exceptions from any page; GET still gated by route deps.
+    "/api/v1/reports/exception-logs",
 )
 
 
 def seed_navigation_pages(db: Session) -> None:
-    """Disabled — navigation pages are managed via Admin UI / migrations, not startup seeds."""
-    return
+    """Upsert catalog pages from DEFAULT_NAVIGATION_PAGES (safe for empty/staging DBs)."""
+    for item in DEFAULT_NAVIGATION_PAGES:
+        existing = (
+            db.query(NavigationPage)
+            .filter(NavigationPage.route == item["route"])
+            .first()
+        )
+        if existing:
+            existing.name = str(item["name"])
+            existing.icon = str(item["icon"])
+            existing.sort_order = int(item["sort_order"])
+            existing.is_active = True
+            continue
+
+        db.add(
+            NavigationPage(
+                name=str(item["name"]),
+                route=str(item["route"]),
+                icon=str(item["icon"]),
+                sort_order=int(item["sort_order"]),
+                is_active=True,
+            )
+        )
+    old_roster_page = (
+        db.query(NavigationPage)
+        .filter(NavigationPage.route == "/counselling-roster")
+        .first()
+    )
+    if old_roster_page:
+        old_roster_page.is_active = False
+    for legacy_route in ("/reports", "/audit-logs"):
+        legacy_page = (
+            db.query(NavigationPage)
+            .filter(NavigationPage.route == legacy_route)
+            .first()
+        )
+        if legacy_page:
+            legacy_page.is_active = False
+    db.commit()
 
 
 def seed_role_page_permissions(db: Session) -> None:
-    """Disabled — role page permissions are managed via Admin UI / migrations, not startup seeds."""
-    return
+    """
+    Ensure role_page_permissions rows exist for active roles/pages.
+
+    Only inserts missing rows — does not overwrite Admin UI can_access changes.
+    """
+    pages = db.query(NavigationPage).filter(NavigationPage.is_active.is_(True)).all()
+    if not pages:
+        return
+    roles = db.query(AdminRole).filter(AdminRole.is_active.is_(True)).all()
+
+    for role in roles:
+        allowed_routes = DEFAULT_ROLE_PAGE_ACCESS.get(role.name, ["/"])
+        if role.is_superuser:
+            allowed_routes = [str(page["route"]) for page in DEFAULT_NAVIGATION_PAGES]
+        for page in pages:
+            permission = (
+                db.query(RolePagePermission)
+                .filter(
+                    RolePagePermission.admin_role_id == role.id,
+                    RolePagePermission.navigation_page_id == page.id,
+                )
+                .first()
+            )
+            if permission:
+                continue
+            db.add(
+                RolePagePermission(
+                    admin_role_id=role.id,
+                    navigation_page_id=page.id,
+                    can_access=page.route in allowed_routes,
+                )
+            )
+    db.commit()
+
+
+def ensure_navigation_rbac(db: Session) -> None:
+    """Seed navigation pages + missing role permissions (idempotent)."""
+    seed_navigation_pages(db)
+    seed_role_page_permissions(db)
 
 
 def get_admin_role_by_name(db: Session, role_name: str) -> AdminRole | None:
@@ -186,7 +265,24 @@ def get_admin_role_by_name(db: Session, role_name: str) -> AdminRole | None:
     )
 
 
+def _default_route_list() -> list[str]:
+    return [str(page["route"]) for page in DEFAULT_NAVIGATION_PAGES]
+
+
 def get_allowed_routes_for_user(db: Session, user: User) -> list[str]:
+    # Match check_page_access: Super Admins see the full menu even if RBAC rows are missing.
+    if user.is_superuser:
+        routes = [
+            route
+            for (route,) in (
+                db.query(NavigationPage.route)
+                .filter(NavigationPage.is_active.is_(True))
+                .order_by(NavigationPage.sort_order.asc())
+                .all()
+            )
+        ]
+        return routes if routes else _default_route_list()
+
     if not user.admin_role_id:
         return ["/"]
 
@@ -221,6 +317,12 @@ def resolve_page_routes_for_api_path(path: str) -> list[str]:
         return LEAD_MUTATION_PAGE_ROUTES
 
     if re.search(r"^/api/v1/leads/\d+/ai-outreach", path):
+        return LEAD_MUTATION_PAGE_ROUTES
+
+    if re.search(r"^/api/v1/leads/\d+/reset-whatsapp", path):
+        return LEAD_MUTATION_PAGE_ROUTES
+
+    if re.search(r"^/api/v1/leads/\d+/whatsapp-conversation/reset", path):
         return LEAD_MUTATION_PAGE_ROUTES
 
     if re.search(r"^/api/v1/leads/\d+/mark-read", path):
@@ -266,7 +368,10 @@ def resolve_page_routes_for_api_path(path: str) -> list[str]:
         return ["/command-center", "/messaging-hub"]
 
     if path.startswith("/api/v1/bookings/mine"):
-        return ["/my-bookings"]
+        return ["/my-bookings", "/students/counselling", "/prospects"]
+
+    if path.startswith("/api/v1/bookings/matching"):
+        return ["/my-bookings", "/students/counselling", "/prospects"]
 
     if path.startswith("/api/v1/users/me/profile") or path.startswith("/api/v1/users/me/change-password"):
         return ["/my-profile"]

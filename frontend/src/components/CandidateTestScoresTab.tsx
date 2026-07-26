@@ -23,20 +23,18 @@ import {
   type TestScoreFormState,
 } from '../types/candidateTestScores';
 import EmptyListMessage from './ui/EmptyListMessage';
+import { nexusDatePickerPortalProps } from '../utils/nexusDatePickerPortal';
+import {
+  studentInfoFieldErrorClass as fieldErrorClass,
+  studentInfoInputClass as inputClass,
+  studentInfoLabelClass as labelClass,
+  studentInfoSectionClass as sectionClass,
+} from './studentInfoFormStyles';
 
 interface CandidateTestScoresTabProps {
   bookingId: number;
   compact?: boolean;
 }
-
-const inputClass =
-  'w-full rounded-md border border-border-subtle bg-card px-2.5 py-1.5 text-xs text-text-main focus:outline-none focus:ring-1 focus:ring-sky-400/40 min-h-[32px]';
-
-const labelClass = 'block text-[11px] font-bold text-text-main mb-1';
-
-const sectionClass = 'rounded-lg border border-border-subtle bg-card/80 p-3 space-y-3';
-
-const fieldErrorClass = 'mt-1 text-[10px] text-red-600';
 
 const fieldClass = (hasError: boolean) =>
   `${inputClass}${hasError ? ' border-red-400 ring-1 ring-red-200' : ''}`;
@@ -249,19 +247,19 @@ const CandidateTestScoresTab: React.FC<CandidateTestScoresTabProps> = ({
     <form onSubmit={handleSave} className={compact ? 'flex flex-1 min-h-0 flex-col' : 'space-y-4'}>
       <div className={compact ? 'flex-1 min-h-0 overflow-y-auto custom-scrollbar space-y-4' : 'space-y-4'}>
         {error ? (
-          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
             {error}
           </div>
         ) : null}
         {success ? (
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
             {success}
           </div>
         ) : null}
 
         <section className={sectionClass}>
-          <h3 className="text-xs font-bold text-text-main uppercase tracking-wide">Add Test Scores</h3>
-          <p className="text-xs text-text-muted">
+          <h3 className="text-sm font-bold text-text-main uppercase tracking-wide">Add Test Scores</h3>
+          <p className="text-sm text-text-muted">
             Each save creates a new test record. Retakes and multiple tests are stored separately.
           </p>
 
@@ -303,6 +301,7 @@ const CandidateTestScoresTab: React.FC<CandidateTestScoresTabProps> = ({
                 className={inputClass}
                 wrapperClassName="w-full"
                 isClearable
+                {...nexusDatePickerPortalProps}
               />
             </div>
 
@@ -326,7 +325,7 @@ const CandidateTestScoresTab: React.FC<CandidateTestScoresTabProps> = ({
               {showsSeparateOverallField(form.test_name) && overallConfig ? (
                 <div className="rounded-md border border-sky-200 bg-sky-50/60 p-3 space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <label htmlFor="test-overall-score" className="text-xs font-bold text-text-main">
+                    <label htmlFor="test-overall-score" className="text-sm font-bold text-text-main">
                       Overall/Composite Score
                       <span className="font-normal text-text-muted">
                         {' '}
@@ -336,7 +335,7 @@ const CandidateTestScoresTab: React.FC<CandidateTestScoresTabProps> = ({
                     <button
                       type="button"
                       onClick={handleRecalculateOverall}
-                      className="text-[10px] font-semibold text-sky-800 hover:text-sky-950"
+                      className="text-xs font-semibold text-sky-800 hover:text-sky-950"
                     >
                       Recalculate from sections
                     </button>
@@ -356,7 +355,7 @@ const CandidateTestScoresTab: React.FC<CandidateTestScoresTabProps> = ({
                         : 'Auto-averages sections; edit to override'
                     }
                   />
-                  <p className="text-[10px] text-text-muted">
+                  <p className="text-sm text-text-muted">
                     {form.overall_manual_override
                       ? 'Manual override active.'
                       : 'Auto-calculated from section scores when all sections are filled.'}
@@ -402,7 +401,7 @@ const CandidateTestScoresTab: React.FC<CandidateTestScoresTabProps> = ({
 
         {groupedAttempts.length > 0 ? (
           <section className={sectionClass}>
-            <h3 className="text-xs font-bold text-text-main uppercase tracking-wide">
+            <h3 className="text-sm font-bold text-text-main uppercase tracking-wide">
               Saved Test History
             </h3>
             <div className="space-y-3">
@@ -413,14 +412,14 @@ const CandidateTestScoresTab: React.FC<CandidateTestScoresTabProps> = ({
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      <p className="text-xs font-bold text-text-main">{attempt.test_name}</p>
+                      <p className="text-sm font-bold text-text-main">{attempt.test_name}</p>
                       {attempt.overall_score != null ? (
-                        <p className="text-[11px] text-sky-800 font-semibold mt-0.5">
+                        <p className="text-xs text-sky-800 font-semibold mt-0.5">
                           Overall: {attempt.overall_score}
                         </p>
                       ) : null}
                     </div>
-                    <p className="text-[10px] text-text-muted">
+                    <p className="text-sm text-text-muted">
                       {attempt.test_date
                         ? new Date(`${attempt.test_date}T00:00:00`).toLocaleDateString()
                         : 'No date'}
@@ -441,7 +440,7 @@ const CandidateTestScoresTab: React.FC<CandidateTestScoresTabProps> = ({
                       href={attempt.score_report_url}
                       target="_blank"
                       rel="noreferrer"
-                      className="text-[11px] text-sky-700 hover:underline break-all"
+                      className="text-xs text-sky-700 hover:underline break-all"
                     >
                       View score report
                     </a>
@@ -452,7 +451,7 @@ const CandidateTestScoresTab: React.FC<CandidateTestScoresTabProps> = ({
           </section>
         ) : (
           <section className={sectionClass}>
-            <h3 className="text-xs font-bold text-text-main uppercase tracking-wide">
+            <h3 className="text-sm font-bold text-text-main uppercase tracking-wide">
               Saved Test History
             </h3>
             <EmptyListMessage
@@ -463,19 +462,19 @@ const CandidateTestScoresTab: React.FC<CandidateTestScoresTabProps> = ({
         )}
       </div>
 
-      <div className="shrink-0 flex items-center justify-end gap-2 border-t border-border-subtle bg-surface-bg/70 px-0 py-3">
+      <div className="shrink-0 relative z-0 flex items-center justify-end gap-2 border-t border-border-subtle bg-surface-bg/70 px-0 py-3">
         <button
           type="button"
           onClick={handleCancel}
           disabled={saving}
-          className="rounded-md border border-border-subtle px-4 py-2 text-xs font-semibold text-text-main hover:bg-card disabled:opacity-60"
+          className="rounded-md border border-border-subtle px-4 py-2 text-sm font-semibold text-text-main hover:bg-card disabled:opacity-60"
         >
           Clear
         </button>
         <button
           type="submit"
           disabled={!canSave}
-          className="rounded-md bg-sky-700 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-800 disabled:opacity-60 inline-flex items-center gap-2"
+          className="rounded-md bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800 disabled:opacity-60 inline-flex items-center gap-2"
         >
           {saving ? <Loader2 size={14} className="animate-spin" /> : null}
           Save

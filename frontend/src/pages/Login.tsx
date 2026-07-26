@@ -80,6 +80,8 @@ const Login: React.FC = () => {
               <Mail className="absolute left-3 top-3.5 h-5 w-5 text-text-muted/60 group-focus-within:text-accent transition-colors" />
               <input
                 type="email"
+                name="username"
+                autoComplete="username"
                 required
                 className="appearance-none block w-full pl-10 pr-3 py-3.5 bg-surface-bg border border-border-subtle rounded-xl text-text-main placeholder:text-text-muted/50 focus:outline-none focus:bg-card focus:border-accent focus:ring-4 focus:ring-accent/10 sm:text-sm transition-all"
                 placeholder="Email address"
@@ -92,6 +94,8 @@ const Login: React.FC = () => {
               <Lock className="absolute left-3 top-3.5 h-5 w-5 text-text-muted/60 group-focus-within:text-accent transition-colors" />
               <input
                 type={showPassword ? 'text' : 'password'}
+                name="password"
+                autoComplete="current-password"
                 required
                 className="appearance-none block w-full pl-10 pr-11 py-3.5 bg-surface-bg border border-border-subtle rounded-xl text-text-main placeholder:text-text-muted/50 focus:outline-none focus:bg-card focus:border-accent focus:ring-4 focus:ring-accent/10 sm:text-sm transition-all"
                 placeholder="Password"

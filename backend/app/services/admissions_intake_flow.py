@@ -741,6 +741,34 @@ def _get_active_consultation_booking(db: Session, lead: Lead):
     )
 
 
+def _load_active_consultation_bookings_map(db: Session, lead_ids: list[int]) -> dict[int, Any]:
+    """Latest PENDING/SCHEDULED counselling booking per lead (avoids N+1 on queue payloads)."""
+    from app.models.counselling_booking import CounsellingBooking
+    from app.services.counselling_service import PENDING_STATUS, SCHEDULED_STATUS
+
+    if not lead_ids:
+        return {}
+
+    rows = (
+        db.query(CounsellingBooking)
+        .filter(
+            CounsellingBooking.lead_id.in_(lead_ids),
+            CounsellingBooking.status.in_([PENDING_STATUS, SCHEDULED_STATUS]),
+        )
+        .order_by(
+            CounsellingBooking.lead_id.asc(),
+            CounsellingBooking.updated_at.desc(),
+            CounsellingBooking.id.desc(),
+        )
+        .all()
+    )
+    by_lead: dict[int, Any] = {}
+    for row in rows:
+        if row.lead_id not in by_lead:
+            by_lead[row.lead_id] = row
+    return by_lead
+
+
 def _lead_has_active_consultation_booking(db: Session, lead: Lead) -> bool:
     if lead.consultation_scheduled_at:
         return True
@@ -753,6 +781,7 @@ def _build_consultation_session_profile_fields(
     *,
     step: str,
     context: dict[str, Any],
+    booking: Any | None = None,
 ) -> dict[str, Any | None]:
     from app.models.user import User
     from app.services.counselling_service import _format_admin_name
@@ -766,35 +795,47 @@ def _build_consultation_session_profile_fields(
     pending_time = str(context.get("pending_session_time_label") or "").strip() or None
     in_time_step = step == INTAKE_STEP_PICK_TIME
 
-    if in_time_step and selected_raw:
-        try:
-            session_date = pending_date or _format_slot_date(date.fromisoformat(str(selected_raw)))
-        except ValueError:
+    # Authoritative source: active counselling booking / scheduled timestamp.
+    # Do this first — intake can remain on PICK_TIME after a successful book +
+    # assign, and the "Pending selection" placeholder must not win.
+    resolved_booking = booking
+    if resolved_booking is None and db is not None:
+        resolved_booking = _get_active_consultation_booking(db, lead)
+
+    if resolved_booking and getattr(resolved_booking, "scheduled_time", None):
+        session_date = _format_slot_date(resolved_booking.scheduled_time.date())
+        session_time = _format_slot_time(resolved_booking.scheduled_time.strftime("%H:%M"))
+        if resolved_booking.admin_id and db is not None:
+            admin = db.query(User).filter(User.id == resolved_booking.admin_id).first()
+            if admin:
+                counsellor_name = _format_admin_name(admin)
+    else:
+        scheduled_at = getattr(lead, "consultation_scheduled_at", None)
+        if scheduled_at:
+            session_date = _format_slot_date(scheduled_at.date())
+            session_time = _format_slot_time(scheduled_at.strftime("%H:%M"))
+        elif in_time_step and selected_raw:
+            # Mid-picker: date chosen, waiting for (or confirming) a time.
+            try:
+                session_date = pending_date or _format_slot_date(date.fromisoformat(str(selected_raw)))
+            except ValueError:
+                session_date = pending_date
+            session_time = pending_time or "Pending selection"
+        elif pending_date or pending_time:
             session_date = pending_date
-        session_time = pending_time or "Pending selection"
+            session_time = pending_time
 
-    if not session_date or (not session_time and not in_time_step):
-        booking = _get_active_consultation_booking(db, lead) if db is not None else None
-        if booking:
-            session_date = session_date or _format_slot_date(booking.scheduled_time.date())
-            session_time = session_time or _format_slot_time(booking.scheduled_time.strftime("%H:%M"))
-            if booking.admin_id and db is not None:
-                admin = db.query(User).filter(User.id == booking.admin_id).first()
-                if admin:
-                    counsellor_name = _format_admin_name(admin)
-        else:
-            scheduled_at = getattr(lead, "consultation_scheduled_at", None)
-            if scheduled_at:
-                session_date = session_date or _format_slot_date(scheduled_at.date())
-                session_time = session_time or _format_slot_time(scheduled_at.strftime("%H:%M"))
-
-    if session_date and not session_time and in_time_step:
-        session_time = pending_time or "Pending selection"
+    appointment_status = "Not booked"
+    if session_date and session_time and session_time != "Pending selection":
+        appointment_status = "Booked"
+    elif session_date or getattr(lead, "consultation_scheduled_at", None) or resolved_booking:
+        appointment_status = "Pending"
 
     return {
         "consultation_session_date": session_date,
         "consultation_session_time": session_time,
         "assigned_counsellor_name": counsellor_name,
+        "appointment_status": appointment_status,
     }
 
 
@@ -1463,8 +1504,8 @@ async def process_intake_message(
             if _is_continue_greeting(text):
                 return IntakeReply(
                     text=(
-                        "Please *reply with the number* of your preferred consultation time "
-                        f"from the list we sent (1–{min(len(slots), 10)})."
+                        "Please *tap a time* from the consultation time menu we sent, "
+                        "or reply with your preferred time."
                     ),
                     suppress_outbound=False,
                 )
@@ -1910,16 +1951,30 @@ def _clear_booking_selection_context(context: dict[str, Any]) -> None:
     context.pop("reschedule_in_progress", None)
 
 
-def release_lead_consultation_slot(db: Session, lead: Lead) -> None:
-    from app.services.counselling_service import cancel_active_counselling_bookings_for_lead
+def release_lead_consultation_slot(
+    db: Session,
+    lead: Lead,
+    *,
+    alert_reason: str = "cancelled",
+) -> None:
+    from app.services.counselling_service import (
+        cancel_active_counselling_bookings_for_lead,
+        dispatch_admin_booking_release_alerts,
+    )
 
     slot = db.query(ConsultationSlot).filter(ConsultationSlot.lead_id == lead.id).first()
     if slot:
         slot.lead_id = None
     lead.consultation_scheduled_at = None
     lead.calendar_booking_id = None
-    cancel_active_counselling_bookings_for_lead(db, lead.id, commit=False)
+    snapshots = cancel_active_counselling_bookings_for_lead(
+        db,
+        lead.id,
+        commit=False,
+        alert_reason=alert_reason,
+    )
     db.commit()
+    dispatch_admin_booking_release_alerts(snapshots)
 
 
 def _reset_booking_intake_context(db: Session, lead: Lead) -> None:
@@ -2027,7 +2082,7 @@ def handle_post_intake_booking_message(db: Session, lead: Lead, incoming_text: s
 
     if is_cancel_command(text):
         had_booking = _lead_has_active_consultation_booking(db, lead)
-        release_lead_consultation_slot(db, lead)
+        release_lead_consultation_slot(db, lead, alert_reason="cancelled")
         _reset_booking_intake_context(db, lead)
         lead.intake_step = INTAKE_STEP_COMPLETE
         lead.wants_consultation_call = True
@@ -2241,7 +2296,9 @@ def _finalize_consultation_booking(
         if existing_slot:
             return IntakeReply(text="", suppress_outbound=True)
 
-    release_lead_consultation_slot(db, lead)
+    context = _load_context(lead)
+    release_reason = "rescheduled" if context.get("reschedule_in_progress") else "cancelled"
+    release_lead_consultation_slot(db, lead, alert_reason=release_reason)
 
     slot = (
         db.query(ConsultationSlot)
@@ -2564,6 +2621,7 @@ def build_intake_profile_summary(
     refresh_lead: bool = True,
     include_booking_options: bool = True,
     include_session_fields: bool = True,
+    active_booking: Any | None = None,
 ) -> dict[str, Any]:
     from app.services.lead_study_interest import study_interest_profile_fields
 
@@ -2602,9 +2660,23 @@ def build_intake_profile_summary(
     }
 
     if include_session_fields:
+        resolved_booking = active_booking
+        if resolved_booking is None and db is not None:
+            resolved_booking = _get_active_consultation_booking(db, lead)
         summary.update(
-            _build_consultation_session_profile_fields(db, lead, step=step, context=context)
+            _build_consultation_session_profile_fields(
+                db,
+                lead,
+                step=step,
+                context=context,
+                booking=resolved_booking,
+            )
         )
+        # Prefer booking timestamp when lead.consultation_scheduled_at drifted null.
+        if not summary.get("consultation_scheduled_at") and resolved_booking is not None:
+            scheduled = getattr(resolved_booking, "scheduled_time", None)
+            if scheduled is not None:
+                summary["consultation_scheduled_at"] = scheduled.isoformat()
 
     if db is None:
         return summary
@@ -2616,7 +2688,7 @@ def build_intake_profile_summary(
         summary["consultation_scheduled_at"] = (
             lead.consultation_scheduled_at.isoformat()
             if getattr(lead, "consultation_scheduled_at", None)
-            else None
+            else summary.get("consultation_scheduled_at")
         )
 
     if not include_booking_options:

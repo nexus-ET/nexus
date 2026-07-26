@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
-import { BookOpen, Briefcase, ClipboardList, FlaskConical, GraduationCap, Gauge, Link2, Loader2, Sparkles, User, X } from 'lucide-react';
+import { BookOpen, Briefcase, ClipboardList, FlaskConical, GraduationCap, Gauge, Link2, Loader2, School, Sparkles, User, X } from 'lucide-react';
 import MyAspirationsTab from './MyAspirationsTab';
 import ProfilePulseTab from './ProfilePulseTab';
 import CandidateTestScoresTab from './CandidateTestScoresTab';
@@ -10,6 +10,7 @@ import ResearchProjectsTab from './ResearchProjectsTab';
 import NonAcademicActivitiesTab from './NonAcademicActivitiesTab';
 import CandidateEducationsTab from './CandidateEducationsTab';
 import DigitalPresenceTab from './DigitalPresenceTab';
+import UniversityShortlistTab from './UniversityShortlistTab';
 import { apiFetch } from '../utils/api';
 import { useCountries, formatPhoneCountryLabel } from '../hooks/useCountries';
 import { useStatusDefinitions } from '../hooks/useStudentStatus';
@@ -34,6 +35,13 @@ import {
   type BookingRowForProfile,
 } from '../utils/candidateProfileLoader';
 import type { ProfilePanelTab } from '../types/profilePanel';
+import {
+  studentInfoFieldErrorClass as fieldErrorClass,
+  studentInfoInputClass as inputClass,
+  studentInfoLabelClass as labelClass,
+  studentInfoSectionClass as sectionClass,
+} from './studentInfoFormStyles';
+import { nexusDatePickerPortalProps } from '../utils/nexusDatePickerPortal';
 
 interface CandidateProfilePanelProps {
   booking: BookingRowForProfile;
@@ -46,15 +54,6 @@ interface CandidateProfilePanelProps {
 const FORM_TABS: ProfilePanelTab[] = ['profile'];
 
 const isFormTab = (tab: ProfilePanelTab): boolean => FORM_TABS.includes(tab);
-
-const inputClass =
-  'w-full rounded-md border border-border-subtle bg-card px-2.5 py-1.5 text-xs text-text-main focus:outline-none focus:ring-1 focus:ring-sky-400/40 min-h-[32px]';
-
-const labelClass = 'block text-[11px] font-bold text-text-main mb-1';
-
-const sectionClass = 'rounded-lg border border-border-subtle bg-card/80 p-3 space-y-3';
-
-const fieldErrorClass = 'mt-1 text-[10px] text-red-600';
 
 const RequiredLabel: React.FC<{ htmlFor?: string; children: React.ReactNode }> = ({
   htmlFor,
@@ -77,12 +76,12 @@ const phoneCountrySelectClass = (hasError: boolean) =>
 
 const phoneCountrySelectOptionalClass = `${inputClass} max-w-[7.5rem]`;
 
-const radioGroupClass = 'flex flex-wrap items-center gap-3 min-h-[32px]';
+const radioGroupClass = 'flex flex-wrap items-center gap-3 min-h-[36px]';
 const radioOptionClass =
-  'inline-flex items-center gap-1.5 text-xs text-text-main cursor-pointer';
+  'inline-flex items-center gap-1.5 text-sm text-text-main cursor-pointer';
 
 const radioBoxClass = (hasError: boolean) =>
-  `w-full rounded-md border bg-card px-2.5 py-1.5 ${radioGroupClass}${
+  `w-full rounded-md border bg-card px-3 py-2 ${radioGroupClass}${
     hasError ? ' border-red-400 ring-1 ring-red-200' : ' border-border-subtle'
   }`;
 
@@ -91,8 +90,8 @@ const PlaceholderTabSection: React.FC<{ title: string; description: string }> = 
   description,
 }) => (
   <section className={sectionClass}>
-    <h3 className="text-xs font-bold text-text-main uppercase tracking-wide">{title}</h3>
-    <p className="text-xs text-text-muted">{description}</p>
+    <h3 className="text-sm font-bold text-text-main uppercase tracking-wide">{title}</h3>
+    <p className="text-sm text-text-muted">{description}</p>
   </section>
 );
 
@@ -283,7 +282,7 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
   };
 
   const tabButtonClass = (tab: ProfilePanelTab) =>
-    `flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-md px-1 py-1.5 text-[11px] leading-tight text-center transition-colors ${
+    `flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-md px-1.5 py-2 text-sm leading-tight text-center transition-colors ${
       activeTab === tab
         ? 'font-bold bg-sky-100 text-sky-900 border border-sky-200'
         : 'font-semibold text-text-muted hover:text-text-main hover:bg-surface-bg border border-transparent'
@@ -301,7 +300,7 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
           className={tabButtonClass('profile_pulse')}
           onClick={() => setActiveTab('profile_pulse')}
         >
-          <Gauge size={12} className="shrink-0" />
+          <Gauge size={14} className="shrink-0" />
           <span>PROFILE PULSE</span>
         </button>
         <button
@@ -309,15 +308,15 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
           className={tabButtonClass('aspirations')}
           onClick={() => setActiveTab('aspirations')}
         >
-          <Sparkles size={12} className="shrink-0" />
+          <Sparkles size={14} className="shrink-0" />
           <span>ASPIRATIONS</span>
         </button>
         <button type="button" className={tabButtonClass('profile')} onClick={() => setActiveTab('profile')}>
-          <User size={12} className="shrink-0" />
+          <User size={14} className="shrink-0" />
           <span>PERSONAL PROFILE</span>
         </button>
         <button type="button" className={tabButtonClass('academia')} onClick={() => setActiveTab('academia')}>
-          <GraduationCap size={12} className="shrink-0" />
+          <GraduationCap size={14} className="shrink-0" />
           <span>ACADEMIA</span>
         </button>
         <button
@@ -325,7 +324,7 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
           className={tabButtonClass('non_academia')}
           onClick={() => setActiveTab('non_academia')}
         >
-          <BookOpen size={12} className="shrink-0" />
+          <BookOpen size={14} className="shrink-0" />
           <span>NON-ACADEMIA</span>
         </button>
         <button
@@ -333,7 +332,7 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
           className={tabButtonClass('digital_presence')}
           onClick={() => setActiveTab('digital_presence')}
         >
-          <Link2 size={12} className="shrink-0" />
+          <Link2 size={14} className="shrink-0" />
           <span>DIGITAL PRESENCE</span>
         </button>
         <button
@@ -341,7 +340,7 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
           className={tabButtonClass('test_scores')}
           onClick={() => setActiveTab('test_scores')}
         >
-          <ClipboardList size={12} className="shrink-0" />
+          <ClipboardList size={14} className="shrink-0" />
           <span>TEST SCORES</span>
         </button>
         <button
@@ -349,7 +348,7 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
           className={tabButtonClass('work_projects')}
           onClick={() => setActiveTab('work_projects')}
         >
-          <Briefcase size={12} className="shrink-0" />
+          <Briefcase size={14} className="shrink-0" />
           <span>PROFESSIONAL</span>
         </button>
         <button
@@ -357,8 +356,16 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
           className={tabButtonClass('projects_research')}
           onClick={() => setActiveTab('projects_research')}
         >
-          <FlaskConical size={12} className="shrink-0" />
+          <FlaskConical size={14} className="shrink-0" />
           <span>PROJECTS & RESEARCH</span>
+        </button>
+        <button
+          type="button"
+          className={tabButtonClass('university_shortlist')}
+          onClick={() => setActiveTab('university_shortlist')}
+        >
+          <School size={14} className="shrink-0" />
+          <span>SHORTLIST</span>
         </button>
       </div>
 
@@ -396,6 +403,10 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
         <div className="flex flex-1 min-h-0 flex-col px-4 py-4">
           <ResearchProjectsTab bookingId={booking.id} compact />
         </div>
+      ) : activeTab === 'university_shortlist' ? (
+        <div className="flex flex-1 min-h-0 flex-col px-4 py-4">
+          <UniversityShortlistTab bookingId={booking.id} compact />
+        </div>
       ) : isFormTab(activeTab) ? (
         loading ? (
           <div className="flex flex-1 items-center justify-center text-text-muted">
@@ -406,19 +417,19 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
         <form onSubmit={handleSubmit} className="flex flex-1 min-h-0 flex-col">
           <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-4 py-4 space-y-4">
             {error ? (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                 {error}
               </div>
             ) : null}
             {success ? (
-              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
                 {success}
               </div>
             ) : null}
 
             {activeTab === 'profile' ? (
             <section className={sectionClass}>
-              <h3 className="text-xs font-bold text-text-main uppercase tracking-wide">
+              <h3 className="text-sm font-bold text-text-main uppercase tracking-wide">
                 Personal Profile
               </h3>
 
@@ -477,13 +488,11 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
                     className={fieldClass(Boolean(fieldErrors.date_of_birth))}
                     wrapperClassName="w-full"
                     calendarClassName="nexus-roster-datepicker"
-                    popperClassName="nexus-datepicker-popper"
-                    portalId="nexus-datepicker-portal"
+                    {...nexusDatePickerPortalProps}
                     showYearDropdown
                     scrollableYearDropdown
                     yearDropdownItemNumber={80}
                     maxDate={new Date()}
-                    popperProps={{ strategy: 'fixed' }}
                     autoComplete="off"
                   />
                   {fieldErrors.date_of_birth ? (
@@ -627,7 +636,7 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
               </div>
 
               <div className="border-t border-border-subtle pt-3 space-y-3">
-                <h4 className="text-[10px] font-bold uppercase tracking-wide text-text-main">
+                <h4 className="text-sm font-bold uppercase tracking-wide text-text-main">
                   Location Details
                 </h4>
                 <div className="grid grid-cols-3 gap-2">
@@ -737,19 +746,19 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
 
           </div>
 
-          <div className="shrink-0 flex items-center justify-end gap-2 border-t border-border-subtle bg-surface-bg/70 px-4 py-3">
+          <div className="shrink-0 relative z-0 flex items-center justify-end gap-2 border-t border-border-subtle bg-surface-bg/70 px-4 py-3">
             <button
               type="button"
               onClick={handleCancel}
               disabled={saving}
-              className="rounded-md border border-border-subtle px-4 py-2 text-xs font-semibold text-text-main hover:bg-card disabled:opacity-60"
+              className="rounded-md border border-border-subtle px-4 py-2 text-sm font-semibold text-text-main hover:bg-card disabled:opacity-60"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={saving}
-              className="rounded-md bg-sky-700 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-800 disabled:opacity-60 inline-flex items-center gap-2"
+              className="rounded-md bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800 disabled:opacity-60 inline-flex items-center gap-2"
             >
               {saving ? <Loader2 size={14} className="animate-spin" /> : null}
               Submit
@@ -771,18 +780,18 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
     <aside className="flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden bg-card">
       <div className="shrink-0 flex items-start justify-between gap-3 border-b border-border-subtle bg-surface-bg/60 px-4 py-3">
         <div className="min-w-0">
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">View Profile</p>
+          <p className="text-sm font-semibold uppercase tracking-wide text-text-muted">View Profile</p>
           <h2 className="text-base font-bold text-text-main truncate flex items-center gap-2 mt-1">
             <User size={16} className="text-sky-700 shrink-0" />
             {profileFullName || booking.candidate_name}
           </h2>
           {dateLabel && timeLabel ? (
-            <p className="text-[11px] text-text-muted mt-0.5">
+            <p className="text-sm text-text-muted mt-0.5">
               {dateLabel} · {timeLabel}
             </p>
           ) : null}
           {savedAt && isFormTab(activeTab) ? (
-            <p className="text-[10px] text-emerald-700 mt-1">
+            <p className="text-sm text-emerald-700 mt-1">
               Last saved {new Date(savedAt).toLocaleString()}
             </p>
           ) : null}

@@ -54,10 +54,16 @@ def register_all_models() -> None:
     from app.models.status_transition import StatusTransition  # noqa: F401
     from app.models.students_master import StudentsMaster  # noqa: F401
     from app.models.sync_log import SyncLog  # noqa: F401
+    from app.models.exception_log import ExceptionLog  # noqa: F401
     from app.models.system_log import SystemLog  # noqa: F401
     from app.models.target_course import TargetCourse  # noqa: F401
     from app.models.target_program import TargetProgram  # noqa: F401
     from app.models.team_chat_message import TeamChatMessage  # noqa: F401
+    from app.models.university_matching import (  # noqa: F401
+        MatchingShortlistItem,
+        MatchingShortlistRun,
+        MatchingWeightProfile,
+    )
     from app.models.user import User  # noqa: F401
     from app.models.work_experience import WorkExperience, WorkProject  # noqa: F401
     from app.models.academia_geography import GeographyCity, GeographyState  # noqa: F401

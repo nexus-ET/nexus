@@ -2,6 +2,10 @@ import { useEffect, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { ProspectListItem } from '../../types/prospect';
 import { formatProspectDate, platformBadgeStyle } from '../../utils/prospectMessages';
+import HeadlessScrollArea, {
+  type HeadlessScrollAreaHandle,
+} from '../HeadlessScrollArea';
+import QueuePaginationControls from '../QueuePaginationControls';
 
 const ROW_HEIGHT = 76;
 
@@ -10,9 +14,11 @@ type ProspectsListPanelProps = {
   selectedLeadId: number | null;
   onSelect: (leadId: number) => void;
   isLoading: boolean;
-  isFetchingNextPage: boolean;
-  hasNextPage: boolean;
-  fetchNextPage: () => void;
+  page: number;
+  totalPages: number;
+  hasMorePages: boolean;
+  onPageChange: (page: number) => void;
+  filteredTotal?: number;
   errorMessage?: string | null;
   scrollStorageKey: string;
   hidden?: boolean;
@@ -31,21 +37,21 @@ export default function ProspectsListPanel({
   selectedLeadId,
   onSelect,
   isLoading,
-  isFetchingNextPage,
-  hasNextPage,
-  fetchNextPage,
+  page,
+  totalPages,
+  hasMorePages,
+  onPageChange,
+  filteredTotal = 0,
   errorMessage,
   scrollStorageKey,
   hidden = false,
 }: ProspectsListPanelProps) {
-  const parentRef = useRef<HTMLDivElement | null>(null);
+  const scrollAreaRef = useRef<HeadlessScrollAreaHandle | null>(null);
   const restoredRef = useRef(false);
 
-  const rowCount = hasNextPage ? items.length + 1 : items.length;
-
   const virtualizer = useVirtualizer({
-    count: rowCount,
-    getScrollElement: () => parentRef.current,
+    count: items.length,
+    getScrollElement: () => scrollAreaRef.current?.getViewport() ?? null,
     estimateSize: () => ROW_HEIGHT,
     overscan: 10,
   });
@@ -57,32 +63,51 @@ export default function ProspectsListPanel({
   }, [scrollStorageKey]);
 
   useEffect(() => {
-    if (restoredRef.current || isLoading || !parentRef.current) return;
+    const viewport = scrollAreaRef.current?.getViewport();
+    if (restoredRef.current || isLoading || !viewport) return;
     const saved = sessionStorage.getItem(scrollStorageKey);
     if (saved) {
-      parentRef.current.scrollTop = Number(saved);
+      viewport.scrollTop = Number(saved);
     }
     restoredRef.current = true;
   }, [isLoading, items.length, scrollStorageKey]);
 
   useEffect(() => {
-    const lastItem = virtualItems.at(-1);
-    if (!lastItem) return;
-    if (lastItem.index >= items.length - 1 && hasNextPage && !isFetchingNextPage) {
-      fetchNextPage();
-    }
-  }, [virtualItems, items.length, hasNextPage, isFetchingNextPage, fetchNextPage]);
+    const viewport = scrollAreaRef.current?.getViewport();
+    if (!viewport) return;
+    viewport.scrollTop = 0;
+    sessionStorage.setItem(scrollStorageKey, '0');
+  }, [page, scrollStorageKey]);
 
   const handleSelect = (leadId: number) => {
-    if (parentRef.current) {
-      sessionStorage.setItem(scrollStorageKey, String(parentRef.current.scrollTop));
+    const viewport = scrollAreaRef.current?.getViewport();
+    if (viewport) {
+      sessionStorage.setItem(scrollStorageKey, String(viewport.scrollTop));
     }
     onSelect(leadId);
   };
 
+  const showPagination = !isLoading && !errorMessage && (filteredTotal > 0 || items.length > 0);
+
   return (
     <aside className={`prospects-list-panel${hidden ? ' prospects-list-panel--hidden' : ''}`}>
-      <div ref={parentRef} className="prospects-list-panel__scroll custom-scroll-region">
+      {showPagination ? (
+        <QueuePaginationControls
+          page={page}
+          totalPages={totalPages}
+          hasMorePages={hasMorePages}
+          disabled={isLoading}
+          onPageChange={onPageChange}
+          className="prospects-list-panel__pagination prospects-list-panel__pagination--top"
+          buttonClassName="prospects-list-panel__page-btn"
+          metaClassName="prospects-list-panel__page-meta"
+        />
+      ) : null}
+
+      <HeadlessScrollArea
+        ref={scrollAreaRef}
+        className="prospects-list-panel__scroll"
+      >
         {errorMessage ? (
           <div className="prospects-empty">{errorMessage}</div>
         ) : isLoading ? (
@@ -98,8 +123,8 @@ export default function ProspectsListPanel({
             }}
           >
             {virtualItems.map(virtualRow => {
-              const isLoaderRow = virtualRow.index >= items.length;
               const item = items[virtualRow.index];
+              if (!item) return null;
 
               return (
                 <div
@@ -113,43 +138,37 @@ export default function ProspectsListPanel({
                     transform: `translateY(${virtualRow.start}px)`,
                   }}
                 >
-                  {isLoaderRow ? (
-                    <div className="prospects-list-panel__sentinel">
-                      {isFetchingNextPage ? 'Loading more...' : 'Scroll for more'}
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      className={`prospects-list-item${item.id === selectedLeadId ? ' is-active' : ''}`}
-                      onClick={() => handleSelect(item.id)}
-                    >
-                      <div className="prospects-list-item__top">
-                        <span className="prospects-list-item__name">{item.full_name}</span>
-                        <div className="prospects-list-item__badges">
-                          {item.platform_badge ? (
-                            <span
-                              className="prospects-list-item__badge"
-                              style={platformBadgeStyle(item.platform_badge)}
-                            >
-                              {item.platform_badge}
-                            </span>
-                          ) : null}
-                          <span className="prospects-list-item__stage">
-                            {formatStageLabel(item.stage)}
+                  <button
+                    type="button"
+                    className={`prospects-list-item${item.id === selectedLeadId ? ' is-active' : ''}`}
+                    onClick={() => handleSelect(item.id)}
+                  >
+                    <div className="prospects-list-item__top">
+                      <span className="prospects-list-item__name">{item.full_name}</span>
+                      <div className="prospects-list-item__badges">
+                        {item.platform_badge ? (
+                          <span
+                            className="prospects-list-item__badge"
+                            style={platformBadgeStyle(item.platform_badge)}
+                          >
+                            {item.platform_badge}
                           </span>
-                        </div>
+                        ) : null}
+                        <span className="prospects-list-item__stage">
+                          {formatStageLabel(item.stage)}
+                        </span>
                       </div>
-                      <div className="prospects-list-item__meta">
-                        <span>{formatProspectDate(item.received_at)}</span>
-                      </div>
-                    </button>
-                  )}
+                    </div>
+                    <div className="prospects-list-item__meta">
+                      <span>{formatProspectDate(item.received_at)}</span>
+                    </div>
+                  </button>
                 </div>
               );
             })}
           </div>
         )}
-      </div>
+      </HeadlessScrollArea>
     </aside>
   );
 }

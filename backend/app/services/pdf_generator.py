@@ -16,6 +16,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 from sqlalchemy.orm import Session
 
 from app.schemas.sync_log import SyncLogOut
+from app.schemas.exception_log import ExceptionLogOut
 from app.services.audit_context import format_audit_details_for_display
 from app.services.business_profile_service import DEFAULT_BUSINESS_ID, get_business_profile
 from app.services.settings_service import get_setting
@@ -297,6 +298,166 @@ def generate_sync_logs_pdf(
                 ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
                 ("ALIGN", (0, 0), (-1, 0), "LEFT"),
                 ("ALIGN", (5, 1), (6, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e2e8f0")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.append(table)
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
+def _format_exception_source(source: str | None) -> str:
+    mapping = {
+        "meta_lead_sync": "Meta Sync",
+        "api_client": "Browser",
+        "backend": "Backend",
+        "scheduler": "Scheduler",
+        "webhook": "Webhook",
+        "proxy_timeout": "Proxy/Timeout",
+    }
+    key = (source or "").strip().lower()
+    return mapping.get(key, source or "—")
+
+
+def _build_exception_table_rows(logs: list[ExceptionLogOut], db: Session) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for log in logs:
+        message = log.message or "—"
+        if log.resolution_comment:
+            message = f"{message}\nResolution: {log.resolution_comment}"
+        rows.append(
+            [
+                _format_timestamp(log.attempt_timestamp, db),
+                (log.severity or "—").upper(),
+                _format_exception_source(log.source),
+                _truncate(log.triggered_by_user, max_len=28),
+                (log.status or "—").upper(),
+                _truncate(log.category, max_len=24),
+                _truncate(log.related_id, max_len=16),
+                _truncate(message, max_len=90),
+            ]
+        )
+    return rows
+
+
+def generate_exception_logs_pdf(
+    db: Session,
+    *,
+    logs: list[ExceptionLogOut],
+    start_date: datetime | None,
+    end_date: datetime | None,
+    sort_by: str,
+    sort_order: Literal["asc", "desc"],
+    generated_at: datetime | None = None,
+) -> bytes:
+    """Build a professional PDF export for the Exception Report dataset."""
+    business_name = _cached_business_name(db)
+    generated = generated_at or datetime.utcnow()
+    range_label = _format_range_label(start_date, end_date)
+    sort_label = f"{sort_by.replace('_', ' ')} ({sort_order.upper()})"
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=_PAGE_SIZE,
+        leftMargin=_MARGIN,
+        rightMargin=_MARGIN,
+        topMargin=_MARGIN,
+        bottomMargin=0.75 * inch,
+        title="Exception Report",
+        author=business_name,
+        canvasmaker=_NumberedCanvas,
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=16,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=4,
+    )
+    subtitle_style = ParagraphStyle(
+        "ReportSubtitle",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=10,
+        textColor=colors.HexColor("#475569"),
+        leading=14,
+        spaceAfter=6,
+    )
+    meta_style = ParagraphStyle(
+        "ReportMeta",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9,
+        textColor=colors.HexColor("#64748b"),
+        leading=12,
+    )
+
+    story = [
+        Paragraph(business_name, ParagraphStyle(
+            "BusinessName",
+            parent=styles["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=11,
+            textColor=colors.HexColor("#334155"),
+            spaceAfter=8,
+        )),
+        Paragraph("Exception Report — Full Export", title_style),
+        Paragraph(f"Report period: {range_label}", subtitle_style),
+        Paragraph(
+            f"Generated {_format_timestamp(generated, db)} · "
+            f"{len(logs):,} record{'s' if len(logs) != 1 else ''} · "
+            f"Sorted by {sort_label}",
+            meta_style,
+        ),
+        Spacer(1, 0.18 * inch),
+    ]
+
+    headers = [
+        "Occurred",
+        "Severity",
+        "Source",
+        "Triggered By",
+        "Status",
+        "Category",
+        "Related",
+        "Message",
+    ]
+    table_data = [headers] + _build_exception_table_rows(logs, db)
+
+    col_widths = [
+        1.05 * inch,
+        0.72 * inch,
+        0.72 * inch,
+        1.05 * inch,
+        0.68 * inch,
+        0.78 * inch,
+        0.58 * inch,
+        3.05 * inch,
+    ]
+
+    table = Table(table_data, colWidths=col_widths, repeatRows=1)
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#18181b")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 8),
+                ("FONTSIZE", (0, 1), (-1, -1), 7),
+                ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                ("ALIGN", (0, 0), (-1, 0), "LEFT"),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e2e8f0")),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),

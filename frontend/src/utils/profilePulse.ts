@@ -393,6 +393,8 @@ export function buildProfilePulseSnapshot(input: {
     test_scores: () => evaluateTestScores(input.testScores),
     work_projects: () => evaluateProfessional(input.workExperiences ?? []),
     projects_research: () => evaluateResearch(input.researchProjects ?? []),
+    university_shortlist: () =>
+      sectionResult('action_required', 'Generate a soft university shortlist when ready.'),
   };
 
   const sections: ProfilePulseSection[] = SECTION_ORDER.map(section => {

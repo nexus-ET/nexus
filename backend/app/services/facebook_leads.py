@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -160,13 +161,35 @@ def _graph_get_json(url: str, *, params: dict[str, Any] | None = None) -> dict[s
     with httpx.Client(timeout=30.0) as client:
         response = client.get(url, params=params)
         if response.status_code >= 400:
-            raise RuntimeError(
-                f"Meta Graph request failed ({response.status_code}): {response.text}"
-            )
+            raise RuntimeError(_format_graph_http_error(response.status_code, response.text))
         data = response.json()
         if not isinstance(data, dict):
             raise RuntimeError("Meta Graph request returned non-object JSON.")
         return data
+
+
+def _format_graph_http_error(status_code: int, body: str) -> str:
+    from app.services.lead_sync_errors import META_RATE_LIMIT_USER_MESSAGE, is_meta_rate_limit_error
+
+    raw = f"Meta Graph request failed ({status_code}): {body}"
+    if is_meta_rate_limit_error(raw):
+        return META_RATE_LIMIT_USER_MESSAGE
+    return raw
+
+
+def _append_preflight_finding(findings: list[str], message: str) -> bool:
+    """Append a finding; return True when Meta rate-limit means stop further Graph calls."""
+    from app.services.lead_sync_errors import (
+        META_RATE_LIMIT_USER_MESSAGE,
+        is_meta_rate_limit_error,
+    )
+
+    if is_meta_rate_limit_error(message):
+        if META_RATE_LIMIT_USER_MESSAGE not in findings:
+            findings.append(META_RATE_LIMIT_USER_MESSAGE)
+        return True
+    findings.append(message)
+    return False
 
 
 META_LEADS_REQUIRED_SCOPES = (
@@ -184,6 +207,7 @@ def diagnose_meta_leads_access(
     Pre-flight checks for Meta Lead Ads backfill.
 
     Returns a list of human-readable findings (empty means basic checks passed).
+    Stops early on Meta rate-limit (#4) so we do not burn more Graph quota.
     """
     findings: list[str] = []
     token = access_token.strip()
@@ -195,7 +219,7 @@ def diagnose_meta_leads_access(
             params={"input_token": token, "access_token": token},
         )
     except RuntimeError as exc:
-        findings.append(f"Token validation failed: {exc}")
+        _append_preflight_finding(findings, f"Token validation failed: {exc}")
         return findings
 
     debug_data = (debug_payload.get("data") or {}) if isinstance(debug_payload, dict) else {}
@@ -215,55 +239,68 @@ def diagnose_meta_leads_access(
         )
 
     try:
-        _graph_get_json(
-            f"{META_GRAPH_API_BASE}/{page}",
-            params={"fields": "id,name", "access_token": token},
-        )
-    except RuntimeError as exc:
-        findings.append(
-            f"Cannot read Facebook Page {page}: {exc}. "
-            "Verify META_PAGE_ID is the Facebook Page ID (not WhatsApp Business Account ID) "
-            "and assign this Page to your System User in Meta Business Manager."
-        )
-
-    try:
-        accounts_payload = _graph_get_json(
-            f"{META_GRAPH_API_BASE}/me/accounts",
-            params={"fields": "id,name", "access_token": token, "limit": 25},
-        )
-        pages = accounts_payload.get("data") or []
-        if isinstance(pages, list) and not pages:
-            findings.append(
-                "Token has no accessible Facebook Pages (/me/accounts is empty). "
-                "Assign the Page asset to your System User, then regenerate the token."
-            )
-        elif isinstance(pages, list):
-            page_ids = {str(item.get("id")) for item in pages if isinstance(item, dict)}
-            if page not in page_ids:
-                available = ", ".join(
-                    f"{item.get('name')} ({item.get('id')})"
-                    for item in pages
-                    if isinstance(item, dict) and item.get("id")
-                )
-                findings.append(
-                    f"Page {page} is not in the token's accessible pages. Available: {available or 'none'}."
-                )
-    except RuntimeError as exc:
-        findings.append(f"Could not list accessible pages: {exc}")
-
-    try:
         page_token = resolve_page_access_token(page, token)
         _graph_get_json(
             f"{META_GRAPH_API_BASE}/{page}/leadgen_forms",
             params={"fields": "id", "limit": 1, "access_token": page_token},
         )
     except RuntimeError as exc:
-        findings.append(
-            f"Leadgen API check failed: {exc}. "
-            "Lead Ads endpoints require a Page Access Token derived from your System User token."
-        )
+        if _append_preflight_finding(
+            findings,
+            f"Leadgen API check failed for Facebook Page {page}: {exc}. "
+            "Lead Ads endpoints require a Page Access Token derived from your System User token. "
+            "Verify META_PAGE_ID is the Facebook Page ID (not the WhatsApp Business Account ID) "
+            "and that this Page is assigned to your System User in Meta Business Manager.",
+        ):
+            return findings
+        _append_accessible_pages_hint(findings, page, token)
 
     return findings
+
+
+def _append_accessible_pages_hint(findings: list[str], page: str, token: str) -> None:
+    """
+    Best-effort diagnostic listing Pages the token can reach.
+
+    Uses the app-level /me/accounts endpoint, so it only runs after a real
+    failure — never on the happy path where it would waste app-level quota.
+    """
+    try:
+        accounts_payload = _graph_get_json(
+            f"{META_GRAPH_API_BASE}/me/accounts",
+            params={"fields": "id,name", "access_token": token, "limit": 25},
+        )
+    except RuntimeError:
+        return
+
+    pages = accounts_payload.get("data") or []
+    if not isinstance(pages, list):
+        return
+
+    if not pages:
+        findings.append(
+            "Token has no accessible Facebook Pages (/me/accounts is empty). "
+            "Assign the Page asset to your System User, then regenerate the token."
+        )
+        return
+
+    page_ids = {str(item.get("id")) for item in pages if isinstance(item, dict)}
+    if page in page_ids:
+        return
+
+    available = ", ".join(
+        f"{item.get('name')} ({item.get('id')})"
+        for item in pages
+        if isinstance(item, dict) and item.get("id")
+    )
+    findings.append(
+        f"Page {page} is not in the token's accessible pages. Available: {available or 'none'}."
+    )
+
+
+_PAGE_TOKEN_CACHE_TTL_SECONDS = 900
+_page_token_cache: dict[str, tuple[str, float]] = {}
+_page_token_cache_lock = threading.Lock()
 
 
 def resolve_page_access_token(page_id: str, access_token: str) -> str:
@@ -272,37 +309,63 @@ def resolve_page_access_token(page_id: str, access_token: str) -> str:
 
     Meta requires a Page token (not a bare System User token) for
     /{page_id}/leadgen_forms and /{form_id}/leads.
+
+    Resolves via the page-scoped edge first. /me/accounts counts against the
+    app-level rate limit, which a low-traffic app exhausts quickly and which
+    returns "(#4) Application request limit reached" even while page-scoped
+    (business use case) quota is untouched.
     """
     page = page_id.strip()
     token = access_token.strip()
     if not page or not token:
         raise RuntimeError("page_id and access_token are required to resolve a Page Access Token.")
 
-    accounts_payload = _graph_get_json(
-        f"{META_GRAPH_API_BASE}/me/accounts",
-        params={"fields": "id,access_token", "access_token": token, "limit": 100},
-    )
-    for item in accounts_payload.get("data") or []:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("id") or "").strip() != page:
-            continue
-        page_token = _optional_str(item.get("access_token"))
-        if page_token:
-            return page_token
+    cache_key = f"{page}:{token[-12:]}"
+    now = time.monotonic()
+    with _page_token_cache_lock:
+        cached = _page_token_cache.get(cache_key)
+        if cached and cached[1] > now:
+            return cached[0]
 
-    page_payload = _graph_get_json(
-        f"{META_GRAPH_API_BASE}/{page}",
-        params={"fields": "access_token", "access_token": token},
-    )
-    page_token = _optional_str(page_payload.get("access_token"))
-    if page_token:
-        return page_token
+    page_token: str | None = None
+    page_scoped_error: RuntimeError | None = None
+    try:
+        page_payload = _graph_get_json(
+            f"{META_GRAPH_API_BASE}/{page}",
+            params={"fields": "access_token", "access_token": token},
+        )
+        page_token = _optional_str(page_payload.get("access_token"))
+    except RuntimeError as exc:
+        page_scoped_error = exc
 
-    raise RuntimeError(
-        f"Could not obtain a Page Access Token for page_id={page}. "
-        "Assign the Page to your System User in Business Manager, then regenerate the token."
-    )
+    if not page_token:
+        try:
+            accounts_payload = _graph_get_json(
+                f"{META_GRAPH_API_BASE}/me/accounts",
+                params={"fields": "id,access_token", "access_token": token, "limit": 100},
+            )
+        except RuntimeError as exc:
+            raise page_scoped_error or exc
+        for item in accounts_payload.get("data") or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("id") or "").strip() != page:
+                continue
+            page_token = _optional_str(item.get("access_token"))
+            if page_token:
+                break
+
+    if not page_token:
+        if page_scoped_error is not None:
+            raise page_scoped_error
+        raise RuntimeError(
+            f"Could not obtain a Page Access Token for page_id={page}. "
+            "Assign the Page to your System User in Business Manager, then regenerate the token."
+        )
+
+    with _page_token_cache_lock:
+        _page_token_cache[cache_key] = (page_token, now + _PAGE_TOKEN_CACHE_TTL_SECONDS)
+    return page_token
 
 
 def _iter_graph_paginated(

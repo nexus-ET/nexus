@@ -42,6 +42,7 @@ const ROUTE_LABELS: Record<string, string> = {
   '/my-profile': 'My Profile',
   '/settings': 'Cockpit > Application Settings',
   '/reports/meta-leads': 'Reports > Meta Leads',
+  '/reports/exceptions': 'Reports > Exception Report',
   '/reports/audit-logs': 'Reports > Audit Logs',
   '/quarantine': 'Manage Leads > Lead Quarantine',
   '/security-audit': 'Cockpit > Security Audit',

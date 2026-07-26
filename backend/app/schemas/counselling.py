@@ -40,6 +40,7 @@ class PendingBookingOut(BaseModel):
     candidate_phone: str | None = None
     notes: str | None = None
     status: BookingStatus
+    lead_id: int | None = None
 
 
 class UpcomingDateGroupOut(BaseModel):
@@ -130,6 +131,7 @@ class GridPendingOut(BaseModel):
     candidate_name: str
     scheduled_time: datetime
     notes: str | None = None
+    lead_id: int | None = None
 
 
 class GridPendingQueueSlotOut(BaseModel):
@@ -139,10 +141,12 @@ class GridPendingQueueSlotOut(BaseModel):
 
 class GridAdminCellOut(BaseModel):
     admin_id: int
+    admin_name: str | None = None
     status: AdminCellStatus
     label: str
     candidate_name: str | None = None
     booking_id: int | None = None
+    lead_id: int | None = None
 
 
 class GridRowOut(BaseModel):
@@ -339,3 +343,4 @@ class ScheduleGridResponse(BaseModel):
     focus_date: date
     calendar_today: date
     navigation: ScheduleNavigationOut
+

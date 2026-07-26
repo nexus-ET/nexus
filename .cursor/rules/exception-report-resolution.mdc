@@ -1,0 +1,42 @@
+---
+description: Auto-fill Exception Report resolution comments when Cursor fixes issues
+alwaysApply: true
+---
+
+# Exception Report — auto resolution comments
+
+When you fix a bug that has (or will create) rows in **Reports → Exception Report**, resolve those exceptions with an automatic resolution comment. Do not leave matching OPEN rows unexplained.
+
+## After a fix lands
+
+Prefer the service helper (same DB session as your verification script):
+
+```python
+from app.services.exception_log_service import auto_resolve_by_cursor
+
+auto_resolve_by_cursor(
+    db,
+    exception_ids=[...],  # preferred when known
+    # or message_fragments=("rate limit",), sources={"meta_lead_sync"},
+    detail="One sentence on what you changed.",
+)
+```
+
+Or call the API (authenticated admin):
+
+`POST /api/v1/reports/exception-logs/auto-resolve`
+`{"mode":"cursor_agent","exception_ids":[5],"detail":"Fixed page-token lookup off /me/accounts."}`
+
+Or patch a single row with auto comment:
+
+`PATCH /api/v1/reports/exception-logs/{id}/status`
+`{"status":"RESOLVED","resolved_by":"cursor_agent","resolution_comment":null}`
+(optional `detail` via a non-null `resolution_comment` override)
+
+## Already automatic (do not duplicate)
+
+- **Server recovery** — stranded Meta sync lock recovery auto-resolves “already in progress” rows
+- **Successful Meta sync** — auto-resolves open Meta Graph / lead_sync_failure rows
+- **Page refresh** — transient UI/network/timeout client exceptions auto-resolve once per tab session
+
+Manual admin Resolve in the UI still requires a typed comment.

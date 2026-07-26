@@ -37,7 +37,7 @@ const LeadStudyInterestPanel: React.FC<LeadStudyInterestPanelProps> = ({ lead, c
 
   const labelStyle: React.CSSProperties = {
     display: 'block',
-    fontSize: '11px',
+    fontSize: '13px',
     fontWeight: 700,
     letterSpacing: '0.04em',
     textTransform: 'uppercase',
@@ -73,7 +73,7 @@ const LeadStudyInterestPanel: React.FC<LeadStudyInterestPanelProps> = ({ lead, c
               alignItems: 'center',
               borderRadius: '999px',
               padding: '4px 10px',
-              fontSize: '11px',
+              fontSize: '13px',
               fontWeight: 700,
               color: '#047857',
               background: '#ecfdf5',

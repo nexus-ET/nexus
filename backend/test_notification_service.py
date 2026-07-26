@@ -20,7 +20,8 @@ from app.services.notification_service import (
 
 def test_build_appointment_management_reply_includes_buttons() -> None:
     reply = build_appointment_management_reply()
-    assert "reschedule or cancel" in reply.text.lower()
+    assert "reschedule" in reply.text.lower()
+    assert "cancel" in reply.text.lower()
     assert reply.quick_reply is not None
     action_ids = [action["id"] for action in reply.quick_reply.actions]
     assert action_ids == [BOOKING_RESCHEDULE_BUTTON_ID, BOOKING_CANCEL_BUTTON_ID]
@@ -121,3 +122,175 @@ def test_send_whatsapp_confirmation_sends_management_buttons_after_confirm() -> 
         lead_id=27,
         candidate_phone="+918754545407",
     )
+
+
+def test_build_admin_assignment_whatsapp_message_is_lean_alert() -> None:
+    from app.services.notification_service import _build_admin_assignment_whatsapp_message
+
+    booking = SimpleNamespace(
+        id=42,
+        scheduled_time=datetime(2026, 7, 24, 15, 30),
+        candidate_name="Aisha Khan",
+        candidate_phone="+919876543210",
+        candidate_email="aisha@example.com",
+        status="SCHEDULED",
+        notes="Prefers evening follow-up",
+        lead_id=99,
+    )
+    db = MagicMock()
+
+    with patch("app.config.settings.FRONTEND_URL", "https://app.example.com"):
+        message = _build_admin_assignment_whatsapp_message(
+            db,
+            admin_name="Ishq Ahmed",
+            booking=booking,
+            lead=None,
+        )
+
+    assert "Hi Ishq Ahmed" in message
+    assert "New booking assigned to you." in message
+    assert "Aisha Khan" in message
+    assert "Booking #42" in message
+    assert "https://app.example.com/prospects/99" in message
+    assert "IELTS" not in message
+    assert "Prefers evening follow-up" not in message
+
+
+def test_morning_digest_and_nudge_message_builders() -> None:
+    from app.services.admin_session_reminders import (
+        build_morning_digest_message,
+        build_session_nudge_message,
+        build_cancel_alert_message,
+        build_reschedule_alert_message,
+    )
+
+    booking = SimpleNamespace(
+        id=7,
+        scheduled_time=datetime(2026, 7, 24, 10, 0),
+        candidate_name="Ravi",
+        lead_id=5,
+    )
+
+    with patch("app.config.settings.FRONTEND_URL", "https://app.example.com"):
+        digest = build_morning_digest_message(
+            admin_name="Counsellor",
+            day_label="Fri, Jul 24 2026",
+            bookings=[booking],
+        )
+        nudge = build_session_nudge_message(
+            admin_name="Counsellor",
+            booking=booking,
+            minutes=15,
+        )
+        cancel = build_cancel_alert_message(
+            admin_name="Counsellor",
+            candidate_name="Ravi",
+            scheduled_time=booking.scheduled_time,
+            booking_id=7,
+            lead_id=5,
+        )
+        reschedule = build_reschedule_alert_message(
+            admin_name="Counsellor",
+            candidate_name="Ravi",
+            previous_time=booking.scheduled_time,
+            booking_id=7,
+            lead_id=5,
+        )
+
+    assert "Your counselling schedule" in digest
+    assert "Ravi" in digest
+    assert "in 15 mins" in nudge
+    assert "cancelled" in cancel.lower()
+    assert "rescheduled" in reschedule.lower()
+
+
+def test_send_whatsapp_admin_assignment_sends_to_admin_phone() -> None:
+    db = MagicMock()
+    service = NotificationService(db)
+    booking = SimpleNamespace(
+        id=55,
+        scheduled_time=datetime(2026, 7, 24, 11, 0),
+        candidate_name="Ravi",
+        candidate_phone="+911111111111",
+        candidate_email=None,
+        status="SCHEDULED",
+        notes=None,
+        lead_id=None,
+    )
+    admin = SimpleNamespace(id=7, phone_number="+918888888888")
+
+    with (
+        patch(
+            "app.services.notification_service._build_admin_assignment_whatsapp_message",
+            return_value="Hi Counsellor, assignment details",
+        ),
+        patch(
+            "app.services.settings_service.get_bool_setting",
+            return_value=True,
+        ),
+        patch(
+            "app.services.notification_service.send_message",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as send_message,
+        patch.object(service, "_log_attempt") as log_attempt,
+    ):
+        status = asyncio.run(
+            service.send_whatsapp_admin_assignment(
+                booking=booking,
+                admin=admin,
+                admin_name="Counsellor",
+                lead=None,
+            )
+        )
+
+    assert status == "sent"
+    send_message.assert_awaited_once_with("+918888888888", "Hi Counsellor, assignment details")
+    log_attempt.assert_called_once()
+    assert log_attempt.call_args.kwargs["channel"] == "whatsapp_admin"
+    assert log_attempt.call_args.kwargs["status"] == "sent"
+
+
+def test_send_whatsapp_admin_assignment_skips_without_phone() -> None:
+    db = MagicMock()
+    service = NotificationService(db)
+    booking = SimpleNamespace(
+        id=56,
+        scheduled_time=datetime(2026, 7, 24, 11, 0),
+        candidate_name="Ravi",
+        candidate_phone="+911111111111",
+        candidate_email=None,
+        status="SCHEDULED",
+        notes=None,
+        lead_id=None,
+    )
+    admin = SimpleNamespace(id=8, phone_number=None)
+
+    with (
+        patch(
+            "app.services.notification_service._build_admin_assignment_whatsapp_message",
+            return_value="Hi Counsellor, assignment details",
+        ),
+        patch(
+            "app.services.settings_service.get_bool_setting",
+            return_value=True,
+        ),
+        patch(
+            "app.services.notification_service.send_message",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as send_message,
+        patch.object(service, "_log_attempt") as log_attempt,
+    ):
+        status = asyncio.run(
+            service.send_whatsapp_admin_assignment(
+                booking=booking,
+                admin=admin,
+                admin_name="Counsellor",
+                lead=None,
+            )
+        )
+
+    assert status == "skipped"
+    send_message.assert_not_awaited()
+    assert log_attempt.call_args.kwargs["status"] == "skipped"

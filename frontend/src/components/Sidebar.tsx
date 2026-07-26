@@ -1,7 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { isAllowedRoute, isRouteActive, normalizePath } from '../utils/routeAccess';
 import { STUDENT_PIPELINE_NAV, STUDENT_PIPELINE_PATHS } from '../config/studentPipelineNav';
 import { ACADEMIA_HUB_SECTIONS } from '../config/academiaHubNav';
+import {
+  findModuleById,
+  findModuleForPath,
+  getAppNavModules,
+  getModuleSidebarSections,
+} from '../config/appNavModules';
 import { canAccessAcademiaHub } from '../utils/academiaAccess';
 import { Link, useLocation } from 'react-router-dom';
 import { useNexusSession } from '../context/NexusSessionContext';
@@ -34,6 +40,8 @@ interface SidebarProps {
   setIsSidebarOpen: (open: boolean) => void;
   allowedRoutes: string[] | null;
   currentUser: SidebarUser | null;
+  /** Top-header module whose sub-menus should appear on desktop. */
+  activeModuleId?: string | null;
 }
 
 const COUNSELLING_ADMIN_ROLES = new Set(['Super Admin', 'Web Admin']);
@@ -43,6 +51,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   setIsSidebarOpen,
   allowedRoutes,
   currentUser,
+  activeModuleId = null,
 }) => {
   const location = useLocation();
   const { unreadMessageCount, messagingHubPulse, setMessagingHubPulse } = useNexusSession();
@@ -64,6 +73,20 @@ const Sidebar: React.FC<SidebarProps> = ({
   const canAccessMessaging = isRouteAllowed('/messaging-hub');
   const canAccessMyBookings = isRouteAllowed('/my-bookings');
 
+  const navModules = useMemo(
+    () =>
+      getAppNavModules({
+        allowedRoutes,
+        roleName: resolvedRole,
+        currentUser,
+      }),
+    [allowedRoutes, resolvedRole, currentUser]
+  );
+
+  const activeModule =
+    findModuleById(navModules, activeModuleId) ?? findModuleForPath(navModules, currentPath);
+  const moduleSections = activeModule ? getModuleSidebarSections(activeModule) : [];
+
   const leadNavItems = [
     { path: '/ai-active', label: 'AI Active' },
     { path: '/handoffs', label: 'Handoffs' },
@@ -80,6 +103,7 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const reportNavItems = [
     { path: '/reports/meta-leads', label: 'Meta Leads' },
+    { path: '/reports/exceptions', label: 'Exception Report' },
     { path: '/reports/audit-logs', label: 'Audit Logs' },
     { path: '/analytics', label: 'Analytics' },
   ];
@@ -127,13 +151,21 @@ const Sidebar: React.FC<SidebarProps> = ({
     if (['/my-bookings', '/counselling'].some(path => isRouteActive(currentPath, path))) {
       setIsAppointmentsOpen(true);
     }
-    if (['/ai-active', '/handoffs', '/prospects', '/offline-leads', '/archive', '/quarantine'].some(path => isRouteActive(currentPath, path))) {
+    if (
+      ['/ai-active', '/handoffs', '/prospects', '/offline-leads', '/archive', '/quarantine'].some(
+        path => isRouteActive(currentPath, path)
+      )
+    ) {
       setIsLeadsOpen(true);
     }
     if (['/users', '/access-control'].some(path => isRouteActive(currentPath, path))) {
       setIsUsersOpen(true);
     }
-    if (['/reports/meta-leads', '/reports/audit-logs', '/reports', '/analytics'].some(path => isRouteActive(currentPath, path))) {
+    if (
+      ['/reports/meta-leads', '/reports/exceptions', '/reports/audit-logs', '/reports', '/analytics'].some(path =>
+        isRouteActive(currentPath, path)
+      )
+    ) {
       setIsReportsOpen(true);
     }
     if (currentPath.startsWith('/academia')) {
@@ -178,7 +210,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 }`}
               >
                 <LayoutDashboard size={20} />
-                {isSidebarOpen && <span className="text-sm font-medium tracking-wide">Dashboard</span>}
+                {isSidebarOpen && <span className="text-base font-medium tracking-wide">Dashboard</span>}
               </Link>
             )}
 
@@ -189,17 +221,19 @@ const Sidebar: React.FC<SidebarProps> = ({
                   messagingHubPulse && unreadMessageCount > 0 ? 'message-hub-nav-unread' : ''
                 } ${
                   isRouteActive(currentPath, '/messaging-hub')
-                    ? 'bg-card/60 text-text-main border-l-2 border-accent'
-                    : 'hover:bg-card/40 hover:text-text-dark-bg'
+                    ? 'bg-white/20 text-white border-l-2 border-chart-secondary'
+                    : 'text-white/85 hover:bg-white/10 hover:text-white'
                 }`}
               >
                 <MessagesSquare
                   size={20}
-                  className={messagingHubPulse && unreadMessageCount > 0 ? 'text-primary' : 'text-text-dark-bg'}
+                  className={
+                    messagingHubPulse && unreadMessageCount > 0 ? 'text-primary' : 'text-text-dark-bg'
+                  }
                 />
                 {isSidebarOpen && (
                   <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
-                    <span className="text-sm font-medium tracking-wide">Chat</span>
+                    <span className="text-base font-medium tracking-wide">Chat</span>
                     {unreadMessageCount > 0 && (
                       <span className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
                         {unreadMessageCount > 99 ? '99+' : unreadMessageCount}
@@ -213,6 +247,60 @@ const Sidebar: React.FC<SidebarProps> = ({
               </Link>
             )}
 
+            {/* Desktop: sub-menus for the header-selected module */}
+            {moduleSections.length > 0 ? (
+              <div className="hidden lg:block pt-3 mt-2 border-t border-white/15 space-y-3">
+                {isSidebarOpen && activeModule ? (
+                  <p className="px-3 text-base font-bold uppercase tracking-wider text-white">
+                    {activeModule.label}
+                  </p>
+                ) : null}
+                {moduleSections.map((section, sectionIndex) => (
+                  <div
+                    key={`${activeModule?.id ?? 'module'}-${section.title ?? 'featured'}-${sectionIndex}`}
+                    className="space-y-1"
+                  >
+                    {isSidebarOpen && section.title ? (
+                      <p className="px-3 pt-2 pb-0.5 text-sm font-bold uppercase tracking-wider text-white/75">
+                        {section.title}
+                      </p>
+                    ) : null}
+                    <div className={section.title && isSidebarOpen ? 'ml-1 space-y-1' : 'space-y-1'}>
+                      {section.links.map(link => {
+                        const Icon = link.icon;
+                        const active = isRouteActive(currentPath, link.path);
+                        return (
+                          <Link
+                            key={link.path}
+                            to={link.path}
+                            title={!isSidebarOpen ? link.label : undefined}
+                            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${
+                              active
+                                ? 'bg-white/20 text-white border-l-2 border-chart-secondary shadow-sm'
+                                : 'text-white/85 hover:bg-white/10 hover:text-white'
+                            } ${!isSidebarOpen ? 'justify-center' : ''}`}
+                          >
+                            {Icon ? (
+                              <Icon size={18} className="shrink-0 text-current" />
+                            ) : (
+                              <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center text-xs font-bold text-current">
+                                {link.label[0]}
+                              </span>
+                            )}
+                            {isSidebarOpen ? (
+                              <span className="block text-base font-medium tracking-wide text-white">
+                                {link.label}
+                              </span>
+                            ) : null}
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
             {showAppointmentsSection && (
               <div className="pt-2 lg:hidden">
                 <button
@@ -224,7 +312,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 >
                   <div className="flex items-center gap-3">
                     <Calendar size={20} className="text-text-dark-bg" />
-                    {isSidebarOpen && <span className="text-sm font-medium">Appointments</span>}
+                    {isSidebarOpen && <span className="text-base font-medium">Appointments</span>}
                   </div>
                   {isSidebarOpen && (
                     <ChevronDown
@@ -240,7 +328,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                       <Link
                         key={item.path}
                         to={item.path}
-                        className={`flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-all ${
+                        className={`flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium transition-all ${
                           isRouteActive(currentPath, item.path)
                             ? 'bg-card/60 text-text-main border-l-2 border-accent'
                             : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
@@ -265,7 +353,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 >
                   <div className="flex items-center gap-3">
                     <Users size={20} className="text-text-dark-bg" />
-                    {isSidebarOpen && <span className="text-sm font-medium">Manage Leads</span>}
+                    {isSidebarOpen && <span className="text-base font-medium">Manage Leads</span>}
                   </div>
                   {isSidebarOpen && (
                     <ChevronDown
@@ -281,7 +369,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                       <Link
                         key={item.path}
                         to={item.path}
-                        className={`flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-all ${
+                        className={`flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium transition-all ${
                           isRouteActive(currentPath, item.path)
                             ? 'bg-card/60 text-text-main border-l-2 border-accent'
                             : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
@@ -306,7 +394,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 >
                   <div className="flex items-center gap-3">
                     <GraduationCap size={20} className="text-text-dark-bg" />
-                    {isSidebarOpen && <span className="text-sm font-medium">Manage Students</span>}
+                    {isSidebarOpen && <span className="text-base font-medium">Manage Students</span>}
                   </div>
                   {isSidebarOpen && (
                     <ChevronDown
@@ -322,7 +410,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                       <Link
                         key={item.path}
                         to={item.path}
-                        className={`flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-all ${
+                        className={`flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium transition-all ${
                           isRouteActive(currentPath, item.path)
                             ? 'bg-card/60 text-text-main border-l-2 border-accent'
                             : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
@@ -347,7 +435,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 >
                   <div className="flex items-center gap-3">
                     <UserCog size={20} className="text-text-dark-bg" />
-                    {isSidebarOpen && <span className="text-sm font-medium">Users</span>}
+                    {isSidebarOpen && <span className="text-base font-medium">Users</span>}
                   </div>
                   {isSidebarOpen && (
                     <ChevronDown
@@ -363,7 +451,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                       <Link
                         key={item.path}
                         to={item.path}
-                        className={`flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-all ${
+                        className={`flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium transition-all ${
                           isRouteActive(currentPath, item.path)
                             ? 'bg-card/60 text-text-main border-l-2 border-accent'
                             : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
@@ -388,7 +476,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 >
                   <div className="flex items-center gap-3">
                     <FileText size={20} className="text-text-dark-bg" />
-                    {isSidebarOpen && <span className="text-sm font-medium">Reports</span>}
+                    {isSidebarOpen && <span className="text-base font-medium">Reports</span>}
                   </div>
                   {isSidebarOpen && (
                     <ChevronDown
@@ -404,7 +492,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                       <Link
                         key={item.path}
                         to={item.path}
-                        className={`flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-all ${
+                        className={`flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium transition-all ${
                           isRouteActive(currentPath, item.path)
                             ? 'bg-card/60 text-text-main border-l-2 border-accent'
                             : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
@@ -429,7 +517,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 >
                   <div className="flex items-center gap-3">
                     <BookOpen size={20} className="text-text-dark-bg" />
-                    {isSidebarOpen && <span className="text-sm font-medium">Academia Hub</span>}
+                    {isSidebarOpen && <span className="text-base font-medium">Academia Hub</span>}
                   </div>
                   {isSidebarOpen && (
                     <ChevronDown
@@ -446,7 +534,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                         <Link
                           key={section.key}
                           to={section.path}
-                          className={`flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-all ${
+                          className={`flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium transition-all ${
                             isRouteActive(currentPath, section.path)
                               ? 'bg-card/60 text-text-main border-l-2 border-accent'
                               : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
@@ -456,14 +544,14 @@ const Sidebar: React.FC<SidebarProps> = ({
                         </Link>
                       ) : (
                         <div key={section.key} className="space-y-1">
-                          <div className="px-3 pt-1 text-[10px] font-bold uppercase tracking-wider text-text-muted/80">
+                          <div className="px-3 pt-1 text-xs font-bold uppercase tracking-wider text-text-muted/80">
                             {section.label}
                           </div>
                           {section.items.map(item => (
                             <Link
                               key={item.path}
                               to={item.path}
-                              className={`flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-all ${
+                              className={`flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium transition-all ${
                                 isRouteActive(currentPath, item.path)
                                   ? 'bg-card/60 text-text-main border-l-2 border-accent'
                                   : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
@@ -491,7 +579,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 >
                   <div className="flex items-center gap-3">
                     <Gauge size={20} className="text-text-dark-bg" />
-                    {isSidebarOpen && <span className="text-sm font-medium">Cockpit</span>}
+                    {isSidebarOpen && <span className="text-base font-medium">Cockpit</span>}
                   </div>
                   {isSidebarOpen && (
                     <ChevronDown
@@ -507,7 +595,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                       <Link
                         key={item.path}
                         to={item.path}
-                        className={`flex items-center gap-2 px-3 py-2 rounded-md text-xs font-medium transition-all ${
+                        className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-all ${
                           isRouteActive(currentPath, item.path)
                             ? 'bg-card/60 text-text-main border-l-2 border-accent'
                             : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
@@ -521,7 +609,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                 )}
               </div>
             )}
-
           </>
         )}
       </nav>

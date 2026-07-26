@@ -1,217 +1,86 @@
-# Staging config requirements (Hostinger)
+# Staging config requirements (2026-07-26 release)
 
-**Do not overwrite** local `backend/.env` or commit secrets.  
-Apply these changes **manually** on the Hostinger VPS file:
+**Do not copy this into `.env` automatically.** Apply keys manually on the Staging server (`nexus-dev` / Hostinger) after review.
 
-```text
-/var/www/nexus/backend/.env
-```
-
-Optional local staging worktree: `E:\NEXUS-staging\backend\.env`
-
-Template (no secrets): `backend/deploy/env.staging.example`
+This release does **not** introduce new mandatory secrets beyond what Staging already needs for mail and Meta. It **expands how existing settings are used**.
 
 ---
 
-## Critical — new Neon database: Nexus-Dev-1
+## 1. Required / confirm on Staging `.env`
 
-Your previous Neon DB hit its limit. Staging must use the **new** Neon project/database:
+| Key | Required? | Notes |
+|-----|-----------|--------|
+| `DATABASE_URL` | Yes | Staging Neon URL (psycopg3-compatible; strip `channel_binding` if needed) |
+| `ENVIRONMENT` | Yes | Should be staging-like (not develop tunnel settings) |
+| `FRONTEND_URL` | Yes | `https://nexus-dev.edutrust.in` (or current Staging front URL) |
+| `SMTP_HOST` | Yes for Exception emails | Hostinger / SMTP provider |
+| `SMTP_PORT` | Yes for Exception emails | Usually `465` or `587` |
+| `SMTP_USE_TLS` | Yes for Exception emails | Match provider (`true`/`false`) |
+| `SMTP_USER` | Yes for Exception emails | |
+| `SMTP_PASSWORD` | Yes for Exception emails | Never commit |
+| `SMTP_FROM_EMAIL` | Yes for Exception emails | From address |
+| `META_GRAPH_ACCESS_TOKEN` | Yes for Meta sync | Page/user token with Lead Ads access |
+| `META_PAGE_ID` | Yes for Meta sync | |
+| `META_LEAD_SYNC_ENABLED` | Recommended | `true` on Staging if sync should run |
+| `R2_BUCKET_NAME` | Yes if uploads used | Must be **`nexus-edutrust-staging`** (not develop bucket) |
+| Other `R2_*` | As today | Account, keys, public URL for Staging |
 
-| Item | Value |
-|------|--------|
-| Neon DB name | **Nexus-Dev-1** (Staging account only) |
-| Used by | Hostinger staging (`nexus-dev.edutrust.in`) only |
-| Not for | Local development (`E:\NEXUS\backend\.env`) |
+**Do not** overwrite Staging `.env` with develop ngrok / tunnel values.
 
-### What to put in staging `.env`
+---
 
-1. Open Neon console → **Nexus-Dev-1** → **Connection details**
-2. Choose **Pooled connection**
-3. Copy the URI and change the scheme:
+## 2. App Settings / DB dynamic keys (no `.env` change required)
 
-| Neon shows | Staging `.env` needs |
-|------------|----------------------|
-| `postgresql://...` or `postgres://...` | Prefer `postgresql+psycopg://...` (app also auto-rewrites plain `postgresql://`) |
+These live in application settings (UI: **Admin → Settings** / App Settings). Defaults are seeded by code if missing.
 
-4. Ensure `?sslmode=require` is present (append if missing).
+| Key | Default | Purpose for this release |
+|-----|---------|---------------------------|
+| `ALERT_EMAIL` | _(empty)_ | **Expanded:** now receives Exception Report emails (new OPEN/ERROR/WARNING) and auto-resolve confirmations, in addition to uptime alerts. Set one or more valid emails. |
+| `MONITORING_STATUS` | — | Keep `Active` for uptime monitoring |
+| `UPTIME_TARGET_URL` | — | Prefer `https://nexus-dev.edutrust.in/` |
+| `EXCEPTION_LOG_RETENTION_DAYS` | `90` | Days to keep Exception Report rows before scheduler purge |
+| `ADMIN_SESSION_DIGEST_ENABLED` | off/default | Counsellor morning WhatsApp digest (optional) |
+| `ADMIN_SESSION_DIGEST_TIME` | — | Local time for digest if enabled |
+| `ADMIN_SESSION_NUDGE_ENABLED` | — | Pre-session WhatsApp nudge (optional) |
+| `ADMIN_SESSION_NUDGE_MINUTES` | — | Minutes before session |
+| `ADMIN_BOOKING_ALERTS_ENABLED` | — | Cancel/reschedule WhatsApp alerts (optional) |
 
-```env
-DATABASE_URL=postgresql+psycopg://USER:PASSWORD@ep-XXXX-pooler.REGION.aws.neon.tech/neondb?sslmode=require
-```
+### Manual Staging checklist for alerts
 
-If migrations fail with `No module named 'psycopg2'`, the URL still used the default Postgres dialect — pull latest staging (URL normalize + `psycopg[binary]` in requirements) and re-run deploy.
+1. Set `ALERT_EMAIL` to ops recipients (comma-separated if supported by UI).
+2. Confirm SMTP env keys are present and restart `nexus-backend`.
+3. Confirm logs do **not** say SMTP is skipped / not configured.
+4. Optionally set Exception retention days in the Exception Report UI.
 
-5. In Neon, allow the Hostinger VPS IP if IP allowlisting is enabled.
+---
 
-### Empty DB bootstrap
+## 3. Optional ops-only env (scripts, not runtime)
 
-Nexus-Dev-1 starts empty. After `DATABASE_URL` is set on the VPS:
+Only needed when running copy/seed scripts against Staging:
+
+| Key | Purpose |
+|-----|---------|
+| `STAGING_DATABASE_URL` | Target DB for copy scripts |
+| `STAGING_ADMIN_PASSWORD` | `seed_staging_users.py` |
+| `STAGING_USERS_SOURCE_URL` | Optional source for user seed |
+| `ACADEMIA_COPY_*` | Academia copy script credentials/URLs |
+
+---
+
+## 4. Not required as new `.env` keys
+
+- Exception Report capture / auto-resolve — uses DB + SMTP + `ALERT_EMAIL`
+- Queue `contact_status` / pagination — API query params only
+- University matching — DB tables + weight profile seeds from migration
+- Period agenda filters — API date range query params
+
+---
+
+## 5. After editing Staging env
 
 ```bash
-cd /var/www/nexus/backend
-source .venv/bin/activate
-python scripts/bootstrap_alembic.py
-# Fresh DB → alembic upgrade head
-alembic current
-# Expected head: c4d7e0f53g6h (or whatever `alembic heads` prints after deploy)
+# Restart backend so SMTP / Meta / R2 changes load
+sudo systemctl restart nexus-backend   # or your Hostinger process name
+# Confirm health
+curl -sS -o /dev/null -w "%{http_code}\n" https://nexus-dev.edutrust.in/docs
 ```
-
-Or run the full staging deploy (migrations included):
-
-```bash
-sudo bash /var/www/nexus/backend/deploy/hostinger-staging.sh
-```
-
----
-
-## Required identity / routing
-
-| Variable | Staging value |
-|----------|---------------|
-| `NEXUS_INSTANCE` | `nexus-dev` or `staging` (never `development`) |
-| `ENVIRONMENT` | `staging` |
-| `PUBLIC_TUNNEL_BASE` | `https://nexus-dev.edutrust.in` |
-| `FRONTEND_URL` | `https://nexus-dev.edutrust.in` |
-| `NEXUS_TUNNEL_ENABLED` | `false` |
-| `NEXUS_PORT` | `8002` |
-| `NEXUS_BIND_HOST` | `127.0.0.1` |
-| `NEXUS_WHATSAPP_AUTO_SYNC` | `true` |
-
-Meta webhook callback:
-
-```text
-https://nexus-dev.edutrust.in/api/webhook
-```
-
----
-
-## Required WhatsApp / intake (current product behavior)
-
-| Variable | Staging value | Why |
-|----------|---------------|-----|
-| `PROVIDER` | `WHATSAPP` | |
-| `NEXUS_APPOINTMENTS_ONLY` | `true` | Deterministic intake (degree → major → country → booking) |
-| `WHATSAPP_OUTREACH_TEMPLATE` | `et_student_welcome` | Welcome only |
-| `WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP` | `true` | **No** hi/hello continue nudge message |
-| `WHATSAPP_OUTREACH_TEMPLATE_LANGUAGE` | `en` | |
-| `WHATSAPP_OUTREACH_TEMPLATE_PARAMETERS` | `student,company` | |
-| `WHATSAPP_OUTREACH_TEMPLATE_PARAMETER_FORMAT` | `positional` | |
-| `WHATSAPP_OUTREACH_COMPANY_NAME` | `Edutrust` | |
-
-Business line (used when `NEXUS_INSTANCE` is staging / nexus-dev):
-
-```env
-WHATSAPP_BUSINESS_PHONE_NUMBER=+917411952525
-WHATSAPP_BUSINESS_PHONE_NUMBER_ID=1097416893464116
-WHATSAPP_BUSINESS_WABA_ID=1312656237246811
-```
-
-Also keep valid:
-
-```env
-WEBHOOK_VERIFY_TOKEN=<Meta verify token>
-WHATSAPP_VERIFY_TOKEN=<same as WEBHOOK_VERIFY_TOKEN>
-WHATSAPP_ACCESS_TOKEN=<long-lived token>
-SECRET_KEY=<existing staging secret — do not copy from local dev>
-```
-
-Meta welcome template body should be **greeting only** (no full-name / continue prompt), for example:
-
-```text
-Hi {{1}}! Thanks for reaching {{2}}. We're excited to help you get started with your study abroad plans.
-```
-
-Student replies `hi` / `hello` → intake advances to **degree** questions.
-
----
-
-## Recommended on staging
-
-| Variable | Value | Why |
-|----------|-------|-----|
-| `SECURITY_AUDIT_ALERT_WHATSAPP_ENABLED` | `false` | Avoid nightly WhatsApp noise |
-| `SECURITY_AUDIT_ALERT_MANUAL_ONLY` | `true` | Alerts only on manual Run audit |
-
----
-
-## Optional — Academia Hub assets (R2)
-
-If institution logos/banners are used on staging:
-
-```env
-R2_ACCOUNT_ID=
-R2_ACCESS_KEY_ID=
-R2_SECRET_ACCESS_KEY=
-R2_BUCKET_NAME=
-R2_PUBLIC_BASE_URL=
-R2_ENDPOINT_URL=
-```
-
----
-
-## Do NOT copy from local development `.env`
-
-| Variable | Dev (wrong on staging) |
-|----------|-------------------------|
-| `DATABASE_URL` | Old Neon / local DB (limit reached) |
-| `PUBLIC_TUNNEL_BASE` | `*.trycloudflare.com` or `*.ngrok-free.dev` |
-| `NEXUS_INSTANCE` | `development` |
-| `NEXUS_TUNNEL_ENABLED` | `true` |
-| `SECRET_KEY` | Dev secret |
-
----
-
-## Staging login users (fresh Nexus-Dev-1)
-
-Fresh DBs seed **all 3 Super Admins** (same accounts as develop):
-
-| Email | Name |
-|-------|------|
-| `ishq@edutrust.in` | Ishq Ahmed |
-| `arunpk@edutrust.in` | Arun Jai |
-| `admin@edutrust.in` | Chithranjan C |
-
-| Variable | Purpose |
-|----------|---------|
-| `STAGING_ADMIN_PASSWORD` | Shared password for the 3 admins when not copying |
-| `STAGING_USERS_SOURCE_URL` | Optional: copy users from develop Neon (keeps real passwords) |
-
-```bash
-cd /var/www/nexus/backend && source .venv/bin/activate
-python scripts/seed_staging_users.py --password 'YourSecurePass'
-# or keep develop passwords:
-python scripts/seed_staging_users.py --copy-from "$STAGING_USERS_SOURCE_URL"
-```
-
----
-
-## Quick paste block (fill secrets on VPS)
-
-```env
-NEXUS_INSTANCE=nexus-dev
-ENVIRONMENT=staging
-PUBLIC_TUNNEL_BASE=https://nexus-dev.edutrust.in
-FRONTEND_URL=https://nexus-dev.edutrust.in
-NEXUS_TUNNEL_ENABLED=false
-NEXUS_PORT=8002
-NEXUS_BIND_HOST=127.0.0.1
-NEXUS_APPOINTMENTS_ONLY=true
-WHATSAPP_OUTREACH_SKIP_INTAKE_FOLLOWUP=true
-WHATSAPP_OUTREACH_TEMPLATE=et_student_welcome
-NEXUS_WHATSAPP_AUTO_SYNC=true
-SECURITY_AUDIT_ALERT_WHATSAPP_ENABLED=false
-SECURITY_AUDIT_ALERT_MANUAL_ONLY=true
-
-# PASTE Nexus-Dev-1 pooled URL (psycopg scheme):
-# DATABASE_URL=postgresql+psycopg://...@ep-XXXX-pooler....neon.tech/neondb?sslmode=require
-```
-
-After editing:
-
-```bash
-sudo systemctl restart nexus-backend
-cd /var/www/nexus/backend && source .venv/bin/activate
-python scripts/sync_whatsapp_webhook.py --status
-```
-
-Expected: `owned_by_this_environment: true`, callback `https://nexus-dev.edutrust.in/api/webhook`.

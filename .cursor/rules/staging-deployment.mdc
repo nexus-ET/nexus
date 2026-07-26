@@ -1,0 +1,39 @@
+---
+description: Hostinger staging (nexus-dev) deploy — follow full checklist including SMTP and default data seeds
+globs: backend/deploy/**,backend/scripts/copy_academia*,backend/scripts/copy_student*,backend/scripts/seed_staging*,backend/scripts/bootstrap_alembic*,backend/scripts/ensure_navigation*,**/hostinger-staging*
+alwaysApply: false
+---
+
+# Staging deployment (Hostinger / nexus-dev)
+
+When the user is deploying, seeding, copying DB data, or fixing staging (`nexus-dev.edutrust.in` / Hostinger / Nexus-Dev-1):
+
+1. **Read and follow** `backend/deploy/STAGING_DEPLOYMENT_AGENT_PROMPT.md` end-to-end before calling the deploy done.
+2. Do **not** overwrite develop `.env` with staging values, or staging `.env` with develop tunnel/ngrok settings.
+3. Never paste secrets into chat; never use credential placeholders (`PASSWORD`, `PASTE_…`) as real values.
+
+## Mandatory before “done”
+
+### SMTP (downtime monitoring)
+
+- Staging `.env` has: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USE_TLS`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`
+- DB settings: `MONITORING_STATUS=Active`, `UPTIME_TARGET_URL=https://nexus-dev.edutrust.in/`, `ALERT_EMAIL` set
+- Restart `nexus-backend` after SMTP env changes; confirm logs are not skipping mail for “SMTP is not configured”
+
+### Default data tables (must be present)
+
+| Area | Tables / rows |
+|------|----------------|
+| Nexus users | `users` — at least the 3 Super Admins (`ishq@`, `arunpk@`, `admin@` `@edutrust.in`), `is_superuser=true`, nav RBAC rows |
+| Nav | `navigation_pages`, `role_page_permissions` (header menu not empty) |
+| Academic framework | `levels`, `programs`, `education_majors`, `education_courses` (+ mapping tables as needed) |
+| Geography | `countries`, `geography_states`, `geography_cities` |
+| Institutions | `institutions` + campuses/colleges; wizard course links via `institution_wizard_drafts` (not only empty `institution_course_offerings`) |
+| Default student | Lead **`id=27`** (Ishan Ahmed / `ishq@erxa.in`) + `students_master` where `lead_id=27` + related messages/educations/test scores/work exp — `scripts/copy_student_to_staging.py --lead-id 27` |
+
+Use `scripts/seed_staging_users.py`, nav/settings seeds, `scripts/copy_academia_to_staging.py` (includes wizard drafts), and **`scripts/copy_student_to_staging.py --lead-id 27`** from develop when staging is empty or missing this data.
+
+### R2
+
+- Staging bucket: `R2_BUCKET_NAME=nexus-edutrust-staging` (not develop `nexus-edutrust`)
+- After env change: restart, probe upload, confirm object in Cloudflare (not only `backend/uploads/`)

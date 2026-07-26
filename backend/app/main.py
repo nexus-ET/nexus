@@ -29,6 +29,7 @@ from app.models.dynamic_setting import DynamicSetting
 from app.models.business import Business
 from app.models.public_holiday import PublicHoliday
 from app.models.sync_log import SyncLog
+from app.models.exception_log import ExceptionLog
 from app.models.raw_incoming_lead import RawIncomingLead
 from app.models.lead_quarantine import LeadQuarantine
 from app.models.audit_log import AuditLog
@@ -53,6 +54,11 @@ from app.models.conversation import Conversation
 from app.models.conversation_audit_log import ConversationAuditLog
 from app.models.conversation_participant import ConversationParticipant
 from app.models.internal_message import InternalMessage
+from app.models.university_matching import (
+    MatchingShortlistItem,
+    MatchingShortlistRun,
+    MatchingWeightProfile,
+)
 from app.api.v1.endpoints import leads
 from app.api.v1 import analytics, notifications, dashboard, users, login, agents, rbac, countries, education_degrees, education_majors, gpa_cgpa_scores, target_programs, conversation_audit, academia, academia_wizard, academic_calendar
 from app.routers import (
@@ -210,6 +216,11 @@ except OSError:
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+from app.middleware.exception_capture import register_exception_handlers
+
+register_exception_handlers(app)
+
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.middleware("http")(audit_middleware)

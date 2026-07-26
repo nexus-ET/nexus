@@ -40,7 +40,7 @@ import {
 type ColumnCount = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 const checkboxClass =
-  'flex items-start gap-2 rounded-md border border-border-subtle bg-surface-bg/50 px-2.5 py-2 text-xs text-text-main cursor-pointer hover:bg-surface-bg';
+  'flex items-start gap-2 rounded-md border border-border-subtle bg-surface-bg/50 px-2.5 py-2 text-sm text-text-main cursor-pointer hover:bg-surface-bg';
 
 const COLUMN_CLASS: Record<ColumnCount, string> = {
   1: 'grid-cols-1',
@@ -173,8 +173,8 @@ const MyAspirationsTab: React.FC<MyAspirationsTabProps> = ({ bookingId, compact 
   const sectionHeadingClass = compact
     ? 'text-sm font-bold text-text-main'
     : 'text-base font-bold text-text-main';
-  const subHeadingClass = 'text-xs font-bold text-text-main';
-  const fieldLabelClass = 'block text-xs font-bold text-text-main mb-1';
+  const subHeadingClass = 'text-sm font-bold text-text-main';
+  const fieldLabelClass = 'block text-sm font-bold text-text-main mb-1';
 
   const apiPath = bookingId
     ? `bookings/mine/${bookingId}/aspirations`
@@ -316,7 +316,7 @@ const MyAspirationsTab: React.FC<MyAspirationsTabProps> = ({ bookingId, compact 
           />
           <span className="font-bold">{label}</span>
         </label>
-        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 text-xs">
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 text-sm">
           {FUNDING_COVERAGE_OPTIONS.map(option => (
             <label key={option.value} className="inline-flex items-center gap-1.5 cursor-pointer">
               <input
@@ -356,13 +356,13 @@ const MyAspirationsTab: React.FC<MyAspirationsTabProps> = ({ bookingId, compact 
             Tell us about your study-abroad goals. All sections are required.
           </p>
           {savedAt ? (
-            <p className="text-xs text-emerald-700 mt-1">
+            <p className="text-sm text-emerald-700 mt-1">
               Last saved {new Date(savedAt).toLocaleString()}
             </p>
           ) : null}
         </div>
       ) : savedAt ? (
-        <p className="text-xs font-semibold text-emerald-700 shrink-0">
+        <p className="text-sm font-semibold text-emerald-700 shrink-0">
           Last saved {new Date(savedAt).toLocaleString()}
         </p>
       ) : null}
@@ -372,7 +372,7 @@ const MyAspirationsTab: React.FC<MyAspirationsTabProps> = ({ bookingId, compact 
           <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
             {validationErrors.length > 0 ? (
-              <ul className="mt-2 list-disc pl-4 space-y-0.5 text-xs">
+              <ul className="mt-2 list-disc pl-4 space-y-0.5 text-sm">
                 {validationErrors.map(item => (
                   <li key={item}>{item}</li>
                 ))}
@@ -419,7 +419,7 @@ const MyAspirationsTab: React.FC<MyAspirationsTabProps> = ({ bookingId, compact 
                     : 'border-border-subtle'
                 }`}
               />
-              <p className="mt-1 text-xs text-text-muted">
+              <p className="mt-1 text-sm text-text-muted">
                 {form.why_study_abroad_other.length}/100 characters
               </p>
             </div>
@@ -459,7 +459,7 @@ const MyAspirationsTab: React.FC<MyAspirationsTabProps> = ({ bookingId, compact 
                     : 'border-border-subtle'
                 }`}
               />
-              <p className="mt-1 text-xs text-text-muted">
+              <p className="mt-1 text-sm text-text-muted">
                 {form.study_countries_other.length}/100 characters
               </p>
             </div>
@@ -610,7 +610,7 @@ const MyAspirationsTab: React.FC<MyAspirationsTabProps> = ({ bookingId, compact 
                     : 'border-border-subtle'
                 }`}
               />
-              <p className="mt-1 text-xs text-text-muted">
+              <p className="mt-1 text-sm text-text-muted">
                 {form.programs_other.length}/50 characters
               </p>
             </div>
@@ -758,7 +758,7 @@ const MyAspirationsTab: React.FC<MyAspirationsTabProps> = ({ bookingId, compact 
           disabled={saving}
           className={
             compact
-              ? 'rounded-md border border-border-subtle px-4 py-2 text-xs font-semibold text-text-main hover:bg-card disabled:opacity-60'
+              ? 'rounded-md border border-border-subtle px-4 py-2 text-sm font-semibold text-text-main hover:bg-card disabled:opacity-60'
               : 'rounded-lg border border-border-subtle px-4 py-2 text-sm font-semibold text-text-main hover:bg-surface-bg disabled:opacity-60'
           }
         >
@@ -769,7 +769,7 @@ const MyAspirationsTab: React.FC<MyAspirationsTabProps> = ({ bookingId, compact 
           disabled={saving}
           className={
             compact
-              ? 'inline-flex items-center gap-2 rounded-md bg-sky-700 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-800 disabled:opacity-60'
+              ? 'inline-flex items-center gap-2 rounded-md bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800 disabled:opacity-60'
               : 'inline-flex items-center gap-2 rounded-lg bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800 disabled:opacity-60'
           }
         >

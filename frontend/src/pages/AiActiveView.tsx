@@ -1,14 +1,26 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Archive, Users, Calendar, CheckCircle2, Circle, Map } from 'lucide-react';
+import { Bot, Archive, Users, Calendar, CheckCircle2, Circle, Map, RotateCcw } from 'lucide-react';
 import { apiFetch, hasValidSession } from '../utils/api';
 import StudentJourneyPanel from '../components/StudentJourneyPanel';
 import AiActivePulseBoard from '../components/AiActivePulseBoard';
 import LeadQueueSidebarFilters from '../components/LeadQueueSidebarFilters';
+import QueuePaginationControls from '../components/QueuePaginationControls';
+import HeadlessScrollArea, {
+  type HeadlessScrollAreaHandle,
+} from '../components/HeadlessScrollArea';
+import { useConfirmation } from '../context/ConfirmationContext';
 import {
+  AI_ACTIVE_PAGE_SIZE_KEY,
   buildLeadQueueQueryParams,
+  DEFAULT_CONTACT_STATUS,
   DEFAULT_INTERACTION_DAYS,
+  formatViewingRecordsLabel,
   interactionDaysEmptyLabel,
+  persistLeadQueuePageSize,
+  readLeadQueuePageSize,
+  type ContactStatusFilter,
   type InteractionDaysFilter,
+  type LeadQueuePageSize,
 } from '../utils/leadQueueFilters';
 
 interface ConsultationDateOption {
@@ -44,6 +56,7 @@ interface ActiveLead {
   total_messages_received: number;
   unread_count: number;
   has_ai_messages?: boolean;
+  has_messages?: boolean;
   messages: ChatMessage[];
   intake_step?: string;
   intake_step_label?: string;
@@ -65,6 +78,7 @@ interface ActiveLead {
   consultation_session_date?: string | null;
   consultation_session_time?: string | null;
   assigned_counsellor_name?: string | null;
+  appointment_status?: string | null;
   available_consultation_dates?: ConsultationDateOption[];
   available_consultation_times?: ConsultationTimeOption[];
   selected_consultation_date?: string | null;
@@ -190,7 +204,18 @@ const mapLeadFromApi = (lead: Record<string, unknown>): ActiveLead => {
     latest_interaction_time: lead.latest_interaction_time as string | undefined,
     total_messages_received: Number(lead.total_messages_received ?? 0),
     unread_count: Number(lead.unread_count ?? 0),
-    has_ai_messages: Boolean(lead.has_ai_messages),
+    has_ai_messages:
+      typeof lead.has_ai_messages === 'boolean'
+        ? Boolean(lead.has_ai_messages)
+        : rawMessages.some(
+            msg => msg.sender === 'advisor' || msg.sender === 'system'
+          ),
+    has_messages:
+      typeof lead.has_messages === 'boolean'
+        ? Boolean(lead.has_messages)
+        : rawMessages.length > 0 ||
+          Boolean(lead.has_ai_messages) ||
+          Number(lead.total_messages_received ?? 0) > 0,
     messages: rawMessages.map(normalizeMessage),
     intake_step: lead.intake_step as string | undefined,
     intake_step_label: lead.intake_step_label as string | undefined,
@@ -212,6 +237,7 @@ const mapLeadFromApi = (lead: Record<string, unknown>): ActiveLead => {
     consultation_session_date: (lead.consultation_session_date as string | null | undefined) ?? null,
     consultation_session_time: (lead.consultation_session_time as string | null | undefined) ?? null,
     assigned_counsellor_name: (lead.assigned_counsellor_name as string | null | undefined) ?? null,
+    appointment_status: (lead.appointment_status as string | null | undefined) ?? null,
     available_consultation_dates: (lead.available_consultation_dates as ConsultationDateOption[] | undefined) ?? [],
     available_consultation_times: (lead.available_consultation_times as ConsultationTimeOption[] | undefined) ?? [],
     selected_consultation_date: (lead.selected_consultation_date as string | null | undefined) ?? null,
@@ -243,65 +269,99 @@ const getLeadActivityTime = (lead: ActiveLead): number => {
 };
 
 const sortActiveLeads = (a: ActiveLead, b: ActiveLead): number => {
+  const aContacted = Number(
+    Boolean(a.has_messages ?? a.has_ai_messages ?? (a.messages?.length ?? 0) > 0)
+  );
+  const bContacted = Number(
+    Boolean(b.has_messages ?? b.has_ai_messages ?? (b.messages?.length ?? 0) > 0)
+  );
+  if (bContacted !== aContacted) return bContacted - aContacted;
+
   const unreadDiff = getUnreadCount(b) - getUnreadCount(a);
   if (unreadDiff !== 0) return unreadDiff;
   return getLeadActivityTime(b) - getLeadActivityTime(a);
 };
 
-const mergeLeadSnapshot = (previous: ActiveLead, incoming: ActiveLead): ActiveLead => {
+const mergeLeadSnapshot = (
+  previous: ActiveLead,
+  incoming: ActiveLead,
+  options?: { replaceMessages?: boolean }
+): ActiveLead => {
   if (previous.id !== incoming.id) {
     return incoming;
   }
 
   const incomingMessages = incoming.messages ?? [];
   const previousMessages = previous.messages ?? [];
-  const messages =
-    incomingMessages.length > 0 && incomingMessages.length >= previousMessages.length
-      ? incomingMessages
-      : previousMessages;
 
+  // Queue list payloads intentionally ship `messages: []`. Never treat that as a
+  // wipe — only replace when the caller explicitly asks (Reset chat).
+  let messages: ChatMessage[];
+  if (options?.replaceMessages) {
+    messages = incomingMessages;
+  } else if (incomingMessages.length > 0) {
+    messages =
+      incomingMessages.length >= previousMessages.length ? incomingMessages : previousMessages;
+  } else {
+    messages = previousMessages;
+  }
+
+  const hasAiMessages = messages.some(
+    msg => msg.sender === 'advisor' || msg.sender === 'system'
+  );
+
+  // Intake/session fields are always present on queue + detail payloads.
+  // Prefer incoming (including null) so Reset chat / cancelled bookings clear the UI.
   return {
     ...previous,
     ...incoming,
     name: incoming.name || previous.name,
     messages,
-    current_location: incoming.current_location ?? previous.current_location,
-    preferred_country: incoming.preferred_country ?? previous.preferred_country,
-    preferred_course: incoming.preferred_course ?? previous.preferred_course,
-    target_program: incoming.target_program ?? previous.target_program,
-    target_degree: incoming.target_degree ?? previous.target_degree,
-    target_major: incoming.target_major ?? previous.target_major,
-    study_interest_complete:
-      incoming.study_interest_complete ?? previous.study_interest_complete,
-    english_test_scores: incoming.english_test_scores ?? previous.english_test_scores,
-    gre_score: incoming.gre_score ?? previous.gre_score,
-    gmat_score: incoming.gmat_score ?? previous.gmat_score,
-    test_scores: incoming.test_scores ?? previous.test_scores,
-    wants_consultation_call: incoming.wants_consultation_call ?? previous.wants_consultation_call,
-    consultation_scheduled_at: incoming.consultation_scheduled_at,
-    calendar_booking_id: incoming.calendar_booking_id ?? previous.calendar_booking_id,
-    consultation_session_date:
-      incoming.consultation_session_date ?? previous.consultation_session_date,
-    consultation_session_time:
-      incoming.consultation_session_time ?? previous.consultation_session_time,
-    assigned_counsellor_name: incoming.assigned_counsellor_name,
+    has_ai_messages: options?.replaceMessages
+      ? Boolean(incoming.has_ai_messages) || hasAiMessages
+      : hasAiMessages || Boolean(incoming.has_ai_messages) || Boolean(previous.has_ai_messages),
+    has_messages:
+      Boolean(incoming.has_messages) ||
+      Boolean(previous.has_messages) ||
+      Boolean(incoming.has_ai_messages) ||
+      Boolean(previous.has_ai_messages) ||
+      messages.length > 0,
+    total_messages_received:
+      options?.replaceMessages && messages.length === 0
+        ? 0
+        : incoming.total_messages_received ?? previous.total_messages_received,
+    unread_count:
+      options?.replaceMessages && messages.length === 0
+        ? 0
+        : incoming.unread_count ?? previous.unread_count,
+    current_location: incoming.current_location ?? null,
+    preferred_country: incoming.preferred_country ?? null,
+    preferred_course: incoming.preferred_course ?? null,
+    target_program: incoming.target_program ?? null,
+    target_degree: incoming.target_degree ?? null,
+    target_major: incoming.target_major ?? null,
+    study_interest_complete: Boolean(incoming.study_interest_complete),
+    english_test_scores: incoming.english_test_scores ?? null,
+    gre_score: incoming.gre_score ?? null,
+    gmat_score: incoming.gmat_score ?? null,
+    test_scores: incoming.test_scores ?? null,
+    wants_consultation_call: incoming.wants_consultation_call ?? null,
+    consultation_scheduled_at: incoming.consultation_scheduled_at ?? null,
+    calendar_booking_id: incoming.calendar_booking_id ?? null,
+    consultation_session_date: incoming.consultation_session_date ?? null,
+    consultation_session_time: incoming.consultation_session_time ?? null,
+    assigned_counsellor_name: incoming.assigned_counsellor_name ?? null,
+    appointment_status: incoming.appointment_status ?? null,
     status_definition_id: incoming.status_definition_id,
     status_stage_name: incoming.status_stage_name,
     status_category: incoming.status_category,
     status_description: incoming.status_description,
-    intake_step: incoming.intake_step ?? previous.intake_step,
-    intake_step_label: incoming.intake_step_label ?? previous.intake_step_label,
-    intake_complete: incoming.intake_complete ?? previous.intake_complete,
-    available_consultation_dates:
-      incoming.available_consultation_dates?.length
-        ? incoming.available_consultation_dates
-        : previous.available_consultation_dates,
-    available_consultation_times:
-      incoming.available_consultation_times?.length
-        ? incoming.available_consultation_times
-        : previous.available_consultation_times,
-    selected_consultation_date:
-      incoming.selected_consultation_date ?? previous.selected_consultation_date,
+    intake_step: incoming.intake_step,
+    intake_step_label: incoming.intake_step_label,
+    intake_complete: Boolean(incoming.intake_complete),
+    available_consultation_dates: incoming.available_consultation_dates ?? [],
+    available_consultation_times: incoming.available_consultation_times ?? [],
+    selected_consultation_date: incoming.selected_consultation_date ?? null,
   };
 };
 
@@ -315,6 +375,9 @@ const formatTime = (dateStr?: string): string => {
     return '';
   }
 };
+
+const REPLY_EXAMPLE_HINT =
+  /\n*\s*Example:\s*reply\s*\*?1\*?\s*for the first option\.?\s*$/i;
 
 const formatCandidateMessageText = (text: string, lead: ActiveLead | null): string => {
   const trimmed = (text || '').trim();
@@ -343,6 +406,9 @@ const formatCandidateMessageText = (text: string, lead: ActiveLead | null): stri
 
   return text;
 };
+
+const formatAdvisorMessageText = (text: string): string =>
+  (text || '').replace(REPLY_EXAMPLE_HINT, '').trimEnd();
 
 const getDateGroupLabel = (dateStr?: string): string => {
   if (!dateStr) return 'Earlier';
@@ -560,15 +626,24 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
 }
 
 export default function AiActiveView() {
+  const openConfirm = useConfirmation();
   const [queue, setQueue] = useState<ActiveLead[]>([]);
   const [selectedLead, setSelectedLead] = useState<ActiveLead | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [interactionDays, setInteractionDays] = useState<InteractionDaysFilter>(DEFAULT_INTERACTION_DAYS);
+  const [contactStatus, setContactStatus] = useState<ContactStatusFilter>(DEFAULT_CONTACT_STATUS);
+  const [pageSize, setPageSize] = useState<LeadQueuePageSize>(() =>
+    readLeadQueuePageSize(AI_ACTIVE_PAGE_SIZE_KEY)
+  );
+  const [page, setPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const [hasMorePages, setHasMorePages] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [updatingRowId, setUpdatingRowId] = useState<number | null>(null);
   const [startingOutreachId, setStartingOutreachId] = useState<number | null>(null);
+  const [resettingConversationId, setResettingConversationId] = useState<number | null>(null);
   const [outreachSuccess, setOutreachSuccess] = useState<string | null>(null);
   const [whatsappConfig, setWhatsappConfig] = useState<{
     business_phone_number?: string | null;
@@ -580,7 +655,7 @@ export default function AiActiveView() {
     studentName: string;
   } | null>(null);
 
-  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HeadlessScrollAreaHandle | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const pollingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -594,17 +669,41 @@ export default function AiActiveView() {
   }, [searchQuery]);
 
   useEffect(() => {
+    setPage(1);
+    // Drop the previous page immediately so a stale Contact status list
+    // cannot remain visible while the next fetch is in flight.
+    setQueue([]);
+    setTotalCount(0);
+  }, [pageSize, interactionDays, contactStatus, debouncedSearch]);
+
+  useEffect(() => {
     selectedLeadIdRef.current = selectedLead?.id ?? null;
   }, [selectedLead?.id]);
 
-  const applyLeadDetail = useCallback((mapped: ActiveLead) => {
-    if (selectedLeadIdRef.current !== mapped.id) return;
-
-    setSelectedLead(prev => (prev?.id === mapped.id ? mergeLeadSnapshot(prev, mapped) : prev));
-    setQueue(prev =>
-      prev.map(item => (item.id === mapped.id ? mergeLeadSnapshot(item, mapped) : item))
-    );
+  const handlePageSizeChange = useCallback((next: LeadQueuePageSize) => {
+    persistLeadQueuePageSize(AI_ACTIVE_PAGE_SIZE_KEY, next);
+    setPageSize(next);
   }, []);
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize) || 1);
+  const rangeStart = totalCount === 0 ? 0 : (page - 1) * pageSize + 1;
+  const rangeEnd = Math.min(page * pageSize, totalCount);
+
+  const applyLeadDetail = useCallback(
+    (mapped: ActiveLead, options?: { replaceMessages?: boolean }) => {
+      if (selectedLeadIdRef.current !== mapped.id) return;
+
+      setSelectedLead(prev =>
+        prev?.id === mapped.id ? mergeLeadSnapshot(prev, mapped, options) : prev
+      );
+      setQueue(prev =>
+        prev.map(item =>
+          item.id === mapped.id ? mergeLeadSnapshot(item, mapped, options) : item
+        )
+      );
+    },
+    []
+  );
 
   const fetchLeadDetail = useCallback(async (leadId: number, signal?: AbortSignal) => {
     const data = await apiFetch(`leads/${leadId}`, { signal });
@@ -615,14 +714,46 @@ export default function AiActiveView() {
 
   const fetchActiveQueue = useCallback(async (signal?: AbortSignal) => {
     try {
-      const query = buildLeadQueueQueryParams(interactionDays, debouncedSearch);
-      const data = await apiFetch(`leads/active?${query}`, { signal });
-      const activeOnly = (Array.isArray(data) ? data : [])
-        .map(mapLeadFromApi)
+      const query = new URLSearchParams(
+        buildLeadQueueQueryParams(interactionDays, debouncedSearch, contactStatus)
+      );
+      const safePage = Math.max(1, page);
+      const offset = (safePage - 1) * pageSize;
+      query.set('limit', String(pageSize));
+      query.set('offset', String(offset));
+      const data = await apiFetch(`leads/active?${query.toString()}`, { signal });
+      if (signal?.aborted) return;
+
+      let rows: unknown[] = [];
+      let nextTotal = 0;
+      let nextHasMore = false;
+      if (Array.isArray(data)) {
+        rows = data;
+        nextTotal = data.length;
+        nextHasMore = false;
+      } else if (data && typeof data === 'object') {
+        const payload = data as {
+          items?: unknown[];
+          total_count?: number;
+          has_more?: boolean;
+        };
+        rows = Array.isArray(payload.items) ? payload.items : [];
+        nextTotal = Number(payload.total_count ?? rows.length) || 0;
+        nextHasMore = Boolean(
+          payload.has_more ?? offset + rows.length < nextTotal
+        );
+      }
+
+      const activeOnly = rows
+        .map(item => mapLeadFromApi(item as Record<string, unknown>))
         .filter(lead => isAiActive(lead.status))
         .sort(sortActiveLeads);
 
+      if (signal?.aborted) return;
+
       setQueue(activeOnly);
+      setTotalCount(nextTotal);
+      setHasMorePages(nextHasMore);
       setLoadError(null);
 
       setSelectedLead(prev => {
@@ -640,9 +771,11 @@ export default function AiActiveView() {
         setLoadError(error.message || 'Failed to load AI active leads.');
       }
     } finally {
-      setIsLoading(false);
+      if (!signal?.aborted) {
+        setIsLoading(false);
+      }
     }
-  }, [interactionDays, debouncedSearch]);
+  }, [interactionDays, contactStatus, debouncedSearch, page, pageSize]);
 
   const groupedMessages = useMemo(() => {
     if (!selectedLead) return {};
@@ -686,31 +819,37 @@ export default function AiActiveView() {
 
   useEffect(() => {
     let isActive = true;
-    abortControllerRef.current = new AbortController();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    queuePollInFlightRef.current = false;
     setIsLoading(true);
 
     async function pollQueue() {
-      if (!isActive || queuePollInFlightRef.current) {
-        if (isActive) {
-          pollingTimerRef.current = setTimeout(pollQueue, 10000);
-        }
-        return;
-      }
+      if (!isActive) return;
+
+      // Always abort any previous in-flight queue call for this effect generation.
+      if (abortControllerRef.current !== controller) return;
 
       queuePollInFlightRef.current = true;
       try {
-        await fetchActiveQueue(abortControllerRef.current?.signal);
+        await fetchActiveQueue(controller.signal);
       } finally {
         queuePollInFlightRef.current = false;
-        if (isActive) pollingTimerRef.current = setTimeout(pollQueue, 10000);
+        if (isActive && abortControllerRef.current === controller) {
+          pollingTimerRef.current = setTimeout(pollQueue, 10000);
+        }
       }
     }
 
-    pollQueue();
+    void pollQueue();
     return () => {
       isActive = false;
+      queuePollInFlightRef.current = false;
       if (pollingTimerRef.current) clearTimeout(pollingTimerRef.current);
-      abortControllerRef.current?.abort();
+      controller.abort();
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
     };
   }, [fetchActiveQueue]);
 
@@ -742,7 +881,7 @@ export default function AiActiveView() {
   }, [selectedLead?.id, selectedLead?.messages.length, selectedLead?.updated_at, fetchLeadDetail]);
 
   useEffect(() => {
-    const container = chatContainerRef.current;
+    const container = chatContainerRef.current?.getViewport();
     if (!container || !selectedLead) return;
     container.scrollTop = container.scrollHeight;
   }, [selectedLead?.id, selectedLead?.messages.length]);
@@ -823,6 +962,92 @@ export default function AiActiveView() {
     }
   };
 
+  const handleResetWhatsappConversation = async () => {
+    if (!selectedLead) return;
+
+    const confirmed = await openConfirm({
+      title: 'Reset WhatsApp conversation?',
+      message:
+        `This will permanently delete all WhatsApp messages with ${selectedLead.name}, ` +
+        `remove any consultation / counselling bookings linked to this lead, ` +
+        `and reset Lead Status to New. This cannot be undone. Continue?`,
+      confirmLabel: 'Reset chat',
+      cancelLabel: 'Cancel',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+
+    setResettingConversationId(selectedLead.id);
+    setOutreachSuccess(null);
+
+    try {
+      const result = (await apiFetch(`leads/${selectedLead.id}/reset-whatsapp`, {
+        method: 'POST',
+      })) as {
+        lead?: Record<string, unknown>;
+        deleted_messages?: number;
+        deleted_bookings?: number;
+      };
+
+      const mapped = result.lead
+        ? mapLeadFromApi(result.lead)
+        : mapLeadFromApi((await apiFetch(`leads/${selectedLead.id}`)) as Record<string, unknown>);
+
+      // Force-clear local chat + intake profile so merge cannot retain stale UI.
+      const cleared: ActiveLead = {
+        ...mapped,
+        messages: [],
+        has_ai_messages: false,
+        total_messages_received: 0,
+        unread_count: 0,
+        current_location: null,
+        preferred_country: null,
+        preferred_course: null,
+        target_program: null,
+        target_degree: null,
+        target_major: null,
+        study_interest_complete: false,
+        english_test_scores: null,
+        gre_score: null,
+        gmat_score: null,
+        test_scores: null,
+        wants_consultation_call: null,
+        consultation_scheduled_at: null,
+        calendar_booking_id: null,
+        consultation_session_date: null,
+        consultation_session_time: null,
+        assigned_counsellor_name: null,
+        appointment_status: null,
+        available_consultation_dates: [],
+        available_consultation_times: [],
+        selected_consultation_date: null,
+        intake_complete: false,
+      };
+      applyLeadDetail(cleared, { replaceMessages: true });
+      const messagePart =
+        typeof result.deleted_messages === 'number'
+          ? `${result.deleted_messages} message${result.deleted_messages === 1 ? '' : 's'}`
+          : 'messages';
+      const bookingPart =
+        typeof result.deleted_bookings === 'number'
+          ? `${result.deleted_bookings} booking${result.deleted_bookings === 1 ? '' : 's'}`
+          : 'bookings';
+      setOutreachSuccess(
+        `WhatsApp conversation with ${cleared.name} was reset (${messagePart} and ${bookingPart} removed). ` +
+          'Lead Status is New — you can start a fresh AI conversation.'
+      );
+    } catch (error) {
+      console.error('Failed to reset WhatsApp conversation:', error);
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Could not reset the WhatsApp conversation. Please try again.';
+      alert(message);
+    } finally {
+      setResettingConversationId(null);
+    }
+  };
+
   const handleTransitionStatus = async (
     event: React.MouseEvent,
     leadId: number,
@@ -884,7 +1109,7 @@ export default function AiActiveView() {
     const displayText =
       msg.sender === 'candidate' || msg.sender === 'student'
         ? formatCandidateMessageText(msg.text, selectedLead)
-        : msg.text;
+        : formatAdvisorMessageText(msg.text);
 
     return <p style={styles.bubbleTextString}>{displayText}</p>;
   };
@@ -911,10 +1136,6 @@ export default function AiActiveView() {
       <div style={styles.workspaceContainer}>
       <style>{`
         html, body, #root { overflow: hidden !important; }
-        .custom-scroll-region::-webkit-scrollbar { width: 6px; height: 6px; }
-        .custom-scroll-region::-webkit-scrollbar-track { background: transparent; }
-        .custom-scroll-region::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 20px; }
-        .custom-scroll-region::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
         .ai-status-btn {
           display: flex;
           align-items: center;
@@ -944,18 +1165,51 @@ export default function AiActiveView() {
 
       <div style={styles.leftSidebarPanel}>
         <div style={styles.sidebarHeader}>
-          <h2 style={styles.sidebarTitle}>AI Active</h2>
-          <span style={styles.activeCounterBadge}>{queue.length}</span>
+          <div style={styles.sidebarHeaderText}>
+            <h2 style={styles.sidebarTitle}>AI Active</h2>
+            <p
+              style={styles.viewingRecordsLabel}
+              title={
+                totalCount > 0
+                  ? formatViewingRecordsLabel(rangeStart, rangeEnd, totalCount)
+                  : 'No candidates in the filtered queue'
+              }
+            >
+              {formatViewingRecordsLabel(rangeStart, rangeEnd, totalCount)}
+            </p>
+          </div>
+          <span style={styles.activeCounterBadge}>
+            {totalCount > 0 ? `${rangeStart}–${rangeEnd}/${totalCount}` : 0}
+          </span>
         </div>
+
+        {!isLoading && !loadError && (totalCount > 0 || queue.length > 0) ? (
+          <QueuePaginationControls
+            page={page}
+            totalPages={totalPages}
+            hasMorePages={hasMorePages}
+            disabled={isLoading}
+            onPageChange={setPage}
+            style={styles.sidebarPaginationHeader}
+          />
+        ) : null}
 
         <LeadQueueSidebarFilters
           interactionDays={interactionDays}
           onInteractionDaysChange={setInteractionDays}
+          contactStatus={contactStatus}
+          onContactStatusChange={setContactStatus}
           searchQuery={searchQuery}
           onSearchQueryChange={setSearchQuery}
+          pageSize={pageSize}
+          onPageSizeChange={handlePageSizeChange}
         />
 
-        <div className="custom-scroll-region" style={styles.leadScrollList}>
+        <HeadlessScrollArea
+          className="flex-1 min-h-0"
+          style={styles.leadScrollList}
+          viewportStyle={styles.leadScrollViewport}
+        >
           {isLoading ? (
             <div style={styles.emptyListPlaceholder}>Loading AI active leads...</div>
           ) : loadError ? (
@@ -963,7 +1217,8 @@ export default function AiActiveView() {
           ) : queue.length === 0 ? (
             <div style={styles.emptyListPlaceholder}>{emptyQueueMessage}</div>
           ) : (
-            queue.map(lead => {
+            <>
+            {queue.map(lead => {
               const isSelected = selectedLead?.id === lead.id;
               const unreadCount = getUnreadCount(lead);
 
@@ -1047,9 +1302,21 @@ export default function AiActiveView() {
                   </div>
                 </div>
               );
-            })
+            })}
+            </>
           )}
-        </div>
+        </HeadlessScrollArea>
+
+        {!isLoading && !loadError && (totalCount > 0 || queue.length > 0) ? (
+          <QueuePaginationControls
+            page={page}
+            totalPages={totalPages}
+            hasMorePages={hasMorePages}
+            disabled={isLoading}
+            onPageChange={setPage}
+            style={styles.sidebarPagination}
+          />
+        ) : null}
       </div>
 
       <div style={styles.rightChatPanel}>
@@ -1088,6 +1355,18 @@ export default function AiActiveView() {
               >
                 Overview
               </button>
+              {(selectedLead.messages.length > 0 || leadHasAiMessages(selectedLead)) && (
+                <button
+                  type="button"
+                  onClick={() => void handleResetWhatsappConversation()}
+                  disabled={resettingConversationId === selectedLead.id}
+                  style={styles.headerResetButton}
+                  title="Reset WhatsApp conversation — clear all messages and start fresh"
+                >
+                  <RotateCcw size={13} />
+                  {resettingConversationId === selectedLead.id ? 'Resetting…' : 'Reset chat'}
+                </button>
+              )}
               {!leadHasAiMessages(selectedLead) ? (
                 <button
                   type="button"
@@ -1120,7 +1399,12 @@ export default function AiActiveView() {
 
             <IntakeProfilePanel key={selectedLead.id} lead={selectedLead} />
 
-            <div ref={chatContainerRef} className="custom-scroll-region" style={styles.whatsappChatFeedSurface}>
+            <HeadlessScrollArea
+              ref={chatContainerRef}
+              className="flex-1 min-h-0"
+              style={styles.whatsappChatFeedShell}
+              viewportStyle={styles.whatsappChatFeedSurface}
+            >
               {hasNoMessages ? (
                 <div style={styles.emptyConversationPrompt}>
                   <div style={{ fontSize: '32px', marginBottom: '8px' }}>🤖</div>
@@ -1197,7 +1481,7 @@ export default function AiActiveView() {
                 ))
               )}
               <div ref={chatEndRef} style={{ height: '1px', width: '100%' }} />
-            </div>
+            </HeadlessScrollArea>
 
             <div style={styles.readOnlyFooter}>
               <Bot size={16} />
@@ -1299,9 +1583,9 @@ const styles = {
     fontFamily: 'system-ui, -apple-system, sans-serif',
   } as React.CSSProperties,
   leftSidebarPanel: {
-    width: '22%',
-    minWidth: '300px',
-    maxWidth: '22%',
+    width: '28%',
+    minWidth: '320px',
+    maxWidth: '400px',
     height: '100%',
     borderRight: '1px solid #e2e8f0',
     display: 'flex',
@@ -1309,23 +1593,75 @@ const styles = {
     backgroundColor: '#ffffff',
     overflow: 'hidden',
     boxSizing: 'border-box',
+    flexShrink: 0,
   } as React.CSSProperties,
   sidebarHeader: {
     padding: '16px 20px',
     borderBottom: '1px solid #e2e8f0',
     display: 'flex',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     flexShrink: 0,
+    gap: '10px',
+  } as React.CSSProperties,
+  sidebarHeaderText: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '4px',
+    minWidth: 0,
+    flex: 1,
   } as React.CSSProperties,
   sidebarTitle: { margin: 0, fontSize: '16px', fontWeight: '700', color: '#0f172a' } as React.CSSProperties,
+  viewingRecordsLabel: {
+    margin: 0,
+    fontSize: '12px',
+    fontWeight: 700,
+    color: '#0f172a',
+    lineHeight: 1.35,
+  } as React.CSSProperties,
   activeCounterBadge: {
     backgroundColor: '#dcfce7',
     color: '#059669',
     padding: '2px 8px',
     borderRadius: '10px',
     fontSize: '11px',
-    fontWeight: '600',
+    fontWeight: '700',
+    flexShrink: 0,
+  } as React.CSSProperties,
+  sidebarLoadMoreButton: {
+    margin: '8px 12px 16px',
+    width: 'calc(100% - 24px)',
+    boxSizing: 'border-box',
+    padding: '10px 12px',
+    borderRadius: '8px',
+    border: '1px solid #bbf7d0',
+    backgroundColor: '#f0fdf4',
+    color: '#047857',
+    fontSize: '12px',
+    fontWeight: 700,
+    cursor: 'pointer',
+  } as React.CSSProperties,
+  sidebarPagination: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '8px',
+    margin: 0,
+    padding: '10px 12px',
+    borderTop: '1px solid #e2e8f0',
+    backgroundColor: '#f8fafc',
+    flexShrink: 0,
+  } as React.CSSProperties,
+  sidebarPaginationHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '8px',
+    margin: 0,
+    padding: '8px 12px',
+    borderBottom: '1px solid #e2e8f0',
+    backgroundColor: '#f8fafc',
+    flexShrink: 0,
   } as React.CSSProperties,
   searchHeaderSection: {
     padding: '12px',
@@ -1345,8 +1681,9 @@ const styles = {
   } as React.CSSProperties,
   leadScrollList: {
     flex: 1,
-    overflowY: 'auto',
-    overflowX: 'hidden',
+    minHeight: 0,
+  } as React.CSSProperties,
+  leadScrollViewport: {
     padding: '8px',
     display: 'flex',
     flexDirection: 'column',
@@ -1482,6 +1819,20 @@ const styles = {
     cursor: 'pointer',
     flexShrink: 0,
   } as React.CSSProperties,
+  headerResetButton: {
+    border: '1px solid #fecaca',
+    backgroundColor: '#fef2f2',
+    color: '#b91c1c',
+    padding: '8px 12px',
+    borderRadius: '8px',
+    fontSize: '12px',
+    fontWeight: '700',
+    cursor: 'pointer',
+    flexShrink: 0,
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+  } as React.CSSProperties,
   headerJourneyLink: {
     marginTop: '6px',
     border: 'none',
@@ -1508,9 +1859,8 @@ const styles = {
     boxShadow: '0 2px 8px rgba(5, 150, 105, 0.25)',
   } as React.CSSProperties,
   rightChatPanel: {
-    flex: '1 1 78%',
-    width: '78%',
-    maxWidth: '78%',
+    flex: '1 1 auto',
+    minWidth: 0,
     height: '100%',
     display: 'flex',
     flexDirection: 'column',
@@ -1634,7 +1984,7 @@ const styles = {
   } as React.CSSProperties,
   intakeFieldLabel: {
     display: 'block',
-    fontSize: '10px',
+    fontSize: '13px',
     fontWeight: '700',
     color: '#64748b',
     textTransform: 'uppercase',
@@ -1642,7 +1992,7 @@ const styles = {
   } as React.CSSProperties,
   intakeFieldValue: {
     display: 'block',
-    fontSize: '12px',
+    fontSize: '14px',
     color: '#0f172a',
     fontWeight: '500',
     wordBreak: 'break-word',
@@ -1718,7 +2068,7 @@ const styles = {
   } as React.CSSProperties,
   headerProfileMeta: {
     margin: '4px 0 0 0',
-    fontSize: '13px',
+    fontSize: '14px',
     color: '#667781',
   } as React.CSSProperties,
   aiAgentBadge: {
@@ -1733,10 +2083,11 @@ const styles = {
     fontWeight: '700',
     flexShrink: 0,
   } as React.CSSProperties,
-  whatsappChatFeedSurface: {
+  whatsappChatFeedShell: {
     flex: 1,
-    overflowY: 'auto',
-    overflowX: 'hidden',
+    minHeight: 0,
+  } as React.CSSProperties,
+  whatsappChatFeedSurface: {
     padding: '20px 4%',
     display: 'flex',
     flexDirection: 'column',

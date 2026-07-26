@@ -41,3 +41,25 @@ class LeadSyncRunResponse(BaseModel):
     delta_since_unix: str | None = None
     delta_since_label: str | None = None
     delta_is_initial_backfill: bool = False
+
+
+class LeadSyncStartResponse(BaseModel):
+    """Immediate ack when Sync Now is accepted as a background job."""
+
+    accepted: bool = True
+    status: str = "IN_PROGRESS"
+    sync_log_id: int
+    message: str = "Meta lead sync started. Poll status until the run completes."
+
+
+class LeadSyncRunStatusOut(BaseModel):
+    sync_log_id: int
+    status: str
+    message: str | None = None
+    forms_processed: int = 0
+    leads_seen: int = 0
+    leads_created: int = 0
+    leads_skipped: int = 0
+    errors: list[str] = Field(default_factory=list)
+    run_at: str | None = None
+    completed_at: str | None = None

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ExternalLink, FileText, Loader2, MessageSquare, Mic, X } from 'lucide-react';
 import { apiFetch } from '../utils/api';
+import HeadlessScrollArea from './HeadlessScrollArea';
 
 type TimelineKind = 'whatsapp' | 'session_note' | 'audio' | 'system';
 
@@ -29,6 +30,8 @@ interface InteractionLogDrawerProps {
   open: boolean;
   bookingId: number | null;
   onClose: () => void;
+  /** `schedule` = Manage Appointments (works before assignment). Default: My Bookings. */
+  scope?: 'mine' | 'schedule';
 }
 
 const timelineIcon = (kind: TimelineKind) => {
@@ -54,7 +57,12 @@ const formatTime = (value: string): string => {
   });
 };
 
-const InteractionLogDrawer: React.FC<InteractionLogDrawerProps> = ({ open, bookingId, onClose }) => {
+const InteractionLogDrawer: React.FC<InteractionLogDrawerProps> = ({
+  open,
+  bookingId,
+  onClose,
+  scope = 'mine',
+}) => {
   const [interaction, setInteraction] = useState<InteractionLogData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,7 +78,12 @@ const InteractionLogDrawer: React.FC<InteractionLogDrawerProps> = ({ open, booki
     setLoading(true);
     setError(null);
 
-    apiFetch(`bookings/mine/${bookingId}/interactions`)
+    const path =
+      scope === 'schedule'
+        ? `bookings/${bookingId}/interactions`
+        : `bookings/mine/${bookingId}/interactions`;
+
+    apiFetch(path)
       .then(data => {
         if (!cancelled) setInteraction(data as InteractionLogData);
       })
@@ -87,7 +100,7 @@ const InteractionLogDrawer: React.FC<InteractionLogDrawerProps> = ({ open, booki
     return () => {
       cancelled = true;
     };
-  }, [open, bookingId]);
+  }, [open, bookingId, scope]);
 
   useEffect(() => {
     if (!open) return;
@@ -105,7 +118,7 @@ const InteractionLogDrawer: React.FC<InteractionLogDrawerProps> = ({ open, booki
   return (
     <>
       <div className="fixed inset-0 bg-black/30 z-[60]" onClick={onClose} role="presentation" />
-      <aside className="fixed top-0 right-0 h-full w-full max-w-2xl bg-card border-l border-border-subtle shadow-2xl z-[70] flex flex-col min-h-0">
+      <aside className="fixed top-0 right-0 h-full w-full max-w-2xl bg-card border-l border-border-subtle shadow-2xl z-[70] flex flex-col min-h-0 overflow-hidden">
         <div className="shrink-0 flex items-start justify-between gap-4 px-5 py-4 border-b border-border-subtle">
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">Interaction Log</p>
@@ -123,7 +136,7 @@ const InteractionLogDrawer: React.FC<InteractionLogDrawerProps> = ({ open, booki
           </button>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-5 py-4">
+        <HeadlessScrollArea className="flex-1 min-h-0 h-0" viewportClassName="px-5 py-4">
           {loading ? (
             <div className="flex items-center justify-center py-16 text-text-muted">
               <Loader2 size={22} className="animate-spin mr-2" />
@@ -132,7 +145,7 @@ const InteractionLogDrawer: React.FC<InteractionLogDrawerProps> = ({ open, booki
           ) : error && !interaction ? (
             <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
           ) : interaction ? (
-            <section className="space-y-3 pb-4">
+            <section className="space-y-3 pb-24">
               <h3 className="text-sm font-semibold text-text-main">Communication History</h3>
               <p className="text-xs text-text-muted">
                 All interactions between Nexus and the student for this booking.
@@ -175,11 +188,11 @@ const InteractionLogDrawer: React.FC<InteractionLogDrawerProps> = ({ open, booki
           ) : null}
 
           {error && interaction && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 mt-4">
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 mt-4 mb-24">
               {error}
             </div>
           )}
-        </div>
+        </HeadlessScrollArea>
       </aside>
     </>
   );

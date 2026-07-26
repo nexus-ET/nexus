@@ -28,10 +28,8 @@ def login_access_token(
     db: Session = Depends(get_db),
     form_data: OAuth2PasswordRequestForm = Depends(),
 ):
-    user = db.query(UserModel).filter(UserModel.email == form_data.username).first()
-
-    if not user:
-        print(f"--- LOGIN DEBUG: User with email '{form_data.username}' not found in database ---")
+    login_email = (form_data.username or "").strip().lower()
+    user = db.query(UserModel).filter(UserModel.email == login_email).first()
 
     if not user or not security.verify_password(form_data.password, user.hashed_password):
         write_audit_log(
@@ -43,7 +41,7 @@ def login_access_token(
             status="failed",
             details=build_auth_audit_details(
                 "LOGIN_FAILURE",
-                form_data.username,
+                login_email,
                 status_code=401,
             ),
             sync_mode="MANUAL",
@@ -64,7 +62,7 @@ def login_access_token(
             status="failed",
             details=build_auth_audit_details(
                 "LOGIN_FAILURE",
-                form_data.username,
+                login_email,
                 reason="account_deactivated",
                 status_code=403,
             ),

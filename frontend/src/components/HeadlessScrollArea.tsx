@@ -10,17 +10,23 @@ import React, {
 export interface HeadlessScrollAreaHandle {
   scrollToBottom: (behavior?: ScrollBehavior) => void;
   scrollToSelector: (selector: string, behavior?: ScrollBehavior) => void;
+  getViewport: () => HTMLDivElement | null;
 }
 
 interface HeadlessScrollAreaProps {
   children: React.ReactNode;
   className?: string;
+  style?: React.CSSProperties;
+  viewportClassName?: string;
+  viewportStyle?: React.CSSProperties;
 }
 
 const HeadlessScrollArea = forwardRef<HeadlessScrollAreaHandle, HeadlessScrollAreaProps>(
-  ({ children, className = '' }, ref) => {
+  ({ children, className = '', style, viewportClassName = '', viewportStyle }, ref) => {
     const viewportRef = useRef<HTMLDivElement>(null);
     const [thumb, setThumb] = useState({ height: 0, top: 0, visible: false });
+
+    const getViewport = useCallback(() => viewportRef.current, []);
 
     const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
       const el = viewportRef.current;
@@ -36,6 +42,7 @@ const HeadlessScrollArea = forwardRef<HeadlessScrollAreaHandle, HeadlessScrollAr
       ref,
       () => ({
         scrollToBottom,
+        getViewport,
         scrollToSelector: (selector: string, behavior: ScrollBehavior = 'smooth') => {
           const el = viewportRef.current;
           if (!el) return;
@@ -45,7 +52,7 @@ const HeadlessScrollArea = forwardRef<HeadlessScrollAreaHandle, HeadlessScrollAr
           }
         },
       }),
-      [scrollToBottom]
+      [scrollToBottom, getViewport]
     );
 
     const updateThumb = useCallback(() => {
@@ -69,24 +76,28 @@ const HeadlessScrollArea = forwardRef<HeadlessScrollAreaHandle, HeadlessScrollAr
       if (!el) return;
       updateThumb();
       el.addEventListener('scroll', updateThumb, { passive: true });
-      const observer = new ResizeObserver(updateThumb);
-      observer.observe(el);
+      const resizeObserver = new ResizeObserver(updateThumb);
+      resizeObserver.observe(el);
+      const mutationObserver = new MutationObserver(updateThumb);
+      mutationObserver.observe(el, { childList: true, subtree: true, characterData: true });
       return () => {
         el.removeEventListener('scroll', updateThumb);
-        observer.disconnect();
+        resizeObserver.disconnect();
+        mutationObserver.disconnect();
       };
     }, [updateThumb, children]);
 
     return (
-      <div className={`headless-scroll-area relative min-h-0 ${className}`}>
-        <div ref={viewportRef} className="headless-scroll-viewport h-full min-h-0 overflow-y-auto overflow-x-hidden">
+      <div className={`headless-scroll-area relative min-h-0 ${className}`} style={style}>
+        <div
+          ref={viewportRef}
+          className={`headless-scroll-viewport h-full min-h-0 overflow-y-auto overflow-x-hidden ${viewportClassName}`}
+          style={viewportStyle}
+        >
           {children}
         </div>
         {thumb.visible && (
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-y-2 right-1 w-1.5"
-          >
+          <div aria-hidden className="pointer-events-none absolute inset-y-2 right-1 w-1.5">
             <div
               className="absolute right-0 w-1 rounded-full bg-[#59a5d8]/80"
               style={{ height: thumb.height, top: thumb.top }}

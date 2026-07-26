@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { apiFetch, getStoredToken, clearSession } from '../utils/api';
 import { isAllowedRoute, normalizePath } from '../utils/routeAccess';
+import { findModuleForPath, getAppNavModules } from '../config/appNavModules';
 import Sidebar from '../components/Sidebar';
 import HeaderMegaNav from '../components/HeaderMegaNav';
 import UserProfileMenu from '../components/UserProfileMenu';
@@ -124,6 +125,7 @@ const NexusDashboard: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [academiaCommandPaletteOpen, setAcademiaCommandPaletteOpen] = useState(false);
+  const [activeNavModuleId, setActiveNavModuleId] = useState<string | null>(null);
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -148,6 +150,29 @@ const NexusDashboard: React.FC = () => {
   const canAccessCurrentRoute = isAllowedRoute(currentPath, allowedRoutes);
   const canUseAcademiaCommandSearch =
     canAccessAcademiaHub(currentUser) && isAllowedRoute('/academia', allowedRoutes);
+
+  // Keep left-nav module in sync when the route belongs to a header module.
+  useEffect(() => {
+    if (!sessionReady || allowedRoutes === null) return;
+    const roleName = currentUser?.admin_role?.name || currentUser?.role || '';
+    const modules = getAppNavModules({
+      allowedRoutes,
+      roleName,
+      currentUser,
+    });
+    const match = findModuleForPath(modules, currentPath);
+    if (match) {
+      setActiveNavModuleId(match.id);
+    }
+  }, [sessionReady, allowedRoutes, currentUser, currentPath]);
+
+  const handleNavModuleSelect = useCallback(
+    (moduleId: string) => {
+      setActiveNavModuleId(moduleId);
+      setIsSidebarOpen(true);
+    },
+    []
+  );
 
   useEffect(() => {
     if (!canUseAcademiaCommandSearch) return undefined;
@@ -322,13 +347,19 @@ const NexusDashboard: React.FC = () => {
         setIsSidebarOpen={setIsSidebarOpen}
         allowedRoutes={allowedRoutes}
         currentUser={currentUser}
+        activeModuleId={activeNavModuleId}
       />
 
       {/* --- TOP HEADER AND CONTAINER WORKSPACE --- */}
       <div className="flex-1 flex flex-col relative overflow-hidden">
         <header className="sticky top-0 h-16 bg-canvas border-b border-white/10 flex items-center justify-between gap-4 px-4 md:px-6 lg:px-8 z-40">
           <div className="flex items-center gap-3 shrink-0 min-w-0">
-            <HeaderMegaNav allowedRoutes={allowedRoutes} currentUser={currentUser} />
+            <HeaderMegaNav
+              allowedRoutes={allowedRoutes}
+              currentUser={currentUser}
+              activeModuleId={activeNavModuleId}
+              onModuleSelect={handleNavModuleSelect}
+            />
           </div>
 
           <div className="flex-1 max-w-xl min-w-0">

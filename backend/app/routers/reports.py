@@ -13,9 +13,38 @@ from app.db.database import get_db
 from app.models.user import User
 from app.schemas.lead_quarantine import IngestionQualityReport
 from app.schemas.sync_log import ReportsSyncScheduleOut, SyncLogOut, SyncLogsResponse
+from app.schemas.exception_log import (
+    ExceptionLogAutoResolveRequest,
+    ExceptionLogAutoResolveResponse,
+    ExceptionLogCreateRequest,
+    ExceptionLogOut,
+    ExceptionLogRetentionSetting,
+    ExceptionLogStatusUpdate,
+    ExceptionLogsResponse,
+)
 from app.services.ingestion_report_service import get_ingestion_quality_report
 from app.services.lead_sync_settings import get_lead_sync_config_for_api
-from app.services.pdf_generator import generate_sync_logs_pdf
+from app.services.pdf_generator import generate_exception_logs_pdf, generate_sync_logs_pdf
+from app.services.exception_log_service import (
+    ALLOWED_EXCEPTION_LOG_LIMITS,
+    EXCEPTION_LOG_SORT_FIELDS,
+    RESOLVER_CURSOR,
+    RESOLVER_PAGE_REFRESH,
+    RESOLVER_SERVER_RECOVERY,
+    RESOLVER_SUCCESSFUL_SYNC,
+    auto_resolve_by_cursor,
+    auto_resolve_lead_sync_failure_exceptions,
+    auto_resolve_lead_sync_lock_exceptions,
+    auto_resolve_transient_client_exceptions,
+    build_auto_resolution_comment,
+    cleanup_old_exception_logs,
+    get_exception_log_retention_days,
+    list_all_exception_logs_for_export,
+    list_exception_logs,
+    record_exception_event,
+    serialize_exception_log,
+    update_exception_log_status,
+)
 from app.services.sync_log_service import (
     ALLOWED_SYNC_LOG_LIMITS,
     MAX_SYNC_LOG_EXPORT_ROWS,
@@ -23,6 +52,7 @@ from app.services.sync_log_service import (
     get_sync_log,
     list_all_sync_logs_for_export,
     list_sync_logs,
+    format_user_label,
 )
 
 router = APIRouter()
@@ -241,4 +271,273 @@ def read_ingestion_quality(
         start_date=_parse_date_param(start_date),
         end_date=_parse_date_param(end_date, end_of_day=True),
         sync_mode=mode_filter,
+    )
+
+
+@router.get("/reports/exception-logs", response_model=ExceptionLogsResponse)
+@router.get("/reports/exception-logs/", response_model=ExceptionLogsResponse)
+def read_exception_logs(
+    page: int = Query(default=1, ge=1, description="1-based page number"),
+    limit: int = Query(default=25, description="Rows per page (25, 50, or 100)"),
+    start_date: str | None = Query(default=None, description="ISO date or datetime (inclusive)"),
+    end_date: str | None = Query(default=None, description="ISO date or datetime (inclusive)"),
+    sort_by: str = Query(default="attempt_timestamp", description="Column to sort by"),
+    sort_order: Literal["asc", "desc"] = Query(default="desc", description="Sort direction"),
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.require_page_access("/reports/exceptions")),
+):
+    if limit not in ALLOWED_EXCEPTION_LOG_LIMITS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"limit must be one of {sorted(ALLOWED_EXCEPTION_LOG_LIMITS)}.",
+        )
+    if sort_by not in EXCEPTION_LOG_SORT_FIELDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"sort_by must be one of {sorted(EXCEPTION_LOG_SORT_FIELDS)}.",
+        )
+
+    logs, total_count = list_exception_logs(
+        db,
+        start_date=_parse_date_param(start_date),
+        end_date=_parse_date_param(end_date, end_of_day=True),
+        page=page,
+        limit=limit,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
+    total_pages = max(1, math.ceil(total_count / limit)) if total_count else 1
+    safe_page = min(page, total_pages) if total_count else page
+
+    return ExceptionLogsResponse(
+        logs=logs,
+        total_count=total_count,
+        page=safe_page,
+        limit=limit,
+        total_pages=total_pages,
+    )
+
+
+def _export_exception_logs_pdf_response(
+    db: Session,
+    *,
+    start_date: str | None,
+    end_date: str | None,
+    sort_by: str,
+    sort_order: Literal["asc", "desc"],
+) -> Response:
+    if sort_by not in EXCEPTION_LOG_SORT_FIELDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"sort_by must be one of {sorted(EXCEPTION_LOG_SORT_FIELDS)}.",
+        )
+
+    parsed_start = _parse_date_param(start_date)
+    parsed_end = _parse_date_param(end_date, end_of_day=True)
+
+    try:
+        logs, total_count = list_all_exception_logs_for_export(
+            db,
+            start_date=parsed_start,
+            end_date=parsed_end,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+    if total_count == 0:
+        raise HTTPException(status_code=400, detail="No exception logs match the selected filters.")
+
+    pdf_bytes = generate_exception_logs_pdf(
+        db,
+        logs=logs,
+        start_date=parsed_start,
+        end_date=parsed_end,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
+    filename_date = datetime.utcnow().strftime("%Y-%m-%d")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="exception-report-{filename_date}.pdf"',
+        },
+    )
+
+
+@router.get("/reports/export/exception-logs")
+@router.get("/reports/export/exception-logs/")
+@router.get("/reports/exception-logs/export/pdf")
+@router.get("/reports/exception-logs/export/pdf/")
+def export_exception_logs_pdf(
+    start_date: str | None = Query(default=None),
+    end_date: str | None = Query(default=None),
+    sort_by: str = Query(default="attempt_timestamp"),
+    sort_order: Literal["asc", "desc"] = Query(default="desc"),
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.require_page_access("/reports/exceptions")),
+):
+    return _export_exception_logs_pdf_response(
+        db,
+        start_date=start_date,
+        end_date=end_date,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
+
+
+@router.post("/reports/exception-logs", response_model=ExceptionLogOut)
+@router.post("/reports/exception-logs/", response_model=ExceptionLogOut)
+def create_exception_log(
+    payload: ExceptionLogCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_user),
+):
+    """Allow authenticated clients to report timeouts/errors into the Exception Report."""
+    row = record_exception_event(
+        db,
+        severity=payload.severity,
+        source=payload.source,
+        category=payload.category,
+        message=payload.message,
+        details=payload.details,
+        page_path=payload.page_path,
+        exception_type=payload.exception_type,
+        related_resource=payload.related_resource,
+        related_id=payload.related_id,
+        triggered_by_user=format_user_label(current_user),
+        triggered_by_user_id=current_user.id,
+        commit=True,
+    )
+    return serialize_exception_log(row)
+
+
+@router.patch("/reports/exception-logs/{exception_log_id}/status", response_model=ExceptionLogOut)
+def set_exception_log_status(
+    exception_log_id: int,
+    payload: ExceptionLogStatusUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.require_page_access("/reports/exceptions")),
+):
+    resolved_by = payload.resolved_by
+    allow_auto = bool(resolved_by and resolved_by != "admin")
+    try:
+        row = update_exception_log_status(
+            db,
+            exception_log_id,
+            status=payload.status,
+            resolution_comment=payload.resolution_comment,
+            resolved_by=resolved_by if allow_auto else None,
+            allow_auto_comment=allow_auto,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="Exception log not found.")
+    return serialize_exception_log(row)
+
+
+@router.post(
+    "/reports/exception-logs/auto-resolve",
+    response_model=ExceptionLogAutoResolveResponse,
+)
+@router.post(
+    "/reports/exception-logs/auto-resolve/",
+    response_model=ExceptionLogAutoResolveResponse,
+)
+def auto_resolve_exception_logs(
+    payload: ExceptionLogAutoResolveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_user),
+):
+    """
+    Bulk-resolve open exceptions with an automatically generated resolution comment.
+
+    Used after Cursor fixes, page refresh (transient client errors), and server recovery.
+    page_refresh / transient_client: any authenticated user (fires on healthy app load).
+    Other modes: require Exception Report page access.
+    """
+    mode = payload.mode
+    if mode not in {"page_refresh", "transient_client"}:
+        from app.services.navigation_rbac import check_page_access
+
+        if not check_page_access(db, current_user, "/reports/exceptions"):
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied for route '/reports/exceptions'.",
+            )
+
+    detail = payload.detail
+    ids = payload.exception_ids
+
+    if mode in {"page_refresh", "transient_client"}:
+        count = auto_resolve_transient_client_exceptions(db, detail=detail)
+        comment = build_auto_resolution_comment(RESOLVER_PAGE_REFRESH, detail=detail)
+    elif mode in {"server_recovery", "lead_sync_lock"}:
+        count = auto_resolve_lead_sync_lock_exceptions(db, detail=detail)
+        comment = build_auto_resolution_comment(RESOLVER_SERVER_RECOVERY, detail=detail)
+    elif mode == "successful_sync" or mode == "lead_sync_failure":
+        count = auto_resolve_lead_sync_failure_exceptions(db, detail=detail)
+        comment = build_auto_resolution_comment(RESOLVER_SUCCESSFUL_SYNC, detail=detail)
+    elif mode == "cursor_agent":
+        count = auto_resolve_by_cursor(
+            db,
+            exception_ids=ids,
+            detail=detail,
+        )
+        comment = build_auto_resolution_comment(RESOLVER_CURSOR, detail=detail)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported auto-resolve mode: {mode}")
+
+    return ExceptionLogAutoResolveResponse(
+        resolved_count=count,
+        mode=mode,
+        resolution_comment=comment if count else None,
+    )
+
+
+@router.get("/reports/exception-logs/retention", response_model=ExceptionLogRetentionSetting)
+@router.get("/reports/exception-logs/retention/", response_model=ExceptionLogRetentionSetting)
+def read_exception_log_retention(
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.require_page_access("/reports/exceptions")),
+):
+    return ExceptionLogRetentionSetting(
+        exception_log_retention_days=get_exception_log_retention_days(db)
+    )
+
+
+@router.put("/reports/exception-logs/retention", response_model=ExceptionLogRetentionSetting)
+@router.put("/reports/exception-logs/retention/", response_model=ExceptionLogRetentionSetting)
+def update_exception_log_retention(
+    payload: ExceptionLogRetentionSetting,
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.require_page_access("/reports/exceptions")),
+):
+    """Save retention window and immediately purge rows older than that window."""
+    from app.models.dynamic_setting import DynamicSetting
+    from app.services.settings_service import clear_settings_cache
+
+    setting = (
+        db.query(DynamicSetting)
+        .filter(DynamicSetting.key == "EXCEPTION_LOG_RETENTION_DAYS")
+        .first()
+    )
+    if setting is None:
+        setting = DynamicSetting(
+            key="EXCEPTION_LOG_RETENTION_DAYS",
+            value=str(payload.exception_log_retention_days),
+        )
+        db.add(setting)
+    else:
+        setting.value = str(payload.exception_log_retention_days)
+    db.commit()
+    clear_settings_cache()
+
+    deleted_count = cleanup_old_exception_logs(db)
+    return ExceptionLogRetentionSetting(
+        exception_log_retention_days=get_exception_log_retention_days(db),
+        deleted_count=deleted_count,
     )

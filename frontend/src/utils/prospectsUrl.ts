@@ -1,7 +1,18 @@
 import type { ProspectsFilters } from '../types/prospect';
 import { DEFAULT_PROSPECTS_FILTERS } from '../types/prospect';
+import {
+  isContactStatusFilter,
+  type ContactStatusFilter,
+} from './leadQueueFilters';
+import {
+  isTablePageSize,
+  readStoredTablePageSize,
+  type TablePageSize,
+} from './tablePageSize';
 
 export type ProspectDetailTab = 'overview' | 'history' | 'notes';
+
+export const PROSPECTS_PAGE_SIZE_KEY = 'nexus.prospects.pageSize';
 
 const SOURCE_TO_SLUG: Record<string, string> = {
   ALL: 'all',
@@ -28,6 +39,24 @@ export function slugToSource(slug: string | null): string {
   return SLUG_TO_SOURCE[slug.toLowerCase()] || slug.toUpperCase();
 }
 
+function readPageSize(params: URLSearchParams): TablePageSize {
+  const raw = Number(params.get('page_size') || params.get('limit') || '');
+  if (isTablePageSize(raw)) return raw;
+  return readStoredTablePageSize(PROSPECTS_PAGE_SIZE_KEY, DEFAULT_PROSPECTS_FILTERS.pageSize);
+}
+
+function readPage(params: URLSearchParams): number {
+  const raw = Number(params.get('page') || '');
+  if (Number.isFinite(raw) && raw >= 1) return Math.floor(raw);
+  return DEFAULT_PROSPECTS_FILTERS.page;
+}
+
+function readContactStatus(params: URLSearchParams): ContactStatusFilter {
+  const raw = params.get('contact') || params.get('contact_status') || '';
+  if (isContactStatusFilter(raw)) return raw;
+  return DEFAULT_PROSPECTS_FILTERS.contactStatus;
+}
+
 export function readFilters(params: URLSearchParams, fixedCategory = ''): ProspectsFilters {
   return {
     q: params.get('q') || '',
@@ -35,6 +64,9 @@ export function readFilters(params: URLSearchParams, fixedCategory = ''): Prospe
     dateFrom: params.get('from') || '',
     dateTo: params.get('to') || '',
     category: fixedCategory || params.get('category') || '',
+    contactStatus: readContactStatus(params),
+    page: readPage(params),
+    pageSize: readPageSize(params),
   };
 }
 
@@ -66,6 +98,23 @@ export function writeFilterParams(
   if (filters.dateTo) next.set('to', filters.dateTo);
   else next.delete('to');
 
+  if (filters.contactStatus && filters.contactStatus !== 'all') {
+    next.set('contact', filters.contactStatus);
+  } else {
+    next.delete('contact');
+  }
+  next.delete('contact_status');
+
+  if (filters.page && filters.page > 1) next.set('page', String(filters.page));
+  else next.delete('page');
+
+  if (filters.pageSize && filters.pageSize !== DEFAULT_PROSPECTS_FILTERS.pageSize) {
+    next.set('page_size', String(filters.pageSize));
+  } else {
+    next.delete('page_size');
+  }
+  next.delete('limit');
+
   if (tab && tab !== 'overview') next.set('tab', tab);
   else next.delete('tab');
 
@@ -92,6 +141,9 @@ export function prospectsScrollStorageKey(filters: ProspectsFilters, basePath = 
     filters.dateFrom,
     filters.dateTo,
     filters.category,
+    filters.contactStatus,
+    filters.page,
+    filters.pageSize,
   ].join('|');
 }
 

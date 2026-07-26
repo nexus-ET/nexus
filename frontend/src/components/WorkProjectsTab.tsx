@@ -5,6 +5,7 @@ import { Info, Loader2, Plus, Trash2 } from 'lucide-react';
 import { apiFetch } from '../utils/api';
 import { formatLocalIsoDate, parseLocalIsoDate } from '../types/candidateProfile';
 import EmptyListMessage from './ui/EmptyListMessage';
+import { nexusDatePickerPortalProps } from '../utils/nexusDatePickerPortal';
 import {
   createEmptyExperience,
   createEmptyProject,
@@ -14,20 +15,17 @@ import {
   type WorkExperienceFormEntry,
   type WorkExperiencesResponse,
 } from '../types/workExperience';
+import {
+  studentInfoFieldErrorClass as fieldErrorClass,
+  studentInfoInputClass as inputClass,
+  studentInfoLabelClass as labelClass,
+  studentInfoSectionClass as sectionClass,
+} from './studentInfoFormStyles';
 
 interface WorkProjectsTabProps {
   bookingId: number;
   compact?: boolean;
 }
-
-const inputClass =
-  'w-full rounded-md border border-border-subtle bg-card px-2.5 py-1.5 text-xs text-text-main focus:outline-none focus:ring-1 focus:ring-sky-400/40 min-h-[32px]';
-
-const labelClass = 'block text-[11px] font-bold text-text-main mb-1';
-
-const sectionClass = 'rounded-lg border border-border-subtle bg-card/80 p-3 space-y-3';
-
-const fieldErrorClass = 'mt-1 text-[10px] text-red-600';
 
 const fieldClass = (hasError: boolean) =>
   `${inputClass}${hasError ? ' border-red-400 ring-1 ring-red-200' : ''}`;
@@ -201,12 +199,12 @@ const WorkProjectsTab: React.FC<WorkProjectsTabProps> = ({ bookingId, compact = 
     <form onSubmit={handleSave} className={compact ? 'flex flex-1 min-h-0 flex-col' : 'space-y-4'}>
       <div className={compact ? 'flex-1 min-h-0 overflow-y-auto custom-scrollbar space-y-4' : 'space-y-4'}>
         {error ? (
-          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
             {error}
           </div>
         ) : null}
         {success ? (
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
             {success}
           </div>
         ) : null}
@@ -214,7 +212,7 @@ const WorkProjectsTab: React.FC<WorkProjectsTabProps> = ({ bookingId, compact = 
         <section className={sectionClass}>
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-1.5">
-              <h3 className="text-xs font-bold text-text-main uppercase tracking-wide">
+              <h3 className="text-sm font-bold text-text-main uppercase tracking-wide">
                 Work Experience (Optional)
               </h3>
               <div className="relative">
@@ -230,7 +228,7 @@ const WorkProjectsTab: React.FC<WorkProjectsTabProps> = ({ bookingId, compact = 
                   <Info size={13} />
                 </button>
                 {showTooltip ? (
-                  <div className="absolute left-0 top-full z-10 mt-1 w-64 rounded-md border border-border-subtle bg-card px-2.5 py-2 text-[10px] text-text-muted shadow-sm">
+                  <div className="absolute left-0 top-full z-10 mt-1 w-64 rounded-md border border-border-subtle bg-card px-2.5 py-2 text-xs text-text-muted shadow-sm">
                     Optional: Adding your work experience and projects helps us provide better
                     career guidance.
                   </div>
@@ -240,14 +238,14 @@ const WorkProjectsTab: React.FC<WorkProjectsTabProps> = ({ bookingId, compact = 
             <button
               type="button"
               onClick={handleAddExperience}
-              className="inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-[11px] font-semibold text-sky-800 hover:bg-sky-100"
+              className="inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-sm font-semibold text-sky-800 hover:bg-sky-100"
             >
               <Plus size={12} />
               Add Work Experience
             </button>
           </div>
 
-          <p className="text-xs text-text-muted">
+          <p className="text-sm text-text-muted">
             Add one or more roles if you have work history. Leave this section empty if it does not
             apply to you.
           </p>
@@ -270,13 +268,13 @@ const WorkProjectsTab: React.FC<WorkProjectsTabProps> = ({ bookingId, compact = 
               return (
                 <div key={experience.clientId} className={cardClass}>
                   <div className="flex items-center justify-between gap-2">
-                    <p className="text-xs font-bold text-text-main">
+                    <p className="text-sm font-bold text-text-main">
                       Work Experience {index + 1}
                     </p>
                     <button
                       type="button"
                       onClick={() => handleRemoveExperience(experience.clientId)}
-                      className="inline-flex items-center gap-1 text-[11px] text-red-600 hover:text-red-700"
+                      className="inline-flex items-center gap-1 text-sm text-red-600 hover:text-red-700"
                     >
                       <Trash2 size={12} />
                       Remove
@@ -323,6 +321,7 @@ const WorkProjectsTab: React.FC<WorkProjectsTabProps> = ({ bookingId, compact = 
                         className={inputClass}
                         wrapperClassName="w-full"
                         isClearable
+                        {...nexusDatePickerPortalProps}
                       />
                     </div>
                     <div>
@@ -340,12 +339,13 @@ const WorkProjectsTab: React.FC<WorkProjectsTabProps> = ({ bookingId, compact = 
                         wrapperClassName="w-full"
                         isClearable
                         disabled={experience.is_current}
+                        {...nexusDatePickerPortalProps}
                       />
                       {endDateError ? <p className={fieldErrorClass}>{endDateError}</p> : null}
                     </div>
                   </div>
 
-                  <label className="inline-flex items-center gap-2 text-xs text-text-main cursor-pointer">
+                  <label className="inline-flex items-center gap-2 text-sm text-text-main cursor-pointer">
                     <input
                       type="checkbox"
                       checked={experience.is_current}
@@ -373,11 +373,11 @@ const WorkProjectsTab: React.FC<WorkProjectsTabProps> = ({ bookingId, compact = 
 
                   <div className="space-y-2 border-t border-border-subtle pt-3">
                     <div className="flex items-center justify-between gap-2">
-                      <p className="text-[11px] font-bold text-text-main">Projects at this role</p>
+                      <p className="text-sm font-bold text-text-main">Projects at this role</p>
                       <button
                         type="button"
                         onClick={() => handleAddProject(experience.clientId)}
-                        className="inline-flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-[10px] font-semibold text-text-main hover:bg-card"
+                        className="inline-flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-xs font-semibold text-text-main hover:bg-card"
                       >
                         <Plus size={11} />
                         Add Project
@@ -394,7 +394,7 @@ const WorkProjectsTab: React.FC<WorkProjectsTabProps> = ({ bookingId, compact = 
                         className="rounded-md border border-border-subtle bg-card/70 p-2.5 space-y-2"
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <p className="text-[10px] font-bold text-text-main">
+                          <p className="text-sm font-bold text-text-main">
                             Project {projectIndex + 1}
                           </p>
                           <button
@@ -402,7 +402,7 @@ const WorkProjectsTab: React.FC<WorkProjectsTabProps> = ({ bookingId, compact = 
                             onClick={() =>
                               handleRemoveProject(experience.clientId, project.clientId)
                             }
-                            className="inline-flex items-center gap-1 text-[10px] text-red-600 hover:text-red-700"
+                            className="inline-flex items-center gap-1 text-sm text-red-600 hover:text-red-700"
                           >
                             <Trash2 size={11} />
                             Remove
@@ -444,19 +444,19 @@ const WorkProjectsTab: React.FC<WorkProjectsTabProps> = ({ bookingId, compact = 
         </section>
       </div>
 
-      <div className="shrink-0 flex items-center justify-end gap-2 border-t border-border-subtle bg-surface-bg/70 px-0 py-3">
+      <div className="shrink-0 relative z-0 flex items-center justify-end gap-2 border-t border-border-subtle bg-surface-bg/70 px-0 py-3">
         <button
           type="button"
           onClick={handleSkip}
           disabled={saving}
-          className="rounded-md border border-border-subtle px-4 py-2 text-xs font-semibold text-text-muted hover:bg-card hover:text-text-main disabled:opacity-60"
+          className="rounded-md border border-border-subtle px-4 py-2 text-sm font-semibold text-text-muted hover:bg-card hover:text-text-main disabled:opacity-60"
         >
           Skip for Now
         </button>
         <button
           type="submit"
           disabled={!canSave}
-          className="rounded-md bg-sky-700 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-800 disabled:opacity-60 inline-flex items-center gap-2"
+          className="rounded-md bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800 disabled:opacity-60 inline-flex items-center gap-2"
         >
           {saving ? <Loader2 size={14} className="animate-spin" /> : null}
           Save for Later

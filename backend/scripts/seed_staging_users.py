@@ -41,6 +41,7 @@ from app.models.admin_role import AdminRole
 from app.models.user import User
 from app.services.admin_roles import DEFAULT_ADMIN_ROLES
 from app.services.business_profile_service import ensure_default_business
+from app.services.navigation_rbac import ensure_navigation_rbac
 
 register_all_models()
 
@@ -297,6 +298,15 @@ def main() -> int:
     if args.copy_from:
         _copy_users_from(args.copy_from, target_url)
         if not args.force_password_reset:
+            engine = create_engine(target_url, pool_pre_ping=True)
+            Session = sessionmaker(bind=engine)
+            db = Session()
+            try:
+                _ensure_admin_roles(db)
+                print("Ensuring navigation pages + role permissions...")
+                ensure_navigation_rbac(db)
+            finally:
+                db.close()
             print("Done. Log in with each copied user's existing password.")
             return 0
 
@@ -308,7 +318,10 @@ def main() -> int:
         existing_users = db.query(User).count()
         if not password:
             if existing_users > 0 and not args.force_password_reset and not args.email:
-                print(f"{existing_users} user(s) already present — nothing to do.")
+                print(f"{existing_users} user(s) already present — nothing to do for passwords.")
+                print("Ensuring navigation pages + role permissions...")
+                _ensure_admin_roles(db)
+                ensure_navigation_rbac(db)
                 print("Pass --password to reset the 3 team admins, or --copy-from to import.")
                 return 0
             password = "StagingAdmin!ChangeMe"
@@ -330,6 +343,9 @@ def main() -> int:
             )
         else:
             _seed_team_admins(db, password=password)
+
+        print("Ensuring navigation pages + role permissions...")
+        ensure_navigation_rbac(db)
     finally:
         db.close()
 
