@@ -24,22 +24,23 @@ INTEGRATED_ROWS: list[tuple[str, str, int]] = [
 
 
 def upgrade() -> None:
-    # Same study-year code may exist under multiple levels (e.g. 12/13).
-    op.drop_index("ix_full_time_study_years_code", table_name="full_time_study_years")
-    op.create_index(
-        "ix_full_time_study_years_code",
-        "full_time_study_years",
-        ["code"],
-        unique=False,
+    conn = op.get_bind()
+    # Idempotent index swap: staging may already have the composite unique index
+    # while alembic_version still lags (schema sync from develop).
+    conn.execute(sa.text("DROP INDEX IF EXISTS ix_full_time_study_years_code"))
+    conn.execute(
+        sa.text(
+            "CREATE INDEX IF NOT EXISTS ix_full_time_study_years_code "
+            "ON full_time_study_years (code)"
+        )
     )
-    op.create_index(
-        "uq_full_time_study_years_code_level_id",
-        "full_time_study_years",
-        ["code", "level_id"],
-        unique=True,
+    conn.execute(
+        sa.text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_full_time_study_years_code_level_id "
+            "ON full_time_study_years (code, level_id)"
+        )
     )
 
-    conn = op.get_bind()
     level_row = conn.execute(
         sa.text("SELECT id FROM levels WHERE code = 'INTEGRATED' LIMIT 1")
     ).fetchone()
@@ -108,14 +109,11 @@ def downgrade() -> None:
         {"level_id": integrated_id},
     )
 
-    op.drop_index(
-        "uq_full_time_study_years_code_level_id",
-        table_name="full_time_study_years",
-    )
-    op.drop_index("ix_full_time_study_years_code", table_name="full_time_study_years")
-    op.create_index(
-        "ix_full_time_study_years_code",
-        "full_time_study_years",
-        ["code"],
-        unique=True,
+    conn.execute(sa.text("DROP INDEX IF EXISTS uq_full_time_study_years_code_level_id"))
+    conn.execute(sa.text("DROP INDEX IF EXISTS ix_full_time_study_years_code"))
+    conn.execute(
+        sa.text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_full_time_study_years_code "
+            "ON full_time_study_years (code)"
+        )
     )

@@ -5,7 +5,7 @@ Auto-maintained by `backend/scripts/promote_to_staging.py`.
 Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
 
 **Current head:** `jj0k1lbizlogo`
-**Doc generated:** 2026-08-08 06:02 UTC
+**Doc generated:** 2026-08-08 06:05 UTC
 
 ## Full migration chain (at head)
 
@@ -123,7 +123,7 @@ Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
 | `v3w6x9glossaryexp` | v3w6x9glossaryexp_expand_glossary_terms | Expand Nexus Intel glossary across all subscribed countries (~100 terms). |
 | `w4x7z0intaichat` | w4x7z0intaichat_add_intel_ai_chat_logs | New table(s): `intel_ai_chat_logs` |
 | `x5y8z1aithread` | x5y8z1aithread_add_intel_ai_chat_thread_id | Alter: `intel_ai_chat_logs.thread_id` |
-| `y6z9a2bithreadsx` | y6z9a2bithreadsx_add_intel_ai_user_created_index | Add user_id+created_at index for Intel AI thread sidebar queries. |
+| `y6z9a2bithreadsx` | y6z9a2bithreadsx_add_intel_ai_user_created_index | SQL data migration |
 | `a1b2c3flowxcore` | a1b2c3flowxcore_add_flowx_operational_tables | New table(s): `flowx_workflow_rules`, `flowx_pipelines`, `flowx_tracks`, `flowx_tasks`, `flowx_audit_logs`, `flowx_workflow_rules` |
 | `b2c3d4flowxcntry` | b2c3d4flowxcntry_rebuild_country_workflows | New table(s): `flowx_country_workflows`, `flowx_stages`, `flowx_tracks`, `flowx_task_templates`, `flowx_enrollments`, `flowx_enrollment_tracks`, `flowx_tasks`, `flowx_audit_logs` |
 | `c3d4e5flowxbrick` | c3d4e5flowxbrick_subprocess_links_overrides | New table(s): `flowx_subprocess_links` |

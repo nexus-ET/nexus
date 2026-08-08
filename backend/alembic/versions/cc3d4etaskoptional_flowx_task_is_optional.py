@@ -19,10 +19,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "flowx_tasks",
-        sa.Column("is_optional", sa.Boolean(), nullable=False, server_default=sa.text("false")),
-    )
+    inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table("flowx_tasks"):
+        return
+    cols = {c["name"] for c in inspector.get_columns("flowx_tasks")}
+    if "is_optional" not in cols:
+        op.add_column(
+            "flowx_tasks",
+            sa.Column("is_optional", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+        )
     # Dropped (waive) templates stay on the country board — reactivate any previously hidden ones.
     op.execute(
         """
