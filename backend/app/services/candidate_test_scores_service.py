@@ -15,6 +15,9 @@ from app.schemas.candidate_test_scores import (
     TestName,
     TestSectionConfig,
 )
+from app.services.candidate_test_scores_sequence import (
+    sync_candidate_test_scores_id_sequence,
+)
 from app.utils.timezone import utc_now_naive
 
 
@@ -210,6 +213,8 @@ def _insert_candidate_test_score_rows(
     # Column is naive DateTime; keep writes naive UTC to avoid adapter/DB errors.
     batch_created_at = utc_now_naive()
     validated_overall = _resolve_overall_score(payload.test_name, payload)
+    # Imported/seeded rows can leave the serial sequence behind MAX(id).
+    sync_candidate_test_scores_id_sequence(db)
 
     for section_key, section_input in provided_sections.items():
         canonical_name = expected_sections[section_key].section_name
