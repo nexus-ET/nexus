@@ -31,16 +31,45 @@ function Read-EnvPort {
 
 function Set-EnvKey {
     param([string]$Key, [string]$Value)
-    $lines = if (Test-Path $EnvFile) { Get-Content $EnvFile } else { @() }
+    # Read as raw bytes and normalize newlines so CRLF corruption (\r\r\n) cannot
+    # accumulate the way Path.write_text did in run_dev.py on Windows.
+    $lines = @()
+    if (Test-Path $EnvFile) {
+        $raw = [System.IO.File]::ReadAllText($EnvFile)
+        $raw = $raw -replace "`r`n", "`n" -replace "`r", "`n"
+        $lines = @(
+            $raw -split "`n" |
+                ForEach-Object { $_.TrimEnd() } |
+                Where-Object { $_ -ne $null }
+        )
+        # Drop trailing empty entries from a final newline
+        while ($lines.Count -gt 0 -and $lines[-1] -eq "") {
+            $lines = $lines[0..($lines.Count - 2)]
+        }
+    }
     $found = $false
-    $out = foreach ($line in $lines) {
+    $out = New-Object System.Collections.Generic.List[string]
+    $blankRun = 0
+    foreach ($line in $lines) {
         if ($line -match "^\s*$([regex]::Escape($Key))\s*=") {
             $found = $true
-            "$Key=$Value"
-        } else { $line }
+            $out.Add("$Key=$Value") | Out-Null
+            $blankRun = 0
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            $blankRun++
+            if ($blankRun -le 1) { $out.Add("") | Out-Null }
+            continue
+        }
+        $blankRun = 0
+        $out.Add($line) | Out-Null
     }
-    if (-not $found) { $out += "$Key=$Value" }
-    $out | Set-Content $EnvFile -Encoding utf8
+    if (-not $found) { $out.Add("$Key=$Value") | Out-Null }
+    while ($out.Count -gt 0 -and $out[-1] -eq "") { $out.RemoveAt($out.Count - 1) }
+    $payload = ($out -join "`n") + "`n"
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($EnvFile, $payload, $utf8NoBom)
 }
 
 if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) {

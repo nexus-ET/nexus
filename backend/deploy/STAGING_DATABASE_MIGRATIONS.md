@@ -5,46 +5,7 @@ Auto-maintained by `backend/scripts/promote_to_staging.py`.
 Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
 
 **Current head:** `jj0k1lbizlogo`
-**Doc generated:** 2026-08-08 05:39 UTC
-
-## Migrations in this release
-
-| Revision | Migration | Changes |
-|----------|-----------|---------|
-| `g8z1a4timestamptz` | g8z1a4timestamptz_event_timestamps_timestamptz | SQL data migration |
-| `h9a2b5studyyears` | h9a2b5studyyears_full_time_study_years | New table(s): `full_time_study_years`; Alter: `candidate_educations.full_time_study_years` |
-| `i0b3c6ftlevels` | i0b3c6ftlevels_link_study_years_to_levels | Alter: `full_time_study_years.level_id` |
-| `j1c4d7ftdocint` | j1c4d7ftdocint_map_integrated_doctoral_study_years | Map Integrated Degree and Doctoral to full_time_study_years. |
-| `k2d5e8ftcode10` | k2d5e8ftcode10_add_study_year_10 | Add full_time_study_years code 10 (High School). |
-| `l3e6f9ftint1213` | l3e6f9ftint1213_integrated_study_years_12_13 | Allow same FT study year codes per level; add Integrated 12/13. |
-| `m4f7g0ft16int` | m4f7g0ft16int_ensure_16_integrated | Ensure study year 16 maps to Integrated Degree. |
-| `n5g8h1ftint1718` | n5g8h1ftint1718_fix_integrated_study_years_17_18 | Fix Integrated Degree FT study years to 17+ and 18+. |
-| `o6h9i2nexusintel` | o6h9i2nexusintel_add_nexus_intel_tables | New table(s): `intel_glossary`, `intel_trivia`, `intel_trivia_answers`, `intel_user_preferences`, `intel_scraper_config`, `intel_academy_modules`, `intel_scrape_reviews` |
-| `p7j0k3usjpintel` | p7j0k3usjpintel_seed_us_jp_nexus_intel | Seed US and JP Nexus Intel glossary, scrapers, and academy content. |
-| `q8k1l4eurowintel` | q8k1l4eurowintel_seed_fr_ae_nz_sg_se_ch | Seed FR, AE, NZ, SG, SE, CH Nexus Intel glossary and scrapers. |
-| `r9m2n5scrapefetch` | r9m2n5scrapefetch_add_scraper_content_snapshot | Alter: `intel_scraper_config.last_content_hash`; `intel_scraper_config.last_content_text`; `intel_scraper_config.last_fetched_at`; `intel_scraper_config.last_http_status` |
-| `s0n3p6scrapehard` | s0n3p6scrapehard_retarget_us_state_scraper | SQL data migration |
-| `t1o4q7scrapefix` | t1o4q7scrapefix_harden_scraper_fetch | SQL data migration |
-| `u2p5r8isafinal` | u2p5r8isafinal_retarget_isa_japan_url | SQL data migration |
-| `v3w6x9glossaryexp` | v3w6x9glossaryexp_expand_glossary_terms | Expand Nexus Intel glossary across all subscribed countries (~100 terms). |
-| `w4x7z0intaichat` | w4x7z0intaichat_add_intel_ai_chat_logs | New table(s): `intel_ai_chat_logs` |
-| `x5y8z1aithread` | x5y8z1aithread_add_intel_ai_chat_thread_id | Alter: `intel_ai_chat_logs.thread_id` |
-| `y6z9a2bithreadsx` | y6z9a2bithreadsx_add_intel_ai_user_created_index | Add user_id+created_at index for Intel AI thread sidebar queries. |
-| `a1b2c3flowxcore` | a1b2c3flowxcore_add_flowx_operational_tables | New table(s): `flowx_pipelines`, `flowx_tracks`, `flowx_tasks`, `flowx_audit_logs`, `flowx_workflow_rules` |
-| `b2c3d4flowxcntry` | b2c3d4flowxcntry_rebuild_country_workflows | New table(s): `flowx_country_workflows`, `flowx_stages`, `flowx_tracks`, `flowx_task_templates`, `flowx_enrollments`, `flowx_enrollment_tracks`, `flowx_tasks`, `flowx_audit_logs` |
-| `c3d4e5flowxbrick` | c3d4e5flowxbrick_subprocess_links_overrides | New table(s): `flowx_subprocess_links`; Alter: `flowx_task_templates.is_active`; `flowx_task_templates.is_optional`; `flowx_task_templates.override_action`; `flowx_task_templates.override_reason`; `flowx_task_templates.overridden_at`; `flowx_task_templates.overridden_by` |
-| `u2p5r8frvisas` | u2p5r8frvisas_retarget_france_visas_scraper | SQL data migration |
-| `z9a2b5flowxapps` | z9a2b5flowxapps_multi_country_college_enrollments | Alter: `flowx_enrollments.institution_id`; `flowx_enrollments.college_id` |
-| `aa1b2cflowxappform` | aa1b2cflowxappform_pathway_registry_application_fields | New table(s): `flowx_pathway_registry`; Alter: `flowx_enrollments.university_name`; `flowx_enrollments.campus_id`; `flowx_enrollments.level_id`; `flowx_enrollments.qualification_program_id`; `flowx_enrollments.intake_id`; `flowx_enrollments.pathway_type`; `flowx_enrollments.pathway_name`; `flowx_enrollments.portal_url`; `flowx_enrollments.portal_username`; `flowx_enrollments.portal_password_hint`; `flowx_enrollments.institutional_app_id`; `flowx_enrollments.application_status`; `flowx_enrollments.fee_status`; `flowx_enrollments.fee_amount`; `flowx_enrollments.fee_currency`; `flowx_enrollments.internal_target_date`; `flowx_enrollments.official_deadline`; `flowx_enrollments.submitted_at` |
-| `bb2c3denrolltrackpos` | bb2c3denrolltrackpos_enrollment_track_position | Alter: `flowx_enrollment_tracks.position_index` |
-| `cc3d4etaskoptional` | cc3d4etaskoptional_flowx_task_is_optional | Alter: `flowx_tasks.is_optional` |
-| `dd4e5fbricksteps` | dd4e5fbricksteps_add_template_action_steps | Alter: `flowx_task_templates.action_steps` |
-| `ee5f6gnestca` | ee5f6gnestca_nest_tests_under_scores_canada | Alter: `flowx_stages.is_hidden`; `flowx_task_templates.parent_template_id` |
-| `ff6g7hmaster` | ff6g7hmaster_add_master_template_id | Alter: `flowx_task_templates.master_template_id` |
-| `gg7h8iparentcasc` | gg7h8iparentcasc_cascade_delete_nested_bricks | Cascade-delete nested FlowX bricks when their parent is deleted. |
-| `hh8i9jchecklist` | hh8i9jchecklist_flowx_task_checklist_state | Alter: `flowx_tasks.checklist_state` |
-| `ii9j0kintakeass` | ii9j0kintakeass_counselling_intake_assessment | Alter: `counselling_bookings.intake_assessment` |
-| `jj0k1lbizlogo` | jj0k1lbizlogo_add_business_logo_path | Alter: `businesses.logo_path` |
+**Doc generated:** 2026-08-08 05:45 UTC
 
 ## Full migration chain (at head)
 

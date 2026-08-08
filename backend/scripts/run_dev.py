@@ -191,11 +191,50 @@ def _read_env_text(path: Path) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def _normalize_env_newlines(text: str) -> str:
+    """Collapse CRLF / bare CR to LF before any rewrite.
+
+    Windows ``Path.write_text`` (newline=None) translates ``\\n`` → ``\\r\\n``.
+    If we read via bytes and keep ``\\r\\n``, that becomes ``\\r\\r\\n`` on write;
+    the next ``splitlines(keepends=True)`` then inserts blank lines between every
+    key — exponential .env bloat on each tunnel URL update.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _compact_env_lines(lines: list[str]) -> list[str]:
+    """Keep at most one consecutive blank line; drop trailing blanks."""
+    out: list[str] = []
+    blank_run = 0
+    for line in lines:
+        if line.strip() == "":
+            blank_run += 1
+            if blank_run <= 1:
+                out.append("")
+            continue
+        blank_run = 0
+        out.append(line.rstrip())
+    while out and out[-1] == "":
+        out.pop()
+    return out
+
+
+def _write_env_text(path: Path, text: str) -> None:
+    """Write .env with LF endings only (no Windows CRLF translation)."""
+    payload = _normalize_env_newlines(text)
+    if not payload.endswith("\n"):
+        payload += "\n"
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    # newline="\n" disables universal-newline translation on Windows.
+    tmp_path.write_text(payload, encoding="utf-8", newline="\n")
+    tmp_path.replace(path)
+
+
 def _load_env_file() -> dict[str, str]:
     values: dict[str, str] = {}
     if not ENV_FILE.is_file():
         return values
-    for line in _read_env_text(ENV_FILE).splitlines():
+    for line in _normalize_env_newlines(_read_env_text(ENV_FILE)).split("\n"):
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -260,37 +299,72 @@ def load_dev_config(args: argparse.Namespace) -> DevConfig:
     )
 
 
-def _update_env_key(key: str, value: str) -> None:
-    """Update a single KEY=value in backend/.env (best-effort; never raises)."""
-    if not ENV_FILE.is_file():
-        return
+def _update_env_key(key: str, value: str, *, env_path: Path | None = None) -> bool:
+    """Update a single KEY=value in backend/.env (best-effort; never raises).
+
+    Returns True when the file was rewritten. Normalizes newlines and collapses
+    runaway blank lines so Windows tunnel restarts cannot bloat the file.
+    """
+    path = env_path or ENV_FILE
+    if not path.is_file():
+        return False
     with _ENV_WRITE_LOCK:
         try:
-            lines = _read_env_text(ENV_FILE).splitlines(keepends=True)
+            normalized = _normalize_env_newlines(_read_env_text(path))
+            raw_lines = normalized.split("\n")
+            # split("\n") leaves a trailing empty string when the file ends with \n
+            if raw_lines and raw_lines[-1] == "":
+                raw_lines = raw_lines[:-1]
+
             found = False
+            current_value: str | None = None
             updated: list[str] = []
-            for line in lines:
-                # Normalize to str in case of odd encodings / free-threaded races.
-                text = line if isinstance(line, str) else str(line)
-                stripped = text.strip()
+            for line in raw_lines:
+                stripped = line.strip()
                 if stripped.startswith(f"{key}=") and not stripped.startswith("#"):
-                    updated.append(f"{key}={value}\n")
+                    current_value = stripped.split("=", 1)[1]
+                    updated.append(f"{key}={value}")
                     found = True
                 else:
-                    updated.append(text if text.endswith("\n") else f"{text}\n")
+                    updated.append(line)
             if not found:
-                updated.append(f"{key}={value}\n")
-            payload = "".join(updated)
-            # Atomic-ish replace avoids truncated .env if another process holds a lock briefly.
-            tmp_path = ENV_FILE.with_suffix(ENV_FILE.suffix + ".tmp")
-            tmp_path.write_text(payload, encoding="utf-8")
-            tmp_path.replace(ENV_FILE)
+                updated.append(f"{key}={value}")
+
+            compacted = _compact_env_lines(updated)
+            payload = "\n".join(compacted) + "\n"
+            prior = normalized if normalized.endswith("\n") else normalized + "\n"
+            # Skip rewrite when value and formatting are already clean.
+            if found and current_value == value and prior == payload:
+                return False
+
+            _write_env_text(path, payload)
+            return True
         except OSError as exc:
             print(
                 f"[tunnel] WARNING: could not update {key} in .env ({exc}). "
                 f"Set {key}={value} manually if needed.",
                 file=sys.stderr,
             )
+            return False
+
+
+def compact_env_file(env_path: Path | None = None) -> bool:
+    """Rewrite .env with normalized newlines and collapsed blank lines."""
+    path = env_path or ENV_FILE
+    if not path.is_file():
+        return False
+    with _ENV_WRITE_LOCK:
+        normalized = _normalize_env_newlines(_read_env_text(path))
+        raw_lines = normalized.split("\n")
+        if raw_lines and raw_lines[-1] == "":
+            raw_lines = raw_lines[:-1]
+        compacted = _compact_env_lines(raw_lines)
+        payload = "\n".join(compacted) + "\n"
+        prior = normalized if normalized.endswith("\n") else normalized + "\n"
+        if prior == payload:
+            return False
+        _write_env_text(path, payload)
+        return True
 
 
 def _venv_uvicorn() -> Path:
@@ -728,6 +802,13 @@ def run_stack(args: argparse.Namespace) -> int:
 
 
 def _run_stack_inner(args: argparse.Namespace) -> int:
+    # Heal CRLF/blank-line inflation from older tunnel writers (Windows-only bug).
+    try:
+        if compact_env_file():
+            print("[env] Compacted backend/.env (removed runaway blank lines)")
+    except OSError as exc:
+        print(f"[env] WARNING: could not compact .env ({exc})", file=sys.stderr)
+
     config = load_dev_config(args)
     env = _load_env_file()
     backend_only = args.backend_only
