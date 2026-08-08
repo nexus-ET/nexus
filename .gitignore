@@ -23,16 +23,22 @@ frontend/dist/
 # Dev / local
 backend/.dev-stack.lock
 backend/uploads/
+backend/app/uploads/
 backend/cloudflared/config.yml
 backend/cloudflared/credentials/
 backend/.ngrok-*.txt
 backend/.tunnel-*.txt
+backend/.env.bloated*
+**/.env.bloated*
+**/*.bloated.bak*
 data/
 **/.DS_Store
 .idea/
 .vscode/
 Hostinger Setup.txt
 **/Hostinger Setup.txt
+Regenerator script ENEXUSdatagenera.txt
+Service URI.txt
 
 # Logs & databases
 **/*.log

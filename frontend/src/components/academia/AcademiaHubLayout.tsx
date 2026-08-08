@@ -23,7 +23,7 @@ const AcademiaHubLayout: React.FC<AcademiaHubLayoutProps> = ({ onOpenCommandPale
   }, [onOpenCommandPalette]);
 
   return (
-    <div className="relative z-10 mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col gap-6">
+    <div className="relative z-10 mx-auto flex h-full min-h-0 w-full max-w-none flex-col gap-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="space-y-2">
           <AcademiaBreadcrumbs

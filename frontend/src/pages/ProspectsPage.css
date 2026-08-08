@@ -59,7 +59,7 @@
 
 .prospects-toolbar__count {
   background: #dbeafe;
-  color: #1d4ed8;
+  color: #322f86;
   padding: 2px 8px;
   border-radius: 999px;
   font-size: 11px;
@@ -150,7 +150,7 @@
 
 .prospects-list-item.is-active {
   background: #eff6ff;
-  box-shadow: inset 3px 0 0 #2563eb;
+  box-shadow: inset 3px 0 0 #322f86;
 }
 
 .prospects-list-item__top {
@@ -394,8 +394,8 @@
 }
 
 .prospects-action-btn--primary {
-  background: #2563eb;
-  border-color: #2563eb;
+  background: #322f86;
+  border-color: #322f86;
   color: #fff;
 }
 
@@ -492,8 +492,8 @@
 }
 
 .prospects-detail-panel__tabs button.is-active {
-  color: #2563eb;
-  border-bottom-color: #2563eb;
+  color: #322f86;
+  border-bottom-color: #322f86;
 }
 
 .prospects-detail-panel__body {

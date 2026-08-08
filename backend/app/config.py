@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     SMTP_USER: str | None = None
     SMTP_PASSWORD: str | None = None
     SMTP_FROM_EMAIL: str | None = None
+    SMTP_FROM_NAME: str = "Nexus Counselling"
     SMTP_USE_TLS: bool = True
 
     WHATSAPP_ACCESS_TOKEN: str | None = None
@@ -104,6 +105,11 @@ class Settings(BaseSettings):
     WHATSAPP_OUTREACH_TEMPLATE_PARAMETER_FORMAT: str = "positional"
     # Meta parameter names matching WHATSAPP_OUTREACH_TEMPLATE_PARAMETERS order (Student Name, Company Name).
     WHATSAPP_OUTREACH_TEMPLATE_PARAMETER_NAMES: str = "student_name,company_name"
+    # Utility templates for staff booking confirmations (required outside the 24h session window).
+    WHATSAPP_BOOKING_TEMPLATE: str | None = "et_booking_confirmation"
+    WHATSAPP_BOOKING_TEMPLATE_LANGUAGE: str = "en"
+    WHATSAPP_ADMIN_BOOKING_TEMPLATE: str | None = "et_booking_assigned"
+    WHATSAPP_ADMIN_BOOKING_TEMPLATE_LANGUAGE: str = "en"
     WEBHOOK_VERIFY_TOKEN: str | None = None
     # Public base URL for this deployment (local quick tunnel or https://nexus-dev.edutrust.in)
     PUBLIC_TUNNEL_BASE: str | None = None
@@ -155,6 +161,32 @@ class Settings(BaseSettings):
     # Process-level kill switch for the uptime monitoring scheduler (DB MONITORING_STATUS still gates each run).
     MONITORING_CHECK_ENABLED: bool = True
     MONITORING_CHECK_INTERVAL_MINUTES: int = 5
+
+    # Nexus Intel regulatory scrapers
+    # Browser fallback launches headless Chromium (loopback-only). Set false to avoid
+    # Playwright entirely (Windows Firewall prompts / no Chromium install).
+    INTEL_SCRAPER_BROWSER_FALLBACK: bool = True
+    INTEL_SCRAPER_ALLOW_INSECURE_SSL: bool = True
+
+    # Nexus Intel AI Assistant (RAG chat) — default local Ollama; override via env
+    INTEL_AI_MODEL: str = "ollama:llama3.1"
+    INTEL_AI_WEB_SEARCH_ENABLED: bool = True
+    INTEL_AI_TIMEOUT_SECONDS: int = 300
+    # Larger budget so glossary + academia rows are not starved before Ollama
+    INTEL_AI_CONTEXT_CHARS: int = 10000
+    INTEL_AI_OLLAMA_KEEP_ALIVE: str = "-1"
+    INTEL_AI_OLLAMA_NUM_PREDICT: int = 1024
+    INTEL_AI_OLLAMA_NUM_CTX: int = 8192
+    INTEL_AI_OLLAMA_TEMPERATURE: float = 0.1
+    INTEL_AI_OLLAMA_TOP_P: float = 0.9
+    # Sliding window: last N user↔assistant pairs sent to the model
+    INTEL_AI_HISTORY_TURNS: int = 3
+    # Retrieval top-k defaults (RAG)
+    INTEL_AI_GLOSSARY_TOP_K: int = 12
+    INTEL_AI_ACADEMIA_TOP_K: int = 18
+    INTEL_AI_COUNTRY_TOP_K: int = 6
+    INTEL_AI_PLACE_TOP_K: int = 8
+    INTEL_AI_LEVEL_TOP_K: int = 6
 
     # Max pending + scheduled counselling appointments allowed at the same time slot
     MAX_COUNSELLING_BOOKINGS_PER_SLOT: int = 5

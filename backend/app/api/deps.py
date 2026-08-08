@@ -93,9 +93,11 @@ def require_academia_admin(
 
 
 def require_super_admin(current_user: User = Depends(get_current_active_user)) -> User:
-    if not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Super Admin access required.")
-    return current_user
+    if current_user.is_superuser:
+        return current_user
+    if _resolved_role_name(current_user) == "Super Admin":
+        return current_user
+    raise HTTPException(status_code=403, detail="Super Admin access required.")
 
 
 def require_page_access(page_route: str):

@@ -1,43 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-
 import DatePicker from 'react-datepicker';
-
 import 'react-datepicker/dist/react-datepicker.css';
-
 import {
-
   ArrowRightLeft,
-
   Calendar,
-
   CalendarCheck,
-
   Loader2,
-
   Map as MapIcon,
-
   MessageSquare,
-
   RefreshCw,
-
   Sparkles,
-
   X,
-
 } from 'lucide-react';
-
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { apiFetch, hasValidSession } from '../utils/api';
-
 import { categoryBadgeClass } from '../utils/statusBadges';
-
 import BookingOverviewMetrics, {
   type BookingMetricKey,
 } from '../components/BookingOverviewMetrics';
-
 import InteractionLogDrawer from '../components/InteractionLogDrawer';
-
-import CounsellingSessionModal from '../components/CounsellingSessionModal';
-
 import StudentJourneyPanel from '../components/StudentJourneyPanel';
 import PeriodAgendaShell, { type PeriodDaySummary } from '../components/PeriodAgendaShell';
 
@@ -202,6 +183,8 @@ const localToday = (): Date => {
 };
 
 const MyBookings: React.FC = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
   const [dateFilterMode, setDateFilterMode] = useState<DateFilterMode>('single');
   const [startDate, setStartDate] = useState<Date | null>(() => localToday());
   const [endDate, setEndDate] = useState<Date | null>(null);
@@ -212,10 +195,17 @@ const MyBookings: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [reassignModal, setReassignModal] = useState<ReassignModalState | null>(null);
   const [interactionBookingId, setInteractionBookingId] = useState<number | null>(null);
-  const [sessionBooking, setSessionBooking] = useState<MyBooking | null>(null);
   const [journeyPanel, setJourneyPanel] = useState<JourneyPanelState | null>(null);
   const [activeMetric, setActiveMetric] = useState<BookingMetricKey>('today');
   const [periodFocusDate, setPeriodFocusDate] = useState<string | null>(null);
+
+  const deepLinkBookingId = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    const raw = params.get('bookingId') || params.get('session');
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, [location.search]);
 
   const viewAllBookings = groupedBookings?.view_all_bookings ?? false;
   const isMultipleDates = dateFilterMode === 'multiple';
@@ -359,6 +349,12 @@ const MyBookings: React.FC = () => {
   useEffect(() => {
     loadBookings();
   }, [loadBookings]);
+
+  // Legacy deep-link `/my-bookings?bookingId=` → dedicated session page
+  useEffect(() => {
+    if (deepLinkBookingId == null) return;
+    navigate(`/my-bookings/session/${deepLinkBookingId}`, { replace: true });
+  }, [deepLinkBookingId, navigate]);
 
   const resolveTodayDate = useCallback((): Date => {
     if (calendarToday) return parseIsoDate(calendarToday);
@@ -654,7 +650,14 @@ const MyBookings: React.FC = () => {
 
         type="button"
 
-        onClick={() => setSessionBooking(booking)}
+        onClick={() => {
+          const params = new URLSearchParams();
+          if (booking.candidate_name) params.set('name', booking.candidate_name);
+          if (booking.date_label) params.set('date', booking.date_label);
+          if (booking.time_label) params.set('time', booking.time_label);
+          const qs = params.toString();
+          navigate(`/my-bookings/session/${booking.id}${qs ? `?${qs}` : ''}`);
+        }}
 
         className="inline-flex items-center gap-1 rounded-lg border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-sm font-semibold text-violet-900 hover:bg-violet-100"
 
@@ -693,7 +696,7 @@ const MyBookings: React.FC = () => {
 
 
   return (
-
+    <>
     <div className="absolute inset-0 min-h-0 overflow-hidden flex flex-col">
 
       <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar p-4 md:p-5">
@@ -1032,26 +1035,6 @@ const MyBookings: React.FC = () => {
 
 
 
-      <CounsellingSessionModal
-
-        open={sessionBooking !== null}
-
-        bookingId={sessionBooking?.id ?? null}
-
-        candidateName={sessionBooking?.candidate_name ?? ''}
-
-        dateLabel={sessionBooking?.date_label}
-
-        timeLabel={sessionBooking?.time_label}
-
-        onClose={() => setSessionBooking(null)}
-
-        onStatusUpdated={() => loadBookings(false)}
-
-      />
-
-
-
       <StudentJourneyPanel
 
         open={journeyPanel !== null}
@@ -1188,6 +1171,9 @@ const MyBookings: React.FC = () => {
       </div>
 
     </div>
+
+      <Outlet />
+    </>
 
   );
 

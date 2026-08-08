@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Bot, Archive, Users } from 'lucide-react';
 import { apiFetch } from '../utils/api';
+import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 
 interface MessagePayload {
   id?: number | string;
@@ -160,45 +161,15 @@ const mapProspectFromApi = (lead: Record<string, unknown>): Prospect => ({
   total_messages_received: Number(lead.total_messages_received ?? 0),
 });
 
-const formatTime = (dateStr?: string): string => {
-  if (!dateStr) return '';
-  try {
-    const parsed = new Date(dateStr);
-    if (Number.isNaN(parsed.getTime())) return '';
-    return parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  } catch {
-    return '';
-  }
-};
-
-const getDateGroupLabel = (dateStr?: string): string => {
-  if (!dateStr) return 'Earlier';
-  try {
-    const parsed = new Date(dateStr);
-    if (Number.isNaN(parsed.getTime())) return 'Earlier';
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const target = new Date(parsed);
-    target.setHours(0, 0, 0, 0);
-    const diffDays = Math.round((today.getTime() - target.getTime()) / (1000 * 60 * 60 * 24));
-    if (diffDays === 0) return 'Today';
-    if (diffDays === 1) return 'Yesterday';
-    if (diffDays > 1 && diffDays < 7) {
-      return target.toLocaleDateString('en-US', { weekday: 'long' });
-    }
-    return target.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  } catch {
-    return 'Earlier';
-  }
-};
 
 const ACTOR_THEME: Record<MessageActor, { bg: string; label: string; labelColor: string; textColor: string }> = {
   candidate: { bg: '#1e3a5f', label: 'Candidate', labelColor: '#93c5fd', textColor: '#f8fafc' },
   ai: { bg: '#ede9fe', label: 'AI Active', labelColor: '#6d28d9', textColor: '#111b21' },
-  admin: { bg: '#dbeafe', label: 'Nexus Admin', labelColor: '#1d4ed8', textColor: '#111b21' },
+  admin: { bg: '#dbeafe', label: 'Nexus Admin', labelColor: '#322f86', textColor: '#111b21' },
 };
 
 export default function ProspectsView() {
+  const { formatTime, formatDateGroup } = useBusinessTimezone();
   const [prospects, setProspects] = useState<Prospect[]>([]);
   const [selectedProspect, setSelectedProspect] = useState<Prospect | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -318,13 +289,13 @@ export default function ProspectsView() {
 
     const groups: Record<string, MessagePayload[]> = {};
     processed.forEach(msg => {
-      const label = getDateGroupLabel(msg.created_at);
+      const label = formatDateGroup(msg.created_at);
       if (!groups[label]) groups[label] = [];
       groups[label].push(msg);
     });
 
     return groups;
-  }, [selectedProspect]);
+  }, [selectedProspect, formatDateGroup]);
 
   useEffect(() => {
     const container = chatContainerRef.current;
@@ -669,7 +640,7 @@ const styles = {
   sidebarTitle: { margin: 0, fontSize: '16px', fontWeight: '700', color: '#0f172a' } as React.CSSProperties,
   activeCounterBadge: {
     backgroundColor: '#dbeafe',
-    color: '#1d4ed8',
+    color: '#322f86',
     padding: '2px 8px',
     borderRadius: '10px',
     fontSize: '11px',
@@ -758,7 +729,7 @@ const styles = {
     margin: 0,
     fontSize: '14px',
     fontWeight: '700',
-    color: '#1e3a8a',
+    color: '#322f86',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -844,7 +815,7 @@ const styles = {
       borderRadius: '999px',
       backgroundColor: ACTOR_THEME[actor].bg,
       color: actor === 'candidate' ? ACTOR_THEME[actor].textColor : ACTOR_THEME[actor].labelColor,
-      border: actor === 'candidate' ? '1px solid #1e40af' : '1px solid rgba(0,0,0,0.06)',
+      border: actor === 'candidate' ? '1px solid #322f86' : '1px solid rgba(0,0,0,0.06)',
     }) as React.CSSProperties,
   whatsappChatFeedSurface: {
     flex: 1,

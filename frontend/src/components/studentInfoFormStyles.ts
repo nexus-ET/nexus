@@ -22,16 +22,16 @@ export const studentInfoAlertSuccessClass =
   'rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800';
 
 export const studentInfoPrimaryBtnClass =
-  'rounded-md bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800 disabled:opacity-60 inline-flex items-center gap-2';
+  'rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60 inline-flex items-center gap-2';
 
 export const studentInfoGhostBtnClass =
   'rounded-md border border-border-subtle px-4 py-2 text-sm font-semibold text-text-main hover:bg-card disabled:opacity-60';
 
 export const studentInfoAddBtnClass =
-  'inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-sm font-semibold text-sky-800 hover:bg-sky-100';
+  'inline-flex items-center gap-1 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-sm font-semibold text-accent hover:bg-accent/15';
 
 export const studentInfoListActionClass =
-  'inline-flex items-center gap-1 text-sm text-sky-700 hover:text-sky-900';
+  'inline-flex items-center gap-1 text-sm text-accent hover:opacity-80';
 
 export const studentInfoListDangerClass =
   'inline-flex items-center gap-1 text-sm text-red-600 hover:text-red-700 disabled:opacity-60';

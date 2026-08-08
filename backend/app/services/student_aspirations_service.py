@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.lead import Lead
 from app.models.students_master import StudentsMaster
@@ -10,6 +11,7 @@ from app.models.user import User
 from app.schemas.student_aspirations import (
     StudentAspirationsData,
     StudentAspirationsSaveRequest,
+    TargetCountrySelection,
     migrate_legacy_aspirations_data,
 )
 from app.services.students_master_service import get_students_master_by_lead
@@ -123,24 +125,6 @@ def _apply_aspirations_payload(payload: StudentAspirationsSaveRequest) -> Studen
             status_code=400,
             detail="Select at least one aptitude test option.",
         )
-    has_accommodation = any(
-        [
-            aspirations.accommodation_university_managed,
-            aspirations.accommodation_off_campus_independent,
-            aspirations.accommodation_shared_living,
-            aspirations.accommodation_immersive_family,
-        ]
-    )
-    if not has_accommodation:
-        raise HTTPException(
-            status_code=400,
-            detail="Select at least one preferred accommodation option.",
-        )
-    if not aspirations.future_job and not aspirations.future_study:
-        raise HTTPException(
-            status_code=400,
-            detail="Select at least one future plan option.",
-        )
     if "OTHER" in aspirations.intake_seasons and not (aspirations.intake_season_other or "").strip():
         raise HTTPException(status_code=400, detail="Please enter a value for Others intake.")
     if "OTHER" not in aspirations.intake_seasons:
@@ -149,6 +133,32 @@ def _apply_aspirations_payload(payload: StudentAspirationsSaveRequest) -> Studen
         raise HTTPException(status_code=400, detail="Please enter a value for Others — why study abroad.")
     if "OTHER" not in aspirations.why_study_abroad:
         aspirations = aspirations.model_copy(update={"why_study_abroad_other": None})
+
+    post_study_goals = list(aspirations.post_study_goals or [])
+    if not post_study_goals and aspirations.post_study_goal:
+        post_study_goals = [aspirations.post_study_goal]
+    if "OTHER" in post_study_goals and not (aspirations.post_study_goal_other or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Please enter your desired career goals for Others.",
+        )
+    if "OTHER" not in post_study_goals:
+        aspirations = aspirations.model_copy(
+            update={
+                "post_study_goals": post_study_goals,
+                "post_study_goal": post_study_goals[0] if post_study_goals else None,
+                "post_study_goal_other": None,
+            }
+        )
+    else:
+        aspirations = aspirations.model_copy(
+            update={
+                "post_study_goals": post_study_goals,
+                "post_study_goal": post_study_goals[0] if post_study_goals else None,
+                "post_study_goal_other": (aspirations.post_study_goal_other or "").strip(),
+            }
+        )
+
     if "OTHER" in aspirations.study_countries_iso2 and not (
         aspirations.study_countries_other or ""
     ).strip():
@@ -165,6 +175,29 @@ def _apply_aspirations_payload(payload: StudentAspirationsSaveRequest) -> Studen
         )
     if "OTHER" not in aspirations.programs:
         aspirations = aspirations.model_copy(update={"programs_other": None})
+
+    target_countries = list(aspirations.target_countries or [])
+    if target_countries:
+        synced_iso2 = [item.iso2 for item in target_countries if item.iso2]
+        aspirations = aspirations.model_copy(
+            update={
+                "target_countries": target_countries,
+                "study_countries_iso2": synced_iso2,
+            }
+        )
+    elif aspirations.study_countries_iso2:
+        aspirations = aspirations.model_copy(
+            update={
+                "target_countries": [
+                    TargetCountrySelection(
+                        iso2=iso2,
+                        priority="TOP_CHOICE" if index == 0 else "ALTERNATIVE",
+                    )
+                    for index, iso2 in enumerate(aspirations.study_countries_iso2)
+                ]
+            }
+        )
+
     return aspirations
 
 
@@ -222,7 +255,8 @@ def save_user_aspirations(
 ) -> dict:
     aspirations = _apply_aspirations_payload(payload)
     record = resolve_students_master_for_user(db, user)
-    record.aspirations_data = aspirations.model_dump()
+    record.aspirations_data = aspirations.model_dump(mode="json")
+    flag_modified(record, "aspirations_data")
     record.updated_by_user_id = user.id
     db.commit()
     db.refresh(record)
@@ -248,7 +282,8 @@ def save_booking_aspirations(
         lead,
         updated_by_user_id=user_id,
     )
-    record.aspirations_data = aspirations.model_dump()
+    record.aspirations_data = aspirations.model_dump(mode="json")
+    flag_modified(record, "aspirations_data")
     db.commit()
     db.refresh(record)
     return _serialize_aspirations(record, booking_id=booking.id)

@@ -400,6 +400,45 @@ def test_session_profile_shows_pending_date_during_pick_time() -> None:
     assert fields["consultation_session_time"] == "Pending selection"
 
 
+def test_begin_reschedule_keeps_reschedule_in_progress_flag() -> None:
+    """Regression: clearing date picks must not wipe reschedule_in_progress."""
+    from app.services.admissions_intake_flow import _begin_reschedule_booking, _load_context
+
+    lead = SimpleNamespace(
+        intake_context=json.dumps(
+            {
+                "selected_date": "2026-07-01",
+                "date_options": ["2026-07-01"],
+                "preferred_course": "Computer",
+            }
+        )
+    )
+    db = MagicMock()
+    _begin_reschedule_booking(db, lead)
+    context = _load_context(lead)
+    assert context.get("reschedule_in_progress") is True
+    assert "selected_date" not in context
+    assert context.get("preferred_course") == "Computer"
+
+
+def test_repair_skips_when_reschedule_in_progress() -> None:
+    from app.services.admissions_intake_flow import _repair_intake_if_booking_already_active
+
+    lead = SimpleNamespace(
+        intake_step=INTAKE_STEP_PICK_DATE,
+        intake_context=json.dumps({"reschedule_in_progress": True}),
+        consultation_scheduled_at=datetime(2026, 8, 8, 15, 0),
+    )
+    db = MagicMock()
+    with patch(
+        "app.services.admissions_intake_flow._get_active_consultation_booking",
+        return_value=SimpleNamespace(id=98, scheduled_time=datetime(2026, 8, 8, 15, 0)),
+    ):
+        repaired = _repair_intake_if_booking_already_active(db, lead)
+    assert repaired is False
+    assert lead.intake_step == INTAKE_STEP_PICK_DATE
+
+
 def test_session_profile_keeps_confirmed_booking_during_reschedule_pick_date() -> None:
     from app.services.admissions_intake_flow import _build_consultation_session_profile_fields
 

@@ -11,6 +11,7 @@ import {
 import { canAccessAcademiaHub } from '../utils/academiaAccess';
 import { Link, useLocation } from 'react-router-dom';
 import { useNexusSession } from '../context/NexusSessionContext';
+import NexusLogo from './NexusLogo';
 import {
   LayoutDashboard,
   Users,
@@ -70,6 +71,9 @@ const Sidebar: React.FC<SidebarProps> = ({
   const resolvedRole = currentUser?.admin_role?.name || currentUser?.role || '';
   const canAccessCounselling =
     COUNSELLING_ADMIN_ROLES.has(resolvedRole) && isRouteAllowed('/counselling');
+  const canAccessBookAppointment =
+    COUNSELLING_ADMIN_ROLES.has(resolvedRole) &&
+    (isRouteAllowed('/book-appointment') || isRouteAllowed('/counselling'));
   const canAccessMessaging = isRouteAllowed('/messaging-hub');
   const canAccessMyBookings = isRouteAllowed('/my-bookings');
 
@@ -109,6 +113,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   ];
 
   const appointmentNavItems = [
+    ...(canAccessBookAppointment ? [{ path: '/book-appointment', label: 'Book Appointment' }] : []),
     ...(canAccessMyBookings ? [{ path: '/my-bookings', label: 'My Appointments' }] : []),
     ...(canAccessCounselling ? [{ path: '/counselling', label: 'Manage Appointments' }] : []),
   ];
@@ -148,7 +153,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     if (STUDENT_PIPELINE_PATHS.some(path => isRouteActive(currentPath, path))) {
       setIsStudentsOpen(true);
     }
-    if (['/my-bookings', '/counselling'].some(path => isRouteActive(currentPath, path))) {
+    if (['/book-appointment', '/my-bookings', '/counselling'].some(path => isRouteActive(currentPath, path))) {
       setIsAppointmentsOpen(true);
     }
     if (
@@ -181,10 +186,12 @@ const Sidebar: React.FC<SidebarProps> = ({
     >
       <div className="h-16 flex items-center justify-between px-4 border-b border-border-subtle/50">
         <div className="flex items-center gap-3 overflow-hidden">
-          <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center shrink-0 shadow-lg shadow-accent/20">
-            <span className="text-text-dark-bg font-bold tracking-tighter italic">N</span>
-          </div>
-          {isSidebarOpen && <span className="font-bold text-lg text-white tracking-tight">NEXUS</span>}
+          <NexusLogo size={32} className="shrink-0" />
+          {isSidebarOpen && (
+            <span className="font-inter text-lg font-extrabold tracking-tight text-white">
+              Nexus Intel
+            </span>
+          )}
         </div>
         <button
           type="button"

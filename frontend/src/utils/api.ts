@@ -46,13 +46,9 @@ export const setSessionToken = (token: string): void => {
 export const getCurrentUserId = (): number | null => {
   const token = getStoredToken();
   if (!token) return null;
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1] ?? ''));
-    const sub = payload?.sub;
-    return sub != null ? Number(sub) : null;
-  } catch {
-    return null;
-  }
+  const payload = decodeJwtPayload(token);
+  const sub = payload?.sub;
+  return sub != null ? Number(sub) : null;
 };
 
 export const clearSession = (): void => {
@@ -65,15 +61,25 @@ export const isValidTokenFormat = (token: string | null | undefined): boolean =>
   return token.split('.').length === 3;
 };
 
+/** Decode JWT payload (base64url). Returns null if the token cannot be decoded. */
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const part = token.split('.')[1];
+    if (!part) return null;
+    const base64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+    return JSON.parse(atob(padded)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 export const isTokenExpired = (token: string | null | undefined): boolean => {
   if (!isValidTokenFormat(token)) return true;
-  try {
-    const payload = JSON.parse(atob(token!.split('.')[1] ?? ''));
-    if (!payload?.exp) return false;
-    return Date.now() >= Number(payload.exp) * 1000;
-  } catch {
-    return true;
-  }
+  const payload = decodeJwtPayload(token!);
+  // Do not force-logout on decode quirks — only when exp is present and past.
+  if (!payload || payload.exp == null) return false;
+  return Date.now() >= Number(payload.exp) * 1000;
 };
 
 export const hasValidSession = (): boolean => {

@@ -41,6 +41,7 @@ from app.models.education_major import EducationMajor
 from app.models.education_major_level import EducationMajorLevel
 from app.models.program_education_major_mapping import ProgramEducationMajorMapping
 from app.models.gpa_cgpa_score import GpaCgpaScore
+from app.models.full_time_study_year import FullTimeStudyYear  # noqa: F401
 from app.models.target_program import TargetProgram
 from app.models.target_course import TargetCourse
 from app.models.security_audit_run import SecurityAuditRun
@@ -60,7 +61,16 @@ from app.models.university_matching import (
     MatchingWeightProfile,
 )
 from app.api.v1.endpoints import leads
-from app.api.v1 import analytics, notifications, dashboard, users, login, agents, rbac, countries, education_degrees, education_majors, gpa_cgpa_scores, target_programs, conversation_audit, academia, academia_wizard, academic_calendar
+from app.api.v1 import analytics, notifications, dashboard, users, login, agents, rbac, countries, education_degrees, education_majors, gpa_cgpa_scores, full_time_study_years, qualification_programs, target_programs, conversation_audit, academia, academia_wizard, academic_calendar, nexus_intel, flowx
+from app.models.nexus_intel import (  # noqa: F401
+    IntelAcademyModule,
+    IntelGlossary,
+    IntelScrapeReview,
+    IntelScraperConfig,
+    IntelTrivia,
+    IntelTriviaAnswer,
+    IntelUserPreferences,
+)
 from app.routers import (
     counselling,
     whatsapp_flow_webhook,
@@ -307,10 +317,14 @@ app.include_router(countries.router, prefix="/api/v1", tags=["Countries"])
 app.include_router(education_degrees.router, prefix="/api/v1", tags=["Education"])
 app.include_router(education_majors.router, prefix="/api/v1", tags=["Education"])
 app.include_router(gpa_cgpa_scores.router, prefix="/api/v1", tags=["Education"])
+app.include_router(full_time_study_years.router, prefix="/api/v1", tags=["Education"])
+app.include_router(qualification_programs.router, prefix="/api/v1", tags=["Education"])
 app.include_router(target_programs.router, prefix="/api/v1", tags=["Study Interest"])
 app.include_router(academia.router, prefix="/api/v1", tags=["Academia Hub"])
 app.include_router(academic_calendar.router, prefix="/api/v1", tags=["Academia Hub"])
 app.include_router(academia_wizard.router, prefix="/api/v1", tags=["Academia Hub"])
+app.include_router(nexus_intel.router, prefix="/api/v1", tags=["Nexus Intel"])
+app.include_router(flowx.router, prefix="/api/v1", tags=["FlowX"])
 app.include_router(login.router, prefix="/api/v1", tags=["Auth"])
 app.include_router(counselling.router, prefix="/api/v1", tags=["Counselling"])
 app.include_router(command_center.router, prefix="/api/v1", tags=["Command Center"])

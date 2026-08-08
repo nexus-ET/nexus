@@ -106,7 +106,7 @@ const MyProfile: React.FC = () => {
   const roleLabel = profile?.admin_role?.name || profile?.role || '—';
 
   return (
-    <div className="relative z-10 max-w-5xl mx-auto space-y-6">
+    <div className="relative z-10 mx-auto w-full max-w-none space-y-6">
       <div>
         <h2 className="text-2xl font-extrabold text-text-main tracking-tight flex items-center gap-2">
           <UserCircle size={24} />

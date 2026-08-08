@@ -24,7 +24,13 @@ class SyncLog(Base):
     leads_created: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     leads_skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     errors_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=func.now(), index=True)
-    attempt_timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=func.now(), index=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=func.now(), index=True
+    )
+    attempt_timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=func.now(), index=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), index=True
+    )

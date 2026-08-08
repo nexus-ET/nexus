@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from app.utils.timezone import utc_now
 import json
 import logging
 from datetime import datetime, timedelta
@@ -16,10 +17,16 @@ from app.models.notification_log import NotificationLog
 from app.models.user import User
 from app.services.email_service import send_email
 from app.services.lead_conversation import touch_lead_activity
-from app.services.messaging import _recent_identical_outbound
-from app.services.phone_utils import find_lead_by_phone
+from app.services.messaging import (
+    OutreachTemplateParameter,
+    WhatsAppDeliveryError,
+    _recent_identical_outbound,
+    lead_has_open_whatsapp_messaging_window,
+    send_message,
+    send_whatsapp_template,
+)
+from app.services.phone_utils import clean_phone_number, find_lead_by_phone
 from app.services.push_service import push_notification_service
-from app.services.messaging import send_message
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +97,47 @@ def _format_time(value: datetime) -> str:
     return value.strftime("%a, %b %d at %I:%M %p").lstrip("0")
 
 
-def _whatsapp_message(candidate_name: str, admin_name: str, scheduled_time: datetime) -> str:
+def _extract_session_purpose(notes: str | None) -> str | None:
+    if not notes:
+        return None
+    for line in str(notes).splitlines():
+        cleaned = line.strip()
+        if cleaned.lower().startswith("purpose:"):
+            purpose = cleaned.split(":", 1)[1].strip()
+            return purpose or None
+    return None
+
+
+def _whatsapp_message(
+    candidate_name: str,
+    admin_name: str,
+    scheduled_time: datetime,
+    *,
+    session_purpose: str | None = None,
+) -> str:
+    purpose_line = f" Purpose: {session_purpose}." if session_purpose else ""
     return (
-        f"Hi {candidate_name}, session with {admin_name} is confirmed for "
-        f"{_format_time(scheduled_time)}."
+        f"Hi {candidate_name}, your counselling session with {admin_name} is confirmed for "
+        f"{_format_time(scheduled_time)}.{purpose_line} Your counsellor will contact you at the "
+        f"scheduled time (phone/WhatsApp). Reply with the buttons below to reschedule or cancel "
+        f"if needed."
     )
+
+
+def _template_param(value: object | None, *, fallback: str = "-") -> str:
+    """Meta template variables cannot be empty and should stay single-line."""
+    cleaned = " ".join(str(value or "").split()).strip()
+    return (cleaned or fallback)[:1024]
+
+
+def _phone_has_open_whatsapp_window(db: Session, phone: str | None, *, lead_id: int | None = None) -> bool:
+    """True when Meta allows free-form session messages to this recipient."""
+    if lead_id and lead_has_open_whatsapp_messaging_window(db, lead_id):
+        return True
+    lead = find_lead_by_phone(db, phone) if phone else None
+    if lead and lead.id != lead_id and lead_has_open_whatsapp_messaging_window(db, lead.id):
+        return True
+    return False
 
 
 def _display_value(value: object | None) -> str | None:
@@ -187,16 +230,58 @@ async def _send_whatsapp_appointment_management_followup(
             title="WhatsApp appointment management",
             message=reply.text,
             priority="normal",
-            sent_at=datetime.utcnow(),
+            sent_at=utc_now(),
         )
     )
     db.commit()
     return status
 
 
-def _email_content(candidate_name: str, admin_name: str, scheduled_time: datetime) -> tuple[str, str]:
-    subject = f"Confirmation: Session with {admin_name}."
-    body = f"Dear {candidate_name}, your session is {_format_time(scheduled_time)}."
+def _email_content(
+    candidate_name: str,
+    admin_name: str,
+    scheduled_time: datetime,
+    *,
+    session_purpose: str | None = None,
+) -> tuple[str, str]:
+    # Avoid spammy subject patterns ("Confirmation:", ALL CAPS, heavy punctuation).
+    subject = f"Your counselling session with {admin_name}"
+    purpose_line = f"\nSession purpose: {session_purpose}" if session_purpose else ""
+    company = (settings.WHATSAPP_OUTREACH_COMPANY_NAME or "Edutrust").strip() or "Edutrust"
+    body = (
+        f"Hi {candidate_name},\n\n"
+        f"Your counselling session with {admin_name} is confirmed for "
+        f"{_format_time(scheduled_time)}.{purpose_line}\n\n"
+        "Your counsellor will contact you at the scheduled time.\n\n"
+        f"Best regards,\n{company} / Nexus Counselling"
+    )
+    return subject, body
+
+
+def _admin_email_content(
+    admin_name: str,
+    booking: CounsellingBooking,
+    *,
+    session_purpose: str | None = None,
+) -> tuple[str, str]:
+    subject = f"New booking assigned: {booking.candidate_name}"
+    purpose_line = f"\nPurpose: {session_purpose}" if session_purpose else ""
+    body = (
+        f"Hi {admin_name},\n\n"
+        f"A counselling session has been assigned to you.\n\n"
+        f"Candidate: {booking.candidate_name}\n"
+        f"When: {_format_time(booking.scheduled_time)}\n"
+        f"Booking #: {booking.id}"
+        f"{purpose_line}\n"
+    )
+    if booking.candidate_email:
+        body += f"Email: {booking.candidate_email}\n"
+    if booking.candidate_phone:
+        body += f"Phone: {booking.candidate_phone}\n"
+    base = (settings.FRONTEND_URL or "").rstrip("/")
+    if base:
+        body += f"\nOpen session: {base}/my-bookings/session/{booking.id}\n"
+    body += "\n— Nexus Counselling"
     return subject, body
 
 
@@ -213,7 +298,7 @@ def _upcoming_appointment_content(candidate_name: str, scheduled_time: datetime)
 
 
 def _booking_notification_priority(scheduled_time: datetime) -> str:
-    now = datetime.utcnow()
+    now = utc_now()
     if scheduled_time.date() == now.date():
         return "urgent"
     days_until = (scheduled_time.date() - now.date()).days
@@ -237,7 +322,7 @@ def _booking_has_active_notification(db: Session, user_id: int, booking_id: int)
 
 def ensure_in_app_booking_notifications(db: Session, user_id: int) -> int:
     """Backfill in-app inbox rows for upcoming assigned bookings."""
-    now = datetime.utcnow()
+    now = utc_now()
     upcoming_bookings = (
         db.query(CounsellingBooking)
         .filter(
@@ -263,7 +348,7 @@ def ensure_in_app_booking_notifications(db: Session, user_id: int) -> int:
                 title=title,
                 message=body,
                 priority=_booking_notification_priority(booking.scheduled_time),
-                sent_at=datetime.utcnow(),
+                sent_at=utc_now(),
             )
         )
         created += 1
@@ -291,7 +376,7 @@ def _create_in_app_assignment_notification(
             title=title,
             message=body,
             priority="important",
-            sent_at=datetime.utcnow(),
+            sent_at=utc_now(),
         )
     )
     db.commit()
@@ -333,7 +418,7 @@ class NotificationService:
                 title=title,
                 message=message,
                 priority="urgent" if status == "failed" else priority,
-                sent_at=datetime.utcnow(),
+                sent_at=utc_now(),
             )
         )
         self.db.commit()
@@ -347,8 +432,14 @@ class NotificationService:
         candidate_phone: str | None,
         *,
         lead_id: int | None = None,
+        session_purpose: str | None = None,
     ) -> str:
-        message = _whatsapp_message(candidate_name, admin_name, scheduled_time)
+        message = _whatsapp_message(
+            candidate_name,
+            admin_name,
+            scheduled_time,
+            session_purpose=session_purpose,
+        )
         lead = _resolve_lead_for_booking_notification(
             self.db,
             lead_id=lead_id,
@@ -369,7 +460,8 @@ class NotificationService:
                 )
                 return "skipped"
 
-        if not candidate_phone:
+        phone = clean_phone_number(candidate_phone or "") or (candidate_phone or "").strip()
+        if not phone:
             self._log_attempt(
                 booking_id=booking_id,
                 user_id=None,
@@ -381,28 +473,88 @@ class NotificationService:
             )
             return "skipped"
 
-        sent = await send_message(candidate_phone, message)
+        window_open = _phone_has_open_whatsapp_window(
+            self.db, phone, lead_id=lead.id if lead else lead_id
+        )
+        sent = False
+        log_message = message
+        if window_open:
+            sent = await send_message(phone, message)
+            if sent:
+                persist_booking_confirmation_in_chat(
+                    self.db,
+                    lead_id=lead_id,
+                    candidate_phone=phone,
+                    message=message,
+                )
+                try:
+                    await _send_whatsapp_appointment_management_followup(
+                        self.db,
+                        booking_id=booking_id,
+                        lead_id=lead_id,
+                        candidate_phone=phone,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Appointment management WhatsApp follow-up failed for booking %s",
+                        booking_id,
+                    )
+        else:
+            template = (settings.WHATSAPP_BOOKING_TEMPLATE or "").strip()
+            if not template:
+                log_message = (
+                    f"{message}\n\n[blocked: outside 24h WhatsApp window; "
+                    "set WHATSAPP_BOOKING_TEMPLATE to an approved Meta UTILITY template]"
+                )
+                logger.warning(
+                    "Candidate WhatsApp blocked for booking %s — outside 24h window and "
+                    "WHATSAPP_BOOKING_TEMPLATE is not configured.",
+                    booking_id,
+                )
+            else:
+                language = (settings.WHATSAPP_BOOKING_TEMPLATE_LANGUAGE or "en").strip() or "en"
+                params = [
+                    OutreachTemplateParameter(_template_param(candidate_name, fallback="there")),
+                    OutreachTemplateParameter(_template_param(admin_name, fallback="your counsellor")),
+                    OutreachTemplateParameter(_template_param(_format_time(scheduled_time))),
+                    OutreachTemplateParameter(
+                        _template_param(session_purpose, fallback="Counselling session")
+                    ),
+                ]
+                try:
+                    wamid = await send_whatsapp_template(
+                        phone,
+                        template,
+                        language_code=language,
+                        body_parameters=params,
+                    )
+                    sent = True
+                    log_message = (
+                        f"[template:{template}] Hi {candidate_name}, session with {admin_name} "
+                        f"confirmed for {_format_time(scheduled_time)}. wamid={wamid}"
+                    )
+                    persist_booking_confirmation_in_chat(
+                        self.db,
+                        lead_id=lead_id,
+                        candidate_phone=phone,
+                        message=message,
+                    )
+                except WhatsAppDeliveryError as exc:
+                    logger.error(
+                        "Candidate booking WhatsApp template failed for booking %s: %s",
+                        booking_id,
+                        exc,
+                    )
+                    log_message = f"{message}\n\n[template failed: {exc}]"
+
         status = "sent" if sent else "failed"
-        if sent:
-            persist_booking_confirmation_in_chat(
-                self.db,
-                lead_id=lead_id,
-                candidate_phone=candidate_phone,
-                message=message,
-            )
-            await _send_whatsapp_appointment_management_followup(
-                self.db,
-                booking_id=booking_id,
-                lead_id=lead_id,
-                candidate_phone=candidate_phone,
-            )
         self._log_attempt(
             booking_id=booking_id,
             user_id=None,
             channel="whatsapp",
             status=status,
             title="WhatsApp confirmation",
-            message=message,
+            message=log_message,
             priority="normal",
         )
         return status
@@ -414,9 +566,17 @@ class NotificationService:
         admin_name: str,
         scheduled_time: datetime,
         candidate_email: str | None,
+        *,
+        session_purpose: str | None = None,
     ) -> str:
-        subject, body = _email_content(candidate_name, admin_name, scheduled_time)
-        if not candidate_email:
+        subject, body = _email_content(
+            candidate_name,
+            admin_name,
+            scheduled_time,
+            session_purpose=session_purpose,
+        )
+        email = (candidate_email or "").strip()
+        if not email:
             self._log_attempt(
                 booking_id=booking_id,
                 user_id=None,
@@ -428,7 +588,7 @@ class NotificationService:
             )
             return "skipped"
 
-        sent = await asyncio.to_thread(send_email, [candidate_email], subject, body)
+        sent = await asyncio.to_thread(send_email, [email], subject, body)
         status = "sent" if sent else "failed"
         self._log_attempt(
             booking_id=booking_id,
@@ -438,6 +598,45 @@ class NotificationService:
             title=subject,
             message=body,
             priority="normal",
+        )
+        return status
+
+    async def send_email_admin_assignment(
+        self,
+        *,
+        booking: CounsellingBooking,
+        admin: User,
+        admin_name: str,
+        session_purpose: str | None = None,
+    ) -> str:
+        subject, body = _admin_email_content(
+            admin_name,
+            booking,
+            session_purpose=session_purpose,
+        )
+        admin_email = (admin.email or "").strip()
+        if not admin_email:
+            self._log_attempt(
+                booking_id=booking.id,
+                user_id=admin.id,
+                channel="email_admin",
+                status="skipped",
+                title=subject,
+                message=body,
+                priority="important",
+            )
+            return "skipped"
+
+        sent = await asyncio.to_thread(send_email, [admin_email], subject, body)
+        status = "sent" if sent else "failed"
+        self._log_attempt(
+            booking_id=booking.id,
+            user_id=admin.id,
+            channel="email_admin",
+            status=status,
+            title=subject,
+            message=body,
+            priority="important",
         )
         return status
 
@@ -517,7 +716,8 @@ class NotificationService:
             booking=booking,
             lead=lead,
         )
-        admin_phone = _display_value(getattr(admin, "phone_number", None))
+        raw_phone = _display_value(getattr(admin, "phone_number", None))
+        admin_phone = clean_phone_number(raw_phone or "") or raw_phone
         if not admin_phone:
             logger.info(
                 "Skipping counsellor WhatsApp for booking %s — admin %s has no phone_number.",
@@ -535,7 +735,56 @@ class NotificationService:
             )
             return "skipped"
 
-        sent = await send_message(admin_phone, message)
+        window_open = _phone_has_open_whatsapp_window(
+            self.db, admin_phone, lead_id=lead.id if lead else None
+        )
+        sent = False
+        log_message = message
+        if window_open:
+            sent = await send_message(admin_phone, message)
+        else:
+            template = (settings.WHATSAPP_ADMIN_BOOKING_TEMPLATE or "").strip()
+            if not template:
+                log_message = (
+                    f"{message}\n\n[blocked: outside 24h WhatsApp window; "
+                    "set WHATSAPP_ADMIN_BOOKING_TEMPLATE to an approved Meta UTILITY template]"
+                )
+                logger.warning(
+                    "Counsellor WhatsApp blocked for booking %s — outside 24h window and "
+                    "WHATSAPP_ADMIN_BOOKING_TEMPLATE is not configured.",
+                    booking.id,
+                )
+            else:
+                language = (
+                    settings.WHATSAPP_ADMIN_BOOKING_TEMPLATE_LANGUAGE or "en"
+                ).strip() or "en"
+                params = [
+                    OutreachTemplateParameter(_template_param(admin_name, fallback="Counsellor")),
+                    OutreachTemplateParameter(
+                        _template_param(booking.candidate_name, fallback="Student")
+                    ),
+                    OutreachTemplateParameter(
+                        _template_param(_format_time(booking.scheduled_time))
+                    ),
+                    OutreachTemplateParameter(_template_param(booking.id)),
+                ]
+                try:
+                    wamid = await send_whatsapp_template(
+                        admin_phone,
+                        template,
+                        language_code=language,
+                        body_parameters=params,
+                    )
+                    sent = True
+                    log_message = f"[template:{template}] {message}\nwamid={wamid}"
+                except WhatsAppDeliveryError as exc:
+                    logger.error(
+                        "Counsellor booking WhatsApp template failed for booking %s: %s",
+                        booking.id,
+                        exc,
+                    )
+                    log_message = f"{message}\n\n[template failed: {exc}]"
+
         status = "sent" if sent else "failed"
         self._log_attempt(
             booking_id=booking.id,
@@ -543,7 +792,7 @@ class NotificationService:
             channel="whatsapp_admin",
             status=status,
             title=ASSIGN_TITLE,
-            message=message,
+            message=log_message,
             priority="important",
         )
         if not sent:
@@ -564,43 +813,84 @@ class NotificationService:
             raise ValueError("Assigned admin record was not found.")
 
         admin_name = _format_admin_name(admin)
+        session_purpose = _extract_session_purpose(booking.notes)
         lead = _resolve_lead_for_booking_notification(
             self.db,
             lead_id=booking.lead_id,
             candidate_phone=booking.candidate_phone,
         )
-        whatsapp_status = await self.send_whatsapp_confirmation(
-            booking_id=booking.id,
-            candidate_name=booking.candidate_name,
-            admin_name=admin_name,
-            scheduled_time=booking.scheduled_time,
-            candidate_phone=booking.candidate_phone,
-            lead_id=booking.lead_id,
+
+        async def _safe(channel: str, coro) -> str:
+            try:
+                return await coro
+            except Exception:
+                logger.exception(
+                    "Assignment notification channel %s failed for booking %s",
+                    channel,
+                    booking_id,
+                )
+                return "failed"
+
+        # Candidate + counsellor each get email and WhatsApp independently.
+        whatsapp_status = await _safe(
+            "whatsapp",
+            self.send_whatsapp_confirmation(
+                booking_id=booking.id,
+                candidate_name=booking.candidate_name,
+                admin_name=admin_name,
+                scheduled_time=booking.scheduled_time,
+                candidate_phone=booking.candidate_phone,
+                lead_id=booking.lead_id,
+                session_purpose=session_purpose,
+            ),
         )
-        email_status = await self.send_email_confirmation(
-            booking_id=booking.id,
-            candidate_name=booking.candidate_name,
-            admin_name=admin_name,
-            scheduled_time=booking.scheduled_time,
-            candidate_email=booking.candidate_email,
+        email_status = await _safe(
+            "email",
+            self.send_email_confirmation(
+                booking_id=booking.id,
+                candidate_name=booking.candidate_name,
+                admin_name=admin_name,
+                scheduled_time=booking.scheduled_time,
+                candidate_email=booking.candidate_email,
+                session_purpose=session_purpose,
+            ),
         )
-        admin_whatsapp_status = await self.send_whatsapp_admin_assignment(
-            booking=booking,
-            admin=admin,
-            admin_name=admin_name,
-            lead=lead,
+        admin_whatsapp_status = await _safe(
+            "whatsapp_admin",
+            self.send_whatsapp_admin_assignment(
+                booking=booking,
+                admin=admin,
+                admin_name=admin_name,
+                lead=lead,
+            ),
         )
-        push_status = await self.send_push_assignment(
-            booking_id=booking.id,
-            admin=admin,
-            candidate_name=booking.candidate_name,
-            scheduled_time=booking.scheduled_time,
+        admin_email_status = await _safe(
+            "email_admin",
+            self.send_email_admin_assignment(
+                booking=booking,
+                admin=admin,
+                admin_name=admin_name,
+                session_purpose=session_purpose,
+            ),
         )
-        _create_in_app_assignment_notification(self.db, booking=booking, admin=admin)
+        push_status = await _safe(
+            "push",
+            self.send_push_assignment(
+                booking_id=booking.id,
+                admin=admin,
+                candidate_name=booking.candidate_name,
+                scheduled_time=booking.scheduled_time,
+            ),
+        )
+        try:
+            _create_in_app_assignment_notification(self.db, booking=booking, admin=admin)
+        except Exception:
+            logger.exception("In-app assignment notification failed for booking %s", booking_id)
         return {
             "whatsapp": whatsapp_status,
             "email": email_status,
             "whatsapp_admin": admin_whatsapp_status,
+            "email_admin": admin_email_status,
             "push": push_status,
         }
 
@@ -718,13 +1008,34 @@ class NotificationService:
         return sent
 
 
-def run_assignment_notifications(booking_id: int) -> None:
+def run_assignment_notifications(booking_id: int) -> dict[str, str]:
+    """Send candidate/counsellor email + WhatsApp. Safe to call from BackgroundTasks."""
     db = SessionLocal()
     try:
         service = NotificationService(db)
-        asyncio.run(service.send_booking_assignment_notifications(booking_id))
+
+        async def _run() -> dict[str, str]:
+            return await service.send_booking_assignment_notifications(booking_id)
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_run())
+
+        # Already inside an event loop (e.g. some ASGI contexts): run in a worker thread.
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(asyncio.run, _run()).result()
     except Exception:
         logger.exception("Failed to send assignment notifications for booking %s", booking_id)
+        return {
+            "whatsapp": "failed",
+            "email": "failed",
+            "whatsapp_admin": "failed",
+            "email_admin": "failed",
+            "push": "failed",
+        }
     finally:
         db.close()
 

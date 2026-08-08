@@ -10,6 +10,7 @@ from app.models.lead import Lead
 from app.models.notification_log import NotificationLog
 from app.models.user import User
 from app.services.email_service import send_email
+from app.utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ def _handoff_marker(lead_id: int) -> str:
 
 def _recent_handoff_notification_exists(db: Session, user_id: int, lead_id: int) -> bool:
     marker = _handoff_marker(lead_id)
-    cutoff = datetime.utcnow() - _HANDOFF_DEDUPE_WINDOW
+    cutoff = utc_now() - _HANDOFF_DEDUPE_WINDOW
     return (
         db.query(NotificationLog.id)
         .filter(
@@ -107,7 +108,7 @@ def notify_advisors_of_handoff(
                 title=title,
                 message=message_body,
                 priority="urgent",
-                sent_at=datetime.utcnow(),
+                sent_at=utc_now(),
             )
         )
         created += 1

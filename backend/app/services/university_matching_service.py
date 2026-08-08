@@ -65,14 +65,19 @@ GPA_BAND_SCORE: dict[str, float] = {
 }
 
 RANKING_CODE_TO_LABEL: dict[str, str] = {
-    "TOP_100_GLOBAL_ELITE": "Top 100 (Global Elite)",
-    "TOP_300_RESEARCH_INTENSIVE": "Top 300 (Highly Research-Intensive)",
-    "TOP_500_BROAD_ACADEMIC": "Top 500 (Broad Academic Excellence)",
+    "TOP_100_GLOBAL_ELITE": "Top 100 Global Elite",
+    "TOP_300_RESEARCH_INTENSIVE": "Top 300 Research-Intensive",
+    "TOP_500_BROAD_ACADEMIC": "Top 500 Academic Excellence",
     "ANY_INCLUSIVE": "Others",
 }
 
 RANKING_LABEL_TO_CODE: dict[str, str] = {v: k for k, v in RANKING_CODE_TO_LABEL.items()}
 RANKING_LABEL_TO_CODE["Others"] = "ANY_INCLUSIVE"
+RANKING_LABEL_TO_CODE["Top 100 (Global Elite)"] = "TOP_100_GLOBAL_ELITE"
+RANKING_LABEL_TO_CODE["Top 300 (Highly Research-Intensive)"] = "TOP_300_RESEARCH_INTENSIVE"
+RANKING_LABEL_TO_CODE["Top 300 (Research-Intensive)"] = "TOP_300_RESEARCH_INTENSIVE"
+RANKING_LABEL_TO_CODE["Top 500 (Broad Academic Excellence)"] = "TOP_500_BROAD_ACADEMIC"
+RANKING_LABEL_TO_CODE["Top 500 (Academic Excellence)"] = "TOP_500_BROAD_ACADEMIC"
 
 RANKING_SELECTIVITY: dict[str, float] = {
     "TOP_100_GLOBAL_ELITE": 90,
@@ -89,7 +94,7 @@ INSTITUTION_TYPE_CODE_TO_LABEL: dict[str, str] = {
 }
 
 ENGLISH_TESTS = {"IELTS", "TOEFL", "PTE", "DUOLINGO"}
-APTITUDE_TESTS = {"GRE", "SAT", "GMAT", "ACT"}
+APTITUDE_TESTS = {"GRE", "SAT", "GMAT", "ACT", "LSAT_MCAT"}
 
 INTAKE_SEASON_MONTHS: dict[str, set[int]] = {
     "JAN_FEB_SPRING": {1, 2},

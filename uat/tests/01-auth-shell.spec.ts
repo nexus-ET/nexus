@@ -9,7 +9,7 @@ test.describe('Auth & shell access', () => {
     await gotoAppPath(page, '/');
     await expect(page.locator('body')).toBeVisible();
     // Shell should show app chrome, not the login card.
-    await expect(page.getByRole('heading', { name: /NEXUS Login/i })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: /Sign in to Nexus Intel|NEXUS Login/i })).toHaveCount(0);
   });
 
   test('AI Active route is reachable under authenticated session', async ({ page }) => {

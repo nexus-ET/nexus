@@ -17,7 +17,7 @@ from app.models.notification_log import NotificationLog
 from app.models.user import User
 from app.services.messaging import send_message
 from app.services.settings_service import get_bool_setting, get_int_setting, get_time_setting
-from app.utils.timezone import office_now, office_today
+from app.utils.timezone import office_now, office_today, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,12 @@ def build_assignment_alert_message(
     admin_name: str,
     booking: CounsellingBooking,
 ) -> str:
+    purpose = None
+    for line in str(booking.notes or "").splitlines():
+        cleaned = line.strip()
+        if cleaned.lower().startswith("purpose:"):
+            purpose = cleaned.split(":", 1)[1].strip() or None
+            break
     lines = [
         f"Hi {admin_name},",
         "New booking assigned to you.",
@@ -90,6 +96,13 @@ def build_assignment_alert_message(
         f"• When: {_format_when(booking.scheduled_time)}",
         f"• Booking #{booking.id}",
     ]
+    if purpose:
+        lines.append(f"• Purpose: {purpose}")
+    if booking.candidate_phone:
+        lines.append(f"• Phone: {booking.candidate_phone}")
+    base = _frontend_base()
+    if base:
+        lines.append(f"• Session: {base}/my-bookings/session/{booking.id}")
     _append_action_links(lines, lead_id=booking.lead_id)
     return "\n".join(lines)
 
@@ -230,7 +243,7 @@ def _log_attempt(
             title=title,
             message=message,
             priority="urgent" if status == "failed" else priority,
-            sent_at=datetime.utcnow(),
+            sent_at=utc_now(),
         )
     )
     db.commit()

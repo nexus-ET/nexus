@@ -12,6 +12,7 @@ from app.models.internal_message import InternalMessage
 from app.models.message_reaction import MessageReaction
 from app.models.user import User
 from app.services.presence_service import presence_tracker
+from app.utils.timezone import utc_now
 
 
 def _format_user_name(user: User | None) -> str:
@@ -427,7 +428,7 @@ def send_message(
         if not reply_to:
             raise HTTPException(status_code=404, detail="Reply target message not found.")
 
-    now = datetime.utcnow()
+    now = utc_now()
     message = InternalMessage(
         conversation_id=conversation_id,
         sender_id=sender_id,
@@ -523,7 +524,7 @@ def mark_conversation_read(
     last_read_at: datetime | None = None,
 ) -> datetime:
     participant = _ensure_participant(db, conversation_id=conversation_id, admin_id=admin_id)
-    now = last_read_at or datetime.utcnow()
+    now = last_read_at or utc_now()
     participant.last_read_at = now
     db.commit()
     return now

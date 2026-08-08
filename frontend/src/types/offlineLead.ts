@@ -6,12 +6,17 @@ export interface OfflineLeadLocation {
   city: string;
   state: string;
   country_iso2: string;
+  zip_code?: string;
 }
 
 export interface OfflineLeadEducation {
   degree_code?: string;
   degree?: string;
   degree_other?: string;
+  program_code?: string;
+  program?: string;
+  level_id?: number;
+  full_time_study_years?: string;
   major?: string;
   gpa_cgpa_code?: string;
   gpa_cgpa?: string;
@@ -34,16 +39,29 @@ export interface OfflineLeadItem {
   source: string;
   target_destination?: string | null;
   target_destination_iso2?: string | null;
+  target_destination_iso2s?: string[];
+  target_destinations?: string[];
+  target_level_id?: number | null;
+  target_level_name?: string | null;
+  target_major_ids?: number[];
+  target_majors?: string[];
+  target_program_codes?: string[];
+  target_programs?: string[];
   target_program?: string | null;
   target_program_code?: string | null;
   target_course?: string | null;
   target_course_code?: string | null;
   city?: string | null;
   state?: string | null;
+  zip_code?: string | null;
   country?: string | null;
   country_iso2?: string | null;
   degree?: string | null;
   degree_code?: string | null;
+  program?: string | null;
+  program_code?: string | null;
+  level_id?: number | null;
+  full_time_study_years?: string | null;
   major?: string | null;
   university?: string | null;
   graduation_year?: number | null;
@@ -71,9 +89,10 @@ export interface OfflineLeadCreatePayload {
   phone_local: string;
   date_of_birth?: string;
   education?: OfflineLeadEducation;
-  target_destination_iso2: string;
-  target_program_code: string;
-  target_course_code: string;
+  target_destination_iso2s: string[];
+  target_level_id?: number;
+  target_major_ids: number[];
+  target_program_codes: string[];
   location: OfflineLeadLocation;
 }
 

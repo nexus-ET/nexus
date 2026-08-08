@@ -9,6 +9,7 @@ import HeadlessScrollArea, {
   type HeadlessScrollAreaHandle,
 } from '../components/HeadlessScrollArea';
 import { useConfirmation } from '../context/ConfirmationContext';
+import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 import {
   AI_ACTIVE_PAGE_SIZE_KEY,
   buildLeadQueueQueryParams,
@@ -157,23 +158,6 @@ const INTAKE_STEPS = [
   { key: 'PICK_TIME', label: 'Pick time' },
   { key: 'COMPLETE', label: 'Complete' },
 ] as const;
-
-const formatConsultationDateTime = (iso?: string | null): string => {
-  if (!iso) return '';
-  try {
-    const parsed = new Date(iso);
-    if (Number.isNaN(parsed.getTime())) return iso;
-    return parsed.toLocaleString([], {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
-  } catch {
-    return iso;
-  }
-};
 
 const getIntakeStepIndex = (step?: string): number => {
   const normalized = (step || 'WELCOME').toUpperCase();
@@ -365,73 +349,11 @@ const mergeLeadSnapshot = (
   };
 };
 
-const formatTime = (dateStr?: string): string => {
-  if (!dateStr) return '';
-  try {
-    const parsed = new Date(dateStr);
-    if (Number.isNaN(parsed.getTime())) return '';
-    return parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  } catch {
-    return '';
-  }
-};
-
 const REPLY_EXAMPLE_HINT =
   /\n*\s*Example:\s*reply\s*\*?1\*?\s*for the first option\.?\s*$/i;
 
-const formatCandidateMessageText = (text: string, lead: ActiveLead | null): string => {
-  const trimmed = (text || '').trim();
-  const dateMatch = trimmed.match(/^date:(\d{4}-\d{2}-\d{2})$/i);
-  if (dateMatch) {
-    const parsed = new Date(`${dateMatch[1]}T12:00:00`);
-    if (!Number.isNaN(parsed.getTime())) {
-      return `Selected ${parsed.toLocaleDateString([], {
-        weekday: 'short',
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      })}`;
-    }
-  }
-
-  const timeMatch = trimmed.match(/^time:(\d+)$/i);
-  if (timeMatch) {
-    if (lead?.consultation_scheduled_at) {
-      const formatted = formatConsultationDateTime(lead.consultation_scheduled_at);
-      const timePart = formatted.split(',').slice(-1)[0]?.trim();
-      if (timePart) return `Selected ${timePart}`;
-    }
-    return 'Selected consultation time';
-  }
-
-  return text;
-};
-
 const formatAdvisorMessageText = (text: string): string =>
   (text || '').replace(REPLY_EXAMPLE_HINT, '').trimEnd();
-
-const getDateGroupLabel = (dateStr?: string): string => {
-  if (!dateStr) return 'Earlier';
-  try {
-    const parsed = new Date(dateStr);
-    if (Number.isNaN(parsed.getTime())) return 'Earlier';
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const target = new Date(parsed);
-    target.setHours(0, 0, 0, 0);
-    const diffDays = Math.round((today.getTime() - target.getTime()) / (1000 * 60 * 60 * 24));
-
-    if (diffDays === 0) return 'Today';
-    if (diffDays === 1) return 'Yesterday';
-    if (diffDays > 1 && diffDays < 7) {
-      return target.toLocaleDateString('en-US', { weekday: 'long' });
-    }
-    return target.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  } catch {
-    return 'Earlier';
-  }
-};
 
 const TRANSITION_OPTIONS = [
   { key: 'handoff', label: 'HANDOFF', icon: Users },
@@ -454,6 +376,7 @@ const getTargetMajorValue = (
 };
 
 function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
+  const { formatBusinessLocal } = useBusinessTimezone();
   const currentStepIndex = getIntakeStepIndex(lead.intake_step);
   const targetProgram = getTargetProgramValue(lead);
   const targetMajor = getTargetMajorValue(lead);
@@ -465,6 +388,17 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
     lead.intake_step === 'PICK_DATE' && (lead.available_consultation_dates?.length ?? 0) > 0;
   const showTimes =
     lead.intake_step === 'PICK_TIME' && (lead.available_consultation_times?.length ?? 0) > 0;
+  const selectedDateLabel = lead.selected_consultation_date
+    ? formatBusinessLocal(`${lead.selected_consultation_date}T12:00:00`, {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: undefined,
+        minute: undefined,
+        second: undefined,
+      })
+    : '';
   const hasProfileData =
     lead.preferred_country ||
     targetProgram ||
@@ -607,9 +541,7 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
           <div style={styles.consultationCalendarTitle}>
             <Calendar size={14} />
             Candidate is choosing a time
-            {lead.selected_consultation_date
-              ? ` on ${formatConsultationDateTime(`${lead.selected_consultation_date}T12:00:00`).split(',')[0]}`
-              : ''}
+            {selectedDateLabel ? ` on ${selectedDateLabel}` : ''}
           </div>
           <div style={styles.consultationTimeGrid}>
             {lead.available_consultation_times?.map((slot, index) => (
@@ -627,6 +559,46 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
 
 export default function AiActiveView() {
   const openConfirm = useConfirmation();
+  const { formatTime, formatDateGroup, formatBusinessLocal } = useBusinessTimezone();
+
+  const formatCandidateMessageText = useCallback(
+    (text: string, lead: ActiveLead | null): string => {
+      const trimmed = (text || '').trim();
+      const dateMatch = trimmed.match(/^date:(\d{4}-\d{2}-\d{2})$/i);
+      if (dateMatch) {
+        return `Selected ${formatBusinessLocal(`${dateMatch[1]}T12:00:00`, {
+          weekday: 'short',
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+          hour: undefined,
+          minute: undefined,
+          second: undefined,
+        })}`;
+      }
+
+      const timeMatch = trimmed.match(/^time:(\d+)$/i);
+      if (timeMatch) {
+        if (lead?.consultation_scheduled_at) {
+          const formatted = formatBusinessLocal(lead.consultation_scheduled_at, {
+            weekday: 'short',
+            month: 'short',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            second: undefined,
+          });
+          const timePart = formatted.split(',').slice(-1)[0]?.trim();
+          if (timePart) return `Selected ${timePart}`;
+        }
+        return 'Selected consultation time';
+      }
+
+      return text;
+    },
+    [formatBusinessLocal]
+  );
+
   const [queue, setQueue] = useState<ActiveLead[]>([]);
   const [selectedLead, setSelectedLead] = useState<ActiveLead | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -782,7 +754,7 @@ export default function AiActiveView() {
 
     const groups: Record<string, ChatMessage[]> = {};
     selectedLead.messages.forEach(msg => {
-      const label = getDateGroupLabel(msg.created_at);
+      const label = formatDateGroup(msg.created_at);
       if (!groups[label]) groups[label] = [];
       groups[label].push(msg);
     });
@@ -793,7 +765,7 @@ export default function AiActiveView() {
       )
     );
     return groups;
-  }, [selectedLead]);
+  }, [selectedLead, formatDateGroup]);
 
   const hasNoMessages = useMemo(() => Object.keys(groupedMessages).length === 0, [groupedMessages]);
 
@@ -1731,7 +1703,7 @@ const styles = {
     margin: 0,
     fontSize: '15px',
     fontWeight: '700',
-    color: '#1e3a8a',
+    color: '#322f86',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -1782,7 +1754,7 @@ const styles = {
   } as React.CSSProperties,
   cardStartButton: {
     border: 'none',
-    backgroundColor: '#059669',
+    backgroundColor: '#322f86',
     color: '#ffffff',
     padding: '6px 10px',
     borderRadius: '6px',
@@ -1811,7 +1783,7 @@ const styles = {
   headerOverviewButton: {
     border: '1px solid #cbd5e1',
     backgroundColor: '#ffffff',
-    color: '#03045e',
+    color: '#322f86',
     padding: '8px 12px',
     borderRadius: '8px',
     fontSize: '12px',
@@ -1848,7 +1820,7 @@ const styles = {
   } as React.CSSProperties,
   headerStartButton: {
     border: 'none',
-    backgroundColor: '#059669',
+    backgroundColor: '#322f86',
     color: '#ffffff',
     padding: '10px 16px',
     borderRadius: '8px',
@@ -2032,7 +2004,7 @@ const styles = {
     width: '20px',
     height: '20px',
     borderRadius: '999px',
-    backgroundColor: '#059669',
+    backgroundColor: '#322f86',
     color: '#ffffff',
     fontSize: '11px',
     fontWeight: '700',
@@ -2190,7 +2162,7 @@ const styles = {
   } as React.CSSProperties,
   startConversationButton: {
     border: 'none',
-    backgroundColor: '#059669',
+    backgroundColor: '#322f86',
     color: '#ffffff',
     padding: '10px 16px',
     borderRadius: '8px',
@@ -2201,7 +2173,7 @@ const styles = {
   footerActionButton: {
     marginLeft: 'auto',
     border: 'none',
-    backgroundColor: '#059669',
+    backgroundColor: '#322f86',
     color: '#ffffff',
     padding: '8px 14px',
     borderRadius: '8px',
@@ -2218,3 +2190,4 @@ const styles = {
     backgroundColor: '#f8fafc',
   } as React.CSSProperties,
 };
+

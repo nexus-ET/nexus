@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from app.utils.timezone import utc_now
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -839,7 +840,7 @@ def process_calendar_intake_reminders(db: Session) -> int:
                     term_name=term_name,
                     year=year,
                     alert_type="missing_intake",
-                    alerted_at=datetime.utcnow(),
+                    alerted_at=utc_now(),
                 )
             )
             alerts_created += 1

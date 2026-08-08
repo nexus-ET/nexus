@@ -1,13 +1,15 @@
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, HelpCircle, Trash2, X } from 'lucide-react';
 
 export interface ConfirmationModalOptions {
   title: string;
-  message: string;
+  message: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: 'danger' | 'warning' | 'primary';
+  /** `alert` = single OK button (HTML replacement for window.alert). */
+  mode?: 'confirm' | 'alert';
 }
 
 interface ConfirmationModalProps extends ConfirmationModalOptions {
@@ -38,16 +40,19 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   open,
   title,
   message,
-  confirmLabel = 'Confirm',
+  confirmLabel,
   cancelLabel = 'Cancel',
   variant = 'danger',
+  mode = 'confirm',
   onConfirm,
   onCancel,
 }) => {
   const dialogRef = useRef<HTMLDivElement>(null);
-  const cancelButtonRef = useRef<HTMLButtonElement>(null);
+  const primaryButtonRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const descriptionId = useId();
+  const isAlert = mode === 'alert';
+  const resolvedConfirmLabel = confirmLabel ?? (isAlert ? 'OK' : 'Confirm');
 
   useEffect(() => {
     if (!open) return;
@@ -57,7 +62,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
       : null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    window.requestAnimationFrame(() => cancelButtonRef.current?.focus());
+    window.requestAnimationFrame(() => primaryButtonRef.current?.focus());
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -124,34 +129,40 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
             <h2 id={titleId} className="text-lg font-bold text-text-main">
               {title}
             </h2>
-            <p id={descriptionId} className="mt-2 whitespace-pre-line text-sm leading-6 text-text-muted">
-              {message}
-            </p>
+            <div id={descriptionId} className="mt-2 text-sm leading-6 text-text-muted">
+              {typeof message === 'string' ? (
+                <p className="whitespace-pre-line">{message}</p>
+              ) : (
+                message
+              )}
+            </div>
           </div>
           <button
             type="button"
             onClick={onCancel}
             className="rounded-lg p-1.5 text-text-muted transition hover:bg-surface-bg hover:text-text-main focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            aria-label="Close confirmation"
+            aria-label="Close dialog"
           >
             <X size={18} />
           </button>
         </div>
         <div className="flex justify-end gap-3 border-t border-border-subtle bg-surface-bg/40 px-6 py-4">
+          {!isAlert ? (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="rounded-xl border border-border-subtle bg-card px-4 py-2 text-sm font-semibold text-text-main transition hover:bg-surface-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              {cancelLabel}
+            </button>
+          ) : null}
           <button
-            ref={cancelButtonRef}
-            type="button"
-            onClick={onCancel}
-            className="rounded-xl border border-border-subtle bg-card px-4 py-2 text-sm font-semibold text-text-main transition hover:bg-surface-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          >
-            {cancelLabel}
-          </button>
-          <button
+            ref={primaryButtonRef}
             type="button"
             onClick={onConfirm}
             className={`rounded-xl px-4 py-2 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 ${styles.buttonClass}`}
           >
-            {confirmLabel}
+            {resolvedConfirmLabel}
           </button>
         </div>
       </div>

@@ -1,4 +1,6 @@
-# Nexus UAT — Run Prompt (32 Playwright cases)
+# Nexus UAT — Run Prompt (45 Playwright entries = 1 setup + 44 cases)
+
+Case catalog for the next run: [`uat/CASE_CATALOG.md`](../uat/CASE_CATALOG.md).
 
 Two ways to use this file:
 
@@ -10,8 +12,9 @@ Two ways to use this file:
 ## Simple prompt (paste this next time)
 
 ```
-Run the Nexus UAT suite per qa/UAT_RUN_PROMPT.md. Ask me LOCAL or STAGING first,
-run all 32 Playwright cases, and end with the pasted UAT Summary table.
+Run the Nexus UAT suite per qa/UAT_RUN_PROMPT.md and uat/CASE_CATALOG.md.
+Ask me LOCAL or STAGING first, run all 44 application cases (+ auth setup),
+and end with the pasted UAT Summary table.
 ```
 
 ---
@@ -32,7 +35,9 @@ npm run summary
 ## Full agent prompt
 
 ```
-Run the full Nexus UAT suite (32 Playwright cases) and report results.
+Run the full Nexus UAT suite (45 Playwright entries: auth setup + 44 cases
+listed in uat/CASE_CATALOG.md, including IntelX, FlowX, Book Appointment,
+and Session / Aspirations / Future Insights / ROI) and report results.
 
 ## Target
 Ask me first: LOCAL or STAGING.
@@ -46,8 +51,9 @@ value when finished. Never commit uat/.env or print UAT_PASSWORD.
 - LOCAL only: dev stack must already be running (frontend :5175, backend :8002).
   If run_dev.py reports "dev stack already running (pid N)", that is fine —
   verify :5175 and :8002 respond and do NOT start a second instance.
-- uat/.env has UAT_BASE_URL, UAT_EMAIL, UAT_PASSWORD, UAT_LEAD_ID.
+- uat/.env has UAT_BASE_URL, UAT_EMAIL, UAT_PASSWORD, UAT_LEAD_ID, UAT_BOOKING_ID.
   UAT_LEAD_ID must be a lead that exists on the target with a counselling booking.
+  UAT_BOOKING_ID is required for Session / Future Insights / ROI cases.
 - Do not invent credentials. If uat/.env is missing values, stop and tell me.
 
 ## Run

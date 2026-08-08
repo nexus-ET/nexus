@@ -29,4 +29,6 @@ class NotificationLog(Base):
     channel: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     priority: Mapped[str] = mapped_column(String(20), nullable=False, default="normal", index=True)
-    sent_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), index=True
+    )

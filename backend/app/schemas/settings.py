@@ -65,6 +65,8 @@ class BusinessProfileOut(BaseModel):
     office_mobile_number: str | None = None
     web_url: str | None = None
     email_domain: str | None = None
+    has_logo: bool = False
+    logo_url: str | None = None
     updated_at: datetime | None = None
 
 

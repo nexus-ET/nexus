@@ -35,3 +35,18 @@ class CounsellingSessionNoteOut(BaseModel):
     officer_recommendations: str | None = None
     next_follow_up: date | None = None
     updated_at: str | None = None
+
+
+class RecommendedInstitutionOption(BaseModel):
+    value: str
+    label: str
+    kind: str
+    name: str
+    country_id: int | None = None
+    country_name: str | None = None
+    state_name: str | None = None
+    city_name: str | None = None
+
+
+class RecommendedInstitutionOptionsResponse(BaseModel):
+    options: list[RecommendedInstitutionOption] = Field(default_factory=list)

@@ -10,8 +10,9 @@ from app.models.user import User
 DEFAULT_NAVIGATION_PAGES: list[dict[str, str | int | bool]] = [
     {"name": "Dashboard", "route": "/", "icon": "LayoutDashboard", "sort_order": 1},
     {"name": "Chat", "route": "/messaging-hub", "icon": "MessagesSquare", "sort_order": 2},
-    {"name": "My Appointments", "route": "/my-bookings", "icon": "CalendarCheck", "sort_order": 3},
-    {"name": "Manage Appointments", "route": "/counselling", "icon": "Calendar", "sort_order": 4},
+    {"name": "Book Appointment", "route": "/book-appointment", "icon": "CalendarPlus", "sort_order": 3},
+    {"name": "My Appointments", "route": "/my-bookings", "icon": "CalendarCheck", "sort_order": 4},
+    {"name": "Manage Appointments", "route": "/counselling", "icon": "Calendar", "sort_order": 5},
     {"name": "Manage Users", "route": "/users", "icon": "UserCog", "sort_order": 5},
     {"name": "Counselling Students", "route": "/students/counselling", "icon": "GraduationCap", "sort_order": 6},
     {"name": "Documentation Students", "route": "/students/documentation", "icon": "GraduationCap", "sort_order": 7},
@@ -37,6 +38,8 @@ DEFAULT_NAVIGATION_PAGES: list[dict[str, str | int | bool]] = [
     {"name": "Audit Logs", "route": "/reports/audit-logs", "icon": "ScrollText", "sort_order": 27},
     {"name": "Lead Quarantine", "route": "/quarantine", "icon": "ShieldAlert", "sort_order": 28},
     {"name": "Academia Hub", "route": "/academia", "icon": "GraduationCap", "sort_order": 29},
+    {"name": "Nexus Intel", "route": "/nexus-intel", "icon": "Brain", "sort_order": 30},
+    {"name": "FlowX", "route": "/flowx", "icon": "GitBranch", "sort_order": 31},
 ]
 
 STUDENT_PIPELINE_PAGE_ROUTES: list[str] = [
@@ -62,12 +65,15 @@ DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
         "/archive",
         "/agents",
         "/analytics",
+        "/book-appointment",
         "/counselling",
         "/command-center",
         "/messaging-hub",
         "/my-bookings",
         "/my-profile",
         "/academia",
+        "/nexus-intel",
+        "/flowx",
     ],
     "Student Manager": [
         "/",
@@ -81,6 +87,8 @@ DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
         "/messaging-hub",
         "/my-bookings",
         "/my-profile",
+        "/nexus-intel",
+        "/flowx",
     ],
     "Student Advisor": [
         "/",
@@ -93,6 +101,8 @@ DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
         "/messaging-hub",
         "/my-bookings",
         "/my-profile",
+        "/nexus-intel",
+        "/flowx",
     ],
 }
 
@@ -105,6 +115,12 @@ API_ROUTE_TO_PAGE: list[tuple[str, str]] = [
     ("/api/v1/bookings/mine", "/my-bookings"),
     ("/api/v1/counselling/summarize", "/my-bookings"),
     ("/api/v1/admins/available", "/counselling"),
+    ("/api/v1/bookings/staff", "/book-appointment"),
+    ("/api/v1/bookings/availability-week", "/book-appointment"),
+    ("/api/v1/bookings/availability", "/book-appointment"),
+    ("/api/v1/bookings/contact-check", "/book-appointment"),
+    ("/api/v1/bookings/counsellors", "/book-appointment"),
+    ("/api/v1/bookings/session-config", "/book-appointment"),
     ("/api/v1/bookings", "/counselling"),
     ("/api/v1/pipeline", "/counselling"),
     ("/api/v1/sessions", "/counselling"),
@@ -135,6 +151,8 @@ API_ROUTE_TO_PAGE: list[tuple[str, str]] = [
     ("/api/v1/permissions", "/access-control"),
     ("/api/v1/command-center", "/command-center"),
     ("/api/v1/academia", "/academia"),
+    ("/api/v1/intel", "/nexus-intel"),
+    ("/api/v1/flowx", "/flowx"),
 ]
 
 LEAD_MUTATION_PAGE_ROUTES = [
@@ -165,8 +183,14 @@ RBAC_PUBLIC_AUTH_PREFIXES = (
     "/api/v1/settings/whatsapp-outreach",
     "/api/v1/countries",
     "/api/v1/education-degrees",
+    "/api/v1/levels",
+    "/api/v1/programs",
     "/api/v1/gpa-cgpa-scores",
+    "/api/v1/full-time-study-years",
     "/api/v1/target-programs",
+    "/api/v1/intel/terms",
+    "/api/v1/intel/trivia",
+    "/api/v1/intel/preferences",
     "/api/v1/audit-events",
     # Authenticated clients may POST exceptions from any page; GET still gated by route deps.
     "/api/v1/reports/exception-logs",
@@ -377,7 +401,25 @@ def resolve_page_routes_for_api_path(path: str) -> list[str]:
         return ["/my-profile"]
 
     if path.startswith("/api/v1/admins/available"):
-        return ["/counselling", "/my-bookings"]
+        return ["/counselling", "/my-bookings", "/book-appointment"]
+
+    if path.startswith("/api/v1/bookings/staff"):
+        return ["/book-appointment", "/counselling"]
+
+    if path.startswith("/api/v1/bookings/availability-week"):
+        return ["/book-appointment", "/counselling"]
+
+    if path.startswith("/api/v1/bookings/availability"):
+        return ["/book-appointment", "/counselling"]
+
+    if path.startswith("/api/v1/bookings/contact-check"):
+        return ["/book-appointment", "/counselling"]
+
+    if path.startswith("/api/v1/bookings/counsellors"):
+        return ["/book-appointment", "/counselling"]
+
+    if path.startswith("/api/v1/bookings/session-config"):
+        return ["/book-appointment", "/counselling", "/my-bookings"]
 
     if path.startswith("/api/v1/bookings/switch"):
         return ["/counselling", "/my-bookings"]

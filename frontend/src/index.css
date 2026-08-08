@@ -3,30 +3,33 @@
 
 @theme {
   /* Nexus Professional (Fluent / Teams-inspired) */
-  --color-primary: #6264a7;
+  --color-primary: #322f86;
   --color-incoming: #f0f0f0;
   --color-outgoing: #e8e8f5;
   --color-text-primary: #242424;
   --color-border: #e1e1e1;
 
   /* 🏛️ Structural Layout Frame */
-  --color-canvas: #03045e;
+  --color-canvas: #322f86;
   --color-surface-bg: #F7F9F9;
   --color-card: #ffffff;
   --color-border-subtle: #84d2f6;
 
   /* 🎨 Interactive Layer & Branding */
-  --color-accent: #03045e;
+  --color-accent: #322f86;
   --color-chart-secondary: #386fa4;
 
   /* ✍️ Typography Systems */
-  --color-text-main: #03045e;
+  --color-text-main: #322f86;
   --color-text-muted: #386fa4;
   --color-text-dark-bg: #ffffff;
 
   /* 📢 System Signals */
   --color-success: #59a5d8;
   --color-alert: #ef4444;
+
+  /* Brand / login typography */
+  --font-inter: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 /* Base resets — Nexus Professional defaults live in styles/globals.css */
@@ -73,7 +76,7 @@
   border-radius: 0.75rem;
   font-family: inherit;
   background: var(--color-card);
-  box-shadow: 0 10px 30px rgba(3, 4, 94, 0.12);
+  box-shadow: 0 10px 30px rgba(50, 47, 134, 0.12);
 }
 
 .nexus-roster-datepicker .react-datepicker__header {

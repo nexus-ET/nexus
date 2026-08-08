@@ -463,7 +463,7 @@ const UsersView: React.FC = () => {
   };
 
   return (
-    <div className="relative z-10 max-w-6xl mx-auto space-y-6">
+    <div className="relative z-10 mx-auto w-full max-w-none space-y-6">
       <div className="flex items-end justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 mb-2">

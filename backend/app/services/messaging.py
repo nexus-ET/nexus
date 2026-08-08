@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from app.utils.timezone import utc_now
 import logging
 import re
 from dataclasses import dataclass
@@ -554,7 +555,7 @@ def lead_has_open_whatsapp_messaging_window(
     """True when the student has messaged within Meta's customer care window."""
     from datetime import datetime, timedelta
 
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = utc_now() - timedelta(hours=hours)
     inbound_message = (
         db.query(Message.id)
         .filter(
@@ -602,7 +603,7 @@ def _lead_has_recent_handoff_notice(db: Session, lead_id: int, *, within_minutes
 
     from app.services.ai_service import HANDOFF_NOTICE_MARKERS
 
-    cutoff = datetime.utcnow() - timedelta(minutes=within_minutes)
+    cutoff = utc_now() - timedelta(minutes=within_minutes)
     recent = (
         db.query(Message)
         .filter(
@@ -630,7 +631,7 @@ def _recent_identical_outbound(
 ) -> bool:
     from datetime import datetime, timedelta
 
-    cutoff = datetime.utcnow() - timedelta(minutes=within_minutes)
+    cutoff = utc_now() - timedelta(minutes=within_minutes)
     recent = (
         db.query(Message)
         .filter(
@@ -770,11 +771,25 @@ async def send_message(to_number: str, body: str, *, media_url: str | None = Non
     Routes by settings.PROVIDER:
     - WHATSAPP: Meta Graph API (Bearer WHATSAPP_ACCESS_TOKEN)
     - TWILIO: existing Twilio client
+
+    Returns False on delivery/API failure instead of raising, so callers can continue
+    with email / other channels.
     """
     provider = get_active_provider()
-    if provider == PROVIDER_WHATSAPP:
-        return await _send_via_whatsapp_graph(to_number, body)
-    return await asyncio.to_thread(dispatch_live_whatsapp_message, to_number, body, media_url)
+    try:
+        if provider == PROVIDER_WHATSAPP:
+            return await _send_via_whatsapp_graph(to_number, body)
+        return await asyncio.to_thread(dispatch_live_whatsapp_message, to_number, body, media_url)
+    except WhatsAppDeliveryError as exc:
+        logger.error(
+            "WhatsApp delivery failed to %s: %s",
+            clean_phone_number(to_number),
+            exc,
+        )
+        return False
+    except Exception:
+        logger.exception("Unexpected WhatsApp send failure to %s", clean_phone_number(to_number))
+        return False
 
 
 def send_message_sync(to_number: str, body: str, *, media_url: str | None = None) -> bool:

@@ -31,6 +31,7 @@ from app.services.audit_logger import get_audit_log_retention_days
 from app.services.audit_service import log_action
 from app.services.pdf_generator import generate_audit_logs_pdf
 from app.services.leads import SaveLeadResult
+from app.utils.timezone import utc_now
 from app.services.quarantine_service import (
     delete_quarantine_record,
     get_quarantine_record,
@@ -235,9 +236,9 @@ def export_audit_logs_pdf(
         end_date=parsed_end,
         sort_by=sort_by,
         sort_order=sort_order,
-        generated_at=datetime.utcnow(),
+        generated_at=utc_now(),
     )
-    filename = f"audit-logs-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.pdf"
+    filename = f"audit-logs-{utc_now().strftime('%Y%m%d-%H%M%S')}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

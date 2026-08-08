@@ -1,6 +1,8 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type { ReportColumn } from './ReportTable';
+import { createPdfLayout } from '../../utils/pdfLayout';
+import type { PdfBusinessBranding } from '../../utils/pdfLayout';
 
 interface ExportReportPdfOptions<T> {
   title: string;
@@ -8,6 +10,7 @@ interface ExportReportPdfOptions<T> {
   columns: ReportColumn<T>[];
   rows: T[];
   filename?: string;
+  branding?: PdfBusinessBranding;
 }
 
 export function exportReportPdf<T>({
@@ -16,22 +19,32 @@ export function exportReportPdf<T>({
   columns,
   rows,
   filename = 'report.pdf',
+  branding,
 }: ExportReportPdfOptions<T>): void {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
-  const margin = 40;
+  const layout = createPdfLayout(doc, {
+    branding: branding || {},
+    margin: 40,
+  });
 
+  let y = layout.contentStartY + 6;
   doc.setFontSize(16);
-  doc.text(title, margin, margin);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(15, 23, 42);
+  doc.text(title, layout.margin, y);
+  y += 16;
 
   if (subtitle) {
     doc.setFontSize(10);
-    doc.setTextColor(90, 90, 90);
-    doc.text(subtitle, margin, margin + 18);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(71, 85, 105);
+    doc.text(subtitle, layout.margin, y);
     doc.setTextColor(0, 0, 0);
+    y += 14;
   }
 
   autoTable(doc, {
-    startY: subtitle ? margin + 30 : margin + 20,
+    startY: y,
     head: [columns.map(column => column.header)],
     body: rows.map(row =>
       columns.map(column => {
@@ -58,7 +71,9 @@ export function exportReportPdf<T>({
     alternateRowStyles: {
       fillColor: [248, 250, 252],
     },
+    margin: layout.tableMargins,
   });
 
+  layout.applyChromeToAllPages();
   doc.save(filename);
 }

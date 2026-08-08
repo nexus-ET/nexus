@@ -121,6 +121,10 @@ pip install --upgrade pip -q
 pip install -r requirements.txt -q
 pip install 'psycopg[binary]' -q
 
+echo "==> Playwright Chromium (IntelX scraper headless shell)..."
+bash scripts/install_playwright_browsers.sh --with-deps || \
+  echo "WARNING: playwright install failed — Scraper Admin browser fallback unavailable." >&2
+
 echo "==> Building frontend..."
 cd "$FRONTEND"
 npm ci

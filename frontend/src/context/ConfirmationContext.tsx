@@ -78,6 +78,7 @@ export const ConfirmationProvider: React.FC<{ children: React.ReactNode }> = ({ 
         confirmLabel={active?.options.confirmLabel}
         cancelLabel={active?.options.cancelLabel}
         variant={active?.options.variant}
+        mode={active?.options.mode}
         onConfirm={() => settle(true)}
         onCancel={() => settle(false)}
       />
@@ -91,4 +92,19 @@ export const useConfirmation = (): OpenConfirm => {
     throw new Error('useConfirmation must be used within ConfirmationProvider');
   }
   return context;
+};
+
+/** HTML replacement for window.alert — single OK dialog. */
+export const useAlert = () => {
+  const openConfirm = useConfirmation();
+  return useCallback(
+    (options: Omit<ConfirmationModalOptions, 'mode' | 'cancelLabel'>) =>
+      openConfirm({
+        ...options,
+        mode: 'alert',
+        variant: options.variant ?? 'warning',
+        confirmLabel: options.confirmLabel ?? 'OK',
+      }).then(() => undefined),
+    [openConfirm]
+  );
 };

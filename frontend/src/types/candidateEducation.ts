@@ -21,6 +21,8 @@ export interface CandidateEducationRecord {
   degree_code: string | null;
   degree_label: string | null;
   degree_other: string | null;
+  full_time_study_years: string | null;
+  full_time_study_years_label?: string | null;
   major: string | null;
   university_name: string | null;
   university_affiliation: string | null;
@@ -44,6 +46,7 @@ export interface CandidateEducationsResponse {
 export interface CandidateEducationFormState {
   degree_code: string;
   degree_other: string;
+  full_time_study_years: string;
   major: string;
   major_custom: string;
   university_name: string;
@@ -57,6 +60,7 @@ export interface CandidateEducationFormState {
 export const emptyCandidateEducationForm = (): CandidateEducationFormState => ({
   degree_code: '',
   degree_other: '',
+  full_time_study_years: '',
   major: '',
   major_custom: '',
   university_name: '',
@@ -76,6 +80,7 @@ export function educationToForm(
   return {
     degree_code: record.degree_code ?? '',
     degree_other: record.degree_other ?? '',
+    full_time_study_years: record.full_time_study_years ?? '',
     major: majorInOptions ? matched!.label : record.major ? 'Other' : '',
     major_custom: majorInOptions ? '' : record.major ?? '',
     university_name: record.university_name ?? '',
@@ -91,6 +96,7 @@ export function formToEducationPayload(form: CandidateEducationFormState) {
   return {
     degree_code: form.degree_code || null,
     degree_other: form.degree_other.trim() || null,
+    full_time_study_years: form.full_time_study_years || null,
     major:
       form.major === 'Other'
         ? form.major_custom.trim() || null
@@ -140,8 +146,11 @@ export function validateCandidateEducationForm(
 ): Record<string, string> {
   const errors: Record<string, string> = {};
 
+  if (!form.full_time_study_years.trim()) {
+    errors.full_time_study_years = 'Full-Time Study Years is required.';
+  }
   if (!form.degree_code.trim()) {
-    errors.degree_code = 'Current degree is required.';
+    errors.degree_code = 'Current program is required.';
   }
   const majorValue = form.major === 'Other' ? form.major_custom.trim() : form.major.trim();
   if (!majorValue) {
@@ -170,7 +179,7 @@ export function validateCandidateEducationForm(
     errors.gpa_cgpa_code = 'GPA/CGPA score is required.';
   }
   if (ctx.degreeIsOther && !form.degree_other.trim()) {
-    errors.degree_other = 'Please enter the degree.';
+    errors.degree_other = 'Please enter the program.';
   }
   if (ctx.gpaIsOther && !form.gpa_cgpa_other.trim()) {
     errors.gpa_cgpa_other = 'Please enter the GPA/CGPA score.';

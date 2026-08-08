@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.lead import Lead
 from app.models.research_project import ResearchProject
+from app.utils.timezone import utc_now
 from app.schemas.research_project import (
     RESEARCH_PROJECT_TYPE_LABELS,
     ResearchProjectInput,
@@ -128,7 +129,7 @@ def update_research_project(
     record.project_description = payload.project_description
     record.publication_url = payload.publication_url
     record.role = payload.role
-    record.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    record.updated_at = utc_now()
     db.commit()
     return get_research_projects(db, booking_id=booking_id, lead=lead)
 

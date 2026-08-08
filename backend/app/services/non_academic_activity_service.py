@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from app.utils.timezone import utc_now
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -154,7 +155,7 @@ def update_non_academic_activity(
     record.start_date = payload.start_date
     record.end_date = payload.end_date
     record.description = payload.description
-    record.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    record.updated_at = utc_now()
     db.commit()
     return get_non_academic_activities(db, booking_id=booking_id, lead=lead)
 

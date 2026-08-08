@@ -1,4 +1,9 @@
 import type { ProspectMessage } from '../types/prospect';
+import {
+  formatApiClockTime,
+  formatApiDateOnly,
+  getApiDateGroupLabel,
+} from './timezone';
 
 export type MessageActor = 'candidate' | 'ai' | 'admin';
 
@@ -23,7 +28,7 @@ export const ACTOR_THEME: Record<
 > = {
   candidate: { bg: '#1e3a5f', label: 'Candidate', labelColor: '#93c5fd', textColor: '#f8fafc' },
   ai: { bg: '#ede9fe', label: 'AI Active', labelColor: '#6d28d9', textColor: '#111b21' },
-  admin: { bg: '#dbeafe', label: 'Nexus Admin', labelColor: '#1d4ed8', textColor: '#111b21' },
+  admin: { bg: '#dbeafe', label: 'Nexus Admin', labelColor: '#322f86', textColor: '#111b21' },
 };
 
 export function classifyMessage(msg: ProspectMessage): MessageActor {
@@ -38,42 +43,24 @@ export function classifyMessage(msg: ProspectMessage): MessageActor {
   return 'admin';
 }
 
-export function formatProspectTime(dateStr?: string): string {
+export function formatProspectTime(dateStr?: string, businessTimezone = 'UTC'): string {
   if (!dateStr) return '';
-  const parsed = new Date(dateStr);
-  if (Number.isNaN(parsed.getTime())) return '';
-  return parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return formatApiClockTime(dateStr, businessTimezone);
 }
 
-export function formatProspectDate(dateStr?: string): string {
+export function formatProspectDate(dateStr?: string, businessTimezone = 'UTC'): string {
   if (!dateStr) return '—';
-  const parsed = new Date(dateStr);
-  if (Number.isNaN(parsed.getTime())) return '—';
-  return parsed.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+  return formatApiDateOnly(dateStr, businessTimezone);
 }
 
-export function getDateGroupLabel(dateStr?: string): string {
-  if (!dateStr) return 'Earlier';
-  const parsed = new Date(dateStr);
-  if (Number.isNaN(parsed.getTime())) return 'Earlier';
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const target = new Date(parsed);
-  target.setHours(0, 0, 0, 0);
-  const diffDays = Math.round((today.getTime() - target.getTime()) / (1000 * 60 * 60 * 24));
-
-  if (diffDays === 0) return 'Today';
-  if (diffDays === 1) return 'Yesterday';
-  if (diffDays > 1 && diffDays < 7) {
-    return target.toLocaleDateString('en-US', { weekday: 'long' });
-  }
-  return target.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+export function getDateGroupLabel(dateStr?: string, businessTimezone = 'UTC'): string {
+  return getApiDateGroupLabel(dateStr, businessTimezone, 'Earlier');
 }
 
 export function buildInteractionGroups(
   messages: ProspectMessage[] | undefined,
-  academicSummary?: string | null
+  academicSummary?: string | null,
+  businessTimezone = 'UTC'
 ): Record<string, Array<ProspectMessage & { actor: MessageActor }>> {
   const processed: Array<ProspectMessage & { actor: MessageActor }> = [...(messages || [])]
     .filter(msg => !msg.text?.includes('Got it! Your update has been logged on your dashboard matrix timeline.'))
@@ -114,7 +101,7 @@ export function buildInteractionGroups(
 
   const groups: Record<string, Array<ProspectMessage & { actor: MessageActor }>> = {};
   processed.forEach(msg => {
-    const label = getDateGroupLabel(msg.created_at);
+    const label = getDateGroupLabel(msg.created_at, businessTimezone);
     if (!groups[label]) groups[label] = [];
     groups[label].push(msg);
   });
@@ -126,7 +113,7 @@ export function platformBadgeStyle(badge: string | null | undefined) {
     return { background: '#fce7f3', color: '#be185d', border: '1px solid #fbcfe8' };
   }
   if (badge === 'FB') {
-    return { background: '#dbeafe', color: '#1d4ed8', border: '1px solid #bfdbfe' };
+    return { background: '#dbeafe', color: '#322f86', border: '1px solid #bfdbfe' };
   }
   return { background: '#f1f5f9', color: '#64748b', border: '1px solid #e2e8f0' };
 }

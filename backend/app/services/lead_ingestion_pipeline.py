@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from app.utils.timezone import utc_now
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
@@ -26,7 +27,7 @@ class StageLeadResult:
 
 
 def _utcnow_naive() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return utc_now()
 
 
 def _json_safe(value: Any) -> Any:

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
@@ -45,6 +46,7 @@ interface GroupedMessageSection {
 }
 
 export default function AdvisorChatPanel({ activeLead, setActiveLead, onRefreshQueue }: AdvisorChatPanelProps) {
+  const { formatTime, formatDateGroup } = useBusinessTimezone();
   const [chatHistory, setChatHistory] = useState<MessagePayload[]>([]);
   const [attachedFileName, setAttachedFileName] = useState<string | null>(null);
   const [attachedFileBase64, setAttachedFileBase64] = useState<string | null>(null);
@@ -217,36 +219,17 @@ useEffect(() => {
     .catch(() => setChatHistory(prev => prev.filter(m => m.id !== optimisticMessage.id)));
   };
 
-  const formatTime = (dateStr?: string): string => {
-    if (!dateStr) return '';
-    try {
-      const date = new Date(dateStr);
-      return isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-    } catch { return ''; }
-  };
-
-  const getDateGroupLabel = (dateStr?: string): string => {
-    if (!dateStr) return 'System Events';
-    try {
-      const targetDate = new Date(dateStr);
-      const now = new Date();
-      const diffDays = Math.floor((now.getTime() - targetDate.getTime()) / (1000 * 60 * 60 * 24));
-      if (diffDays === 0) return 'Today';
-      if (diffDays === 1) return 'Yesterday';
-      return targetDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    } catch { return 'System Events'; }
-  };
 
   const groupedMessages = useMemo((): GroupedMessageSection[] => {
     const sectionMap: Map<string, MessagePayload[]> = new Map();
     const orderedLabels: string[] = [];
     chatHistory.forEach((msg) => {
-      const label = getDateGroupLabel(msg.created_at);
+      const label = formatDateGroup(msg.created_at);
       if (!sectionMap.has(label)) { sectionMap.set(label, []); orderedLabels.push(label); }
       sectionMap.get(label)?.push(msg);
     });
     return orderedLabels.map(label => ({ label, messages: sectionMap.get(label) || [] }));
-  }, [chatHistory]);
+  }, [chatHistory, formatDateGroup]);
 
   return (
     <div style={styles.panelContainer}>
@@ -323,5 +306,5 @@ const styles = {
   bubbleTimestampLabel: { fontSize: '10px', color: '#667781', display: 'block', textAlign: 'right' } as React.CSSProperties,
   inputArea: { padding: '10px 18px', backgroundColor: '#f0f2f5', display: 'flex', alignItems: 'center', gap: '12px' } as React.CSSProperties,
   textInput: { flex: 1, padding: '10px 16px', borderRadius: '8px', border: 'none', outline: 'none' } as React.CSSProperties,
-  sendButton: { border: 'none', color: '#ffffff', padding: '10px 22px', borderRadius: '8px', backgroundColor: '#16a34a', cursor: 'pointer' } as React.CSSProperties
+  sendButton: { border: 'none', color: '#ffffff', padding: '10px 22px', borderRadius: '8px', backgroundColor: '#322f86', cursor: 'pointer' } as React.CSSProperties
 };

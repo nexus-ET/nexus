@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { Loader2, Map, X } from 'lucide-react';
 import { categoryBadgeClass } from '../utils/statusBadges';
 import { useStudentJourney } from '../hooks/useStudentStatus';
+import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 import HeadlessScrollArea from './HeadlessScrollArea';
 
 export type StudentJourneyPanelProps = {
@@ -11,16 +12,6 @@ export type StudentJourneyPanelProps = {
   onClose: () => void;
 };
 
-const formatTimestamp = (value: string): string => {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-};
 
 export default function StudentJourneyPanel({
   open,
@@ -28,6 +19,7 @@ export default function StudentJourneyPanel({
   studentName,
   onClose,
 }: StudentJourneyPanelProps) {
+  const { formatDateTime } = useBusinessTimezone();
   const { data, isLoading, error, refetch } = useStudentJourney(open ? studentId : null);
 
   useEffect(() => {
@@ -125,7 +117,7 @@ export default function StudentJourneyPanel({
                     </div>
                   </div>
                   <div className="sm:pt-0.5 pl-7 sm:pl-0 text-sm text-text-muted whitespace-nowrap">
-                    {formatTimestamp(item.created_at)}
+                    {formatDateTime(item.created_at)}
                   </div>
                   <div className="sm:pt-0.5 pl-7 sm:pl-0 text-sm text-text-main truncate">
                     {item.changed_by_label}

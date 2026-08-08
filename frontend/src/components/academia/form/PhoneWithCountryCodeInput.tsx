@@ -24,6 +24,7 @@ interface PhoneWithCountryCodeInputProps {
   error?: string;
   placeholder?: string;
   hint?: string;
+  className?: string;
 }
 
 const fieldClass = (hasError: boolean) =>
@@ -41,6 +42,7 @@ const PhoneWithCountryCodeInput: React.FC<PhoneWithCountryCodeInputProps> = ({
   error,
   placeholder = PHONE_LOCAL_PLACEHOLDER,
   hint = PHONE_LOCAL_REQUIREMENTS,
+  className = 'space-y-1 text-sm md:col-span-2',
 }) => {
   const parsed = useMemo(() => parseStoredPhone(value, countries), [countries, value]);
   const countryIso2 = parsed.countryIso2 || defaultCountryIso2;
@@ -64,7 +66,7 @@ const PhoneWithCountryCodeInput: React.FC<PhoneWithCountryCodeInputProps> = ({
   };
 
   return (
-    <div className="space-y-1 text-sm md:col-span-2">
+    <div className={className}>
       <span className={wizardLabelClass}>
         {label}
         {required ? ' *' : ''}

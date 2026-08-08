@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from app.utils.timezone import utc_now
 import logging
 import os
 import socket
@@ -53,7 +54,7 @@ def normalize_status(raw: str | None) -> str:
 
 
 def _utcnow_naive() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return utc_now()
 
 
 def _parse_legacy_timestamp(raw: str) -> datetime | None:

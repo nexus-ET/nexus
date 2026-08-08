@@ -137,3 +137,103 @@ export const formatInBusinessTimezone = (
     ...options,
   });
 };
+
+const readParts = (
+  date: Date,
+  timezone: string,
+  options: Intl.DateTimeFormatOptions
+): Record<string, string> => {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: timezone, ...options }).formatToParts(date);
+  return Object.fromEntries(parts.filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
+};
+
+/** Calendar Y-M-D (and optional time) for a UTC/API instant in the business timezone. */
+export const getBusinessCalendarParts = (
+  value: string | Date,
+  timezone: string
+): { year: number; month: number; day: number; hour: number; minute: number } | null => {
+  const date = value instanceof Date ? value : parseApiDateTime(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = readParts(date, timezone, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const year = Number(parts.year);
+  const month = Number(parts.month);
+  const day = Number(parts.day);
+  let hour = Number(parts.hour);
+  if (hour === 24) hour = 0; // some engines emit 24:00
+  const minute = Number(parts.minute);
+  if (![year, month, day, hour, minute].every(n => Number.isFinite(n))) return null;
+  return { year, month, day, hour, minute };
+};
+
+export const formatApiClockTime = (
+  value: string | Date | null | undefined,
+  timezone: string,
+  options?: Intl.DateTimeFormatOptions
+): string => {
+  if (value === null || value === undefined || value === '') return '';
+  const date = value instanceof Date ? value : parseApiDateTime(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleTimeString(undefined, {
+    timeZone: timezone,
+    hour: '2-digit',
+    minute: '2-digit',
+    ...options,
+  });
+};
+
+export const formatApiDateOnly = (
+  value: string | Date | null | undefined,
+  timezone: string,
+  options?: Intl.DateTimeFormatOptions
+): string => {
+  if (value === null || value === undefined || value === '') return '—';
+  const date = value instanceof Date ? value : parseApiDateTime(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleDateString(undefined, {
+    timeZone: timezone,
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    ...options,
+  });
+};
+
+/**
+ * Today / Yesterday / weekday / date label for an API (UTC) timestamp,
+ * computed against "now" in the business timezone.
+ */
+export const getApiDateGroupLabel = (
+  value: string | Date | null | undefined,
+  timezone: string,
+  emptyLabel = 'Earlier'
+): string => {
+  if (value === null || value === undefined || value === '') return emptyLabel;
+  const target = getBusinessCalendarParts(value, timezone);
+  const now = getBusinessCalendarParts(new Date(), timezone);
+  if (!target || !now) return emptyLabel;
+
+  const toUtcDay = (p: { year: number; month: number; day: number }) =>
+    Date.UTC(p.year, p.month - 1, p.day) / (1000 * 60 * 60 * 24);
+  const diffDays = Math.round(toUtcDay(now) - toUtcDay(target));
+
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays > 1 && diffDays < 7) {
+    return formatApiDateOnly(value, timezone, { weekday: 'long', month: undefined, day: undefined, year: undefined });
+  }
+  return formatApiDateOnly(value, timezone);
+};
+
+/** Minute bucket for chat clustering, in business timezone. */
+export const getApiMinuteKey = (value: string | Date, timezone: string): string => {
+  const parts = getBusinessCalendarParts(value, timezone);
+  if (!parts) return String(value);
+  return `${parts.year}-${parts.month}-${parts.day}-${parts.hour}:${parts.minute}`;
+};

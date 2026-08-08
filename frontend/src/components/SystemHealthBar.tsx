@@ -18,7 +18,7 @@ const SystemHealthBar: React.FC = () => {
         <div className="flex items-center gap-2">
           <Activity className={`h-5 w-5 ${securityHealthy ? 'text-[#59a5d8]' : 'text-red-500'}`} />
           <div>
-            <p className="text-sm font-semibold text-[#03045e]">Nexus Operational Pulse</p>
+            <p className="text-sm font-semibold text-[#322f86]">Nexus Operational Pulse</p>
             <p className="text-xs text-[#386fa4]">
               {pulse?.security_checked_at
                 ? `Last audit: ${new Date(pulse.security_checked_at).toLocaleString()}`
@@ -42,7 +42,7 @@ const SystemHealthBar: React.FC = () => {
             Security {pulse?.security_status ?? 'unknown'}
           </span>
 
-          <span className="inline-flex items-center gap-1 rounded-full bg-[#03045e]/5 px-3 py-1 text-[#03045e]">
+          <span className="inline-flex items-center gap-1 rounded-full bg-[#322f86]/5 px-3 py-1 text-[#322f86]">
             <Shield className="h-3.5 w-3.5" />
             Fortress headers active
           </span>

@@ -17,22 +17,34 @@ from app.schemas.counselling import (
     BookingCreateRequest,
     BookingInteractionLogResponse,
     BookingOut,
+    BookingContactCheckResponse,
+    BookingSessionConfigResponse,
     BookingSwitchRequest,
     BookingCandidateProfileResponse,
     BookingViewDetailResponse,
+    CounsellorAvailabilityResponse,
+    CounsellorAvailabilityWeekResponse,
+    CounsellorsResponse,
     MyBookingReassignRequest,
     MyBookingsDayResponse,
     MyBookingsOverviewResponse,
     MyBookingsResponse,
     PendingBookingsResponse,
     ScheduleGridResponse,
+    StaffBookingCreateRequest,
 )
-from app.schemas.students_master import StudentMasterSaveRequest, StudentMasterSaveResponse
+from app.schemas.intake_assessment import IntakeAssessmentPayload, IntakeAssessmentResponse
+from app.schemas.students_master import (
+    StudentMasterSaveRequest,
+    StudentMasterSaveResponse,
+)
 from app.schemas.student_aspirations import (
     StudentAspirationsResponse,
     StudentAspirationsSaveRequest,
 )
 from app.schemas.candidate_test_scores import (
+    CandidateTestScoreAttemptDeleteRequest,
+    CandidateTestScoreAttemptReplaceRequest,
     CandidateTestScoreSaveRequest,
     CandidateTestScoresResponse,
 )
@@ -71,6 +83,7 @@ from app.schemas.counselling_note import (
     CounsellingSessionNoteSaveRequest,
     CounsellingSummarizeRequest,
     CounsellingSummarizeResponse,
+    RecommendedInstitutionOptionsResponse,
 )
 from app.schemas.pipeline import (
     PipelineAnalyticsResponse,
@@ -89,8 +102,10 @@ from app.utils.timezone import office_today
 router = APIRouter()
 
 
-def _serialize_booking_out(booking, admin=None) -> BookingOut:
+def _serialize_booking_out(booking, admin=None, notifications: dict | None = None) -> BookingOut:
     payload = counselling_service._serialize_booking(booking, admin)
+    if notifications is not None:
+        payload["notifications"] = notifications
     return BookingOut(**payload)
 
 
@@ -262,6 +277,50 @@ def save_my_booking_test_scores(
     current_user: User = Depends(deps.get_current_active_user),
 ):
     return counselling_service.save_booking_candidate_test_scores(
+        db,
+        current_user.id,
+        booking_id,
+        payload,
+    )
+
+
+@router.post(
+    "/bookings/mine/{booking_id}/test-scores/delete-attempt",
+    response_model=CandidateTestScoresResponse,
+)
+@router.post(
+    "/bookings/mine/{booking_id}/test-scores/delete-attempt/",
+    response_model=CandidateTestScoresResponse,
+)
+def delete_my_booking_test_score_attempt(
+    booking_id: int,
+    payload: CandidateTestScoreAttemptDeleteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.delete_booking_candidate_test_score_attempt(
+        db,
+        current_user.id,
+        booking_id,
+        payload.score_ids,
+    )
+
+
+@router.put(
+    "/bookings/mine/{booking_id}/test-scores/attempts",
+    response_model=CandidateTestScoresResponse,
+)
+@router.put(
+    "/bookings/mine/{booking_id}/test-scores/attempts/",
+    response_model=CandidateTestScoresResponse,
+)
+def replace_my_booking_test_score_attempt(
+    booking_id: int,
+    payload: CandidateTestScoreAttemptReplaceRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.replace_booking_candidate_test_score_attempt(
         db,
         current_user.id,
         booking_id,
@@ -703,6 +762,44 @@ async def summarize_counselling_notes(
     return await counselling_note_service.summarize_counselling_text(db, payload.raw_text)
 
 
+@router.get(
+    "/counselling/recommended-institutions",
+    response_model=RecommendedInstitutionOptionsResponse,
+)
+@router.get(
+    "/counselling/recommended-institutions/",
+    response_model=RecommendedInstitutionOptionsResponse,
+)
+def list_recommended_institutions(
+    country_ids: list[int] | None = Query(
+        default=None,
+        description="Optional country IDs used to filter institutions and colleges.",
+    ),
+    level_id: int | None = Query(
+        default=None,
+        ge=1,
+        description="Optional level ID used to filter institutions by offered programs.",
+    ),
+    major_ids: list[int] | None = Query(
+        default=None,
+        description="Optional education major IDs used to filter institutions.",
+    ),
+    program_ids: list[str] | None = Query(
+        default=None,
+        description="Optional qualification program UUIDs used to filter institutions.",
+    ),
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.get_current_active_user),
+):
+    return counselling_note_service.list_recommended_institution_options(
+        db,
+        country_ids=country_ids,
+        level_id=level_id,
+        major_ids=major_ids,
+        program_ids=program_ids,
+    )
+
+
 @router.get("/bookings/mine/{booking_id}/session-notes", response_model=CounsellingSessionNoteOut)
 @router.get("/bookings/mine/{booking_id}/session-notes/", response_model=CounsellingSessionNoteOut)
 def get_my_booking_session_notes(
@@ -711,6 +808,42 @@ def get_my_booking_session_notes(
     current_user: User = Depends(deps.get_current_active_user),
 ):
     return counselling_note_service.get_session_note(db, current_user.id, booking_id)
+
+
+@router.get(
+    "/bookings/mine/{booking_id}/intake-assessment",
+    response_model=IntakeAssessmentResponse,
+)
+@router.get(
+    "/bookings/mine/{booking_id}/intake-assessment/",
+    response_model=IntakeAssessmentResponse,
+)
+def get_my_booking_intake_assessment(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.get_booking_intake_assessment(db, current_user.id, booking_id)
+
+
+@router.put(
+    "/bookings/mine/{booking_id}/intake-assessment",
+    response_model=IntakeAssessmentResponse,
+)
+@router.put(
+    "/bookings/mine/{booking_id}/intake-assessment/",
+    response_model=IntakeAssessmentResponse,
+)
+@log_action("save_intake_assessment", "counselling_booking", resource_id_key="booking_id")
+def save_my_booking_intake_assessment(
+    booking_id: int,
+    payload: IntakeAssessmentPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.save_booking_intake_assessment(
+        db, current_user.id, booking_id, payload
+    )
 
 
 @router.post("/bookings/mine/{booking_id}/session-notes", response_model=CounsellingSessionNoteOut)
@@ -783,6 +916,101 @@ def create_pending_booking(
         payload.notes,
     )
     return _serialize_booking_out(booking)
+
+
+@router.get("/bookings/session-config", response_model=BookingSessionConfigResponse)
+@router.get("/bookings/session-config/", response_model=BookingSessionConfigResponse)
+def read_booking_session_config(
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.require_counselling_admin),
+):
+    return BookingSessionConfigResponse(**counselling_service.get_booking_session_config(db))
+
+
+@router.get("/bookings/counsellors", response_model=CounsellorsResponse)
+@router.get("/bookings/counsellors/", response_model=CounsellorsResponse)
+def read_counsellors(
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.require_counselling_admin),
+):
+    return CounsellorsResponse(counsellors=counselling_service.list_counsellors(db))
+
+
+@router.get("/bookings/availability", response_model=CounsellorAvailabilityResponse)
+@router.get("/bookings/availability/", response_model=CounsellorAvailabilityResponse)
+def read_counsellor_availability(
+    admin_id: int = Query(..., ge=1),
+    slot_date: date = Query(..., alias="date"),
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.require_counselling_admin),
+):
+    return CounsellorAvailabilityResponse(
+        **counselling_service.get_counsellor_availability(db, admin_id, slot_date)
+    )
+
+
+@router.get("/bookings/availability-week", response_model=CounsellorAvailabilityWeekResponse)
+@router.get("/bookings/availability-week/", response_model=CounsellorAvailabilityWeekResponse)
+def read_counsellor_availability_week(
+    admin_id: int = Query(..., ge=1),
+    start_date: date = Query(...),
+    days: int = Query(7, ge=1, le=14),
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.require_counselling_admin),
+):
+    return CounsellorAvailabilityWeekResponse(
+        **counselling_service.get_counsellor_availability_week(
+            db, admin_id, start_date, days=days
+        )
+    )
+
+
+@router.get("/bookings/contact-check", response_model=BookingContactCheckResponse)
+@router.get("/bookings/contact-check/", response_model=BookingContactCheckResponse)
+def read_booking_contact_check(
+    email: str | None = Query(default=None),
+    phone: str | None = Query(default=None),
+    exclude_lead_id: int | None = Query(default=None, ge=1),
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.require_counselling_admin),
+):
+    return BookingContactCheckResponse(
+        **counselling_service.check_booking_contact_duplicates(
+            db,
+            email=email,
+            phone=phone,
+            exclude_lead_id=exclude_lead_id,
+        )
+    )
+
+
+@router.post("/bookings/staff", response_model=BookingOut)
+@router.post("/bookings/staff/", response_model=BookingOut)
+@limiter.limit(STRICT_RATE_LIMIT)
+@log_action("staff_book_appointment", "counselling_booking")
+def create_staff_booking(
+    request: Request,
+    payload: StaffBookingCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.require_counselling_admin),
+):
+    booking = counselling_service.create_staff_booking(
+        db,
+        payload.scheduled_time,
+        payload.admin_id,
+        payload.candidate_name,
+        str(payload.candidate_email) if payload.candidate_email else None,
+        payload.candidate_phone,
+        payload.lead_id,
+        payload.session_purpose,
+        payload.notes,
+        create_lead=payload.create_lead,
+    )
+    _, admin = counselling_service.get_booking_with_admin(db, booking.id)
+    # Run synchronously so candidate + counsellor email/WhatsApp complete before response
+    # and the UI can surface per-channel delivery status.
+    notification_status = run_assignment_notifications(booking.id)
+    return _serialize_booking_out(booking, admin, notifications=notification_status)
 
 
 @router.post("/bookings/assign", response_model=BookingOut)

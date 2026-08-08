@@ -67,7 +67,7 @@ const ProfilePulseTab: React.FC<ProfilePulseTabProps> = ({
 
   return (
     <div className="flex flex-1 min-h-0 flex-col overflow-y-auto custom-scrollbar px-3 py-4 sm:px-4">
-      <div className="mx-auto w-full max-w-5xl space-y-4">
+      <div className="mx-auto w-full max-w-none space-y-4">
         <section className="rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-card p-4 sm:p-5 shadow-sm">
           <p className="text-sm font-bold uppercase tracking-[0.18em] text-sky-800">
             Personal Vision Statement

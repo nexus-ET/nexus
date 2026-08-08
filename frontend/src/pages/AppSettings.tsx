@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Building2, CheckCircle2, Loader2, RefreshCw, Save, Settings } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Building2, CheckCircle2, Image as ImageIcon, Loader2, RefreshCw, Save, Settings, Upload } from 'lucide-react';
 import PublicHolidayCalendar from '../components/PublicHolidayCalendar';
-import { apiFetch } from '../utils/api';
+import { apiFetch, apiUpload, getStoredToken, resolveBaseUrl } from '../utils/api';
 import { clearBusinessTimezoneCache } from '../utils/timezone';
 import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 import { useUnsavedChanges } from '../context/UnsavedChangesContext';
@@ -51,6 +51,8 @@ interface BusinessProfile {
   office_mobile_number: string | null;
   web_url: string | null;
   email_domain: string | null;
+  has_logo?: boolean;
+  logo_url?: string | null;
   updated_at?: string | null;
 }
 
@@ -202,6 +204,12 @@ const AppSettings: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [accessDenied, setAccessDenied] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoViewOpen, setLogoViewOpen] = useState(false);
+  const [logoPreviewUrl, setLogoPreviewUrl] = useState<string | null>(null);
+  const [logoPreviewLoading, setLogoPreviewLoading] = useState(false);
+  const [logoPreviewError, setLogoPreviewError] = useState<string | null>(null);
+  const logoFileInputRef = useRef<HTMLInputElement>(null);
 
   const loadSettings = useCallback(async () => {
     try {
@@ -236,6 +244,12 @@ const AppSettings: React.FC = () => {
   useEffect(() => {
     loadSettings();
   }, [loadSettings]);
+
+  useEffect(() => {
+    return () => {
+      if (logoPreviewUrl) URL.revokeObjectURL(logoPreviewUrl);
+    };
+  }, [logoPreviewUrl]);
 
   const dirtyKeys = useMemo(
     () =>
@@ -283,6 +297,86 @@ const AppSettings: React.FC = () => {
       return next;
     });
     setSuccessMessage(null);
+  };
+
+  const closeLogoView = useCallback(() => {
+    setLogoViewOpen(false);
+    setLogoPreviewError(null);
+    setLogoPreviewLoading(false);
+    setLogoPreviewUrl(prev => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+  }, []);
+
+  const fetchLogoPreview = useCallback(async () => {
+    setLogoPreviewLoading(true);
+    setLogoPreviewError(null);
+    setLogoPreviewUrl(prev => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+
+    const token = getStoredToken();
+    if (!token) {
+      setLogoPreviewLoading(false);
+      setLogoPreviewError('Session expired. Please log in again.');
+      return;
+    }
+
+    try {
+      const base = resolveBaseUrl().replace(/\/$/, '');
+      const response = await fetch(`${base}/settings/business-profile/logo`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'ngrok-skip-browser-warning': 'true',
+        },
+      });
+      if (!response.ok) {
+        throw new Error(
+          response.status === 404 ? 'Company logo not found.' : 'Failed to load company logo.'
+        );
+      }
+      const blob = await response.blob();
+      setLogoPreviewUrl(URL.createObjectURL(blob));
+    } catch (err: unknown) {
+      setLogoPreviewError(err instanceof Error ? err.message : 'Failed to load company logo.');
+    } finally {
+      setLogoPreviewLoading(false);
+    }
+  }, []);
+
+  const openLogoView = useCallback(async () => {
+    if (!businessProfile?.has_logo) return;
+    setLogoViewOpen(true);
+    await fetchLogoPreview();
+  }, [businessProfile?.has_logo, fetchLogoPreview]);
+
+  const handleLogoFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setLogoUploading(true);
+    setError(null);
+    setSuccessMessage(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const updated = (await apiUpload(
+        'settings/business-profile/logo',
+        formData
+      )) as BusinessProfile;
+      setBusinessProfile(updated);
+      setSuccessMessage('Company logo uploaded.');
+      if (logoViewOpen) {
+        await fetchLogoPreview();
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to upload company logo.');
+    } finally {
+      setLogoUploading(false);
+    }
   };
 
   const handleSave = async () => {
@@ -609,6 +703,20 @@ const AppSettings: React.FC = () => {
       );
     }
 
+    if (setting.key === 'COUNSELING_SESSION_PURPOSES') {
+      return (
+        <textarea
+          value={value}
+          onChange={event => handleDraftChange(setting.key, event.target.value)}
+          rows={6}
+          placeholder={
+            'General Counselling | Initial guidance and pathway overview\nVisa Application Help | Visa forms and interview prep'
+          }
+          className="w-full rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm text-text-main outline-none focus:border-primary"
+        />
+      );
+    }
+
     const inputType =
       setting.key === 'ALERT_EMAIL'
         ? 'text'
@@ -769,16 +877,59 @@ const AppSettings: React.FC = () => {
                 'Business identity',
                 'Core name and public-facing web presence for this tenant.'
               )}
-              {renderBusinessProfileField('business-name', 'Business Name', 'business_name', {
-                required: true,
-              })}
-              {renderBusinessProfileField('business-domain', 'Business Domain', 'business_domain', {
-                placeholder: 'company.com',
-              })}
-              {renderBusinessProfileField('web-url', 'Web URL', 'web_url', {
-                type: 'url',
-                placeholder: 'https://www.company.com',
-              })}
+              <div className="col-span-1 md:col-span-2 xl:col-span-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-x-6 gap-y-4 items-start">
+                {renderBusinessProfileField('business-name', 'Business Name', 'business_name', {
+                  required: true,
+                })}
+                {renderBusinessProfileField('business-domain', 'Business Domain', 'business_domain', {
+                  placeholder: 'company.com',
+                })}
+                {renderBusinessProfileField('web-url', 'Web URL', 'web_url', {
+                  type: 'url',
+                  placeholder: 'https://www.company.com',
+                })}
+                <div className="min-w-0 flex flex-col">
+                  <span className="block text-sm font-medium text-text-main leading-tight">
+                    Company Logo
+                  </span>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                    <input
+                      ref={logoFileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml,.png,.jpg,.jpeg,.gif,.webp,.svg"
+                      className="hidden"
+                      onChange={handleLogoFileChange}
+                    />
+                    <button
+                      type="button"
+                      disabled={logoUploading || loading}
+                      onClick={() => logoFileInputRef.current?.click()}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-bg px-3 py-2 text-sm font-medium text-text-main hover:bg-card disabled:opacity-50"
+                    >
+                      {logoUploading ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <Upload size={14} />
+                      )}
+                      {businessProfile?.has_logo ? 'Replace logo' : 'Upload logo'}
+                    </button>
+                    {businessProfile?.has_logo && (
+                      <button
+                        type="button"
+                        disabled={logoUploading || loading}
+                        onClick={() => void openLogoView()}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-sm font-medium text-accent hover:bg-accent/10 disabled:opacity-50"
+                      >
+                        <ImageIcon size={14} />
+                        View logo
+                      </button>
+                    )}
+                  </div>
+                  <p className="mt-1 text-xs text-text-muted">
+                    PNG, JPG, GIF, WebP, or SVG up to 5 MB. New uploads overwrite the existing logo.
+                  </p>
+                </div>
+              </div>
 
               {renderBusinessProfileSection(
                 'Contact & email',
@@ -879,6 +1030,74 @@ const AppSettings: React.FC = () => {
       <PublicHolidayCalendar />
 
       {renderActionButtons('bottom')}
+
+      {logoViewOpen && (
+        <div
+          className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="company-logo-view-title"
+          onClick={closeLogoView}
+        >
+          <div
+            className="w-full max-w-lg rounded-2xl border border-border-subtle bg-card shadow-xl"
+            onClick={event => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
+              <h2 id="company-logo-view-title" className="text-base font-semibold text-text-main">
+                View logo
+              </h2>
+              <button
+                type="button"
+                onClick={closeLogoView}
+                className="rounded-lg px-2 py-1 text-sm text-text-muted hover:bg-surface-bg hover:text-text-main"
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex min-h-[220px] items-center justify-center p-6">
+              {logoPreviewLoading && (
+                <div className="flex items-center gap-2 text-sm text-text-muted">
+                  <Loader2 size={18} className="animate-spin" />
+                  Loading logo...
+                </div>
+              )}
+              {!logoPreviewLoading && logoPreviewError && (
+                <p className="text-sm text-red-600">{logoPreviewError}</p>
+              )}
+              {!logoPreviewLoading && !logoPreviewError && logoPreviewUrl && (
+                <img
+                  src={logoPreviewUrl}
+                  alt="Company logo"
+                  className="max-h-72 max-w-full object-contain"
+                />
+              )}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border-subtle px-4 py-3">
+              <button
+                type="button"
+                disabled={logoUploading}
+                onClick={() => logoFileInputRef.current?.click()}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-bg px-3 py-2 text-sm font-medium text-text-main hover:bg-card disabled:opacity-50"
+              >
+                {logoUploading ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Upload size={14} />
+                )}
+                Replace logo
+              </button>
+              <button
+                type="button"
+                onClick={closeLogoView}
+                className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:opacity-90"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

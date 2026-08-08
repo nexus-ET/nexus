@@ -7,6 +7,7 @@ from sqlalchemy import cast, String, func
 from sqlalchemy.orm import Session
 
 from app.models.lead import Lead, LeadChannel, LeadStage
+from app.utils.timezone import utc_now
 
 
 CHANNEL_LABELS = {
@@ -73,7 +74,7 @@ def get_conversion_funnel_trends(
     weeks: int = 8,
     channel: Optional[str] = None,
 ) -> dict:
-    now = datetime.utcnow()
+    now = utc_now()
     current_week = _week_start(now)
     results = []
 
@@ -120,7 +121,7 @@ def get_channel_performance(
     days: int = 90,
     channel: Optional[str] = None,
 ) -> dict:
-    since = datetime.utcnow() - timedelta(days=days)
+    since = utc_now() - timedelta(days=days)
     channels = ["WhatsApp", "Instagram", "Web"]
     if channel and channel not in {"All", "all"} and channel in channels:
         channels = [channel]
@@ -156,7 +157,7 @@ def get_ai_efficacy_trends(
     weeks: int = 12,
     channel: Optional[str] = None,
 ) -> dict:
-    now = datetime.utcnow()
+    now = utc_now()
     current_week = _week_start(now)
     points = []
 
@@ -198,7 +199,7 @@ def get_lead_velocity(
     db: Session,
     channel: Optional[str] = None,
 ) -> dict:
-    now = datetime.utcnow()
+    now = utc_now()
     current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     previous_month_end = current_month_start
     previous_month_start = (current_month_start - timedelta(days=1)).replace(day=1)
@@ -254,7 +255,7 @@ def build_trends_payload(
     ai_weeks: int = 12,
 ) -> dict:
     return {
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": utc_now().isoformat(),
         "filters": {
             "channel": channel or "All",
             "funnel_weeks": funnel_weeks,

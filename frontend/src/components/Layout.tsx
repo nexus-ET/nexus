@@ -9,6 +9,7 @@ import {
   Database
 } from 'lucide-react';
 
+import NexusLogo from './NexusLogo';
 import { clearSession } from '../utils/api';
 
 const Layout: React.FC = () => {
@@ -33,10 +34,10 @@ const Layout: React.FC = () => {
       <aside className="w-64 bg-slate-950 text-slate-300 flex flex-col border-r border-slate-800">
         <div className="h-16 flex items-center px-6 border-b border-slate-800/50">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center shadow-lg">
-              <span className="text-white font-bold italic">N</span>
-            </div>
-            <span className="font-bold text-lg text-white tracking-tight">NEXUS</span>
+            <NexusLogo size={32} />
+            <span className="font-inter text-lg font-extrabold tracking-tight text-white">
+              Nexus Intel
+            </span>
           </div>
         </div>
 

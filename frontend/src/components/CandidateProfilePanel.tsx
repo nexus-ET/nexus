@@ -49,6 +49,11 @@ interface CandidateProfilePanelProps {
   timeLabel?: string;
   onClose?: () => void;
   variant?: 'standalone' | 'embedded';
+  /** Controlled tab — when set, parent owns the active tab. */
+  activeTab?: ProfilePanelTab;
+  onTabChange?: (tab: ProfilePanelTab) => void;
+  /** Hide the internal tab strip (use when parent renders tabs). Default true. */
+  showTabBar?: boolean;
 }
 
 const FORM_TABS: ProfilePanelTab[] = ['profile'];
@@ -101,8 +106,12 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
   timeLabel,
   onClose,
   variant = 'standalone',
+  activeTab: controlledTab,
+  onTabChange,
+  showTabBar = true,
 }) => {
   const isEmbedded = variant === 'embedded';
+  const isTabControlled = controlledTab !== undefined;
   const [form, setForm] = useState<StudentMasterFormState>(() =>
     profileToForm(buildProfileFromBooking(booking))
   );
@@ -115,9 +124,12 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
   const [success, setSuccess] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const [activeTab, setActiveTab] = useState<ProfilePanelTab>(
-    variant === 'embedded' ? 'profile_pulse' : 'aspirations'
-  );
+  const [internalTab, setInternalTab] = useState<ProfilePanelTab>('aspirations');
+  const activeTab = isTabControlled ? controlledTab : internalTab;
+  const setActiveTab = (tab: ProfilePanelTab) => {
+    if (!isTabControlled) setInternalTab(tab);
+    onTabChange?.(tab);
+  };
   const [leadStatusLabel, setLeadStatusLabel] = useState(booking.status_stage_name ?? '');
   const [leadStatusDefinitionId, setLeadStatusDefinitionId] = useState<number | null>(
     booking.status_definition_id ?? null
@@ -168,10 +180,12 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
   }, []);
 
   useEffect(() => {
-    setActiveTab(isEmbedded ? 'profile_pulse' : 'aspirations');
+    if (!isTabControlled) {
+      setInternalTab('aspirations');
+    }
     setLeadStatusLabel(booking.status_stage_name ?? '');
     setLeadStatusDefinitionId(booking.status_definition_id ?? null);
-  }, [booking.id, booking.status_definition_id, booking.status_stage_name, isEmbedded]);
+  }, [booking.id, booking.status_definition_id, booking.status_stage_name, isEmbedded, isTabControlled]);
 
   useEffect(() => {
     if (!booking.lead_id) return;
@@ -290,19 +304,12 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
 
   const profileWorkspace = (
     <>
+      {showTabBar ? (
       <div
         className={`shrink-0 flex gap-1 border-b border-border-subtle bg-surface-bg/30 ${
           isEmbedded ? 'px-2 py-1.5' : 'px-2 py-1.5'
         }`}
       >
-        <button
-          type="button"
-          className={tabButtonClass('profile_pulse')}
-          onClick={() => setActiveTab('profile_pulse')}
-        >
-          <Gauge size={14} className="shrink-0" />
-          <span>PROFILE PULSE</span>
-        </button>
         <button
           type="button"
           className={tabButtonClass('aspirations')}
@@ -311,9 +318,17 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
           <Sparkles size={14} className="shrink-0" />
           <span>ASPIRATIONS</span>
         </button>
+        <button
+          type="button"
+          className={tabButtonClass('university_shortlist')}
+          onClick={() => setActiveTab('university_shortlist')}
+        >
+          <School size={14} className="shrink-0" />
+          <span>SHORTLIST</span>
+        </button>
         <button type="button" className={tabButtonClass('profile')} onClick={() => setActiveTab('profile')}>
           <User size={14} className="shrink-0" />
-          <span>PERSONAL PROFILE</span>
+          <span>PERSONAL</span>
         </button>
         <button type="button" className={tabButtonClass('academia')} onClick={() => setActiveTab('academia')}>
           <GraduationCap size={14} className="shrink-0" />
@@ -361,13 +376,14 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
         </button>
         <button
           type="button"
-          className={tabButtonClass('university_shortlist')}
-          onClick={() => setActiveTab('university_shortlist')}
+          className={tabButtonClass('profile_pulse')}
+          onClick={() => setActiveTab('profile_pulse')}
         >
-          <School size={14} className="shrink-0" />
-          <span>SHORTLIST</span>
+          <Gauge size={14} className="shrink-0" />
+          <span>PROFILE PULSE</span>
         </button>
       </div>
+      ) : null}
 
       {activeTab === 'profile_pulse' ? (
         <ProfilePulseTab
@@ -758,7 +774,7 @@ const CandidateProfilePanel: React.FC<CandidateProfilePanelProps> = ({
             <button
               type="submit"
               disabled={saving}
-              className="rounded-md bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800 disabled:opacity-60 inline-flex items-center gap-2"
+              className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60 inline-flex items-center gap-2"
             >
               {saving ? <Loader2 size={14} className="animate-spin" /> : null}
               Submit

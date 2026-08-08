@@ -70,23 +70,29 @@ def _build_location_string(db: Session, payload: OfflineLeadCreate) -> str | Non
         return None
     loc = payload.location
     country_name = _resolve_country_name(db, loc.country_iso2)
-    parts = [p.strip() for p in (loc.city, loc.state, country_name) if p and p.strip()]
+    city_state = ", ".join(
+        p.strip() for p in (loc.city, loc.state) if p and p.strip()
+    )
+    if loc.zip_code and loc.zip_code.strip():
+        city_state = f"{city_state} {loc.zip_code.strip()}" if city_state else loc.zip_code.strip()
+    parts = [p for p in (city_state, country_name) if p]
     return ", ".join(parts) if parts else None
 
 
 def _build_academic_summary(db: Session, payload: OfflineLeadCreate) -> str | None:
     bits: list[str] = []
     study_interest = resolve_study_interest_fields(db, payload)
-    if study_interest.get("target_course"):
-        bits.append(str(study_interest["target_course"]))
+    programs = study_interest.get("target_programs") or []
+    if isinstance(programs, list) and programs:
+        bits.append(", ".join(str(item) for item in programs))
     elif study_interest.get("target_program"):
         bits.append(str(study_interest["target_program"]))
     if payload.education:
         edu = resolve_education_payload(db, payload.education)
-        if edu and edu.get("degree"):
-            degree = str(edu["degree"])
-            if degree not in bits:
-                bits.append(degree)
+        if edu and (edu.get("program") or edu.get("degree")):
+            program = str(edu.get("program") or edu.get("degree"))
+            if program not in bits:
+                bits.append(program)
     return " — ".join(bits) if bits else None
 
 
@@ -165,16 +171,37 @@ def build_offline_lead_list_item(lead: Lead, db: Session | None = None) -> dict[
         "source": lead.source or OFFLINE_SOURCE,
         "target_destination": extra.get("target_destination") or lead.preferred_country,
         "target_destination_iso2": extra.get("target_destination_iso2"),
+        "target_destination_iso2s": list(extra.get("target_destination_iso2s") or (
+            [extra["target_destination_iso2"]] if extra.get("target_destination_iso2") else []
+        )),
+        "target_destinations": list(extra.get("target_destinations") or (
+            [extra["target_destination"]] if extra.get("target_destination") else []
+        )),
+        "target_level_id": extra.get("target_level_id"),
+        "target_level_name": extra.get("target_level_name"),
+        "target_major_ids": list(extra.get("target_major_ids") or []),
+        "target_majors": list(extra.get("target_majors") or []),
+        "target_program_codes": list(extra.get("target_program_codes") or (
+            [extra["target_program_code"]] if extra.get("target_program_code") else []
+        )),
+        "target_programs": list(extra.get("target_programs") or (
+            [extra["target_program"]] if extra.get("target_program") else []
+        )),
         "target_program": extra.get("target_program"),
         "target_program_code": extra.get("target_program_code"),
         "target_course": extra.get("target_course") or lead.academic_summary,
         "target_course_code": extra.get("target_course_code"),
         "city": location.get("city"),
         "state": location.get("state"),
+        "zip_code": location.get("zip_code"),
         "country": country_name,
         "country_iso2": country_iso2,
         "degree": education.get("degree"),
         "degree_code": education.get("degree_code"),
+        "program": education.get("program") or education.get("degree"),
+        "program_code": education.get("program_code") or education.get("degree_code"),
+        "level_id": education.get("level_id"),
+        "full_time_study_years": education.get("full_time_study_years"),
         "major": education.get("major"),
         "university": education.get("university"),
         "graduation_year": education.get("graduation_year"),
@@ -296,7 +323,7 @@ def create_offline_lead(db: Session, payload: OfflineLeadCreate) -> Lead:
         source=OFFLINE_SOURCE,
         stage=LeadStage.AI_ACTIVE,
         is_human_locked=False,
-        preferred_country=study_interest["target_destination"],
+        preferred_country=str(study_interest.get("target_destination") or "")[:100] or None,
         academic_summary=academic_summary,
         current_location=location_str,
         additional_data=_build_additional_data(db, payload),
@@ -384,7 +411,7 @@ def update_offline_lead(db: Session, lead_id: int, payload: OfflineLeadCreate) -
     lead.full_name = full_name
     lead.email = email
     lead.phone_number = phone
-    lead.preferred_country = study_interest["target_destination"]
+    lead.preferred_country = str(study_interest.get("target_destination") or "")[:100] or None
     lead.academic_summary = academic_summary
     lead.current_location = location_str
     lead.additional_data = merged

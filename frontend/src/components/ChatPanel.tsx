@@ -3,6 +3,7 @@ import { Mic, Send, UserMinus, UserPlus, X } from 'lucide-react';
 import { getStoredToken, resolveBaseUrl } from '../utils/api';
 import MessageBody from '../utils/messageBody';
 import { formatMessageTime, shouldShowMessageTimestamp } from '../utils/chatTimestamps';
+import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 import HeadlessScrollArea, { HeadlessScrollAreaHandle } from './HeadlessScrollArea';
 import ChatHistorySearchBar from './ChatHistorySearchBar';
 import ChatMessageInput from './ChatMessageInput';
@@ -27,6 +28,7 @@ import {
 } from '../utils/chatPins';
 
 const ChatPanel: React.FC = () => {
+  const { timezone } = useBusinessTimezone();
   const {
     activeConversation,
     activeConversationId,
@@ -501,9 +503,10 @@ const ChatPanel: React.FC = () => {
             messages,
             index,
             item => item.sender_id,
-            item => item.created_at
+            item => item.created_at,
+            timezone
           );
-          const messageTime = formatMessageTime(message.created_at);
+          const messageTime = formatMessageTime(message.created_at, timezone);
           const isJumpTarget = jumpTarget?.messageId === message.id;
           const bubbleBg = isOutgoing ? 'bg-outgoing' : 'bg-incoming';
           const bubbleTone = isJumpTarget ? bubbleHighlightClassName : '';

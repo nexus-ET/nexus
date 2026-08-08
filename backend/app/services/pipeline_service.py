@@ -12,6 +12,7 @@ from app.models.counselling_booking import CounsellingBooking
 from app.models.lead import Lead
 from app.models.user import User
 from app.services.security_service import input_sanitizer
+from app.utils.timezone import utc_now
 
 COMPLETED_STATUS = "COMPLETED"
 SCHEDULED_STATUS = "SCHEDULED"
@@ -133,7 +134,7 @@ def move_candidate(
         raise HTTPException(status_code=400, detail=f"Invalid pipeline stage: {stage}")
 
     previous_stage = getattr(lead, "admission_stage", None) or COUNSELLING_STAGE
-    now = datetime.utcnow()
+    now = utc_now()
 
     lead.admission_stage = normalized_stage
     lead.admission_stage_entered_at = now
@@ -190,7 +191,7 @@ def complete_session(
         if input_sanitizer(item).strip()
     ]
 
-    now = datetime.utcnow()
+    now = utc_now()
     booking.status = COMPLETED_STATUS
     booking.outcome_key = normalized_outcome
     booking.wrap_up_notes = sanitized_notes
@@ -283,7 +284,7 @@ def get_pipeline_analytics(db: Session) -> dict:
             }
         )
 
-    now = datetime.utcnow()
+    now = utc_now()
     stalled_threshold = now - timedelta(days=STALLED_STAGE_THRESHOLD_DAYS)
     stalled_candidates = (
         db.query(Lead)
@@ -365,7 +366,7 @@ def process_stalled_document_reminders(db: Session) -> int:
     """Send friendly WhatsApp reminders for candidates awaiting docs > 5 days."""
     from app.services.notification_service import NotificationService
 
-    now = datetime.utcnow()
+    now = utc_now()
     threshold = now - timedelta(days=DOC_REMINDER_DAYS)
     leads = (
         db.query(Lead)

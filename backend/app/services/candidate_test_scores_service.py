@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -13,10 +12,10 @@ from app.schemas.candidate_test_scores import (
     TEST_SECTION_CONFIG,
     CandidateTestScoreSaveRequest,
     CandidateTestScoresResponse,
-    OverallScoreConfig,
     TestName,
     TestSectionConfig,
 )
+from app.utils.timezone import utc_now_naive
 
 
 def _get_section_config(test_name: TestName, section_name: str) -> TestSectionConfig | None:
@@ -60,11 +59,8 @@ def _validate_section_score(
             ),
         )
 
-    if config.data_type == "integer" and score != score.to_integral_value():
-        raise HTTPException(
-            status_code=400,
-            detail=f"{section_name} score must be a whole number for {test_name.value}.",
-        )
+    if config.data_type == "integer":
+        return Decimal(score).to_integral_value(rounding=ROUND_HALF_UP)
 
     if config.data_type == "float":
         return Decimal(str(round(numeric_score, 1)))
@@ -82,16 +78,6 @@ def _validate_overall_score(
     if config is None:
         return score
 
-    score_text = format(score, "f").rstrip("0").rstrip(".")
-    if len(score_text) > config.max_length:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Overall score must be at most {config.max_length} characters "
-                f"for {test_name.value}."
-            ),
-        )
-
     numeric_score = float(score)
     if numeric_score < config.min_score or numeric_score > config.max_score:
         raise HTTPException(
@@ -102,15 +88,24 @@ def _validate_overall_score(
             ),
         )
 
-    if config.data_type == "integer" and score != score.to_integral_value():
+    if config.data_type == "integer":
+        normalized = Decimal(score).to_integral_value(rounding=ROUND_HALF_UP)
+    elif config.data_type == "float":
+        normalized = Decimal(str(round(numeric_score, 1)))
+    else:
+        normalized = score.to_integral_value()
+
+    score_text = format(normalized, "f").rstrip("0").rstrip(".")
+    if len(score_text) > config.max_length:
         raise HTTPException(
             status_code=400,
-            detail=f"Overall score must be a whole number for {test_name.value}.",
+            detail=(
+                f"Overall score must be at most {config.max_length} characters "
+                f"for {test_name.value}."
+            ),
         )
 
-    if config.data_type == "float":
-        return Decimal(str(round(numeric_score, 1)))
-    return score.to_integral_value()
+    return normalized
 
 
 def _resolve_overall_score(
@@ -120,7 +115,7 @@ def _resolve_overall_score(
     if payload.overall_score is not None:
         return _validate_overall_score(test_name, payload.overall_score)
 
-    if test_name == TestName.DUOLINGO:
+    if test_name in {TestName.DUOLINGO, TestName.LSAT_MCAT}:
         for section in payload.sections:
             if section.section_name.strip().lower() == "overall":
                 return _validate_overall_score(test_name, section.score)
@@ -174,6 +169,23 @@ def save_candidate_test_scores(
     lead: Lead | None,
     payload: CandidateTestScoreSaveRequest,
 ) -> CandidateTestScoresResponse:
+    _insert_candidate_test_score_rows(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        payload=payload,
+    )
+    db.commit()
+    return get_candidate_test_scores(db, booking_id=booking_id, lead=lead)
+
+
+def _insert_candidate_test_score_rows(
+    db: Session,
+    *,
+    booking_id: int,
+    lead: Lead | None,
+    payload: CandidateTestScoreSaveRequest,
+) -> list[CandidateTestScore]:
     expected_sections = {
         section.section_name.lower(): section
         for section in TEST_SECTION_CONFIG[payload.test_name]
@@ -195,7 +207,8 @@ def save_candidate_test_scores(
 
     lead_id = lead.id if lead else None
     created_records: list[CandidateTestScore] = []
-    batch_created_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Column is naive DateTime; keep writes naive UTC to avoid adapter/DB errors.
+    batch_created_at = utc_now_naive()
     validated_overall = _resolve_overall_score(payload.test_name, payload)
 
     for section_key, section_input in provided_sections.items():
@@ -219,8 +232,67 @@ def save_candidate_test_scores(
         db.add(record)
         created_records.append(record)
 
-    db.commit()
+    db.flush()
     for record in created_records:
         db.refresh(record)
+    return created_records
 
+
+def delete_candidate_test_score_attempt(
+    db: Session,
+    *,
+    booking_id: int,
+    lead: Lead | None,
+    score_ids: list[int],
+    commit: bool = True,
+) -> CandidateTestScoresResponse:
+    """Delete all section rows belonging to one grouped test attempt."""
+    if not score_ids:
+        raise HTTPException(status_code=400, detail="No score ids provided.")
+
+    lead_id = lead.id if lead else None
+    query = db.query(CandidateTestScore).filter(CandidateTestScore.id.in_(score_ids))
+    if lead_id is not None:
+        query = query.filter(CandidateTestScore.lead_id == lead_id)
+    else:
+        query = query.filter(CandidateTestScore.booking_id == booking_id)
+
+    records = query.all()
+    if not records:
+        raise HTTPException(status_code=404, detail="Test score attempt not found.")
+
+    for record in records:
+        db.delete(record)
+
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+
+    return get_candidate_test_scores(db, booking_id=booking_id, lead=lead)
+
+
+def replace_candidate_test_score_attempt(
+    db: Session,
+    *,
+    booking_id: int,
+    lead: Lead | None,
+    score_ids: list[int],
+    payload: CandidateTestScoreSaveRequest,
+) -> CandidateTestScoresResponse:
+    """Atomically replace one attempt: delete old section rows, then insert the new set."""
+    delete_candidate_test_score_attempt(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        score_ids=score_ids,
+        commit=False,
+    )
+    _insert_candidate_test_score_rows(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        payload=payload,
+    )
+    db.commit()
     return get_candidate_test_scores(db, booking_id=booking_id, lead=lead)

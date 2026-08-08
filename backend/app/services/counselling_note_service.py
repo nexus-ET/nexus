@@ -2,21 +2,29 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from datetime import date, datetime
 
 from fastapi import HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models.counselling_booking import CounsellingBooking
 from app.models.counselling_note import CounsellingNote
+from app.models.academia_institution import Campus, College, Institution
+from app.models.academia_wizard import InstitutionCourseOffering
+from app.models.program import Program
+from app.models.target_course import TargetCourse
 from app.schemas.counselling_note import (
     CounsellingSessionNoteOut,
     CounsellingSessionNoteSaveRequest,
     CounsellingSummarizeResponse,
+    RecommendedInstitutionOption,
+    RecommendedInstitutionOptionsResponse,
 )
 from app.services.agent_runtime import get_runtime_agent_config
 from app.services.ai_service import call_llm_json_content
 from app.services.security_service import input_sanitizer
+from app.utils.timezone import utc_now
 
 SUMMARIZE_JSON_DIRECTIVE = (
     "\n\nRespond with valid JSON only using this schema: "
@@ -53,6 +61,185 @@ def _decode_universities(raw: str | None) -> list[str]:
     except json.JSONDecodeError:
         pass
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _institution_option_value(institution_id: int) -> str:
+    return f"institution:{institution_id}"
+
+
+def _college_option_value(college_id: int) -> str:
+    return f"college:{college_id}"
+
+
+def _parse_uuid_list(values: list[str] | None) -> list[uuid.UUID]:
+    parsed: list[uuid.UUID] = []
+    for raw in values or []:
+        token = str(raw or "").strip()
+        if not token:
+            continue
+        try:
+            parsed.append(uuid.UUID(token))
+        except ValueError:
+            continue
+    return parsed
+
+
+def _matching_institution_ids_for_study_interest(
+    db: Session,
+    *,
+    level_id: int | None = None,
+    major_ids: list[int] | None = None,
+    program_ids: list[uuid.UUID] | None = None,
+) -> set[int] | None:
+    """Return matching institution IDs, or None when no academic filter is applied."""
+    cleaned_majors = [int(item) for item in (major_ids or []) if int(item) > 0]
+    cleaned_programs = list(program_ids or [])
+    if not level_id and not cleaned_majors and not cleaned_programs:
+        return None
+
+    offering_q = (
+        db.query(InstitutionCourseOffering.institution_id)
+        .join(TargetCourse, TargetCourse.id == InstitutionCourseOffering.course_id)
+        .filter(InstitutionCourseOffering.is_active.is_(True))
+    )
+
+    if cleaned_programs:
+        offering_q = offering_q.filter(
+            TargetCourse.qualification_program_id.in_(cleaned_programs)
+        )
+    elif cleaned_majors:
+        offering_q = offering_q.filter(TargetCourse.education_major_id.in_(cleaned_majors))
+    elif level_id:
+        offering_q = offering_q.join(
+            Program, Program.id == TargetCourse.qualification_program_id
+        ).filter(Program.level_id == level_id)
+
+    return {int(row[0]) for row in offering_q.distinct().all()}
+
+
+def list_recommended_institution_options(
+    db: Session,
+    *,
+    country_ids: list[int] | None = None,
+    level_id: int | None = None,
+    major_ids: list[int] | None = None,
+    program_ids: list[str] | None = None,
+) -> RecommendedInstitutionOptionsResponse:
+    query = (
+        db.query(Institution)
+        .options(
+            joinedload(Institution.country),
+            joinedload(Institution.state),
+            joinedload(Institution.city),
+        )
+        .filter(Institution.is_active.is_(True))
+    )
+    if country_ids is not None:
+        cleaned_ids = [int(item) for item in country_ids if int(item) > 0]
+        if not cleaned_ids:
+            return RecommendedInstitutionOptionsResponse(options=[])
+        query = query.filter(Institution.country_id.in_(cleaned_ids))
+
+    academic_ids = _matching_institution_ids_for_study_interest(
+        db,
+        level_id=level_id,
+        major_ids=major_ids,
+        program_ids=_parse_uuid_list(program_ids),
+    )
+    if academic_ids is not None:
+        if not academic_ids:
+            return RecommendedInstitutionOptionsResponse(options=[])
+        query = query.filter(Institution.id.in_(academic_ids))
+
+    institutions = query.order_by(Institution.sort_order.asc(), Institution.name.asc()).all()
+    active_institution_ids = {row.id for row in institutions}
+    institution_by_id = {row.id: row for row in institutions}
+    colleges: list[College] = []
+    if active_institution_ids:
+        colleges = (
+            db.query(College)
+            .options(
+                joinedload(College.campus).joinedload(Campus.location),
+                joinedload(College.campus).joinedload(Campus.state),
+                joinedload(College.campus).joinedload(Campus.country),
+            )
+            .filter(
+                College.is_active.is_(True),
+                College.institution_id.in_(active_institution_ids),
+            )
+            .order_by(College.sort_order.asc(), College.name.asc())
+            .all()
+        )
+
+    options: list[RecommendedInstitutionOption] = []
+    for row in institutions:
+        options.append(
+            RecommendedInstitutionOption(
+                value=_institution_option_value(row.id),
+                label=f"{row.name} (Institution)",
+                kind="institution",
+                name=row.name,
+                country_id=row.country_id,
+                country_name=row.country.name if row.country else None,
+                state_name=row.state.name if row.state else None,
+                city_name=row.city.name if row.city else None,
+            )
+        )
+    for row in colleges:
+        parent = institution_by_id.get(row.institution_id)
+        parent_name = parent.name if parent else "Institution"
+        campus = row.campus
+        country_name = None
+        state_name = None
+        city_name = None
+        if campus:
+            country_name = campus.country.name if campus.country else None
+            state_name = campus.state.name if campus.state else None
+            city_name = campus.location.name if campus.location else campus.city
+        if parent:
+            country_name = country_name or (parent.country.name if parent.country else None)
+            state_name = state_name or (parent.state.name if parent.state else None)
+            city_name = city_name or (parent.city.name if parent.city else None)
+        options.append(
+            RecommendedInstitutionOption(
+                value=_college_option_value(row.id),
+                label=f"{row.name} · {parent_name} (College)",
+                kind="college",
+                name=row.name,
+                country_id=parent.country_id if parent else None,
+                country_name=country_name,
+                state_name=state_name,
+                city_name=city_name,
+            )
+        )
+    return RecommendedInstitutionOptionsResponse(options=options)
+
+
+def _filter_recommended_institutions(db: Session, values: list[str]) -> list[str]:
+    options = list_recommended_institution_options(db).options
+    allowed = {option.value for option in options}
+    by_label = {option.label.strip().lower(): option.value for option in options}
+    by_name: dict[str, str] = {}
+    for option in options:
+        key = option.name.strip().lower()
+        # Prefer institution matches when names collide.
+        if key not in by_name or option.kind == "institution":
+            by_name[key] = option.value
+
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        token = (raw or "").strip()
+        if not token:
+            continue
+        value = token if token in allowed else (
+            by_label.get(token.lower()) or by_name.get(token.lower()) or ""
+        )
+        if not value or value not in allowed or value in seen:
+            continue
+        seen.add(value)
+        resolved.append(value)
+    return resolved
 
 
 def _encode_universities(values: list[str]) -> str | None:
@@ -211,12 +398,14 @@ def save_session_note(
 
     note.admin_id = user_id
     note.ai_transcription = (payload.ai_transcription or "").strip() or None
-    note.preferred_universities = _encode_universities(payload.preferred_universities)
+    note.preferred_universities = _encode_universities(
+        _filter_recommended_institutions(db, payload.preferred_universities)
+    )
     note.scholarship_interests = (payload.scholarship_interests or "").strip() or None
     note.career_goals = (payload.career_goals or "").strip() or None
     note.officer_recommendations = (payload.officer_recommendations or "").strip() or None
     note.next_follow_up = payload.next_follow_up
-    note.updated_at = datetime.utcnow()
+    note.updated_at = utc_now()
     db.commit()
     db.refresh(note)
     return _serialize_note(note)

@@ -1,41 +1,61 @@
 from __future__ import annotations
 
 import io
-import json
-import time
 from datetime import datetime
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from sqlalchemy.orm import Session
 
-from app.schemas.sync_log import SyncLogOut
 from app.schemas.exception_log import ExceptionLogOut
+from app.schemas.sync_log import SyncLogOut
 from app.services.audit_context import format_audit_details_for_display
-from app.services.business_profile_service import DEFAULT_BUSINESS_ID, get_business_profile
+from app.services.business_profile_service import get_business_pdf_branding
 from app.services.settings_service import get_setting
-
-_BUSINESS_NAME_CACHE: tuple[str, float] | None = None
-_BUSINESS_NAME_CACHE_TTL_SECONDS = 300
+from app.utils.timezone import utc_now
 
 _PAGE_SIZE = landscape(A4)
 _PAGE_WIDTH, _PAGE_HEIGHT = _PAGE_SIZE
 _MARGIN = 0.55 * inch
-_FOOTER_Y = 0.42 * inch
+_LOGO_MAX_H = 0.38 * inch
+_LOGO_MAX_W = 1.1 * inch
+_HEADER_CONTENT_GAP = 0.12 * inch
+_PDF_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif"}
 
 
-class _NumberedCanvas(canvas.Canvas):
-    """Two-pass canvas so footers can show 'Page X of Y'."""
+def _estimate_footer_band(address_lines: list[str]) -> float:
+    line_count = max(1, len(address_lines)) if address_lines else 1
+    # top border padding + address lines + bottom padding
+    return 0.18 * inch + (line_count * 10) + 0.12 * inch
 
-    def __init__(self, *args, **kwargs):
+
+def _estimate_header_band(has_logo: bool) -> float:
+    # logo/name row + divider + gap under divider
+    return (0.42 * inch if has_logo else 0.32 * inch) + _HEADER_CONTENT_GAP
+
+
+class _BrandedReportCanvas(canvas.Canvas):
+    """Two-pass canvas: header (logo + business name) and footer (address + Page X of Y)."""
+
+    def __init__(self, *args: Any, branding: dict | None = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._page_states: list[dict] = []
+        self._branding = branding or {}
+        self._business_name = (self._branding.get("business_name") or "NEXUS").strip() or "NEXUS"
+        self._address_lines = [
+            line.strip()
+            for line in (self._branding.get("address_lines") or [])
+            if (line or "").strip()
+        ]
+        self._logo_path = self._branding.get("logo_path")
 
     def showPage(self) -> None:
         self._page_states.append(dict(self.__dict__))
@@ -45,35 +65,119 @@ class _NumberedCanvas(canvas.Canvas):
         total_pages = len(self._page_states)
         for state in self._page_states:
             self.__dict__.update(state)
+            self._draw_header()
             self._draw_footer(total_pages)
             super().showPage()
         super().save()
 
+    def _draw_header(self) -> None:
+        self.saveState()
+        left = _MARGIN
+        right = _PAGE_WIDTH - _MARGIN
+        top = _PAGE_HEIGHT - _MARGIN
+
+        text_x = left
+        name_baseline = top - 14
+
+        if self._logo_path:
+            drawn = self._draw_logo(left, top)
+            if drawn:
+                logo_w, _logo_h = drawn
+                text_x = left + logo_w + 10
+                name_baseline = top - (_LOGO_MAX_H / 2) - 4
+
+        self.setFont("Helvetica-Bold", 12)
+        self.setFillColor(colors.HexColor("#0f172a"))
+        self.drawString(text_x, name_baseline, self._business_name)
+
+        divider_y = top - (_LOGO_MAX_H if self._logo_path else 0.28 * inch) - 6
+        self.setStrokeColor(colors.HexColor("#cbd5e1"))
+        self.setLineWidth(0.6)
+        self.line(left, divider_y, right, divider_y)
+        self.restoreState()
+
+    def _draw_logo(self, left: float, top: float) -> tuple[float, float] | None:
+        path = Path(str(self._logo_path))
+        if path.suffix.lower() not in _PDF_LOGO_EXTENSIONS or not path.is_file():
+            return None
+        try:
+            reader = ImageReader(str(path))
+            iw, ih = reader.getSize()
+            if iw <= 0 or ih <= 0:
+                return None
+            scale = min(_LOGO_MAX_W / iw, _LOGO_MAX_H / ih)
+            width = iw * scale
+            height = ih * scale
+            self.drawImage(
+                reader,
+                left,
+                top - height,
+                width=width,
+                height=height,
+                mask="auto",
+                preserveAspectRatio=True,
+            )
+            return width, height
+        except Exception:
+            return None
+
     def _draw_footer(self, total_pages: int) -> None:
         self.saveState()
-        self.setFont("Helvetica", 9)
+        left = _MARGIN
+        right = _PAGE_WIDTH - _MARGIN
+        footer_band = _estimate_footer_band(self._address_lines)
+        footer_top = _MARGIN + footer_band
+
+        self.setStrokeColor(colors.HexColor("#cbd5e1"))
+        self.setLineWidth(0.5)
+        self.line(left, footer_top, right, footer_top)
+
+        self.setFont("Helvetica", 8)
         self.setFillColor(colors.HexColor("#64748b"))
-        self.drawCentredString(
-            _PAGE_WIDTH / 2,
-            _FOOTER_Y,
-            f"Page {self._pageNumber} of {total_pages}",
-        )
+
+        address_y = footer_top - 11
+        max_width = _PAGE_WIDTH - (2 * _MARGIN) - 90
+        for line in self._address_lines:
+            text = line
+            while self.stringWidth(text, "Helvetica", 8) > max_width and len(text) > 4:
+                text = text[:-2]
+            if text != line:
+                text = text.rstrip() + "…"
+            self.drawString(left, address_y, text)
+            address_y -= 10
+
+        page_label = f"Page {self._pageNumber} of {total_pages}"
+        self.drawRightString(right, _MARGIN + 4, page_label)
         self.restoreState()
 
 
-def _cached_business_name(db: Session) -> str:
-    global _BUSINESS_NAME_CACHE
-    now = time.monotonic()
-    if (
-        _BUSINESS_NAME_CACHE is not None
-        and now - _BUSINESS_NAME_CACHE[1] < _BUSINESS_NAME_CACHE_TTL_SECONDS
-    ):
-        return _BUSINESS_NAME_CACHE[0]
+def _canvas_maker_for_branding(branding: dict):
+    def _maker(*args: Any, **kwargs: Any):
+        return _BrandedReportCanvas(*args, branding=branding, **kwargs)
 
-    profile = get_business_profile(db, DEFAULT_BUSINESS_ID)
-    name = (profile.get("business_name") or "NEXUS").strip() or "NEXUS"
-    _BUSINESS_NAME_CACHE = (name, now)
-    return name
+    return _maker
+
+
+def _build_report_doc(
+    buffer: io.BytesIO,
+    *,
+    branding: dict,
+    title: str,
+) -> SimpleDocTemplate:
+    has_logo = bool(branding.get("logo_path"))
+    top_margin = _MARGIN + _estimate_header_band(has_logo)
+    bottom_margin = _MARGIN + _estimate_footer_band(branding.get("address_lines") or [])
+    return SimpleDocTemplate(
+        buffer,
+        pagesize=_PAGE_SIZE,
+        leftMargin=_MARGIN,
+        rightMargin=_MARGIN,
+        topMargin=top_margin,
+        bottomMargin=bottom_margin,
+        title=title,
+        author=branding.get("business_name") or "NEXUS",
+        canvasmaker=_canvas_maker_for_branding(branding),
+    )
 
 
 def _format_range_label(start_date: datetime | None, end_date: datetime | None) -> str:
@@ -142,6 +246,36 @@ def _pdf_table_header_style(base: ParagraphStyle) -> ParagraphStyle:
     )
 
 
+def _report_title_styles():
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=16,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=4,
+    )
+    subtitle_style = ParagraphStyle(
+        "ReportSubtitle",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=10,
+        textColor=colors.HexColor("#475569"),
+        leading=14,
+        spaceAfter=6,
+    )
+    meta_style = ParagraphStyle(
+        "ReportMeta",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9,
+        textColor=colors.HexColor("#64748b"),
+        leading=12,
+    )
+    return styles, title_style, subtitle_style, meta_style
+
+
 def _format_sync_mode(mode: str) -> str:
     normalized = (mode or "").strip().upper()
     if normalized == "AUTOMATED":
@@ -198,60 +332,16 @@ def generate_sync_logs_pdf(
     generated_at: datetime | None = None,
 ) -> bytes:
     """Build a professional PDF export for the full filtered sync-log dataset."""
-    business_name = _cached_business_name(db)
-    generated = generated_at or datetime.utcnow()
+    branding = get_business_pdf_branding(db)
+    generated = generated_at or utc_now()
     range_label = _format_range_label(start_date, end_date)
     sort_label = f"{sort_by.replace('_', ' ')} ({sort_order.upper()})"
 
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=_PAGE_SIZE,
-        leftMargin=_MARGIN,
-        rightMargin=_MARGIN,
-        topMargin=_MARGIN,
-        bottomMargin=0.75 * inch,
-        title="Meta Lead Sync Logs",
-        author=business_name,
-        canvasmaker=_NumberedCanvas,
-    )
-
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "ReportTitle",
-        parent=styles["Heading1"],
-        fontName="Helvetica-Bold",
-        fontSize=16,
-        textColor=colors.HexColor("#0f172a"),
-        spaceAfter=4,
-    )
-    subtitle_style = ParagraphStyle(
-        "ReportSubtitle",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=10,
-        textColor=colors.HexColor("#475569"),
-        leading=14,
-        spaceAfter=6,
-    )
-    meta_style = ParagraphStyle(
-        "ReportMeta",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=9,
-        textColor=colors.HexColor("#64748b"),
-        leading=12,
-    )
+    doc = _build_report_doc(buffer, branding=branding, title="Meta Lead Sync Logs")
+    _styles, title_style, subtitle_style, meta_style = _report_title_styles()
 
     story = [
-        Paragraph(business_name, ParagraphStyle(
-            "BusinessName",
-            parent=styles["Normal"],
-            fontName="Helvetica-Bold",
-            fontSize=11,
-            textColor=colors.HexColor("#334155"),
-            spaceAfter=8,
-        )),
         Paragraph("Meta Lead Sync Logs — Full Report", title_style),
         Paragraph(f"Report period: {range_label}", subtitle_style),
         Paragraph(
@@ -359,60 +449,16 @@ def generate_exception_logs_pdf(
     generated_at: datetime | None = None,
 ) -> bytes:
     """Build a professional PDF export for the Exception Report dataset."""
-    business_name = _cached_business_name(db)
-    generated = generated_at or datetime.utcnow()
+    branding = get_business_pdf_branding(db)
+    generated = generated_at or utc_now()
     range_label = _format_range_label(start_date, end_date)
     sort_label = f"{sort_by.replace('_', ' ')} ({sort_order.upper()})"
 
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=_PAGE_SIZE,
-        leftMargin=_MARGIN,
-        rightMargin=_MARGIN,
-        topMargin=_MARGIN,
-        bottomMargin=0.75 * inch,
-        title="Exception Report",
-        author=business_name,
-        canvasmaker=_NumberedCanvas,
-    )
-
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "ReportTitle",
-        parent=styles["Heading1"],
-        fontName="Helvetica-Bold",
-        fontSize=16,
-        textColor=colors.HexColor("#0f172a"),
-        spaceAfter=4,
-    )
-    subtitle_style = ParagraphStyle(
-        "ReportSubtitle",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=10,
-        textColor=colors.HexColor("#475569"),
-        leading=14,
-        spaceAfter=6,
-    )
-    meta_style = ParagraphStyle(
-        "ReportMeta",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=9,
-        textColor=colors.HexColor("#64748b"),
-        leading=12,
-    )
+    doc = _build_report_doc(buffer, branding=branding, title="Exception Report")
+    _styles, title_style, subtitle_style, meta_style = _report_title_styles()
 
     story = [
-        Paragraph(business_name, ParagraphStyle(
-            "BusinessName",
-            parent=styles["Normal"],
-            fontName="Helvetica-Bold",
-            fontSize=11,
-            textColor=colors.HexColor("#334155"),
-            spaceAfter=8,
-        )),
         Paragraph("Exception Report — Full Export", title_style),
         Paragraph(f"Report period: {range_label}", subtitle_style),
         Paragraph(
@@ -507,60 +553,16 @@ def generate_audit_logs_pdf(
     sort_order: Literal["asc", "desc"],
     generated_at: datetime | None = None,
 ) -> bytes:
-    business_name = _cached_business_name(db)
-    generated = generated_at or datetime.utcnow()
+    branding = get_business_pdf_branding(db)
+    generated = generated_at or utc_now()
     range_label = _format_range_label(start_date, end_date)
     sort_label = f"{sort_by.replace('_', ' ')} ({sort_order.upper()})"
 
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=_PAGE_SIZE,
-        leftMargin=_MARGIN,
-        rightMargin=_MARGIN,
-        topMargin=_MARGIN,
-        bottomMargin=0.75 * inch,
-        title="Audit Logs",
-        author=business_name,
-        canvasmaker=_NumberedCanvas,
-    )
-
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "AuditReportTitle",
-        parent=styles["Heading1"],
-        fontName="Helvetica-Bold",
-        fontSize=16,
-        textColor=colors.HexColor("#0f172a"),
-        spaceAfter=4,
-    )
-    subtitle_style = ParagraphStyle(
-        "AuditReportSubtitle",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=10,
-        textColor=colors.HexColor("#475569"),
-        leading=14,
-        spaceAfter=6,
-    )
-    meta_style = ParagraphStyle(
-        "AuditReportMeta",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=9,
-        textColor=colors.HexColor("#64748b"),
-        leading=12,
-    )
+    doc = _build_report_doc(buffer, branding=branding, title="Audit Logs")
+    styles, title_style, subtitle_style, meta_style = _report_title_styles()
 
     story = [
-        Paragraph(business_name, ParagraphStyle(
-            "AuditBusinessName",
-            parent=styles["Normal"],
-            fontName="Helvetica-Bold",
-            fontSize=11,
-            textColor=colors.HexColor("#334155"),
-            spaceAfter=8,
-        )),
         Paragraph("NEXUS Audit Log Report", title_style),
         Paragraph(f"Report period: {range_label}", subtitle_style),
         Paragraph(

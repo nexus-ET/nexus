@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from app.utils.timezone import utc_now
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -15,7 +16,12 @@ from app.schemas.candidate_education import (
 )
 from app.schemas.offline_lead import OfflineLeadEducation
 from app.services.education_degrees import get_education_degree_by_code, resolve_education_payload
+from app.services.full_time_study_years import (
+    get_full_time_study_year_by_code,
+    require_full_time_study_years,
+)
 from app.services.gpa_cgpa_scores import apply_gpa_cgpa_fields, get_gpa_cgpa_score_by_code
+from app.services.qualification_programs import get_qualification_program_by_code
 from app.services.students_master_service import get_students_master_by_lead
 
 
@@ -25,12 +31,25 @@ def _education_query(db: Session, *, lead_id: int | None, booking_id: int):
     return db.query(CandidateEducation).filter(CandidateEducation.booking_id == booking_id)
 
 
+def _resolve_program_or_degree(db: Session, code: str | None):
+    if not code:
+        return None, None
+    program = get_qualification_program_by_code(db, code)
+    if program:
+        return program, None
+    return None, get_education_degree_by_code(db, code)
+
+
 def _serialize_education(db: Session, record: CandidateEducation) -> CandidateEducationOut:
     degree_label = None
-    if record.degree_code:
-        degree = get_education_degree_by_code(db, record.degree_code)
-        if degree:
-            degree_label = record.degree_other if degree.is_other else degree.label
+    level_id = None
+    program, degree = _resolve_program_or_degree(db, record.degree_code)
+    if program:
+        degree_label = program.name
+        level_id = program.level_id
+    elif degree:
+        degree_label = record.degree_other if degree.is_other else degree.label
+        level_id = degree.level_id
 
     gpa_label = None
     if record.gpa_cgpa_code:
@@ -38,11 +57,23 @@ def _serialize_education(db: Session, record: CandidateEducation) -> CandidateEd
         if score:
             gpa_label = record.gpa_cgpa_other if score.is_other else score.label
 
+    study_years_label = None
+    if record.full_time_study_years:
+        study_year = get_full_time_study_year_by_code(
+            db,
+            record.full_time_study_years,
+            level_id=level_id,
+        )
+        if study_year:
+            study_years_label = study_year.label
+
     return CandidateEducationOut(
         id=record.id,
         degree_code=record.degree_code,
         degree_label=degree_label,
         degree_other=record.degree_other,
+        full_time_study_years=record.full_time_study_years,
+        full_time_study_years_label=study_years_label,
         major=record.major,
         university_name=record.university_name,
         university_affiliation=record.university_affiliation,
@@ -96,9 +127,15 @@ def _maybe_migrate_legacy_education(
 
 
 def _education_degree_sort_key(db: Session, record: CandidateEducation) -> tuple[int, int, int, int]:
-    degree = get_education_degree_by_code(db, record.degree_code) if record.degree_code else None
+    program, degree = _resolve_program_or_degree(db, record.degree_code)
+    if program:
+        sort_order = int(program.sort_order or 0)
+    elif degree:
+        sort_order = int(degree.sort_order or 0)
+    else:
+        sort_order = 999
     return (
-        degree.sort_order if degree else 999,
+        sort_order,
         -(record.graduation_year or 0),
         -(record.graduation_month or 0),
         record.id,
@@ -148,7 +185,7 @@ def _get_owned_education(
 
 def _validate_education_input(db: Session, payload: CandidateEducationInput) -> dict:
     if not payload.degree_code:
-        raise HTTPException(status_code=400, detail="Current degree is required.")
+        raise HTTPException(status_code=400, detail="Current program is required.")
     if not payload.major:
         raise HTTPException(status_code=400, detail="Current major is required.")
     if not payload.university_name:
@@ -160,30 +197,56 @@ def _validate_education_input(db: Session, payload: CandidateEducationInput) -> 
     if not payload.gpa_cgpa_code:
         raise HTTPException(status_code=400, detail="GPA/CGPA score is required.")
 
-    edu_payload = OfflineLeadEducation(
-        degree_code=payload.degree_code,
-        degree_other=payload.degree_other,
-        major=payload.major,
-        university=payload.university_name,
-        graduation_year=payload.graduation_year,
-        gpa_cgpa_code=payload.gpa_cgpa_code,
-        gpa_cgpa=payload.gpa_cgpa_other,
-        gpa_cgpa_other=payload.gpa_cgpa_other,
+    program, degree = _resolve_program_or_degree(db, payload.degree_code)
+    if not program and not degree:
+        raise HTTPException(status_code=400, detail="Select a valid program.")
+
+    level_id = program.level_id if program else (degree.level_id if degree else None)
+    study_year = require_full_time_study_years(
+        db,
+        payload.full_time_study_years,
+        level_id=level_id,
     )
+    study_years = study_year.code
+
+    if program:
+        edu_payload = OfflineLeadEducation(
+            program_code=payload.degree_code,
+            major=payload.major,
+            university=payload.university_name,
+            graduation_year=payload.graduation_year,
+            gpa_cgpa_code=payload.gpa_cgpa_code,
+            gpa_cgpa=payload.gpa_cgpa_other,
+            full_time_study_years=study_years,
+            level_id=level_id,
+        )
+    else:
+        edu_payload = OfflineLeadEducation(
+            degree_code=payload.degree_code,
+            degree=payload.degree_other,
+            major=payload.major,
+            university=payload.university_name,
+            graduation_year=payload.graduation_year,
+            gpa_cgpa_code=payload.gpa_cgpa_code,
+            gpa_cgpa=payload.gpa_cgpa_other,
+            full_time_study_years=study_years,
+            level_id=level_id,
+        )
+
     resolved_edu = resolve_education_payload(db, edu_payload) or {}
     gpa_fields = apply_gpa_cgpa_fields(db, edu_payload, {})
 
-    degree = get_education_degree_by_code(db, payload.degree_code)
     if degree and degree.is_other and not payload.degree_other:
-        raise HTTPException(status_code=400, detail="Please enter the degree.")
+        raise HTTPException(status_code=400, detail="Please enter the program.")
 
     gpa_score = get_gpa_cgpa_score_by_code(db, payload.gpa_cgpa_code)
     if gpa_score and gpa_score.is_other and not payload.gpa_cgpa_other:
         raise HTTPException(status_code=400, detail="Please enter the GPA/CGPA score.")
 
     return {
-        "degree_code": resolved_edu.get("degree_code"),
-        "degree_other": resolved_edu.get("degree_other"),
+        "degree_code": resolved_edu.get("program_code") or resolved_edu.get("degree_code"),
+        "degree_other": payload.degree_other if degree and degree.is_other else None,
+        "full_time_study_years": study_years,
         "major": resolved_edu.get("major"),
         "university_name": (payload.university_name or "").strip() or None,
         "university_affiliation": (payload.university_affiliation or "").strip() or None,
@@ -235,6 +298,7 @@ def update_candidate_education(
 
     record.degree_code = fields["degree_code"]
     record.degree_other = fields["degree_other"]
+    record.full_time_study_years = fields["full_time_study_years"]
     record.major = fields["major"]
     record.university_name = fields["university_name"]
     record.university_affiliation = fields["university_affiliation"]
@@ -242,7 +306,7 @@ def update_candidate_education(
     record.graduation_year = fields["graduation_year"]
     record.gpa_cgpa_code = fields["gpa_cgpa_code"]
     record.gpa_cgpa_other = fields["gpa_cgpa_other"]
-    record.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    record.updated_at = utc_now()
     db.commit()
     return get_candidate_educations(db, booking_id=booking_id, lead=lead)
 

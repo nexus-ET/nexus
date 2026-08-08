@@ -21,7 +21,9 @@ import Analytics from './pages/Analytics';
 import Agents from './pages/Agents';
 import AccessControl from './pages/AccessControl';
 import CounsellingDashboard from './pages/CounsellingDashboard';
+import BookAppointmentPage from './pages/BookAppointmentPage';
 import MyBookings from './pages/MyBookings';
+import MyBookingSessionPage from './pages/MyBookingSessionPage';
 import MyProfile from './pages/MyProfile';
 import AppSettings from './pages/AppSettings';
 import ReportsLayout from './pages/ReportsLayout';
@@ -49,6 +51,24 @@ import InstitutionsCollegesManagePage from './components/academia/InstitutionsCo
 import InstitutionIntakeManagePage from './components/academia/intakes/InstitutionIntakeManagePage';
 import InstitutionWizardPage from './components/academia/wizard/InstitutionWizardPage';
 import InstitutionHistoryPage from './components/academia/wizard/InstitutionHistoryPage';
+import NexusIntelShell from './pages/nexus-intel/NexusIntelShell';
+import KnowledgeHubPage from './pages/nexus-intel/KnowledgeHubPage';
+import AiAssistantPage from './pages/nexus-intel/AiAssistantPage';
+import WorkflowsPage from './pages/nexus-intel/WorkflowsPage';
+import AcademyPage from './pages/nexus-intel/AcademyPage';
+import ControlsPage from './pages/nexus-intel/ControlsPage';
+import AdminPage from './pages/nexus-intel/AdminPage';
+import FlowxShell from './pages/flowx/FlowxShell';
+import FlowxOpsDashboardPage from './pages/flowx/FlowxOpsDashboardPage';
+import FlowxCountryHubPage from './pages/flowx/FlowxCountryHubPage';
+import FlowxCountriesPage from './pages/flowx/FlowxCountriesPage';
+import FlowxCountryDetailPage from './pages/flowx/FlowxCountryDetailPage';
+import FlowxMasterWorkflowPage from './pages/flowx/FlowxMasterWorkflowPage';
+import FlowxJourneysPage from './pages/flowx/FlowxJourneysPage';
+import FlowxAddApplicationPage from './pages/flowx/FlowxAddApplicationPage';
+import FlowxJourneyDetailPage from './pages/flowx/FlowxJourneyDetailPage';
+import FlowxStudentApplicationsPage from './pages/flowx/FlowxStudentApplicationsPage';
+import FlowxBoardPage from './pages/flowx/FlowxBoardPage';
 import Login from './pages/Login';
 import ProtectedRoute from './components/ProtectedRoute';
 import GlobalExceptionCapture from './components/GlobalExceptionCapture';
@@ -99,9 +119,13 @@ const router = createBrowserRouter(
         <Route path="analytics" element={<Analytics />} />
         <Route path="agents" element={<Agents />} />
         <Route path="counselling" element={<CounsellingDashboard />} />
+        <Route path="book-appointment" element={<BookAppointmentPage />} />
         <Route path="command-center" element={<AdminCommandCenter />} />
         <Route path="messaging-hub" element={<MessagingHub />} />
-        <Route path="my-bookings" element={<MyBookings />} />
+        <Route path="my-bookings" element={<MyBookings />}>
+          <Route path="session" element={<MyBookingSessionPage />} />
+          <Route path="session/:bookingId" element={<MyBookingSessionPage />} />
+        </Route>
         <Route path="my-profile" element={<MyProfile />} />
         <Route path="settings" element={<AppSettings />} />
         <Route path="reports" element={<ReportsLayout />}>
@@ -162,6 +186,30 @@ const router = createBrowserRouter(
           </Route>
           <Route path=":section/:entity" element={<AcademiaEntityPage />} />
           <Route path=":section/:entity/:recordId" element={<AcademiaEntityPage />} />
+        </Route>
+        <Route path="nexus-intel" element={<NexusIntelShell />}>
+          <Route index element={<Navigate to="knowledge" replace />} />
+          <Route path="knowledge" element={<KnowledgeHubPage />} />
+          <Route path="ai-assistant" element={<AiAssistantPage />} />
+          <Route path="flowx" element={<Navigate to="/flowx" replace />} />
+          <Route path="flowx/:studentId" element={<Navigate to="/flowx" replace />} />
+          <Route path="workflows" element={<WorkflowsPage />} />
+          <Route path="academy" element={<AcademyPage />} />
+          <Route path="controls" element={<ControlsPage />} />
+          <Route path="admin" element={<AdminPage />} />
+        </Route>
+        <Route path="flowx" element={<FlowxShell />}>
+          <Route index element={<Navigate to="ops" replace />} />
+          <Route path="ops" element={<FlowxOpsDashboardPage />} />
+          <Route path="ops/:countryCode" element={<FlowxCountryHubPage />} />
+          <Route path="countries" element={<FlowxCountriesPage />} />
+          <Route path="master" element={<FlowxMasterWorkflowPage />} />
+          <Route path="countries/:countryCode" element={<FlowxCountryDetailPage />} />
+          <Route path="journeys" element={<FlowxJourneysPage />} />
+          <Route path="journeys/new" element={<FlowxAddApplicationPage />} />
+          <Route path="journeys/student/:leadId" element={<FlowxStudentApplicationsPage />} />
+          <Route path="journeys/:enrollmentId" element={<FlowxJourneyDetailPage />} />
+          <Route path="board" element={<FlowxBoardPage />} />
         </Route>
       </Route>
 
