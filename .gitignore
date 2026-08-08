@@ -31,7 +31,8 @@ backend/.tunnel-*.txt
 backend/.env.bloated*
 **/.env.bloated*
 **/*.bloated.bak*
-data/
+# Repo-root generated datasets only — do NOT ignore backend/app/data (Alembic seeds).
+/data/
 **/.DS_Store
 .idea/
 .vscode/
