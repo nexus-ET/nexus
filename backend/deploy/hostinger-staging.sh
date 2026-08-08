@@ -76,6 +76,8 @@ echo "    Domain:    ${PUBLIC_DOMAIN}"
 echo "    Mode:      frontend_only=${FRONTEND_ONLY} skip_migrations=${SKIP_MIGRATIONS}"
 echo ""
 
+DEPLOY_FAILURES=0
+
 if [[ "${FRONTEND_ONLY}" -eq 0 ]]; then
   echo "==> Pull ${GIT_BRANCH}..."
   cd "${APP_ROOT}"
@@ -115,15 +117,19 @@ if [[ "${FRONTEND_ONLY}" -eq 0 ]]; then
     if python scripts/ensure_navigation_rbac.py; then
       echo "    Navigation RBAC: OK"
     else
-      echo "    WARNING: ensure_navigation_rbac.py failed — mega-nav may be incomplete." >&2
+      echo "    ERROR: ensure_navigation_rbac.py failed — mega-nav may be incomplete." >&2
+      DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
     fi
     echo ""
-    echo "==> Heal candidate_test_scores id sequence..."
-    if python scripts/ensure_candidate_test_scores_sequence.py; then
-      echo "    candidate_test_scores sequence: OK"
+    echo "==> Heal Postgres id sequences (import desync guard)..."
+    if python scripts/ensure_id_sequences.py; then
+      echo "    id sequences: OK"
     else
-      echo "    WARNING: candidate_test_scores sequence heal failed — TOEFL/IELTS capture may 500." >&2
+      echo "    ERROR: ensure_id_sequences.py failed — TOEFL/booking inserts may 500." >&2
+      DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
     fi
+    # Keep legacy alias script for one-release compatibility.
+    python scripts/ensure_candidate_test_scores_sequence.py >/dev/null 2>&1 || true
     echo ""
     echo "==> Staging login users..."
     if python scripts/seed_staging_users.py; then
@@ -137,6 +143,8 @@ if [[ "${FRONTEND_ONLY}" -eq 0 ]]; then
   fi
 fi
 
+DEPLOY_FAILURES="${DEPLOY_FAILURES:-0}"
+
 echo ""
 echo "==> Frontend build..."
 cd "${FRONTEND}"
@@ -144,67 +152,83 @@ npm ci
 npm run build
 
 MISSING_UI=0
-for needle in "View Journey" "Future Insights" "ROI Calculator" "Book Appointment"; do
+for needle in \
+  "View Journey" \
+  "Future Insights" \
+  "ROI Calculator" \
+  "Book Appointment" \
+  "Exception Report" \
+  "Aspirations"; do
   if grep -rq "${needle}" "${FRONTEND}/dist" 2>/dev/null; then
     echo "    Frontend marker OK: ${needle}"
   else
-    echo "    WARNING: '${needle}' not found in dist — UI may be outdated or build failed." >&2
+    echo "    ERROR: '${needle}' not found in dist — UI may be outdated or build failed." >&2
     MISSING_UI=1
+    DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
   fi
 done
-if [[ "${MISSING_UI}" -eq 1 ]]; then
-  echo "    WARNING: one or more expected UI strings missing from frontend/dist." >&2
-fi
 
 echo ""
 echo "==> Env presence checks (names only — never print secrets)..."
 ENV_FILE="${BACKEND}/.env"
+CRITICAL_ENV_MISSING=0
 if [[ -f "${ENV_FILE}" ]]; then
   for key in \
     DATABASE_URL FRONTEND_URL PUBLIC_TUNNEL_BASE \
     SMTP_HOST SMTP_USER SMTP_PASSWORD SMTP_FROM_EMAIL \
     WHATSAPP_ACCESS_TOKEN WHATSAPP_BOOKING_TEMPLATE WHATSAPP_ADMIN_BOOKING_TEMPLATE \
     WHATSAPP_BOOKING_TEMPLATE_LANGUAGE WHATSAPP_ADMIN_BOOKING_TEMPLATE_LANGUAGE \
+    WHATSAPP_BUSINESS_WABA_ID WHATSAPP_BUSINESS_PHONE_NUMBER_ID \
     R2_BUCKET_NAME; do
     if grep -Eq "^${key}=" "${ENV_FILE}"; then
       val="$(grep -E "^${key}=" "${ENV_FILE}" | head -1 | cut -d= -f2-)"
-      # redact
       if [[ -z "${val}" ]]; then
-        echo "    ${key}: EMPTY"
+        echo "    ERROR: ${key}: EMPTY" >&2
+        CRITICAL_ENV_MISSING=1
+        DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
       elif [[ "${val}" == *"copy from"* || "${val}" == *"placeholder"* || "${val}" == *"<*"* ]]; then
-        echo "    ${key}: PLACEHOLDER — replace with real value"
+        echo "    ERROR: ${key}: PLACEHOLDER — replace with real value" >&2
+        CRITICAL_ENV_MISSING=1
+        DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
       else
         echo "    ${key}: set (len=${#val})"
       fi
     else
-      echo "    ${key}: MISSING"
+      echo "    ERROR: ${key}: MISSING" >&2
+      CRITICAL_ENV_MISSING=1
+      DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
     fi
   done
-  # Soft reminders from prior staging incidents
   if grep -Eq '^R2_BUCKET_NAME=nexus-edutrust$' "${ENV_FILE}"; then
     echo "    WARNING: R2_BUCKET_NAME is shared develop bucket — prefer nexus-edutrust-staging." >&2
   fi
   if grep -Eq '^NEXUS_TUNNEL_ENABLED=true' "${ENV_FILE}"; then
-    echo "    WARNING: NEXUS_TUNNEL_ENABLED=true on staging — should be false." >&2
+    echo "    ERROR: NEXUS_TUNNEL_ENABLED=true on staging — must be false." >&2
+    DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
   fi
   if grep -Eq '^FRONTEND_URL=http://127\.0\.0\.1' "${ENV_FILE}"; then
-    echo "    WARNING: FRONTEND_URL looks local — expect https://nexus-dev.edutrust.in" >&2
+    echo "    ERROR: FRONTEND_URL looks local — expect https://nexus-dev.edutrust.in" >&2
+    DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
+  fi
+  # Soft tip: API smoke needs credentials on the VPS.
+  if ! grep -Eq '^STAGING_SMOKE_EMAIL=' "${ENV_FILE}" && ! grep -Eq '^UAT_EMAIL=' "${ENV_FILE}"; then
+    echo "    WARNING: set STAGING_SMOKE_EMAIL/PASSWORD (or UAT_*) in .env for booking/TOEFL API smoke." >&2
   fi
 else
-  echo "    WARNING: ${ENV_FILE} missing — do not copy develop .env blindly." >&2
+  echo "    ERROR: ${ENV_FILE} missing — do not copy develop .env blindly." >&2
+  DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
 fi
 
 echo ""
 echo "==> Restart services..."
+backend_ok=0
 if command -v systemctl >/dev/null 2>&1; then
-  # Keep service account able to read code/.env and write uploads after root deploys.
   mkdir -p "${BACKEND}/uploads"
   chown -R www-data:www-data "${BACKEND}/uploads" 2>/dev/null || true
   if [[ -f "${BACKEND}/.env" ]]; then
     chown www-data:www-data "${BACKEND}/.env" 2>/dev/null || true
     chmod 640 "${BACKEND}/.env" 2>/dev/null || true
   fi
-  # Ensure www-data can import app modules pulled as root.
   chown -R www-data:www-data "${BACKEND}/app" "${BACKEND}/alembic" "${BACKEND}/scripts" 2>/dev/null || true
 
   systemctl restart nexus-backend
@@ -212,7 +236,6 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl reload nginx
 
   echo "    Waiting for backend on ${BACKEND_HEALTH_URL} ..."
-  backend_ok=0
   for _ in $(seq 1 30); do
     if curl -sf "${BACKEND_HEALTH_URL}" >/dev/null 2>&1; then
       backend_ok=1
@@ -224,12 +247,12 @@ if command -v systemctl >/dev/null 2>&1; then
     echo "    ERROR: nexus-backend did not become healthy." >&2
     systemctl --no-pager --full status nexus-backend || true
     journalctl -u nexus-backend -n 80 --no-pager || true
+    DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
   else
     echo "    Backend is up."
   fi
 else
   echo "    systemctl not available; restart nexus-backend manually." >&2
-  backend_ok=0
 fi
 
 echo ""
@@ -237,10 +260,11 @@ echo "==> WhatsApp webhook sync..."
 cd "${BACKEND}"
 # shellcheck disable=SC1091
 source .venv/bin/activate
-if [[ "${backend_ok:-0}" -eq 1 ]] && python scripts/sync_whatsapp_webhook.py; then
+if [[ "${backend_ok}" -eq 1 ]] && python scripts/sync_whatsapp_webhook.py; then
   echo "    Webhook registered."
 else
-  echo "    Webhook sync skipped/failed (backend down or WHATSAPP_*/PUBLIC_TUNNEL_BASE)." >&2
+  echo "    ERROR: Webhook sync skipped/failed (backend down or WHATSAPP_*/PUBLIC_TUNNEL_BASE)." >&2
+  DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
 fi
 
 chown -R www-data:www-data "${FRONTEND}/dist" 2>/dev/null || true
@@ -251,25 +275,44 @@ if curl -sf "${BACKEND_HEALTH_URL}" >/dev/null 2>&1; then
   echo "    Backend: OK (${BACKEND_HEALTH_URL})"
 else
   echo "    Backend: NOT responding — check journalctl -u nexus-backend -n 50" >&2
+  DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
 fi
 
 if curl -sf "https://${PUBLIC_DOMAIN}/" >/dev/null 2>&1; then
   echo "    Public site: OK (https://${PUBLIC_DOMAIN}/)"
 else
   echo "    Public site: check nginx / DNS" >&2
+  DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
 fi
 
 if curl -sf "https://${PUBLIC_DOMAIN}/api/webhook/info" >/dev/null 2>&1; then
   echo "    Public API proxy: OK (/api/webhook/info)"
 else
   echo "    Public API proxy: FAIL — nginx → :8002 may be down" >&2
-fi
-
-if [[ -x "${SCRIPT_DIR}/verify-staging-deploy.sh" ]]; then
-  echo ""
-  bash "${SCRIPT_DIR}/verify-staging-deploy.sh" || true
+  DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
 fi
 
 echo ""
+echo "==> Hard verify (must pass — 2026-08-08 post-deploy gate)..."
+if [[ -x "${SCRIPT_DIR}/verify-staging-deploy.sh" ]]; then
+  if bash "${SCRIPT_DIR}/verify-staging-deploy.sh"; then
+    echo "    verify-staging-deploy: OK"
+  else
+    echo "    ERROR: verify-staging-deploy.sh failed." >&2
+    DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
+  fi
+else
+  echo "    ERROR: verify-staging-deploy.sh missing or not executable" >&2
+  DEPLOY_FAILURES=$((DEPLOY_FAILURES + 1))
+fi
+
+echo ""
+if [[ "${DEPLOY_FAILURES}" -gt 0 ]]; then
+  echo "==> Deploy finished WITH ${DEPLOY_FAILURES} failure(s) at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
+  echo "    Do not hand off to BAU until verify-staging-deploy.sh and staging_post_deploy_smoke.py are green." >&2
+  exit 1
+fi
+
 echo "==> Deploy complete at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "    Hard-refresh browser: Ctrl+Shift+R on https://${PUBLIC_DOMAIN}"
+exit 0

@@ -27,6 +27,30 @@ function Invoke-Step($Name, $ScriptBlock) {
     }
 }
 
+# Phase 0 — Staging post-deploy / pre-BAU smoke (sequences, Meta booking templates, TOEFL)
+Invoke-Step "Phase0 Staging smoke gates" {
+    Push-Location (Join-Path $Root "backend")
+    try {
+        $uatEnv = Join-Path $Root "uat\.env"
+        if (Test-Path $uatEnv) {
+            Get-Content $uatEnv | ForEach-Object {
+                if ($_ -match '^\s*#' -or $_ -notmatch '=') { return }
+                $parts = $_.Split('=', 2)
+                if ($parts.Length -eq 2) {
+                    [Environment]::SetEnvironmentVariable($parts[0].Trim(), $parts[1].Trim(), "Process")
+                }
+            }
+        }
+        $base = $env:STAGING_SMOKE_BASE_URL
+        if (-not $base) { $base = $env:UAT_BASE_URL }
+        if (-not $base) { $base = "http://127.0.0.1:5175" }
+        & .\.venv\Scripts\python.exe scripts\staging_post_deploy_smoke.py --base-url $base
+        if ($LASTEXITCODE -ne 0) { throw "staging_post_deploy_smoke exit $LASTEXITCODE" }
+    } finally {
+        Pop-Location
+    }
+}
+
 # Phase 2+3+4 — Pytest QA package
 if (-not $SkipPytest) {
     Invoke-Step "Phase2-4 Pytest (API/WhatsApp/RBAC)" {

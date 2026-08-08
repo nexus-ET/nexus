@@ -5,13 +5,7 @@ Auto-maintained by `backend/scripts/promote_to_staging.py`.
 Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
 
 **Current head:** `kk1l2mbiztseq`
-**Doc generated:** 2026-08-08 08:13 UTC
-
-## Migrations in this release
-
-| Revision | Migration | Changes |
-|----------|-----------|---------|
-| `kk1l2mbiztseq` | kk1l2mbiztseq_fix_candidate_test_scores_id_seq | SQL data migration |
+**Doc generated:** 2026-08-08 08:29 UTC
 
 ## Full migration chain (at head)
 

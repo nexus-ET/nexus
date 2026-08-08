@@ -1,6 +1,6 @@
 # Nexus UAT — Case catalog (save for next run)
 
-**Suite size:** 45 Playwright entries = **1 auth setup** + **44 application cases**.  
+**Suite size:** 48 Playwright entries = **1 auth setup** + **47 application cases**.  
 **Command:** `cd E:\NEXUS\uat` → `npm test` → `npm run summary`  
 **Env:** `uat/.env` — `UAT_BASE_URL`, `UAT_EMAIL`, `UAT_PASSWORD`, `UAT_LEAD_ID=27`, `UAT_BOOKING_ID` (session workspace).
 
@@ -113,6 +113,25 @@ Do not commit secrets. Keep this catalog in sync when adding/removing specs unde
 
 ---
 
+## Post-deploy regression gates (3) — `tests/07-post-deploy-gates.spec.ts`
+
+Hard API gates from **2026-08-08 staging BAU burn** (WhatsApp booking templates / TOEFL sequence / notify failures).
+
+| # | Case |
+| ---: | --- |
+| 45 | API login + status definitions healthy |
+| 46 | Staff booking notify channels do not return `failed`; TOEFL score capture HTTP 200 |
+| 47 | Book Appointment + Exception Report routes render |
+
+Also run backend smoke (VPS / preflight):
+
+```powershell
+cd E:\NEXUS\backend
+.\.venv\Scripts\python.exe scripts\staging_post_deploy_smoke.py --base-url https://nexus-dev.edutrust.in
+```
+
+---
+
 ## SIT screens (6) — `tests/sit/01-screen-sit.spec.ts`
 
 | # | Case |
@@ -160,4 +179,5 @@ Do not commit secrets. Keep this catalog in sync when adding/removing specs unde
 1. Frontend `:5175` and backend `:8002` responding  
 2. `uat/.env` populated (`UAT_PASSWORD`, `UAT_LEAD_ID=27`, `UAT_BOOKING_ID` for session cases)  
 3. `npm test` then `npm run summary`  
-4. Expect **45** Playwright entries (1 setup + 44 cases)  
+4. Expect **48** Playwright entries (1 setup + 47 cases)  
+5. Before staging handoff: `npm run smoke:staging` (or backend `staging_post_deploy_smoke.py`) must be green 
