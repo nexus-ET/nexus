@@ -4,6 +4,8 @@ Revision ID: h9a2b5studyyears
 Revises: g8z1a4timestamptz
 Create Date: 2026-07-27 07:00:00.000000
 
+Idempotent: safe when the table/column already exist (e.g. staging schema
+copied from develop while alembic_version lagged).
 """
 
 from __future__ import annotations
@@ -28,51 +30,73 @@ SEED_ROWS: list[tuple[str, str, int]] = [
 ]
 
 
+def _inspector():
+    return sa.inspect(op.get_bind())
+
+
+def _seed_missing_rows() -> None:
+    conn = op.get_bind()
+    for code, label, sort_order in SEED_ROWS:
+        exists = conn.execute(
+            sa.text("SELECT 1 FROM full_time_study_years WHERE code = :code LIMIT 1"),
+            {"code": code},
+        ).scalar()
+        if exists:
+            continue
+        conn.execute(
+            sa.text(
+                "INSERT INTO full_time_study_years (code, label, is_active, sort_order) "
+                "VALUES (:code, :label, true, :sort_order)"
+            ),
+            {"code": code, "label": label, "sort_order": sort_order},
+        )
+
+
 def upgrade() -> None:
-    op.create_table(
-        "full_time_study_years",
-        sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("code", sa.String(length=10), nullable=False),
-        sa.Column("label", sa.String(length=255), nullable=False),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
-        sa.Column("sort_order", sa.Integer(), nullable=False, server_default=sa.text("0")),
-    )
-    op.create_index("ix_full_time_study_years_id", "full_time_study_years", ["id"])
-    op.create_index(
-        "ix_full_time_study_years_code",
-        "full_time_study_years",
-        ["code"],
-        unique=True,
-    )
+    inspector = _inspector()
+    if not inspector.has_table("full_time_study_years"):
+        op.create_table(
+            "full_time_study_years",
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("code", sa.String(length=10), nullable=False),
+            sa.Column("label", sa.String(length=255), nullable=False),
+            sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
+            sa.Column("sort_order", sa.Integer(), nullable=False, server_default=sa.text("0")),
+        )
 
-    study_years = sa.table(
-        "full_time_study_years",
-        sa.column("code", sa.String),
-        sa.column("label", sa.String),
-        sa.column("is_active", sa.Boolean),
-        sa.column("sort_order", sa.Integer),
-    )
-    op.bulk_insert(
-        study_years,
-        [
-            {
-                "code": code,
-                "label": label,
-                "is_active": True,
-                "sort_order": sort_order,
-            }
-            for code, label, sort_order in SEED_ROWS
-        ],
-    )
+    inspector = _inspector()
+    indexes = {idx["name"] for idx in inspector.get_indexes("full_time_study_years")}
+    if "ix_full_time_study_years_id" not in indexes:
+        op.create_index("ix_full_time_study_years_id", "full_time_study_years", ["id"])
+    if "ix_full_time_study_years_code" not in indexes:
+        op.create_index(
+            "ix_full_time_study_years_code",
+            "full_time_study_years",
+            ["code"],
+            unique=True,
+        )
 
-    op.add_column(
-        "candidate_educations",
-        sa.Column("full_time_study_years", sa.String(length=10), nullable=True),
-    )
+    _seed_missing_rows()
+
+    if inspector.has_table("candidate_educations"):
+        edu_cols = {c["name"] for c in inspector.get_columns("candidate_educations")}
+        if "full_time_study_years" not in edu_cols:
+            op.add_column(
+                "candidate_educations",
+                sa.Column("full_time_study_years", sa.String(length=10), nullable=True),
+            )
 
 
 def downgrade() -> None:
-    op.drop_column("candidate_educations", "full_time_study_years")
-    op.drop_index("ix_full_time_study_years_code", table_name="full_time_study_years")
-    op.drop_index("ix_full_time_study_years_id", table_name="full_time_study_years")
-    op.drop_table("full_time_study_years")
+    inspector = _inspector()
+    if inspector.has_table("candidate_educations"):
+        edu_cols = {c["name"] for c in inspector.get_columns("candidate_educations")}
+        if "full_time_study_years" in edu_cols:
+            op.drop_column("candidate_educations", "full_time_study_years")
+    if inspector.has_table("full_time_study_years"):
+        indexes = {idx["name"] for idx in inspector.get_indexes("full_time_study_years")}
+        if "ix_full_time_study_years_code" in indexes:
+            op.drop_index("ix_full_time_study_years_code", table_name="full_time_study_years")
+        if "ix_full_time_study_years_id" in indexes:
+            op.drop_index("ix_full_time_study_years_id", table_name="full_time_study_years")
+        op.drop_table("full_time_study_years")

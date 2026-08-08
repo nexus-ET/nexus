@@ -5,7 +5,7 @@ Auto-maintained by `backend/scripts/promote_to_staging.py`.
 Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
 
 **Current head:** `jj0k1lbizlogo`
-**Doc generated:** 2026-08-08 05:51 UTC
+**Doc generated:** 2026-08-08 05:57 UTC
 
 ## Full migration chain (at head)
 
@@ -124,12 +124,12 @@ Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
 | `w4x7z0intaichat` | w4x7z0intaichat_add_intel_ai_chat_logs | New table(s): `intel_ai_chat_logs` |
 | `x5y8z1aithread` | x5y8z1aithread_add_intel_ai_chat_thread_id | Alter: `intel_ai_chat_logs.thread_id` |
 | `y6z9a2bithreadsx` | y6z9a2bithreadsx_add_intel_ai_user_created_index | Add user_id+created_at index for Intel AI thread sidebar queries. |
-| `a1b2c3flowxcore` | a1b2c3flowxcore_add_flowx_operational_tables | New table(s): `flowx_pipelines`, `flowx_tracks`, `flowx_tasks`, `flowx_audit_logs`, `flowx_workflow_rules` |
+| `a1b2c3flowxcore` | a1b2c3flowxcore_add_flowx_operational_tables | New table(s): `flowx_workflow_rules`, `flowx_pipelines`, `flowx_tracks`, `flowx_tasks`, `flowx_audit_logs`, `flowx_workflow_rules` |
 | `b2c3d4flowxcntry` | b2c3d4flowxcntry_rebuild_country_workflows | New table(s): `flowx_country_workflows`, `flowx_stages`, `flowx_tracks`, `flowx_task_templates`, `flowx_enrollments`, `flowx_enrollment_tracks`, `flowx_tasks`, `flowx_audit_logs` |
-| `c3d4e5flowxbrick` | c3d4e5flowxbrick_subprocess_links_overrides | New table(s): `flowx_subprocess_links`; Alter: `flowx_task_templates.is_active`; `flowx_task_templates.is_optional`; `flowx_task_templates.override_action`; `flowx_task_templates.override_reason`; `flowx_task_templates.overridden_at`; `flowx_task_templates.overridden_by` |
+| `c3d4e5flowxbrick` | c3d4e5flowxbrick_subprocess_links_overrides | New table(s): `flowx_subprocess_links` |
 | `u2p5r8frvisas` | u2p5r8frvisas_retarget_france_visas_scraper | SQL data migration |
 | `z9a2b5flowxapps` | z9a2b5flowxapps_multi_country_college_enrollments | Alter: `flowx_enrollments.institution_id`; `flowx_enrollments.college_id` |
-| `aa1b2cflowxappform` | aa1b2cflowxappform_pathway_registry_application_fields | New table(s): `flowx_pathway_registry`; Alter: `flowx_enrollments.university_name`; `flowx_enrollments.campus_id`; `flowx_enrollments.level_id`; `flowx_enrollments.qualification_program_id`; `flowx_enrollments.intake_id`; `flowx_enrollments.pathway_type`; `flowx_enrollments.pathway_name`; `flowx_enrollments.portal_url`; `flowx_enrollments.portal_username`; `flowx_enrollments.portal_password_hint`; `flowx_enrollments.institutional_app_id`; `flowx_enrollments.application_status`; `flowx_enrollments.fee_status`; `flowx_enrollments.fee_amount`; `flowx_enrollments.fee_currency`; `flowx_enrollments.internal_target_date`; `flowx_enrollments.official_deadline`; `flowx_enrollments.submitted_at` |
+| `aa1b2cflowxappform` | aa1b2cflowxappform_pathway_registry_application_fields | New table(s): `flowx_pathway_registry` |
 | `bb2c3denrolltrackpos` | bb2c3denrolltrackpos_enrollment_track_position | Alter: `flowx_enrollment_tracks.position_index` |
 | `cc3d4etaskoptional` | cc3d4etaskoptional_flowx_task_is_optional | Alter: `flowx_tasks.is_optional` |
 | `dd4e5fbricksteps` | dd4e5fbricksteps_add_template_action_steps | Alter: `flowx_task_templates.action_steps` |

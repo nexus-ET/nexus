@@ -18,16 +18,24 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "intel_ai_chat_logs",
-        sa.Column("thread_id", postgresql.UUID(as_uuid=True), nullable=True),
-    )
-    op.create_index("ix_intel_ai_chat_logs_thread_id", "intel_ai_chat_logs", ["thread_id"])
-    op.create_index(
-        "ix_intel_ai_chat_logs_user_thread_created",
-        "intel_ai_chat_logs",
-        ["user_id", "thread_id", "created_at"],
-    )
+    inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table("intel_ai_chat_logs"):
+        return
+    cols = {c["name"] for c in inspector.get_columns("intel_ai_chat_logs")}
+    indexes = {i["name"] for i in inspector.get_indexes("intel_ai_chat_logs")}
+    if "thread_id" not in cols:
+        op.add_column(
+            "intel_ai_chat_logs",
+            sa.Column("thread_id", postgresql.UUID(as_uuid=True), nullable=True),
+        )
+    if "ix_intel_ai_chat_logs_thread_id" not in indexes:
+        op.create_index("ix_intel_ai_chat_logs_thread_id", "intel_ai_chat_logs", ["thread_id"])
+    if "ix_intel_ai_chat_logs_user_thread_created" not in indexes:
+        op.create_index(
+            "ix_intel_ai_chat_logs_user_thread_created",
+            "intel_ai_chat_logs",
+            ["user_id", "thread_id", "created_at"],
+        )
 
 
 def downgrade() -> None:

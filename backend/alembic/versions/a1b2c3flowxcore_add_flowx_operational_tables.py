@@ -18,6 +18,22 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    # Skip if v1 pipelines already exist, or if country rebuild already applied.
+    if inspector.has_table("flowx_pipelines") or inspector.has_table("flowx_country_workflows"):
+        if not inspector.has_table("flowx_workflow_rules"):
+            op.create_table(
+                "flowx_workflow_rules",
+                sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+                sa.Column("rule_name", sa.String(255), nullable=False),
+                sa.Column("trigger_condition", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+                sa.Column("action_payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+                sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
+                sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+            )
+        return
+
     op.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
 
     op.create_table(

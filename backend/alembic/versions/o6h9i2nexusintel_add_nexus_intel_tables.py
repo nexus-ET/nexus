@@ -23,6 +23,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    # Staging may already have Intel tables (schema sync) while alembic_version lags.
+    if inspector.has_table("intel_glossary"):
+        return
+
     op.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
 
     op.create_table(
