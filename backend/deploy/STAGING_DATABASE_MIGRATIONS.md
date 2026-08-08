@@ -4,8 +4,14 @@ Auto-maintained by `backend/scripts/promote_to_staging.py`.
 
 Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
 
-**Current head:** `jj0k1lbizlogo`
-**Doc generated:** 2026-08-08 07:42 UTC
+**Current head:** `kk1l2mbiztseq`
+**Doc generated:** 2026-08-08 08:13 UTC
+
+## Migrations in this release
+
+| Revision | Migration | Changes |
+|----------|-----------|---------|
+| `kk1l2mbiztseq` | kk1l2mbiztseq_fix_candidate_test_scores_id_seq | SQL data migration |
 
 ## Full migration chain (at head)
 
@@ -139,6 +145,7 @@ Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
 | `hh8i9jchecklist` | hh8i9jchecklist_flowx_task_checklist_state | Alter: `flowx_tasks.checklist_state` |
 | `ii9j0kintakeass` | ii9j0kintakeass_counselling_intake_assessment | Alter: `counselling_bookings.intake_assessment` |
 | `jj0k1lbizlogo` | jj0k1lbizlogo_add_business_logo_path | Alter: `businesses.logo_path` |
+| `kk1l2mbiztseq` | kk1l2mbiztseq_fix_candidate_test_scores_id_seq | SQL data migration |
 
 ## Manual run (VPS or local)
 
@@ -153,5 +160,5 @@ alembic upgrade head
 
 ```bash
 alembic current
-# Expected: jj0k1lbizlogo (head)
+# Expected: kk1l2mbiztseq (head)
 ```

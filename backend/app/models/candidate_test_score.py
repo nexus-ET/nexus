@@ -12,7 +12,7 @@ from app.db.database import Base
 class CandidateTestScore(Base):
     __tablename__ = "candidate_test_scores"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, autoincrement=True)
     lead_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("leads.id", ondelete="CASCADE"),

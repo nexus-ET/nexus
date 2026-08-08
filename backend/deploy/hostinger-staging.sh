@@ -118,6 +118,13 @@ if [[ "${FRONTEND_ONLY}" -eq 0 ]]; then
       echo "    WARNING: ensure_navigation_rbac.py failed — mega-nav may be incomplete." >&2
     fi
     echo ""
+    echo "==> Heal candidate_test_scores id sequence..."
+    if python scripts/ensure_candidate_test_scores_sequence.py; then
+      echo "    candidate_test_scores sequence: OK"
+    else
+      echo "    WARNING: candidate_test_scores sequence heal failed — TOEFL/IELTS capture may 500." >&2
+    fi
+    echo ""
     echo "==> Staging login users..."
     if python scripts/seed_staging_users.py; then
       echo "    Staging users: OK"
