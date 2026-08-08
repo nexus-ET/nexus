@@ -111,6 +111,13 @@ if [[ "${FRONTEND_ONLY}" -eq 0 ]]; then
     fi
     echo "    Alembic: $(python -m alembic current 2>/dev/null | head -1 || echo unknown)"
     echo ""
+    echo "==> Navigation RBAC seed (Book Appointment / IntelX / FlowX / Students)..."
+    if python scripts/ensure_navigation_rbac.py; then
+      echo "    Navigation RBAC: OK"
+    else
+      echo "    WARNING: ensure_navigation_rbac.py failed — mega-nav may be incomplete." >&2
+    fi
+    echo ""
     echo "==> Staging login users..."
     if python scripts/seed_staging_users.py; then
       echo "    Staging users: OK"
@@ -129,10 +136,55 @@ cd "${FRONTEND}"
 npm ci
 npm run build
 
-if grep -rq "View Journey" "${FRONTEND}/dist" 2>/dev/null; then
-  echo "    Frontend build OK (View Journey found in dist)."
+MISSING_UI=0
+for needle in "View Journey" "Future Insights" "ROI Calculator" "Book Appointment"; do
+  if grep -rq "${needle}" "${FRONTEND}/dist" 2>/dev/null; then
+    echo "    Frontend marker OK: ${needle}"
+  else
+    echo "    WARNING: '${needle}' not found in dist — UI may be outdated or build failed." >&2
+    MISSING_UI=1
+  fi
+done
+if [[ "${MISSING_UI}" -eq 1 ]]; then
+  echo "    WARNING: one or more expected UI strings missing from frontend/dist." >&2
+fi
+
+echo ""
+echo "==> Env presence checks (names only — never print secrets)..."
+ENV_FILE="${BACKEND}/.env"
+if [[ -f "${ENV_FILE}" ]]; then
+  for key in \
+    DATABASE_URL FRONTEND_URL PUBLIC_TUNNEL_BASE \
+    SMTP_HOST SMTP_USER SMTP_PASSWORD SMTP_FROM_EMAIL \
+    WHATSAPP_ACCESS_TOKEN WHATSAPP_BOOKING_TEMPLATE WHATSAPP_ADMIN_BOOKING_TEMPLATE \
+    WHATSAPP_BOOKING_TEMPLATE_LANGUAGE WHATSAPP_ADMIN_BOOKING_TEMPLATE_LANGUAGE \
+    R2_BUCKET_NAME; do
+    if grep -Eq "^${key}=" "${ENV_FILE}"; then
+      val="$(grep -E "^${key}=" "${ENV_FILE}" | head -1 | cut -d= -f2-)"
+      # redact
+      if [[ -z "${val}" ]]; then
+        echo "    ${key}: EMPTY"
+      elif [[ "${val}" == *"copy from"* || "${val}" == *"placeholder"* || "${val}" == *"<*"* ]]; then
+        echo "    ${key}: PLACEHOLDER — replace with real value"
+      else
+        echo "    ${key}: set (len=${#val})"
+      fi
+    else
+      echo "    ${key}: MISSING"
+    fi
+  done
+  # Soft reminders from prior staging incidents
+  if grep -Eq '^R2_BUCKET_NAME=nexus-edutrust$' "${ENV_FILE}"; then
+    echo "    WARNING: R2_BUCKET_NAME is shared develop bucket — prefer nexus-edutrust-staging." >&2
+  fi
+  if grep -Eq '^NEXUS_TUNNEL_ENABLED=true' "${ENV_FILE}"; then
+    echo "    WARNING: NEXUS_TUNNEL_ENABLED=true on staging — should be false." >&2
+  fi
+  if grep -Eq '^FRONTEND_URL=http://127\.0\.0\.1' "${ENV_FILE}"; then
+    echo "    WARNING: FRONTEND_URL looks local — expect https://nexus-dev.edutrust.in" >&2
+  fi
 else
-  echo "    WARNING: 'View Journey' not found in dist — UI may be outdated or build failed." >&2
+  echo "    WARNING: ${ENV_FILE} missing — do not copy develop .env blindly." >&2
 fi
 
 echo ""

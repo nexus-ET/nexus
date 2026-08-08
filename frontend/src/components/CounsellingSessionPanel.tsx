@@ -80,6 +80,10 @@ interface StatusDefinition {
 }
 
 interface SessionActivityData {
+  booking?: {
+    status?: string | null;
+    session_status_label?: string | null;
+  } | null;
   status_definitions: StatusDefinition[];
   current_status_definition_id?: number | null;
   suggested_next_status_definition_id?: number | null;
@@ -774,11 +778,15 @@ const CounsellingSessionPanel: React.FC<CounsellingSessionPanelProps> = ({
       }
 
       if (shouldApplyStatus && nextStatusId) {
+        const statusNotes =
+          officerRecommendations.trim() ||
+          careerGoals.trim() ||
+          'Updated from counselling session.';
         await apiFetch(`bookings/mine/${bookingId}/status`, {
           method: 'POST',
           body: JSON.stringify({
             status_definition_id: Number(nextStatusId),
-            notes: null,
+            notes: statusNotes,
           }),
         });
         statusApplied = true;

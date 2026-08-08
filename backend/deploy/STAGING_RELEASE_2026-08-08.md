@@ -2,6 +2,8 @@
 
 Promote package for **IntelX**, **FlowX**, **Book Appointment**, intake **Session** workspace (Aspirations / Future Insights / ROI), counselling notification/reschedule fixes, and related Alembic heads.
 
+**Follow-up promote (same day):** counselling session status updates, Students counselling full session workspace, Meta template error clarity, Hostinger deploy hardening (nav RBAC + frontend markers + env presence checks).
+
 **No develop or staging `.env` files are modified by this package.** Apply optional new keys on the Hostinger staging `.env` manually using `STAGING_CONFIG_REQUIREMENTS.md` / `env.staging.example`.
 
 ---
@@ -9,11 +11,12 @@ Promote package for **IntelX**, **FlowX**, **Book Appointment**, intake **Sessio
 ## Suggested promote message
 
 ```
-Staging release 2026-08-08: IntelX, FlowX, Book Appointment, Session insights/ROI
+Staging redeploy 2026-08-08: session workspace + booking notify harden
 
-Ship Nexus Intel + FlowX operational modules, staff Book Appointment, intake
-session workspace (Aspirations / Future Insights / ROI), booking notification
-and WhatsApp reschedule fixes, and UAT harness (44 application cases).
+Ship Students counselling IntakeSession tabs (Future Insights / ROI), session
+pipeline status updates without cancelled-booking blockers, Meta template error
+clarity, and Hostinger deploy checks (nav RBAC seed, frontend markers, env
+presence). Do not overwrite staging .env.
 ```
 
 ---
@@ -26,8 +29,11 @@ and WhatsApp reschedule fixes, and UAT harness (44 application cases).
 | **FlowX** | `/flowx/*` — Ops, journeys, country/master workflows, enrollments, pathway registry |
 | **Book Appointment** | `/book-appointment` staff booking + week availability matrix + session purposes |
 | **Session workspace** | Intake tabs: Session, Aspirations, Future Insights, ROI Calculator, Shortlist, Personal, … |
-| **Notifications** | Multi-channel staff-book alerts; WA utility templates; email deliverability headers |
+| **Students counselling** | `/students/counselling` embeds the same IntakeSessionWorkspace (not profile-only) |
+| **Session status** | Allow Prospect Qualified / Finished updates from session; default lifecycle comment |
+| **Notifications** | Multi-channel staff-book alerts; WA utility templates; clearer Meta template errors |
 | **WhatsApp reschedule** | Latest booking summary; keep `reschedule_in_progress` through date→time pickers |
+| **Deploy** | `hostinger-staging.sh` runs `ensure_navigation_rbac.py`, frontend marker checks, env presence |
 | **Data sync** | `students_master.email` → `leads` + booking `candidate_email` on profile save |
 | **UAT** | `uat/CASE_CATALOG.md` — 44 cases (+ setup); `tests/06-new-modules.spec.ts` |
 
@@ -35,7 +41,7 @@ and WhatsApp reschedule fixes, and UAT harness (44 application cases).
 
 ## Database (Alembic)
 
-Hostinger `deploy.sh` / `hostinger-staging.sh` runs **`alembic upgrade head`**.
+Hostinger `deploy.sh` / `hostinger-staging.sh` runs **`bootstrap_alembic.py`** (then `alembic upgrade head` fallback).
 
 **Target head after this promote:** `jj0k1lbizlogo`
 
@@ -56,7 +62,7 @@ Full table: `STAGING_DATABASE_MIGRATIONS.md` (refreshed by `promote_to_staging.p
 cd /var/www/nexus/backend
 source .venv/bin/activate
 alembic current   # expect jj0k1lbizlogo (head)
-python scripts/ensure_navigation_rbac.py   # Book Appointment, Nexus Intel, FlowX routes
+python scripts/ensure_navigation_rbac.py   # also run by hostinger-staging.sh
 ```
 
 ---
@@ -83,34 +89,28 @@ New **optional** keys (manual on server if missing):
 |-----|---------|
 | `SMTP_FROM_NAME` | Display name for booking emails (default in code: Nexus Counselling) |
 | `WHATSAPP_BOOKING_TEMPLATE` | `et_booking_confirmation` (UTILITY; Meta must APPROVE) |
-| `WHATSAPP_BOOKING_TEMPLATE_LANGUAGE` | `en` |
+| `WHATSAPP_BOOKING_TEMPLATE_LANGUAGE` | Match Meta exactly (`en` or `en_US`) |
 | `WHATSAPP_ADMIN_BOOKING_TEMPLATE` | `et_booking_assigned` |
-| `WHATSAPP_ADMIN_BOOKING_TEMPLATE_LANGUAGE` | `en` |
+| `WHATSAPP_ADMIN_BOOKING_TEMPLATE_LANGUAGE` | Match Meta exactly (`en` or `en_US`) |
 
-Never copy develop tunnel / ngrok into staging `.env`.
+Never copy develop tunnel / ngrok into staging `.env`.  
+Confirm `SMTP_PASSWORD` is **not** a placeholder.  
+Confirm `R2_BUCKET_NAME=nexus-edutrust-staging` (not shared develop bucket).
 
 ---
 
 ## Deploy steps (Hostinger)
 
 1. Promote already pushed `origin/staging` (this package).
-2. On VPS (preferred full path):
+2. On VPS (preferred full path — rebuilds frontend every time):
 
 ```bash
 sudo bash /var/www/nexus/backend/deploy/hostinger-staging.sh
 ```
 
-Or pull + migrate + frontend build + restart:
-
-```bash
-sudo bash /var/www/nexus/backend/deploy/deploy.sh
-# ensure frontend rebuilt if deploy.sh alone is code-only:
-sudo bash /var/www/nexus/backend/deploy/hostinger-staging.sh --frontend-only
-```
-
 3. Post-deploy checklist: `STAGING_DEPLOYMENT_AGENT_PROMPT.md` (SMTP, nav RBAC, academia/student copy if empty DB, R2 staging bucket).
-4. Smoke: login → IntelX → FlowX → Book Appointment → open Session for lead 27 → Future Insights / ROI.
-5. Optional: UAT against staging (`uat/.env` `UAT_BASE_URL=https://nexus-dev.edutrust.in`).
+4. Smoke: login → mega-nav present → IntelX → FlowX → Book Appointment → `/students/counselling` Session tabs (Future Insights / ROI) → hard-refresh Ctrl+Shift+R.
+5. Booking notify smoke: create staff booking; expect email `sent` / WhatsApp may still `failed` until template language matches Meta.
 
 ---
 

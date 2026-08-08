@@ -13,9 +13,9 @@ New runtime code ships with **safe defaults** in `app/config.py`. Staging `.env`
 |-----|-----------|--------|
 | `SMTP_FROM_NAME` | Optional | Display name for outbound mail (code default: `Nexus Counselling`) |
 | `WHATSAPP_BOOKING_TEMPLATE` | Recommended for WA confirms outside 24h | Default `et_booking_confirmation` — must be **APPROVED** in Meta |
-| `WHATSAPP_BOOKING_TEMPLATE_LANGUAGE` | With template | Default `en` |
+| `WHATSAPP_BOOKING_TEMPLATE_LANGUAGE` | With template | Must match Meta exactly (`en` vs `en_US`). Staging failures were language mismatches. |
 | `WHATSAPP_ADMIN_BOOKING_TEMPLATE` | Recommended | Default `et_booking_assigned` — Meta **APPROVED** |
-| `WHATSAPP_ADMIN_BOOKING_TEMPLATE_LANGUAGE` | With template | Default `en` |
+| `WHATSAPP_ADMIN_BOOKING_TEMPLATE_LANGUAGE` | With template | Must match Meta exactly (`en` vs `en_US`) |
 | `INTEL_SCRAPER_BROWSER_FALLBACK` | Optional | Default `true` for Cloudflare/JS scraper sites |
 
 **Post-deploy seeds (not `.env`):**
@@ -24,8 +24,10 @@ New runtime code ships with **safe defaults** in `app/config.py`. Staging `.env`
 cd /var/www/nexus/backend && source .venv/bin/activate
 python scripts/ensure_navigation_rbac.py
 # Nav routes: /book-appointment, /nexus-intel, /flowx
+# hostinger-staging.sh now runs this automatically after migrations.
 ```
 
+**Booking notification smoke (after deploy):** Book Appointment should return per-channel status. If WhatsApp is `failed` with template language errors, fix `*_TEMPLATE_LANGUAGE` on the server `.env` and restart — do not overwrite the whole `.env` from develop.
 Register WA templates once (from a machine with Meta token configured — usually develop, then reuse names on staging):
 
 ```bash
