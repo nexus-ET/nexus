@@ -28,6 +28,8 @@ python scripts/ensure_navigation_rbac.py
 ```
 
 **Booking notification smoke (after deploy):** Book Appointment should return per-channel status. If WhatsApp is `failed` with template language errors, fix `*_TEMPLATE_LANGUAGE` on the server `.env` and restart — do not overwrite the whole `.env` from develop.
+
+**Hard post-deploy gate (2026-08-08):** `hostinger-staging.sh` must exit 0. It runs `ensure_id_sequences.py`, then `verify-staging-deploy.sh` → `staging_post_deploy_smoke.py` (Meta booking templates on business WABA, id sequences, optional API TOEFL/booking notify). Set `STAGING_SMOKE_EMAIL` / `STAGING_SMOKE_PASSWORD` on the VPS `.env` for full API gates.
 Register WA templates once (from a machine with Meta token configured — usually develop, then reuse names on staging):
 
 ```bash

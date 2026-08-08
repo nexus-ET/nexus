@@ -389,3 +389,45 @@ Staging deploy is **not done** until:
 10. **`alembic current` == release head, single head (G1/G3)**, and the consolidated SQL was **not** run alongside Alembic  
 
 If any item fails, **do not** report success — fix or list blockers with the exact command to run next.
+
+---
+
+## H. 2026-08-08 BAU burn — mandatory hard gates
+
+~2 hours of post-deploy firefighting. These are now **hard failures** in `hostinger-staging.sh` → `verify-staging-deploy.sh` → `scripts/staging_post_deploy_smoke.py`.
+
+| # | Issue we hit | Prevention / verify |
+|---|--------------|---------------------|
+| H1 | **Booking WhatsApp Failed** while AI Active “worked”. Free-form session msgs ≠ booking UTILITY templates. Templates lived on **test** WABA only; staging sends from **business** WABA. Language `en_US` vs Meta `en`. | Smoke checks Meta for `et_booking_confirmation` / `et_booking_assigned` on **BUSINESS** WABA, **APPROVED**, language matches `*_TEMPLATE_LANGUAGE`. Register with `register_whatsapp_booking_templates.py` against business WABA. |
+| H2 | **TOEFL capture HTTP 500** — `UniqueViolation candidate_test_scores_pkey` (sequence stuck at 1 after imported rows). | Deploy runs `ensure_id_sequences.py`. Smoke fails if sequence ≤ MAX(id). |
+| H3 | **verify-staging-deploy.sh was non-blocking** (`\|\| true`) so “Deploy complete” lied. | Deploy **exits 1** if verify/smoke fails. Do not wrap with `\|\| true`. |
+| H4 | **Env drift** (local FRONTEND_URL, tunnel flags, missing booking template language keys). | Critical env EMPTY/MISSING/PLACEHOLDER fails deploy. |
+| H5 | **UI markers missing** in `frontend/dist` after partial deploys. | Dist must contain Book Appointment, Future Insights, ROI, Aspirations, Exception Report. |
+| H6 | **UAT was page-load only** — never exercised notify dict or TOEFL POST. | `uat/tests/07-post-deploy-gates.spec.ts` + `npm run smoke:staging`. |
+
+### Mandatory post-deploy (VPS)
+
+```bash
+sudo bash /var/www/nexus/backend/deploy/hostinger-staging.sh
+# must end with exit 0 — if not, BAU is blocked on purpose
+
+cd /var/www/nexus/backend && source .venv/bin/activate
+python scripts/staging_post_deploy_smoke.py --base-url https://nexus-dev.edutrust.in
+```
+
+Put smoke credentials on the server `.env` (never commit):
+
+```text
+STAGING_SMOKE_EMAIL=…
+STAGING_SMOKE_PASSWORD=…
+STAGING_SMOKE_PHONE=+91…   # optional; enables candidate WhatsApp path
+```
+
+### Pre-BAU UAT (laptop)
+
+```powershell
+cd E:\NEXUS\uat
+# UAT_BASE_URL=https://nexus-dev.edutrust.in in .env
+npm run test:gates
+npm run smoke:staging
+```

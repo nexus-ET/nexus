@@ -6,8 +6,10 @@
   "scripts": {
     "test": "playwright test",
     "test:headed": "playwright test --headed",
+    "test:gates": "playwright test tests/07-post-deploy-gates.spec.ts",
     "test:report": "playwright show-report reports/html",
-    "summary": "node scripts/print-summary.mjs"
+    "summary": "node scripts/print-summary.mjs",
+    "smoke:staging": "node ./scripts/run-staging-smoke.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.54.2",
