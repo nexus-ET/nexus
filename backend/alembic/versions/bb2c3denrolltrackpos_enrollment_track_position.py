@@ -19,10 +19,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "flowx_enrollment_tracks",
-        sa.Column("position_index", sa.Integer(), nullable=False, server_default="0"),
-    )
+    inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table("flowx_enrollment_tracks"):
+        return
+    cols = {c["name"] for c in inspector.get_columns("flowx_enrollment_tracks")}
+    if "position_index" not in cols:
+        op.add_column(
+            "flowx_enrollment_tracks",
+            sa.Column("position_index", sa.Integer(), nullable=False, server_default="0"),
+        )
     # Backfill sequential order within each enrollment + stage.
     op.execute(
         """

@@ -24,27 +24,55 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "flowx_stages",
-        sa.Column("is_hidden", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+    inspector = sa.inspect(op.get_bind())
+    stage_cols = (
+        {c["name"] for c in inspector.get_columns("flowx_stages")}
+        if inspector.has_table("flowx_stages")
+        else set()
     )
-    op.add_column(
-        "flowx_task_templates",
-        sa.Column("parent_template_id", UUID(as_uuid=True), nullable=True),
+    tmpl_cols = (
+        {c["name"] for c in inspector.get_columns("flowx_task_templates")}
+        if inspector.has_table("flowx_task_templates")
+        else set()
     )
-    op.create_foreign_key(
-        "fk_flowx_task_templates_parent",
-        "flowx_task_templates",
-        "flowx_task_templates",
-        ["parent_template_id"],
-        ["id"],
-        ondelete="SET NULL",
+    tmpl_indexes = (
+        {i["name"] for i in inspector.get_indexes("flowx_task_templates")}
+        if inspector.has_table("flowx_task_templates")
+        else set()
     )
-    op.create_index(
-        "ix_flowx_task_templates_parent_template_id",
-        "flowx_task_templates",
-        ["parent_template_id"],
+    tmpl_fks = (
+        {fk["name"] for fk in inspector.get_foreign_keys("flowx_task_templates")}
+        if inspector.has_table("flowx_task_templates")
+        else set()
     )
+
+    if "is_hidden" not in stage_cols and inspector.has_table("flowx_stages"):
+        op.add_column(
+            "flowx_stages",
+            sa.Column("is_hidden", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+        )
+    if "parent_template_id" not in tmpl_cols and inspector.has_table("flowx_task_templates"):
+        op.add_column(
+            "flowx_task_templates",
+            sa.Column("parent_template_id", UUID(as_uuid=True), nullable=True),
+        )
+    if "fk_flowx_task_templates_parent" not in tmpl_fks and inspector.has_table("flowx_task_templates"):
+        op.create_foreign_key(
+            "fk_flowx_task_templates_parent",
+            "flowx_task_templates",
+            "flowx_task_templates",
+            ["parent_template_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
+    if "ix_flowx_task_templates_parent_template_id" not in tmpl_indexes and inspector.has_table(
+        "flowx_task_templates"
+    ):
+        op.create_index(
+            "ix_flowx_task_templates_parent_template_id",
+            "flowx_task_templates",
+            ["parent_template_id"],
+        )
 
     conn = op.get_bind()
 

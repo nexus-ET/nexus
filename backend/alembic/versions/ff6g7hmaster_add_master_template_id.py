@@ -23,23 +23,33 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "flowx_task_templates",
-        sa.Column("master_template_id", UUID(as_uuid=True), nullable=True),
-    )
-    op.create_index(
-        "ix_flowx_task_templates_master_template_id",
-        "flowx_task_templates",
-        ["master_template_id"],
-    )
-    op.create_foreign_key(
-        "fk_flowx_task_templates_master_template_id",
-        "flowx_task_templates",
-        "flowx_task_templates",
-        ["master_template_id"],
-        ["id"],
-        ondelete="SET NULL",
-    )
+    inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table("flowx_task_templates"):
+        return
+    cols = {c["name"] for c in inspector.get_columns("flowx_task_templates")}
+    indexes = {i["name"] for i in inspector.get_indexes("flowx_task_templates")}
+    fks = {fk["name"] for fk in inspector.get_foreign_keys("flowx_task_templates")}
+
+    if "master_template_id" not in cols:
+        op.add_column(
+            "flowx_task_templates",
+            sa.Column("master_template_id", UUID(as_uuid=True), nullable=True),
+        )
+    if "ix_flowx_task_templates_master_template_id" not in indexes:
+        op.create_index(
+            "ix_flowx_task_templates_master_template_id",
+            "flowx_task_templates",
+            ["master_template_id"],
+        )
+    if "fk_flowx_task_templates_master_template_id" not in fks:
+        op.create_foreign_key(
+            "fk_flowx_task_templates_master_template_id",
+            "flowx_task_templates",
+            "flowx_task_templates",
+            ["master_template_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
 
 
 def downgrade() -> None:

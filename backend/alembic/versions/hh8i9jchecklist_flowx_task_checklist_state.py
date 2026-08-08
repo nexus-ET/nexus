@@ -20,6 +20,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table("flowx_tasks"):
+        return
+    cols = {c["name"] for c in inspector.get_columns("flowx_tasks")}
+    if "checklist_state" in cols:
+        return
     op.add_column(
         "flowx_tasks",
         sa.Column(

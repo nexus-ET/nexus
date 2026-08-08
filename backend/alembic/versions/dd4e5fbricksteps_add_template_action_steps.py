@@ -19,6 +19,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table("flowx_task_templates"):
+        return
+    cols = {c["name"] for c in inspector.get_columns("flowx_task_templates")}
+    if "action_steps" in cols:
+        return
     op.add_column(
         "flowx_task_templates",
         sa.Column("action_steps", sa.Text(), nullable=True),

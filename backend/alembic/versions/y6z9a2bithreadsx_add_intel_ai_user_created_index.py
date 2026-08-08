@@ -7,6 +7,7 @@ Create Date: 2026-07-29
 
 from __future__ import annotations
 
+import sqlalchemy as sa
 from alembic import op
 
 revision = "y6z9a2bithreadsx"
@@ -17,10 +18,11 @@ depends_on = None
 
 def upgrade() -> None:
     # Fast sidebar / date-bucket scans: filter by user, order by recency.
-    op.create_index(
-        "ix_intel_ai_chat_logs_user_created",
-        "intel_ai_chat_logs",
-        ["user_id", "created_at"],
+    op.execute(
+        sa.text(
+            "CREATE INDEX IF NOT EXISTS ix_intel_ai_chat_logs_user_created "
+            "ON intel_ai_chat_logs (user_id, created_at)"
+        )
     )
 
 
