@@ -29,6 +29,16 @@ SEED_ROWS: list[tuple[str, str, int]] = [
     ("17+", "17+ - Master's / Postgraduate", 6),
 ]
 
+# Same mapping as i0b3c6ftlevels — needed when staging already has NOT NULL level_id.
+FT_LEVEL_MAP: dict[str, str] = {
+    "12": "FOUNDATIONAL",
+    "13": "FOUNDATIONAL",
+    "14": "UNDERGRAD",
+    "15": "UNDERGRAD",
+    "16": "UNDERGRAD",
+    "17+": "GRADUATE",
+}
+
 
 def _inspector():
     return sa.inspect(op.get_bind())
@@ -36,6 +46,14 @@ def _inspector():
 
 def _seed_missing_rows() -> None:
     conn = op.get_bind()
+    cols = {c["name"] for c in _inspector().get_columns("full_time_study_years")}
+    has_level_id = "level_id" in cols
+
+    level_by_code: dict[str, int] = {}
+    if has_level_id and _inspector().has_table("levels"):
+        level_rows = conn.execute(sa.text("SELECT id, code FROM levels")).fetchall()
+        level_by_code = {str(code).upper(): int(level_id) for level_id, code in level_rows}
+
     for code, label, sort_order in SEED_ROWS:
         exists = conn.execute(
             sa.text("SELECT 1 FROM full_time_study_years WHERE code = :code LIMIT 1"),
@@ -43,13 +61,30 @@ def _seed_missing_rows() -> None:
         ).scalar()
         if exists:
             continue
-        conn.execute(
-            sa.text(
-                "INSERT INTO full_time_study_years (code, label, is_active, sort_order) "
-                "VALUES (:code, :label, true, :sort_order)"
-            ),
-            {"code": code, "label": label, "sort_order": sort_order},
-        )
+
+        params = {"code": code, "label": label, "sort_order": sort_order}
+        if has_level_id:
+            level_code = FT_LEVEL_MAP.get(code)
+            level_id = level_by_code.get(level_code) if level_code else None
+            if level_id is None:
+                # Cannot satisfy NOT NULL level_id yet — leave for later catalog migrations.
+                continue
+            conn.execute(
+                sa.text(
+                    "INSERT INTO full_time_study_years "
+                    "(code, label, is_active, sort_order, level_id) "
+                    "VALUES (:code, :label, true, :sort_order, :level_id)"
+                ),
+                {**params, "level_id": level_id},
+            )
+        else:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO full_time_study_years (code, label, is_active, sort_order) "
+                    "VALUES (:code, :label, true, :sort_order)"
+                ),
+                params,
+            )
 
 
 def upgrade() -> None:
