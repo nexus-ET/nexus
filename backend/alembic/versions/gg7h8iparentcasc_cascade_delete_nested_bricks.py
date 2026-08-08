@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Sequence, Union
 
+import sqlalchemy as sa
 from alembic import op
 
 revision: str = "gg7h8iparentcasc"
@@ -21,11 +22,19 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.drop_constraint(
-        "fk_flowx_task_templates_parent",
-        "flowx_task_templates",
-        type_="foreignkey",
-    )
+    inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table("flowx_task_templates"):
+        return
+    fks = {fk["name"]: fk for fk in inspector.get_foreign_keys("flowx_task_templates")}
+    parent_fk = fks.get("fk_flowx_task_templates_parent")
+    if parent_fk is not None and (parent_fk.get("options") or {}).get("ondelete") == "CASCADE":
+        return
+    if parent_fk is not None:
+        op.drop_constraint(
+            "fk_flowx_task_templates_parent",
+            "flowx_task_templates",
+            type_="foreignkey",
+        )
     op.create_foreign_key(
         "fk_flowx_task_templates_parent",
         "flowx_task_templates",
