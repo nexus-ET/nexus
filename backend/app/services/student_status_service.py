@@ -485,9 +485,11 @@ def update_student_status(
         trigger_outreach = changed_by_type == "admin"
 
     if definition.stage_name == STAGE_COUNSELLING_FINISHED and booking is not None:
-        booking.status = "COMPLETED"
-        booking.completed_at = now
-        booking.updated_at = now
+        # Do not revive cancelled/pending rows; only complete a live session booking.
+        if (booking.status or "").strip().upper() in {"SCHEDULED", "COMPLETED"}:
+            booking.status = "COMPLETED"
+            booking.completed_at = now
+            booking.updated_at = now
 
     if definition.id == STATUS_PROSPECT_RELAUNCH:
         lead.stage = LeadStage.AI_ACTIVE

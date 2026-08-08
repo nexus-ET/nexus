@@ -40,7 +40,7 @@ import { phoneLocalToDigits } from '../../utils/phoneCountry';
 import StudentJourneyPanel from '../StudentJourneyPanel';
 import InteractionLogDrawer from '../InteractionLogDrawer';
 import CounsellingSessionModal from '../CounsellingSessionModal';
-import CandidateProfilePanel from '../CandidateProfilePanel';
+import IntakeSessionWorkspace from '../IntakeSessionWorkspace';
 import DigitalPresenceAdminSection from '../DigitalPresenceAdminSection';
 import AiActivePulseBoard, { type PulseLead } from '../AiActivePulseBoard';
 import HeadlessScrollArea from '../HeadlessScrollArea';
@@ -536,11 +536,16 @@ export default function ProspectDetailPanel({
         profileBookingQuery.isLoading ? (
           <div className="prospects-empty flex-1">Loading student profile...</div>
         ) : profileBookingQuery.data ? (
-          <CandidateProfilePanel
-            key={profileBookingQuery.data.id}
-            booking={profileBookingQuery.data}
-            variant="embedded"
-          />
+          <div className="min-h-0 flex-1 overflow-auto p-3">
+            <IntakeSessionWorkspace
+              key={profileBookingQuery.data.id}
+              bookingId={profileBookingQuery.data.id}
+              candidateName={profileBookingQuery.data.candidate_name}
+              onStatusUpdated={() => {
+                void profileBookingQuery.refetch();
+              }}
+            />
+          </div>
         ) : (
           <div className="prospects-empty flex-1">
             {profileBookingQuery.error instanceof Error

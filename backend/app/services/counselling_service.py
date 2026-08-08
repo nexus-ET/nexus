@@ -1231,6 +1231,8 @@ def _booking_session_status_label(status: str) -> str:
         return "Counselling: Finished"
     if normalized == CANCELLED_STATUS:
         return "Counselling: Cancelled"
+    if normalized == PENDING_STATUS:
+        return "Counselling: Pending Assignment"
     return "Counselling: Scheduled"
 
 
@@ -1380,10 +1382,21 @@ def get_viewable_booking_for_lead(db: Session, user: User, lead_id: int) -> Coun
         .order_by(CounsellingBooking.scheduled_time.desc(), CounsellingBooking.id.desc())
         .all()
     )
-    for booking in bookings:
-        if booking.admin_id == user.id or _my_bookings_view_all(user):
-            return booking
-    return None
+    viewable = [
+        booking
+        for booking in bookings
+        if booking.admin_id == user.id or _my_bookings_view_all(user)
+    ]
+    if not viewable:
+        return None
+
+    # Prefer a live session over historical cancelled rows so status updates
+    # and the session workspace target the booking the counsellor can act on.
+    for preferred in (SCHEDULED_STATUS, COMPLETED_STATUS):
+        for booking in viewable:
+            if booking.status == preferred:
+                return booking
+    return viewable[0]
 
 
 def get_lead_profile_booking_context(db: Session, user: User, lead_id: int) -> dict:
@@ -1671,6 +1684,11 @@ def _assert_booking_status_change_allowed_before_appointment(
     lead: Lead,
     status_definition_id: int,
 ) -> None:
+    # Cancelled rows are historical — allow pipeline catch-up (e.g. Prospect Qualified)
+    # without re-applying the "wait until appointment date" rule.
+    if booking.status == CANCELLED_STATUS:
+        return
+
     calendar_today = office_today(db)
     if not _booking_forward_status_change_blocked(booking, calendar_today):
         return
@@ -2383,11 +2401,6 @@ def update_my_booking_status(
     notes: str | None = None,
 ) -> dict:
     booking = _get_owned_booking(db, user_id, booking_id)
-    if booking.status not in (SCHEDULED_STATUS, COMPLETED_STATUS):
-        raise HTTPException(
-            status_code=400,
-            detail="Only active or completed session bookings can be updated.",
-        )
     if not booking.lead_id:
         raise HTTPException(status_code=400, detail="Booking is not linked to a lead.")
 
@@ -2399,21 +2412,44 @@ def update_my_booking_status(
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
+    # Prefer a live SCHEDULED booking for the same lead when the opened row is
+    # cancelled/pending — pipeline stages (e.g. Prospect Qualified) should still
+    # apply, and Finished should complete the active session when one exists.
+    status_booking = booking
+    if booking.status not in (SCHEDULED_STATUS, COMPLETED_STATUS):
+        active = (
+            db.query(CounsellingBooking)
+            .filter(
+                CounsellingBooking.lead_id == booking.lead_id,
+                CounsellingBooking.admin_id == user_id,
+                CounsellingBooking.status == SCHEDULED_STATUS,
+            )
+            .order_by(CounsellingBooking.scheduled_time.desc(), CounsellingBooking.id.desc())
+            .first()
+        )
+        if active:
+            status_booking = active
+
     _assert_booking_status_change_allowed_before_appointment(
         db,
-        booking,
+        status_booking,
         lead,
         status_definition_id,
     )
+
+    # Admin overrides / express jumps require a history comment. Session UI may
+    # omit one when moving between non-adjacent stages (e.g. Session Booked →
+    # Prospect Qualified).
+    status_notes = (notes or "").strip() or "Updated from counselling session."
 
     return apply_lead_status(
         db,
         lead=lead,
         status_definition_id=status_definition_id,
         counsellor_id=user_id,
-        booking_id=booking.id,
-        notes=notes,
-        booking=booking,
+        booking_id=status_booking.id,
+        notes=status_notes,
+        booking=status_booking,
     )
 
 

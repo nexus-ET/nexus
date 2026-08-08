@@ -116,6 +116,8 @@ def test_is_backward_transition_uses_transition_graph() -> None:
 def test_booking_session_status_label():
     assert _booking_session_status_label("SCHEDULED") == "Counselling: Scheduled"
     assert _booking_session_status_label("COMPLETED") == "Counselling: Finished"
+    assert _booking_session_status_label("CANCELLED") == "Counselling: Cancelled"
+    assert _booking_session_status_label("PENDING") == "Counselling: Pending Assignment"
 
 
 def test_resolve_admission_stage_meta_categories():

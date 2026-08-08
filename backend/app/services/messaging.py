@@ -486,9 +486,23 @@ def _build_template_components(
     return [{"type": "body", "parameters": parameters}]
 
 
-def format_meta_graph_error(response: httpx.Response, *, to_number: str | None = None) -> str:
+def format_meta_graph_error(
+    response: httpx.Response,
+    *,
+    to_number: str | None = None,
+    template_name: str | None = None,
+    language_code: str | None = None,
+) -> str:
     """Turn a Meta Graph API error response into a user-facing message."""
     detail = response.text
+    resolved_template = (
+        (template_name or "").strip()
+        or (settings.WHATSAPP_OUTREACH_TEMPLATE or "").strip()
+        or "your template"
+    )
+    resolved_language = (
+        (language_code or "").strip() or resolve_outreach_template_language()
+    )
     try:
         err = response.json().get("error", {})
         detail = err.get("message") or detail
@@ -506,21 +520,19 @@ def format_meta_graph_error(response: httpx.Response, *, to_number: str | None =
                 "business number first."
             )
         elif code == META_ERROR_TEMPLATE_TRANSLATION:
-            template = (settings.WHATSAPP_OUTREACH_TEMPLATE or "").strip() or "your template"
-            language = resolve_outreach_template_language()
             detail = (
-                f'Template "{template}" is not available for language code "{language}". '
-                "In Meta Business Manager → WhatsApp Manager → Message templates, open the "
-                "template and note its language (English = en, English (US) = en_US). "
-                "Set WHATSAPP_OUTREACH_TEMPLATE_LANGUAGE in .env to that exact code."
+                f'Template "{resolved_template}" is not available for language code '
+                f'"{resolved_language}". In Meta Business Manager → WhatsApp Manager → '
+                "Message templates, open the template and note its language "
+                "(English = en, English (US) = en_US). Set the matching *_TEMPLATE_LANGUAGE "
+                "in .env to that exact code."
             )
         elif code == META_ERROR_PARAMETER_COUNT:
-            template = (settings.WHATSAPP_OUTREACH_TEMPLATE or "").strip() or "your template"
             meta_detail = err.get("error_data") or err.get("error_user_msg") or ""
             detail = (
-                f'Template "{template}" parameter mismatch. {meta_detail} '
+                f'Template "{resolved_template}" parameter mismatch. {meta_detail} '
                 "If details say expected number of params (0), the template body uses static text "
-                'like [Student Name] instead of Meta variables — recreate the template in WhatsApp '
+                "like [Student Name] instead of Meta variables — recreate the template in WhatsApp "
                 "Manager using Add variable ({{1}}, {{2}}), not typed square brackets."
             )
     except Exception:
@@ -847,7 +859,12 @@ async def send_whatsapp_template(
     async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.post(url, json=payload, headers=headers)
         if response.status_code >= 400:
-            detail = format_meta_graph_error(response, to_number=to_number)
+            detail = format_meta_graph_error(
+                response,
+                to_number=to_number,
+                template_name=template_name,
+                language_code=resolved_language,
+            )
             logger.error(
                 "WhatsApp template delivery failed: template=%s status=%s body=%s",
                 template_name,
