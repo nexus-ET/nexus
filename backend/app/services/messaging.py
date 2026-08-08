@@ -336,6 +336,100 @@ def _language_codes_match(template_language: str, requested_language: str) -> bo
     return left == right or left.split("_")[0] == right.split("_")[0]
 
 
+def _language_codes_equal(template_language: str, requested_language: str) -> bool:
+    left = (template_language or "").strip().lower().replace("-", "_")
+    right = (requested_language or "").strip().lower().replace("-", "_")
+    return bool(left) and left == right
+
+
+async def list_meta_template_language_codes(template_name: str) -> list[str]:
+    """Return language codes Meta has for a template name (approved first)."""
+    from app.services.whatsapp_config import resolve_whatsapp_waba_id
+
+    waba_id = resolve_whatsapp_waba_id()
+    access_token = (settings.WHATSAPP_ACCESS_TOKEN or "").strip()
+    if not waba_id or not access_token or not (template_name or "").strip():
+        return []
+
+    url = f"{WHATSAPP_GRAPH_API_BASE}/{waba_id}/message_templates"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(
+                url,
+                params={"name": template_name, "limit": "50"},
+                headers=headers,
+            )
+            if response.status_code >= 400:
+                logger.warning(
+                    "Could not list WhatsApp template languages for %r: status=%s body=%s",
+                    template_name,
+                    response.status_code,
+                    response.text,
+                )
+                return []
+
+            approved: list[str] = []
+            other: list[str] = []
+            for template in response.json().get("data", []):
+                if str(template.get("name") or "") != template_name:
+                    continue
+                language = str(template.get("language") or "").strip()
+                if not language:
+                    continue
+                status = str(template.get("status") or "").upper()
+                if status in {"APPROVED", "ACTIVE", ""}:
+                    if language not in approved:
+                        approved.append(language)
+                elif language not in other and language not in approved:
+                    other.append(language)
+            return approved or other
+    except Exception:
+        logger.exception("Failed to list WhatsApp template languages for %r", template_name)
+        return []
+
+
+async def resolve_meta_template_send_language(
+    template_name: str,
+    preferred_language: str | None = None,
+) -> str:
+    """
+    Pick the exact Meta language code for a template send.
+
+    Preferred env values like en_US must not be sent when Meta only has `en`
+    (error 132001). Prefer an exact match, then same base language using Meta's
+    exact code, then the first approved language Meta returns.
+    """
+    preferred = (preferred_language or "").strip() or resolve_outreach_template_language()
+    languages = await list_meta_template_language_codes(template_name)
+    if not languages:
+        return preferred
+
+    for language in languages:
+        if _language_codes_equal(language, preferred):
+            return language
+
+    for language in languages:
+        if _language_codes_match(language, preferred):
+            if not _language_codes_equal(language, preferred):
+                logger.info(
+                    "WhatsApp template %r: preferred language %r not exact; using Meta code %r",
+                    template_name,
+                    preferred,
+                    language,
+                )
+            return language
+
+    logger.info(
+        "WhatsApp template %r: preferred language %r unavailable; using Meta code %r",
+        template_name,
+        preferred,
+        languages[0],
+    )
+    return languages[0]
+
+
+
 async def fetch_meta_outreach_template_spec(
     template_name: str,
     language_code: str,
@@ -370,9 +464,23 @@ async def fetch_meta_outreach_template_spec(
                 )
                 return None
 
-            for template in response.json().get("data", []):
-                if str(template.get("name") or "") != template_name:
-                    continue
+            rows = [
+                template
+                for template in response.json().get("data", [])
+                if str(template.get("name") or "") == template_name
+            ]
+            # Prefer an exact language match before any en/en_US fuzzy match.
+            ordered = sorted(
+                rows,
+                key=lambda template: (
+                    0
+                    if _language_codes_equal(str(template.get("language") or ""), language_code)
+                    else 1
+                    if _language_codes_match(str(template.get("language") or ""), language_code)
+                    else 2
+                ),
+            )
+            for template in ordered:
                 if not _language_codes_match(str(template.get("language") or ""), language_code):
                     continue
 
@@ -400,9 +508,10 @@ async def fetch_meta_outreach_template_spec(
                     )
                 _TEMPLATE_SPEC_CACHE[cache_key] = spec
                 logger.info(
-                    "Loaded WhatsApp template spec for %r (%s): format=%s body_params=%s names=%s",
+                    "Loaded WhatsApp template spec for %r (%s→%s): format=%s body_params=%s names=%s",
                     template_name,
                     language_code,
+                    template.get("language"),
                     spec.parameter_format,
                     spec.body_parameter_count,
                     spec.body_named_parameter_names,
@@ -829,51 +938,80 @@ async def send_whatsapp_template(
     """Send an approved Meta WhatsApp template (required to open business-initiated chats)."""
     access_token = (settings.WHATSAPP_ACCESS_TOKEN or "").strip()
     phone_number_id = resolve_whatsapp_phone_number_id()
-    resolved_language = (language_code or resolve_outreach_template_language()).strip()
+    preferred_language = (language_code or resolve_outreach_template_language()).strip()
+    resolved_language = await resolve_meta_template_send_language(
+        template_name, preferred_language
+    )
 
     if not access_token or not phone_number_id:
         raise WhatsAppDeliveryError(
             "WHATSAPP_ACCESS_TOKEN or WHATSAPP_PHONE_NUMBER_ID is not configured."
         )
 
-    template_payload: dict[str, Any] = {
-        "name": template_name,
-        "language": {"code": resolved_language},
-    }
-    components = _build_template_components(body_parameters)
-    if components:
-        template_payload["components"] = components
+    async def _post(language: str) -> httpx.Response:
+        template_payload: dict[str, Any] = {
+            "name": template_name,
+            "language": {"code": language},
+        }
+        components = _build_template_components(body_parameters)
+        if components:
+            template_payload["components"] = components
 
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": clean_phone_number(to_number),
-        "type": "template",
-        "template": template_payload,
-    }
-    url = f"{WHATSAPP_GRAPH_API_BASE}/{phone_number_id}/messages"
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-    }
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": clean_phone_number(to_number),
+            "type": "template",
+            "template": template_payload,
+        }
+        url = f"{WHATSAPP_GRAPH_API_BASE}/{phone_number_id}/messages"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            return await client.post(url, json=payload, headers=headers)
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        if response.status_code >= 400:
-            detail = format_meta_graph_error(
-                response,
-                to_number=to_number,
-                template_name=template_name,
-                language_code=resolved_language,
-            )
-            logger.error(
-                "WhatsApp template delivery failed: template=%s status=%s body=%s",
-                template_name,
-                response.status_code,
-                response.text,
-            )
-            raise WhatsAppDeliveryError(detail, status_code=response.status_code)
-        message_id = extract_meta_message_id(response)
-        return message_id
+    response = await _post(resolved_language)
+    if response.status_code >= 400:
+        # One retry with another Meta-listed language on translation mismatch.
+        try:
+            err_code = response.json().get("error", {}).get("code")
+        except Exception:
+            err_code = None
+        if err_code == META_ERROR_TEMPLATE_TRANSLATION:
+            alternatives = [
+                lang
+                for lang in await list_meta_template_language_codes(template_name)
+                if not _language_codes_equal(lang, resolved_language)
+            ]
+            for alt in alternatives:
+                logger.warning(
+                    "Retrying WhatsApp template %r with Meta language %r after %r failed",
+                    template_name,
+                    alt,
+                    resolved_language,
+                )
+                retry = await _post(alt)
+                if retry.status_code < 400:
+                    return extract_meta_message_id(retry)
+                response = retry
+                resolved_language = alt
+
+        detail = format_meta_graph_error(
+            response,
+            to_number=to_number,
+            template_name=template_name,
+            language_code=resolved_language,
+        )
+        logger.error(
+            "WhatsApp template delivery failed: template=%s language=%s status=%s body=%s",
+            template_name,
+            resolved_language,
+            response.status_code,
+            response.text,
+        )
+        raise WhatsAppDeliveryError(detail, status_code=response.status_code)
+    return extract_meta_message_id(response)
 
 
 async def send_whatsapp_outreach_template(

@@ -13,9 +13,9 @@ New runtime code ships with **safe defaults** in `app/config.py`. Staging `.env`
 |-----|-----------|--------|
 | `SMTP_FROM_NAME` | Optional | Display name for outbound mail (code default: `Nexus Counselling`) |
 | `WHATSAPP_BOOKING_TEMPLATE` | Recommended for WA confirms outside 24h | Default `et_booking_confirmation` — must be **APPROVED** in Meta |
-| `WHATSAPP_BOOKING_TEMPLATE_LANGUAGE` | With template | Must match Meta exactly (`en` vs `en_US`). Staging failures were language mismatches. |
+| `WHATSAPP_BOOKING_TEMPLATE_LANGUAGE` | With template | Prefer `en` (registration default). App now resolves Meta's exact code if `en_US` is set but only `en` exists. |
 | `WHATSAPP_ADMIN_BOOKING_TEMPLATE` | Recommended | Default `et_booking_assigned` — Meta **APPROVED** |
-| `WHATSAPP_ADMIN_BOOKING_TEMPLATE_LANGUAGE` | With template | Must match Meta exactly (`en` vs `en_US`) |
+| `WHATSAPP_ADMIN_BOOKING_TEMPLATE_LANGUAGE` | With template | Prefer `en`. Same auto-resolve as candidate template. |
 | `INTEL_SCRAPER_BROWSER_FALLBACK` | Optional | Default `true` for Cloudflare/JS scraper sites |
 
 **Post-deploy seeds (not `.env`):**
