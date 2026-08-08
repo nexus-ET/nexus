@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timezone
+from zoneinfo import ZoneInfo
+
+from app.utils.timezone import utc_now
 
 from sqlalchemy import String, and_, case, cast, exists, func, or_, select
 from sqlalchemy.orm import Session
@@ -266,7 +269,7 @@ def list_prospects_keyset(
         next_cursor = None
         if has_more and page_rows:
             last = page_rows[-1]
-            anchor_time = last.created_at or datetime.now(timezone.utc).replace(tzinfo=None)
+            anchor_time = last.created_at or utc_now()
             next_cursor = encode_prospect_cursor(anchor_time, last.id)
     else:
         cursor_ts, cursor_id = decode_prospect_cursor(cursor)
@@ -282,7 +285,7 @@ def list_prospects_keyset(
         next_cursor = None
         if has_more and page_rows:
             last = page_rows[-1]
-            anchor_time = last.created_at or datetime.now(timezone.utc).replace(tzinfo=None)
+            anchor_time = last.created_at or utc_now()
             next_cursor = encode_prospect_cursor(anchor_time, last.id)
 
     from app.services.admissions_intake_flow import _load_active_consultation_bookings_map
@@ -310,7 +313,7 @@ def list_prospects_keyset(
 
 
 def get_prospects_summary(db: Session) -> dict:
-    today_start = datetime.combine(datetime.utcnow().date(), time.min)
+    today_start = datetime.combine(utc_now().date(), time.min, tzinfo=ZoneInfo("UTC"))
     total_leads = db.query(func.count(Lead.id)).scalar() or 0
     leads_today = (
         db.query(func.count(Lead.id)).filter(Lead.created_at >= today_start).scalar() or 0

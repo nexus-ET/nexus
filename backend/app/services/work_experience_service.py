@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.models.lead import Lead
 from app.models.work_experience import WorkExperience, WorkProject
 from app.schemas.work_experience import WorkExperienceSaveRequest, WorkExperiencesResponse
+from app.utils.timezone import utc_now
 
 
 def _experience_query(db: Session, *, lead_id: int | None, booking_id: int):
@@ -71,7 +72,7 @@ def save_work_experiences(
         db.delete(record)
     db.flush()
 
-    saved_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    saved_at = utc_now()
 
     for index, experience_input in enumerate(payload.experiences):
         if _is_experience_empty(experience_input):

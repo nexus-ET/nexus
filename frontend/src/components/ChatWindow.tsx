@@ -3,6 +3,7 @@ import { Check, CheckCheck, Mic, Send, Square, UserPlus } from 'lucide-react';
 import { apiUpload, getCurrentUserId, getStoredToken, resolveBaseUrl } from '../utils/api';
 import MessageBody from '../utils/messageBody';
 import { formatMessageTime, shouldShowMessageTimestamp } from '../utils/chatTimestamps';
+import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 import ChatMessageInput from './ChatMessageInput';
 import DirectionalMessageRow from './DirectionalMessageRow';
 import EmotePicker from './EmotePicker';
@@ -24,6 +25,7 @@ const deliveryIcon = (status: string) => {
 };
 
 const ChatWindow: React.FC = () => {
+  const { timezone } = useBusinessTimezone();
   const {
     messages,
     selectedLeadId,
@@ -200,13 +202,14 @@ const ChatWindow: React.FC = () => {
             messages,
             index,
             item => item.sender_user_id,
-            item => item.created_at
+            item => item.created_at,
+            timezone
           );
           const isHighlighted =
             (highlightedLeadId !== null && message.lead_id === highlightedLeadId) ||
             (highlightedCandidateName !== null &&
               message.text.toLowerCase().includes(highlightedCandidateName.toLowerCase()));
-          const messageTime = formatMessageTime(message.created_at);
+          const messageTime = formatMessageTime(message.created_at, timezone);
 
           if (message.message_type === 'system') {
             return (

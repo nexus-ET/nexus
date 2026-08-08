@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.models.exception_log import ExceptionLog
 from app.schemas.exception_log import ExceptionLogOut
 from app.services.settings_service import get_setting
-from app.utils.timezone import business_now
+from app.utils.timezone import business_now, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ EXCEPTION_LOG_SORT_FIELDS = {
 
 
 def _utcnow_naive() -> datetime:
-    return datetime.utcnow().replace(microsecond=0)
+    return utc_now().replace(microsecond=0)
 
 
 def normalize_severity(raw: str | None) -> str:

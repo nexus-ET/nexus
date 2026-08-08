@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from app.utils.timezone import utc_now
 from datetime import datetime, time
 from typing import Literal
 
@@ -202,7 +203,7 @@ def _export_sync_logs_pdf_response(
         sort_order=sort_order,
     )
 
-    filename_date = datetime.utcnow().strftime("%Y-%m-%d")
+    filename_date = utc_now().strftime("%Y-%m-%d")
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -357,7 +358,7 @@ def _export_exception_logs_pdf_response(
         sort_by=sort_by,
         sort_order=sort_order,
     )
-    filename_date = datetime.utcnow().strftime("%Y-%m-%d")
+    filename_date = utc_now().strftime("%Y-%m-%d")
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

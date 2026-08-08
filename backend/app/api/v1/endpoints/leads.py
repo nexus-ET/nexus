@@ -1,4 +1,5 @@
 import os
+from app.utils.timezone import utc_now
 import re
 import traceback
 import mimetypes
@@ -134,7 +135,7 @@ def _apply_lead_interaction_window(query, db: Session, days: int | None):
     if not days or days <= 0:
         return query
 
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = utc_now() - timedelta(days=days)
     has_recent_message = (
         db.query(Message.id)
         .filter(
@@ -340,7 +341,7 @@ def build_universal_lead_payload(lead: Lead, db: Session) -> dict:
     raw_stage = lead.stage or LeadStage.AI_ACTIVE
     clean_stage = normalize_lead_stage(raw_stage)
 
-    base_time = lead.created_at.isoformat() if lead.created_at else datetime.utcnow().isoformat()
+    base_time = lead.created_at.isoformat() if lead.created_at else utc_now().isoformat()
     updated_time = lead.updated_at.isoformat() if hasattr(lead, 'updated_at') and lead.updated_at else base_time
 
     def serialize_sender(sender: str) -> str:
@@ -475,7 +476,7 @@ def build_active_queue_item(
     stats = stats or {}
     raw_stage = lead.stage or LeadStage.AI_ACTIVE
     clean_stage = normalize_lead_stage(raw_stage)
-    base_time = lead.created_at.isoformat() if lead.created_at else datetime.utcnow().isoformat()
+    base_time = lead.created_at.isoformat() if lead.created_at else utc_now().isoformat()
     updated_time = (
         lead.updated_at.isoformat()
         if hasattr(lead, "updated_at") and lead.updated_at
@@ -567,7 +568,7 @@ def build_handoff_queue_item(
     stats = stats or {}
     raw_stage = lead.stage or LeadStage.HANDOFF
     clean_stage = normalize_lead_stage(raw_stage)
-    base_time = lead.created_at.isoformat() if lead.created_at else datetime.utcnow().isoformat()
+    base_time = lead.created_at.isoformat() if lead.created_at else utc_now().isoformat()
     updated_time = (
         lead.updated_at.isoformat()
         if hasattr(lead, "updated_at") and lead.updated_at
@@ -629,7 +630,7 @@ def build_lead_list_payload(lead: Lead) -> dict:
     """Lightweight list payload for /leads/all without loading full message history."""
     raw_stage = lead.stage or LeadStage.AI_ACTIVE
     clean_stage = normalize_lead_stage(raw_stage)
-    base_time = lead.created_at.isoformat() if lead.created_at else datetime.utcnow().isoformat()
+    base_time = lead.created_at.isoformat() if lead.created_at else utc_now().isoformat()
     updated_time = (
         lead.updated_at.isoformat()
         if hasattr(lead, "updated_at") and lead.updated_at
@@ -1279,7 +1280,7 @@ async def update_lead_notes(lead_id: int, payload: LeadNotesUpdate, db: Session 
     if not lead:
         raise HTTPException(status_code=404, detail="Lead profile not found.")
     lead.intake_context = payload.notes.strip()
-    lead.updated_at = datetime.utcnow()
+    lead.updated_at = utc_now()
     db.commit()
     db.refresh(lead)
     return build_universal_lead_payload(lead, db)
@@ -1335,7 +1336,7 @@ async def update_lead_status(lead_id: int, update: StatusUpdate, db: Session = D
         new_stage = "ARCHIVE"
 
     lead.stage = new_stage
-    lead.updated_at = datetime.utcnow()
+    lead.updated_at = utc_now()
 
     if new_stage == "AI_ACTIVE":
         lead.is_human_locked = False

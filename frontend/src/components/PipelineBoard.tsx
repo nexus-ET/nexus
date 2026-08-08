@@ -37,7 +37,7 @@ const PipelineBoard: React.FC<PipelineBoardProps> = ({ onSelectLead }) => {
     <div className="flex h-full flex-col rounded-xl border border-[#84d2f6]/50 bg-white shadow-sm">
       <div className="flex items-center justify-between border-b border-[#84d2f6]/40 px-4 py-3">
         <div>
-          <h2 className="text-sm font-semibold text-[#03045e]">Admission Pipeline</h2>
+          <h2 className="text-sm font-semibold text-[#322f86]">Admission Pipeline</h2>
           <p className="text-xs text-[#386fa4]">{totalCards} active candidates</p>
         </div>
       </div>
@@ -52,7 +52,7 @@ const PipelineBoard: React.FC<PipelineBoardProps> = ({ onSelectLead }) => {
           >
             <div className="mb-2 flex items-center justify-between px-1">
               <p className="text-xs font-semibold uppercase tracking-wide text-[#386fa4]">{stage.label}</p>
-              <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-[#03045e]">
+              <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-[#322f86]">
                 {(columns[stage.key] ?? []).length}
               </span>
             </div>
@@ -72,7 +72,7 @@ const PipelineBoard: React.FC<PipelineBoardProps> = ({ onSelectLead }) => {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1">
                         <UserRound className="h-3.5 w-3.5 text-[#386fa4]" />
-                        <p className="truncate text-sm font-medium text-[#03045e]">{card.full_name}</p>
+                        <p className="truncate text-sm font-medium text-[#322f86]">{card.full_name}</p>
                       </div>
                       {card.is_stalled && (
                         <p className="mt-1 inline-flex items-center gap-1 text-[10px] font-medium text-amber-700">
@@ -87,7 +87,7 @@ const PipelineBoard: React.FC<PipelineBoardProps> = ({ onSelectLead }) => {
                             event.stopPropagation();
                             openWrapUp(card);
                           }}
-                          className="mt-2 rounded-md bg-[#03045e] px-2 py-1 text-[10px] font-medium text-white hover:bg-[#386fa4]"
+                          className="mt-2 rounded-md bg-[#322f86] px-2 py-1 text-[10px] font-medium text-white hover:bg-[#386fa4]"
                         >
                           Session Wrap-up
                         </button>

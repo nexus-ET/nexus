@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session, joinedload
 from app.models.education_degree import EducationDegree
 from app.schemas.offline_lead import OfflineLeadEducation
 from app.services.levels import get_level
+from app.services.full_time_study_years import require_full_time_study_years
 from app.services.gpa_cgpa_scores import apply_gpa_cgpa_fields
+from app.services.qualification_programs import require_qualification_program
 
 LEVEL_CODE_TO_ID = {
     "ENTRY": 1,
@@ -107,26 +109,55 @@ def resolve_education_payload(
         return None
 
     payload: dict[str, str | int] = {}
+    program_code = (education.program_code or "").strip().upper() or None
     degree_code = (education.degree_code or "").strip().upper() or None
     custom_degree = (education.degree or "").strip() or None
     major = (education.major or "").strip() or None
+    level_id = education.level_id
 
-    if not degree_code:
-        raise HTTPException(status_code=400, detail="Degree is required.")
-
-    record = get_education_degree_by_code(db, degree_code)
-    if not record:
-        raise HTTPException(status_code=400, detail="Select a valid education degree.")
-    if record.is_other:
-        if not custom_degree:
-            raise HTTPException(
-                status_code=400,
-                detail="Please enter the degree when Other is selected.",
-            )
-        payload["degree"] = custom_degree
+    # Offline lead forms now use Levels → Programs. Candidate education still
+    # posts degree_code; accept either path.
+    if program_code:
+        program = require_qualification_program(db, program_code, level_id=level_id)
+        payload["program"] = program.name
+        payload["program_code"] = program.code
+        payload["level_id"] = program.level_id
+        # Keep degree_* populated for list/table compatibility with older UI columns.
+        payload["degree"] = program.name
+        payload["degree_code"] = program.code
+    elif degree_code:
+        record = get_education_degree_by_code(db, degree_code)
+        if not record:
+            raise HTTPException(status_code=400, detail="Select a valid education degree.")
+        if record.is_other:
+            if not custom_degree:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Please enter the degree when Other is selected.",
+                )
+            payload["degree"] = custom_degree
+        else:
+            payload["degree"] = record.label
+        payload["degree_code"] = record.code
+        if record.level_id:
+            payload["level_id"] = record.level_id
     else:
-        payload["degree"] = record.label
-    payload["degree_code"] = record.code
+        raise HTTPException(status_code=400, detail="Program is required.")
+
+    # Offline leads (program_code) always require study years. Counselling educations
+    # also send the field. Legacy students_master degree-only saves may omit it.
+    if program_code or education.full_time_study_years:
+        resolved_level_id = payload.get("level_id")
+        if resolved_level_id is None and level_id is not None:
+            resolved_level_id = level_id
+        study_year = require_full_time_study_years(
+            db,
+            education.full_time_study_years,
+            level_id=int(resolved_level_id) if resolved_level_id is not None else None,
+        )
+        payload["full_time_study_years"] = study_year.code
+        if study_year.level_id and "level_id" not in payload:
+            payload["level_id"] = study_year.level_id
 
     if not major:
         raise HTTPException(status_code=400, detail="Major is required.")

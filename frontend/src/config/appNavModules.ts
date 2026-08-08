@@ -3,22 +3,29 @@ import {
   Archive,
   BookOpen,
   Bot,
+  Brain,
   Building2,
   Calendar,
+  CalendarPlus,
+  ClipboardCheck,
   ClipboardList,
   FileText,
   Gauge,
+  GitCompare,
   Globe2,
   GraduationCap,
   Inbox,
   KeyRound,
   Layers,
+  LayoutGrid,
   MapPin,
   Plane,
   Radio,
   Settings,
+  Settings2,
   ShieldAlert,
   ShieldCheck,
+  Sparkles,
   UserCog,
   Users,
   UserSearch,
@@ -28,6 +35,8 @@ import {
   FRAMEWORK_TABS,
   GEOGRAPHY_TABS,
 } from './academiaHubNav';
+import { FLOWX_NAV, FLOWX_NAV_GROUPS } from './flowxNav';
+import { NEXUS_INTEL_NAV } from './nexusIntelNav';
 import { STUDENT_PIPELINE_NAV } from './studentPipelineNav';
 import { isAllowedRoute } from '../utils/routeAccess';
 import { canAccessAcademiaHub } from '../utils/academiaAccess';
@@ -89,6 +98,9 @@ export function getAppNavModules(ctx: NavAccessContext): NavMegaModule[] {
 
   const canCounselling =
     COUNSELLING_ADMIN_ROLES.has(ctx.roleName) && allowed('/counselling', ctx);
+  const canBookAppointment =
+    COUNSELLING_ADMIN_ROLES.has(ctx.roleName) &&
+    (allowed('/book-appointment', ctx) || allowed('/counselling', ctx));
 
   const modules: NavMegaModule[] = [
     {
@@ -293,10 +305,102 @@ export function getAppNavModules(ctx: NavAccessContext): NavMegaModule[] {
       }),
     },
     {
+      id: 'nexus-intel',
+      label: 'IntelX',
+      activePrefixes: ['/nexus-intel'],
+      featured: NEXUS_INTEL_NAV.map(item => ({
+        path: item.path,
+        label: item.label,
+        description: item.description,
+        icon:
+          item.key === 'knowledge'
+            ? BookOpen
+            : item.key === 'ai-assistant'
+              ? Bot
+              : item.key === 'workflows'
+                ? GitCompare
+                : item.key === 'academy'
+                  ? ClipboardCheck
+                  : item.key === 'controls'
+                    ? Sparkles
+                    : item.key === 'admin'
+                      ? Settings2
+                      : Brain,
+      })),
+      groups: [
+        {
+          title: 'Workspace',
+          links: NEXUS_INTEL_NAV.slice(0, 3).map(item => ({
+            path: item.path,
+            label: item.label,
+            description: item.description,
+            icon: item.icon,
+          })),
+        },
+        {
+          title: 'Controls',
+          links: NEXUS_INTEL_NAV.slice(3).map(item => ({
+            path: item.path,
+            label: item.label,
+            description: item.description,
+            icon: item.icon,
+          })),
+        },
+      ],
+      sidebarSections: [
+        {
+          title: null,
+          links: NEXUS_INTEL_NAV.map(item => ({
+            path: item.path,
+            label: item.label,
+            icon: item.icon,
+          })),
+        },
+      ],
+    },
+    {
+      id: 'flowx',
+      label: 'FlowX',
+      activePrefixes: ['/flowx'],
+      featured: FLOWX_NAV.map(item => ({
+        path: item.path,
+        label: item.label,
+        description: item.description,
+        icon: item.icon,
+      })),
+      groups: FLOWX_NAV_GROUPS.map(group => ({
+        title: group.label,
+        links: group.items.map(item => ({
+          path: item.path,
+          label: item.label,
+          description: item.description,
+          icon: item.icon,
+        })),
+      })),
+      sidebarSections: FLOWX_NAV_GROUPS.map(group => ({
+        title: group.label,
+        links: group.items.map(item => ({
+          path: item.path,
+          label: item.label,
+          icon: item.icon,
+        })),
+      })),
+    },
+    {
       id: 'appointments',
       label: 'Appointments',
-      activePrefixes: ['/my-bookings', '/counselling'],
+      activePrefixes: ['/book-appointment', '/my-bookings', '/counselling'],
       featured: [
+        ...(canBookAppointment
+          ? [
+              {
+                path: '/book-appointment',
+                label: 'Book Appointment',
+                description: 'Schedule a counselling session for a candidate',
+                icon: CalendarPlus,
+              },
+            ]
+          : []),
         ...(allowed('/my-bookings', ctx)
           ? [
               {

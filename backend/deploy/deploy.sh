@@ -60,6 +60,13 @@ source .venv/bin/activate
 pip install -r requirements.txt -q
 pip install 'psycopg[binary]' -q
 
+echo "==> Playwright Chromium (IntelX scraper headless shell)..."
+if bash scripts/install_playwright_browsers.sh; then
+  echo "    Playwright browsers: OK"
+else
+  echo "    WARNING: playwright install failed — Scraper Admin browser fallback will ERROR until fixed." >&2
+fi
+
 echo "==> Database migrations (alembic upgrade head)..."
 cd "$BACKEND"
 python scripts/bootstrap_alembic.py

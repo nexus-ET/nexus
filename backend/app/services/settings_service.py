@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models.dynamic_setting import DynamicSetting
 from app.models.user import User
-from app.utils.timezone import BUSINESS_TIMEZONE_OPTIONS, is_valid_timezone
+from app.utils.timezone import BUSINESS_TIMEZONE_OPTIONS, is_valid_timezone, utc_now
 
 WORKING_DAY_CODES: list[tuple[str, str]] = [
     ("mon", "Monday"),
@@ -42,6 +42,14 @@ SETTING_DEFINITIONS: dict[str, dict[str, str]] = {
         "label": "Allow new bookings",
         "value_type": "boolean",
         "description": "When disabled, new counselling bookings cannot be created.",
+    },
+    "COUNSELING_SESSION_PURPOSES": {
+        "label": "Counselling session purposes",
+        "value_type": "text",
+        "description": (
+            "One purpose per line for Book Appointment. Optional description after a pipe: "
+            "Label | Short description for counsellors."
+        ),
     },
     "OFFICE_HOURS_START": {
         "label": "Office hours start",
@@ -136,6 +144,14 @@ SETTING_DEFINITIONS: dict[str, dict[str, str]] = {
 DEFAULT_SETTING_VALUES: dict[str, str] = {
     "COUNSELING_SLOT_DURATION": "30",
     "ALLOW_BOOKINGS": "true",
+    "COUNSELING_SESSION_PURPOSES": (
+        "General Counselling | Initial study-abroad guidance, goals, and pathway overview\n"
+        "Visa Application Help | Visa forms, evidence checklist, and interview prep support\n"
+        "Documentation | Collecting, reviewing, and organizing application documents\n"
+        "University Shortlisting | Matching destinations, institutions, and programs\n"
+        "Test Prep Guidance | IELTS/TOEFL/GRE/GMAT planning and score targets\n"
+        "Application Review | Application drafts, essays, and submission readiness"
+    ),
     "OFFICE_HOURS_START": "09:00",
     "OFFICE_HOURS_END": "19:00",
     "WORKING_DAYS": DEFAULT_WORKING_DAYS,
@@ -374,7 +390,7 @@ def update_setting(db: Session, key: str, value: str, updated_by_user_id: int | 
         db.add(row)
     else:
         row.value = cleaned_value
-        row.updated_at = datetime.utcnow()
+        row.updated_at = utc_now()
         row.updated_by_user_id = updated_by_user_id
 
     db.commit()

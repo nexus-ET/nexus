@@ -13,6 +13,9 @@ export default {
         'text-primary': '#242424',
         border: '#E1E1E1',
       },
+      fontFamily: {
+        inter: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+      },
     },
   },
   plugins: [],

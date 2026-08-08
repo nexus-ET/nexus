@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from app.utils.timezone import utc_now
 import logging
 
 from sqlalchemy.orm import Session
@@ -847,7 +848,7 @@ def reset_whatsapp_conversation(db: Session, lead: Lead) -> dict:
         not status_result.get("changed") and not status_result.get("skipped")
     ):
         lead.status_definition_id = new_status_id
-        lead.status_entered_at = datetime.utcnow()
+        lead.status_entered_at = utc_now()
 
     deleted_bookings, alert_snapshots = _delete_lead_booking_details(db, lead)
 

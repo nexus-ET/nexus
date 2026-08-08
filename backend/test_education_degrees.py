@@ -8,10 +8,11 @@ from app.services.education_degrees import resolve_education_payload
 
 
 class FakeDegree:
-    def __init__(self, code: str, label: str, is_other: bool = False):
+    def __init__(self, code: str, label: str, is_other: bool = False, level_id: int | None = 2):
         self.code = code
         self.label = label
         self.is_other = is_other
+        self.level_id = level_id
 
 
 class FakeScore:
@@ -73,6 +74,7 @@ def test_resolve_education_payload_other_requires_custom_text(monkeypatch):
     assert payload == {
         "degree": "Custom Diploma",
         "degree_code": "OTHER",
+        "level_id": 2,
         "major": "Physics",
         "university": "ABC University",
         "graduation_year": 2020,
@@ -101,6 +103,7 @@ def test_resolve_education_payload_predefined_degree(monkeypatch):
     assert payload == {
         "degree": "Bachelor's Degree (BA/BS/B.Tech)",
         "degree_code": "BACHELORS_DEGREE",
+        "level_id": 2,
         "major": "Computer Science",
         "university": "ABC University",
         "graduation_year": 2022,

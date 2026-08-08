@@ -93,15 +93,37 @@ def resolve_lead_study_interest(lead: Lead) -> dict[str, str | None]:
     ) or None
     if not program and course:
         program = course
-    target_degree = str(context.get("target_degree") or "").strip()
-    target_major = str(context.get("target_major") or "").strip()
+    target_degree = str(context.get("target_degree") or "").strip() or None
+    target_major = str(context.get("target_major") or "").strip() or None
     if not course and program and not (target_degree and not target_major):
         course = program
 
+    destination_iso2 = (
+        _extra_value(extra, "target_destination_iso2", "destination_iso2", "country_iso2")
+        or str(extra.get("target_destination_iso2") or "").strip()
+        or None
+    )
+    if isinstance(extra.get("target_destination_iso2s"), list) and not destination_iso2:
+        codes = [str(x).strip().upper() for x in extra["target_destination_iso2s"] if x]
+        destination_iso2 = codes[0] if codes else None
+
+    program_code = _extra_value(extra, "target_program_code", "program_code") or None
+    course_code = _extra_value(extra, "target_course_code", "course_code") or None
+
+    # Preserve multi-destination text when preferred_country holds a list-like string.
+    destinations = country
+    if not destinations:
+        destinations = _extra_value(extra, "target_destination", "target_destinations")
+
     return {
-        "country": country,
+        "country": country or destinations,
         "course": course,
         "program": program,
+        "target_degree": target_degree,
+        "target_major": target_major,
+        "destination_iso2": destination_iso2.upper() if destination_iso2 else None,
+        "program_code": program_code,
+        "course_code": course_code,
     }
 
 

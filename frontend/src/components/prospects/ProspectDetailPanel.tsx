@@ -24,6 +24,8 @@ import {
   platformBadgeStyle,
 } from '../../utils/prospectMessages';
 import { useUpdateProspectNotes, useUpdateProspectStatus, useLeadProfileBooking } from '../../hooks/useProspects';
+import { useAlert } from '../../context/ConfirmationContext';
+import { useBusinessTimezone } from '../../context/BusinessTimezoneContext';
 import {
   useStatusDefinitions,
   useUpdateStudentStatus,
@@ -118,6 +120,8 @@ export default function ProspectDetailPanel({
   onToggleFocus,
   studentProfileTabs = false,
 }: ProspectDetailPanelProps) {
+  const showAlert = useAlert();
+  const { timezone } = useBusinessTimezone();
   const [notesDraft, setNotesDraft] = useState('');
   const [pipelineStatusId, setPipelineStatusId] = useState('');
   const [pipelineComments, setPipelineComments] = useState('');
@@ -205,8 +209,13 @@ export default function ProspectDetailPanel({
   }, [leadId, detail?.intake_context]);
 
   const interactionGroups = useMemo(
-    () => buildInteractionGroups(detail?.messages || detail?.chat_history, detail?.academic_summary),
-    [detail]
+    () =>
+      buildInteractionGroups(
+        detail?.messages || detail?.chat_history,
+        detail?.academic_summary,
+        timezone
+      ),
+    [detail, timezone]
   );
 
   const currentPipelineDefinition = useMemo(
@@ -315,7 +324,11 @@ export default function ProspectDetailPanel({
   const handleRevertUpdate = () => {
     if (!selectedRevertTransition) return;
     if (requiresRevertComment && !pipelineComments.trim()) {
-      window.alert('Please add a comment explaining this revert or relaunch.');
+      void showAlert({
+        title: 'Comment required',
+        message: 'Please add a comment explaining this revert or relaunch.',
+        variant: 'warning',
+      });
       return;
     }
     applyPipelineTransition(selectedRevertTransition, pipelineComments);
@@ -690,7 +703,7 @@ export default function ProspectDetailPanel({
             </div>
             <div>
               <span>Received</span>
-              <strong>{formatProspectDate(detail.created_at || detail.updated_at)}</strong>
+              <strong>{formatProspectDate(detail.created_at || detail.updated_at, timezone)}</strong>
             </div>
             {detail.meta_campaign_name ? (
               <div className="prospects-profile-grid__wide">
@@ -758,7 +771,7 @@ export default function ProspectDetailPanel({
                       >
                         <span style={{ color: theme.labelColor }}>{theme.label}</span>
                         <p>{msg.text}</p>
-                        {msg.created_at ? <small>{formatProspectTime(msg.created_at)}</small> : null}
+                        {msg.created_at ? <small>{formatProspectTime(msg.created_at, timezone)}</small> : null}
                       </div>
                     </div>
                   );

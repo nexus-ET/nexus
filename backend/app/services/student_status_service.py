@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from app.utils.timezone import utc_now
 from datetime import datetime
 from typing import Literal
 
@@ -108,8 +109,8 @@ def sync_lead_pipeline_status_id(db: Session, lead: Lead) -> bool:
         return False
 
     lead.status_definition_id = effective
-    lead.status_entered_at = lead.status_entered_at or datetime.utcnow()
-    lead.updated_at = datetime.utcnow()
+    lead.status_entered_at = lead.status_entered_at or utc_now()
+    lead.updated_at = utc_now()
     db.commit()
     db.refresh(lead)
     return True
@@ -119,7 +120,7 @@ def _infer_funnel_history_time(db: Session, lead: Lead, stage_name: str) -> date
     from app.models.message import Message
 
     if stage_name == STAGE_LEAD_NEW:
-        return lead.created_at or datetime.utcnow()
+        return lead.created_at or utc_now()
 
     if stage_name == STAGE_LEAD_OUTREACH:
         advisor_msg = (
@@ -130,7 +131,7 @@ def _infer_funnel_history_time(db: Session, lead: Lead, stage_name: str) -> date
         )
         if advisor_msg and advisor_msg[0]:
             return advisor_msg[0]
-        return lead.status_entered_at or lead.updated_at or datetime.utcnow()
+        return lead.status_entered_at or lead.updated_at or utc_now()
 
     if stage_name == STAGE_LEAD_ENGAGEMENT:
         candidate_msg = (
@@ -141,9 +142,9 @@ def _infer_funnel_history_time(db: Session, lead: Lead, stage_name: str) -> date
         )
         if candidate_msg and candidate_msg[0]:
             return candidate_msg[0]
-        return lead.status_entered_at or lead.updated_at or datetime.utcnow()
+        return lead.status_entered_at or lead.updated_at or utc_now()
 
-    return lead.status_entered_at or lead.updated_at or datetime.utcnow()
+    return lead.status_entered_at or lead.updated_at or utc_now()
 
 
 def ensure_funnel_journey_history(db: Session, lead: Lead, *, source: str) -> bool:
@@ -213,7 +214,7 @@ def ensure_funnel_journey_history(db: Session, lead: Lead, *, source: str) -> bo
                     lead.status_definition_id = definition.id
                     lead.status_entered_at = _infer_funnel_history_time(db, lead, stage_name)
                 break
-        lead.updated_at = datetime.utcnow()
+        lead.updated_at = utc_now()
         db.commit()
         db.refresh(lead)
     return changed
@@ -397,7 +398,7 @@ def update_student_status(
             sanitized_comments = f"[Override] {sanitized_comments}"
 
     definition = get_status_definition(db, status_id)
-    now = datetime.utcnow()
+    now = utc_now()
     previous_id = current_status_id
 
     if force_history and current_status_id == status_id:
@@ -417,6 +418,16 @@ def update_student_status(
             db.refresh(lead)
         else:
             db.flush()
+        try:
+            from app.services.flowx import sync_intake_session_for_lead
+
+            sync_intake_session_for_lead(db, lead.id, commit=commit)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "Failed to sync FlowX Intake Session for lead_id=%s", lead.id
+            )
         return {
             "changed": True,
             "student_id": lead.id,
@@ -490,6 +501,18 @@ def update_student_status(
             db.refresh(booking)
     else:
         db.flush()
+
+    try:
+        from app.services.flowx import sync_intake_session_for_lead
+
+        sync_intake_session_for_lead(db, lead.id, commit=commit)
+    except Exception:
+        # FlowX sync must not block counselling status updates.
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "Failed to sync FlowX Intake Session for lead_id=%s", lead.id
+        )
 
     if (
         previous_id != definition.id
@@ -631,7 +654,7 @@ def _resolve_lead_new_definition(db: Session):
 
 
 def _baseline_lead_new_journey_item(lead: Lead, definition) -> dict:
-    baseline_time = lead.created_at or lead.status_entered_at or datetime.utcnow()
+    baseline_time = lead.created_at or lead.status_entered_at or utc_now()
     return {
         "id": 0,
         "status_id": definition.id if definition is not None else STATUS_LEAD_NEW,
@@ -662,8 +685,8 @@ def ensure_lead_new_journey_baseline(db: Session, lead: Lead, *, source: str) ->
             definition = _resolve_lead_new_definition(db)
             if definition is not None:
                 lead.status_definition_id = definition.id
-                lead.status_entered_at = lead.status_entered_at or lead.created_at or datetime.utcnow()
-                lead.updated_at = datetime.utcnow()
+                lead.status_entered_at = lead.status_entered_at or lead.created_at or utc_now()
+                lead.updated_at = utc_now()
                 db.commit()
                 db.refresh(lead)
         return False
@@ -681,7 +704,7 @@ def ensure_lead_new_journey_baseline(db: Session, lead: Lead, *, source: str) ->
         )
         return False
 
-    baseline_time = lead.created_at or datetime.utcnow()
+    baseline_time = lead.created_at or utc_now()
     record_status_history(
         db,
         student_id=lead.id,
@@ -693,7 +716,7 @@ def ensure_lead_new_journey_baseline(db: Session, lead: Lead, *, source: str) ->
     if lead.status_definition_id is None:
         lead.status_definition_id = definition.id
         lead.status_entered_at = baseline_time
-        lead.updated_at = datetime.utcnow()
+        lead.updated_at = utc_now()
 
     db.commit()
     db.refresh(lead)

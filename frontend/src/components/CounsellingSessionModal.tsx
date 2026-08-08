@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { Sparkles, X } from 'lucide-react';
-import CounsellingSessionPanel from './CounsellingSessionPanel';
+import IntakeSessionWorkspace from './IntakeSessionWorkspace';
 import SessionOutcomeSection from './SessionOutcomeSection';
 
 interface CounsellingSessionModalProps {
@@ -42,7 +42,7 @@ const CounsellingSessionModal: React.FC<CounsellingSessionModalProps> = ({
       aria-modal="true"
       aria-labelledby="counselling-session-title"
     >
-      <div className="w-full max-w-6xl max-h-[92vh] rounded-2xl border border-border-subtle bg-card shadow-2xl flex flex-col overflow-hidden">
+      <div className="w-full max-w-[min(120rem,98vw)] max-h-[92vh] rounded-2xl border border-border-subtle bg-card shadow-2xl flex flex-col overflow-hidden">
         <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-border-subtle bg-surface-bg shrink-0">
           <div>
             <h3
@@ -68,9 +68,13 @@ const CounsellingSessionModal: React.FC<CounsellingSessionModalProps> = ({
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-5 py-5 space-y-8">
-          <CounsellingSessionPanel bookingId={bookingId} candidateName={candidateName} />
+          <IntakeSessionWorkspace
+            bookingId={bookingId}
+            candidateName={candidateName}
+            onStatusUpdated={onStatusUpdated}
+          />
           <div className="border-t border-border-subtle pt-6">
-            <SessionOutcomeSection bookingId={bookingId} onStatusUpdated={onStatusUpdated} />
+            <SessionOutcomeSection bookingId={bookingId} />
           </div>
         </div>
       </div>

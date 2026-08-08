@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Loader2, Search, UserPlus } from 'lucide-react';
+import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 import HeadlessScrollArea from './HeadlessScrollArea';
 import { MessageSenderAvatar, initialsFromName } from './PresenceIndicator';
 import {
@@ -13,26 +14,9 @@ interface ChatSidebarProps {
   onSelectConversation: (conversation: Conversation) => void;
 }
 
-const formatTime = (value?: string | null) => {
-  if (!value) return '';
-  const date = new Date(value);
-  const now = new Date();
-  const sameDay =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
-  if (sameDay) {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  }
-  return date.toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-};
 
 const ChatSidebar: React.FC<ChatSidebarProps> = ({ onSelectConversation }) => {
+  const { formatDateTime } = useBusinessTimezone();
   const {
     sortedInbox,
     activeConversationId,
@@ -241,7 +225,7 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({ onSelectConversation }) => {
                         </span>
                       )}
                       <span className="whitespace-nowrap text-[10px] text-text-primary/60">
-                        {formatTime(conversation.last_message_at)}
+                        {formatDateTime(conversation.last_message_at, { second: undefined })}
                       </span>
                     </div>
                   </div>

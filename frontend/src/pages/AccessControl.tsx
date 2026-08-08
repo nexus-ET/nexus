@@ -122,7 +122,7 @@ const AccessControl: React.FC = () => {
 
   if (accessDenied) {
     return (
-      <div className="relative z-10 max-w-4xl mx-auto">
+      <div className="relative z-10 mx-auto w-full max-w-none">
         <div className="p-8 bg-card border border-border-subtle rounded-2xl text-center">
           <ShieldCheck size={32} className="mx-auto mb-3 text-alert" />
           <h2 className="text-lg font-bold text-text-main">Super Admin Access Required</h2>
@@ -135,7 +135,7 @@ const AccessControl: React.FC = () => {
   }
 
   return (
-    <div className="relative z-10 max-w-7xl mx-auto space-y-6">
+    <div className="relative z-10 mx-auto w-full max-w-none space-y-6">
       <div className="flex items-end justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 mb-2">

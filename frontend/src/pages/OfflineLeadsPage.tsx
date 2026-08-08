@@ -4,18 +4,22 @@ import { ArrowDown, ArrowUp, ArrowUpDown, Pencil, Plus, Search, X } from 'lucide
 import { useCreateOfflineLead, useOfflineLeadDuplicateCheck, useOfflineLeads, useUpdateOfflineLead } from '../hooks/useOfflineLeads';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useCountries } from '../hooks/useCountries';
-import { findEducationDegree, useEducationDegrees } from '../hooks/useEducationDegrees';
 import { useLevels } from '../hooks/useLevels';
 import { levelSelectOptions } from '../constants/levels';
 import { findGpaCgpaScore, useGpaCgpaScores } from '../hooks/useGpaCgpaScores';
-import { useTargetCourses, useTargetPrograms } from '../hooks/useTargetPrograms';
+import { useFullTimeStudyYears, findFullTimeStudyYear, filterFullTimeStudyYearsByLevel } from '../hooks/useFullTimeStudyYears';
+import {
+  findQualificationProgram,
+  useQualificationPrograms,
+} from '../hooks/useQualificationPrograms';
+import { useEducationMajors } from '../hooks/useEducationMajors';
+import SearchableMultiSelect from '../components/academia/SearchableMultiSelect';
 import { useConfirmation } from '../context/ConfirmationContext';
 import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 import {
   buildEducationPayload,
-  educationToFormFields,
   validateEducationFields,
-} from '../utils/educationDegree';
+} from '../utils/offlineLeadEducation';
 import { gpaCgpaToFormFields, validateGpaCgpaScore } from '../utils/gpaCgpaScore';
 import {
   computeAgeAsOf,
@@ -29,8 +33,8 @@ import {
   PHONE_LOCAL_DRAFT_MAX_LENGTH,
   PHONE_LOCAL_PLACEHOLDER,
 } from '../utils/phoneCountry';
-import type { EducationDegreeRecord } from '../types/educationDegree';
 import type { GpaCgpaScoreRecord } from '../types/gpaCgpaScore';
+import type { QualificationProgramRecord } from '../types/qualificationProgram';
 import type { CountryRecord } from '../types/country';
 import {
   validateLocationFields,
@@ -63,19 +67,20 @@ const EMPTY_FORM: OfflineLeadCreatePayload = {
   phone_country_iso2: '',
   phone_local: '',
   date_of_birth: '',
-  target_destination_iso2: '',
-  target_program_code: '',
-  target_course_code: '',
+  target_destination_iso2s: [],
+  target_level_id: undefined,
+  target_major_ids: [],
+  target_program_codes: [],
   education: {
-    degree_code: '',
-    degree_other: '',
+    program_code: '',
+    full_time_study_years: '',
     major: '',
     gpa_cgpa_code: '',
     gpa_cgpa_other: '',
     university: '',
     graduation_year: undefined,
   },
-  location: { city: '', state: '', country_iso2: '' },
+  location: { city: '', state: '', country_iso2: '', zip_code: '' },
 };
 
 function serializeOfflineLeadForm(form: OfflineLeadCreatePayload): string {
@@ -85,7 +90,12 @@ function serializeOfflineLeadForm(form: OfflineLeadCreatePayload): string {
 const UNSAVED_CLOSE_MESSAGE =
   'You have unsaved changes. Discard them and close this form?';
 
-async function detectLocationFromIp(): Promise<{ city: string; state: string; country_iso2: string }> {
+async function detectLocationFromIp(): Promise<{
+  city: string;
+  state: string;
+  country_iso2: string;
+  zip_code: string;
+}> {
   try {
     const response = await fetch('https://ipapi.co/json/', { signal: AbortSignal.timeout(5000) });
     if (!response.ok) throw new Error('geo failed');
@@ -93,26 +103,29 @@ async function detectLocationFromIp(): Promise<{ city: string; state: string; co
       city?: string;
       region?: string;
       country_code?: string;
+      postal?: string;
     };
     return {
       city: data.city || '',
       state: data.region || '',
       country_iso2: (data.country_code || '').toUpperCase(),
+      zip_code: data.postal || '',
     };
   } catch {
-    return { city: '', state: '', country_iso2: '' };
+    return { city: '', state: '', country_iso2: '', zip_code: '' };
   }
 }
 
 function leadToForm(
   lead: OfflineLeadItem,
   countries: CountryRecord[],
-  degrees: EducationDegreeRecord[],
+  programs: QualificationProgramRecord[],
   gpaCgpaScores: GpaCgpaScoreRecord[]
 ): OfflineLeadCreatePayload {
   const { countryIso2, localNumber } = parseStoredPhone(lead.phone_number, countries);
   const email = lead.email?.includes('@edutrust.nexus') ? '' : lead.email || '';
-  const educationFields = educationToFormFields(lead.degree, lead.degree_code, degrees);
+  const programCode = lead.program_code || lead.degree_code || '';
+  const matchedProgram = findQualificationProgram(programs, programCode);
   const gpaFields = gpaCgpaToFormFields(lead.gpa_cgpa, lead.gpa_cgpa_code, gpaCgpaScores);
   const destinationIso2 =
     lead.target_destination_iso2 ||
@@ -120,6 +133,13 @@ function leadToForm(
       country => country.name.toLowerCase() === (lead.target_destination || '').toLowerCase()
     )?.iso2 ||
     '';
+
+  const destinationIso2s =
+    lead.target_destination_iso2s?.length
+      ? lead.target_destination_iso2s
+      : destinationIso2
+        ? [destinationIso2]
+        : [];
 
   return {
     first_name: lead.first_name || '',
@@ -129,12 +149,17 @@ function leadToForm(
     phone_country_iso2: lead.phone_country_iso2 || countryIso2,
     phone_local: localNumber,
     date_of_birth: lead.date_of_birth || '',
-    target_destination_iso2: destinationIso2,
-    target_program_code: lead.target_program_code || '',
-    target_course_code: lead.target_course_code || '',
+    target_destination_iso2s: destinationIso2s,
+    target_level_id: lead.target_level_id ?? undefined,
+    target_major_ids: lead.target_major_ids || [],
+    target_program_codes: lead.target_program_codes?.length
+      ? lead.target_program_codes
+      : lead.target_program_code
+        ? [lead.target_program_code]
+        : [],
     education: {
-      degree_code: educationFields.degree_code,
-      degree_other: educationFields.degree_other,
+      program_code: matchedProgram?.code || programCode,
+      full_time_study_years: lead.full_time_study_years || '',
       major: lead.major || '',
       gpa_cgpa_code: gpaFields.gpa_cgpa_code,
       gpa_cgpa_other: gpaFields.gpa_cgpa_other,
@@ -145,6 +170,7 @@ function leadToForm(
       city: lead.city || '',
       state: lead.state || '',
       country_iso2: lead.country_iso2 || '',
+      zip_code: lead.zip_code || '',
     },
   };
 }
@@ -191,11 +217,16 @@ function formatDateOfBirthCell(dob?: string | null, registeredAt?: string | null
 }
 
 function formatStudyInterestCell(lead: OfflineLeadItem): string {
-  return (
-    [lead.target_destination, lead.target_program, lead.target_course]
-      .filter(Boolean)
-      .join(' · ') || '—'
-  );
+  const destinations =
+    lead.target_destinations?.length
+      ? lead.target_destinations.join(', ')
+      : lead.target_destination || '';
+  const programs =
+    lead.target_programs?.length
+      ? lead.target_programs.join(', ')
+      : lead.target_program || lead.target_course || '';
+  const majors = lead.target_majors?.length ? lead.target_majors.join(', ') : '';
+  return [destinations, lead.target_level_name, majors, programs].filter(Boolean).join(' · ') || '—';
 }
 
 function statusClass(label: string): string {
@@ -238,6 +269,7 @@ export default function OfflineLeadsPage() {
   useUnsavedChanges(formIsDirty, 'offline-leads-form');
   const [educationLevelId, setEducationLevelId] = useState('');
 
+
   const debouncedSearch = useDebouncedValue(search, 350);
 
   const query: OfflineLeadsQuery = useMemo(
@@ -256,25 +288,87 @@ export default function OfflineLeadsPage() {
   const createMutation = useCreateOfflineLead();
   const updateMutation = useUpdateOfflineLead();
   const { countries } = useCountries();
-  const { degrees: allDegrees } = useEducationDegrees();
+  const { programs: qualificationPrograms } = useQualificationPrograms();
   const { levels } = useLevels();
-  const filteredDegrees = useMemo(() => {
-    if (!educationLevelId) return allDegrees;
-    return allDegrees.filter(
-      degree => degree.level_id === Number(educationLevelId)
+  const filteredPrograms = useMemo(() => {
+    if (!educationLevelId) return [];
+    return qualificationPrograms.filter(
+      program => program.level_id === Number(educationLevelId)
     );
-  }, [allDegrees, educationLevelId]);
+  }, [qualificationPrograms, educationLevelId]);
+  const { majors } = useEducationMajors();
+  const selectedEducationProgram = useMemo(
+    () => findQualificationProgram(qualificationPrograms, form.education?.program_code),
+    [qualificationPrograms, form.education?.program_code]
+  );
+  const mappedProgramMajors = selectedEducationProgram?.majors ?? [];
+  const filteredMajors = useMemo(() => {
+    if (!form.education?.program_code || !mappedProgramMajors.length) {
+      return [];
+    }
+    const labels = new Set(
+      mappedProgramMajors.map(major => major.label.trim().toLowerCase())
+    );
+    const codes = new Set(
+      mappedProgramMajors
+        .map(major => (major.code || '').trim().toUpperCase())
+        .filter(Boolean)
+    );
+    const matched = majors.filter(
+      major =>
+        !major.is_other &&
+        (labels.has(major.label.trim().toLowerCase()) ||
+          Boolean(major.code && codes.has(major.code.trim().toUpperCase())))
+    );
+    if (matched.length) {
+      return matched;
+    }
+    return mappedProgramMajors.map(major => ({
+      id: major.id,
+      code: major.code,
+      label: major.label,
+      is_other: false,
+      sort_order: 0,
+      is_active: true,
+    }));
+  }, [form.education?.program_code, majors, mappedProgramMajors]);
+  const majorSelectValue = useMemo(() => {
+    const current = form.education?.major || '';
+    if (!current) return '';
+    if (filteredMajors.some(major => major.label === current)) return current;
+    return current;
+  }, [filteredMajors, form.education?.major]);
   const { scores: gpaCgpaScores } = useGpaCgpaScores();
-  const { programs } = useTargetPrograms();
-  const { courses: targetCourses } = useTargetCourses(form.target_program_code);
+  const { options: studyYearOptions } = useFullTimeStudyYears();
+  const filteredStudyYears = useMemo(
+    () => filterFullTimeStudyYearsByLevel(studyYearOptions, educationLevelId),
+    [studyYearOptions, educationLevelId]
+  );
+  const targetLevelId = form.target_level_id ? String(form.target_level_id) : '';
+  const studyInterestMajors = useMemo(() => {
+    if (!form.target_level_id) return [];
+    const byId = new Map<number, { id: number; code?: string | null; label: string }>();
+    for (const program of qualificationPrograms) {
+      if (program.level_id !== form.target_level_id) continue;
+      for (const major of program.majors ?? []) {
+        byId.set(major.id, major);
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [form.target_level_id, qualificationPrograms]);
+  const studyInterestPrograms = useMemo(() => {
+    if (!form.target_level_id || !form.target_major_ids?.length) return [];
+    const majorIds = new Set(form.target_major_ids);
+    return qualificationPrograms.filter(
+      program =>
+        program.level_id === form.target_level_id &&
+        (program.majors ?? []).some(major => majorIds.has(major.id))
+    );
+  }, [form.target_level_id, form.target_major_ids, qualificationPrograms]);
   const computedAge = useMemo(() => computeAgeFromDob(form.date_of_birth), [form.date_of_birth]);
   const dobError = useMemo(() => validateDateOfBirth(form.date_of_birth), [form.date_of_birth]);
   const maxDateOfBirth = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const isSaving = createMutation.isPending || updateMutation.isPending;
-  const selectedDegree = useMemo(
-    () => findEducationDegree(allDegrees, form.education?.degree_code),
-    [allDegrees, form.education?.degree_code]
-  );
   const selectedGpaCgpa = useMemo(
     () => findGpaCgpaScore(gpaCgpaScores, form.education?.gpa_cgpa_code),
     [gpaCgpaScores, form.education?.gpa_cgpa_code]
@@ -319,6 +413,7 @@ export default function OfflineLeadsPage() {
         city: detected.city,
         state: detected.state,
         country_iso2: detected.country_iso2,
+        zip_code: detected.zip_code,
       },
     };
     setForm(withLocation);
@@ -327,9 +422,25 @@ export default function OfflineLeadsPage() {
   };
 
   const openEditModal = (lead: OfflineLeadItem) => {
-    const nextForm = leadToForm(lead, countries, allDegrees, gpaCgpaScores);
-    const degree = findEducationDegree(allDegrees, nextForm.education?.degree_code);
-    setEducationLevelId(degree ? String(degree.level_id) : '');
+    const nextForm = leadToForm(lead, countries, qualificationPrograms, gpaCgpaScores);
+    const program = findQualificationProgram(
+      qualificationPrograms,
+      nextForm.education?.program_code
+    );
+    const studyYear = findFullTimeStudyYear(
+      studyYearOptions,
+      nextForm.education?.full_time_study_years,
+      lead.level_id ?? program?.level_id
+    );
+    const levelFromLead =
+      studyYear?.level_id != null
+        ? String(studyYear.level_id)
+        : lead.level_id != null
+          ? String(lead.level_id)
+          : program
+            ? String(program.level_id)
+            : '';
+    setEducationLevelId(levelFromLead);
     setEditingLead(lead);
     setForm(nextForm);
     setFormError(null);
@@ -343,6 +454,7 @@ export default function OfflineLeadsPage() {
     setEditingLead(null);
     setFormError(null);
     setFormBaseline('');
+    setEducationLevelId('');
   }, []);
 
   const requestCloseModal = useCallback(async () => {
@@ -433,15 +545,20 @@ export default function OfflineLeadsPage() {
     }
 
     const educationError = validateEducationFields(
-      form.education?.degree_code,
-      form.education?.degree_other,
+      form.education?.program_code,
       form.education?.major,
-      allDegrees,
+      qualificationPrograms,
       form.education?.university,
-      form.education?.graduation_year
+      form.education?.graduation_year,
+      form.education?.full_time_study_years
     );
     if (educationError) {
       setFormError(educationError);
+      return;
+    }
+
+    if (!educationLevelId) {
+      setFormError('Level is required.');
       return;
     }
 
@@ -461,27 +578,29 @@ export default function OfflineLeadsPage() {
       return;
     }
 
-    const studyInterestError = validateStudyInterestFields(
-      form.target_destination_iso2,
-      form.target_program_code,
-      form.target_course_code
-    );
+    const studyInterestError = validateStudyInterestFields({
+      targetDestinationIso2s: form.target_destination_iso2s,
+      targetLevelId: form.target_level_id,
+      targetMajorIds: form.target_major_ids,
+      targetProgramCodes: form.target_program_codes,
+    });
     if (studyInterestError) {
       setFormError(studyInterestError);
       return;
     }
 
     const educationPayload = buildEducationPayload(
-      form.education?.degree_code,
-      form.education?.degree_other,
-      allDegrees,
+      form.education?.program_code,
+      qualificationPrograms,
       {
+        levelId: educationLevelId,
         major: form.education?.major,
         university: form.education?.university,
         graduationYear: form.education?.graduation_year,
         gpaCgpaCode: form.education?.gpa_cgpa_code,
         gpaCgpaOther: form.education?.gpa_cgpa_other,
         gpaCgpaScores,
+        fullTimeStudyYears: form.education?.full_time_study_years,
       }
     );
 
@@ -493,13 +612,15 @@ export default function OfflineLeadsPage() {
       phone_local: phoneLocalToDigits(form.phone_local),
       email: form.email.trim(),
       date_of_birth: form.date_of_birth,
-      target_destination_iso2: form.target_destination_iso2,
-      target_program_code: form.target_program_code,
-      target_course_code: form.target_course_code,
+      target_destination_iso2s: form.target_destination_iso2s,
+      target_level_id: form.target_level_id,
+      target_major_ids: form.target_major_ids,
+      target_program_codes: form.target_program_codes,
       location: {
         city: form.location?.city?.trim() || '',
         state: form.location?.state?.trim() || '',
         country_iso2: form.location?.country_iso2 || '',
+        zip_code: form.location?.zip_code?.trim() || undefined,
       },
       education: educationPayload,
     };
@@ -589,13 +710,13 @@ export default function OfflineLeadsPage() {
                   Phone <SortIcon field="phone_number" sortBy={sortBy} sortDir={sortDir} />
                 </th>
                 <th>Date of Birth</th>
-                <th>Degree</th>
+                <th>Program</th>
                 <th>Major</th>
                 <th>University</th>
                 <th>Graduation Year</th>
                 <th>GPA / CGPA</th>
-                <th>Destination / Course</th>
-                <th>Location</th>
+                <th>Destination / Interest</th>
+                <th>Current Location</th>
                 <th>Status</th>
                 <th className="sortable" onClick={() => toggleSort('created_at')}>
                   Date Added <SortIcon field="created_at" sortBy={sortBy} sortDir={sortDir} />
@@ -612,14 +733,14 @@ export default function OfflineLeadsPage() {
                   <td className="offline-leads-table__dob">
                     {formatDateOfBirthCell(lead.date_of_birth, lead.created_at)}
                   </td>
-                  <td>{lead.degree || '—'}</td>
+                  <td>{lead.program || lead.degree || '—'}</td>
                   <td>{lead.major || '—'}</td>
                   <td>{lead.university || '—'}</td>
                   <td>{lead.graduation_year ?? '—'}</td>
                   <td>{lead.gpa_cgpa || '—'}</td>
                   <td>{formatStudyInterestCell(lead)}</td>
                   <td>
-                    {[lead.city, lead.state, lead.country].filter(Boolean).join(', ') || '—'}
+                    {[lead.city, lead.state, lead.zip_code, lead.country].filter(Boolean).join(', ') || '—'}
                   </td>
                   <td>
                     <span className={statusClass(lead.status_label)}>{lead.status_label}</span>
@@ -817,27 +938,9 @@ export default function OfflineLeadsPage() {
 
                 <section className="offline-leads-panel">
                   <h4 className="offline-leads-panel__title">
-                    Location{geoLoading && !editingLead ? ' (detecting…)' : ''}
+                    Current Location{geoLoading && !editingLead ? ' (detecting…)' : ''}
                   </h4>
-                  <div className="offline-leads-form-grid offline-leads-form-grid--3">
-                    <div className="offline-leads-field">
-                      <label htmlFor="ol-city">City *</label>
-                      <input
-                        id="ol-city"
-                        value={form.location?.city || ''}
-                        onChange={e => updateLocation({ city: e.target.value })}
-                        required
-                      />
-                    </div>
-                    <div className="offline-leads-field">
-                      <label htmlFor="ol-state">State *</label>
-                      <input
-                        id="ol-state"
-                        value={form.location?.state || ''}
-                        onChange={e => updateLocation({ state: e.target.value })}
-                        required
-                      />
-                    </div>
+                  <div className="offline-leads-form-grid offline-leads-form-grid--4">
                     <div className="offline-leads-field">
                       <label htmlFor="ol-country">Country *</label>
                       <select
@@ -854,37 +957,56 @@ export default function OfflineLeadsPage() {
                         ))}
                       </select>
                     </div>
+                    <div className="offline-leads-field">
+                      <label htmlFor="ol-state">State *</label>
+                      <input
+                        id="ol-state"
+                        value={form.location?.state || ''}
+                        onChange={e => updateLocation({ state: e.target.value })}
+                        required
+                      />
+                    </div>
+                    <div className="offline-leads-field">
+                      <label htmlFor="ol-city">City *</label>
+                      <input
+                        id="ol-city"
+                        value={form.location?.city || ''}
+                        onChange={e => updateLocation({ city: e.target.value })}
+                        required
+                      />
+                    </div>
+                    <div className="offline-leads-field">
+                      <label htmlFor="ol-zip">Zip code</label>
+                      <input
+                        id="ol-zip"
+                        value={form.location?.zip_code || ''}
+                        onChange={e => updateLocation({ zip_code: e.target.value })}
+                        placeholder="e.g. 560001"
+                      />
+                    </div>
                   </div>
                 </section>
 
                 <section className="offline-leads-panel">
                   <h4 className="offline-leads-panel__title">Education</h4>
-                  <div className="offline-leads-form-grid offline-leads-form-grid--3">
+                  <div className="offline-leads-form-grid offline-leads-form-grid--4">
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-course-level">Course Level *</label>
+                      <label htmlFor="ol-course-level">Levels *</label>
                       <select
                         id="ol-course-level"
                         value={educationLevelId}
                         onChange={e => {
                           const nextLevelId = e.target.value;
                           setEducationLevelId(nextLevelId);
-                          if (form.education?.degree_code) {
-                            const degree = findEducationDegree(
-                              allDegrees,
-                              form.education.degree_code
-                            );
-                            if (
-                              degree &&
-                              nextLevelId &&
-                              degree.level_id !== Number(nextLevelId)
-                            ) {
-                              updateEducation({ degree_code: '', degree_other: '', major: '' });
-                            }
-                          }
+                          updateEducation({
+                            full_time_study_years: '',
+                            program_code: '',
+                            major: '',
+                          });
                         }}
                         required
                       >
-                        <option value="">Select course level</option>
+                        <option value="">Select level</option>
                         {levelSelectOptions(levels).map(option => (
                           <option key={option.value} value={option.value}>
                             {option.label}
@@ -892,62 +1014,95 @@ export default function OfflineLeadsPage() {
                         ))}
                       </select>
                     </div>
-                    <div className="offline-leads-field offline-leads-field--full">
-                      <div className="offline-leads-degree-row">
-                        <div className="offline-leads-field">
-                          <label htmlFor="ol-degree">Degree *</label>
-                          <select
-                            id="ol-degree"
-                            value={form.education?.degree_code || ''}
-                            disabled={!educationLevelId}
-                            onChange={e => {
-                              const nextCode = e.target.value;
-                              const nextDegree = findEducationDegree(allDegrees, nextCode);
-                              updateEducation({
-                                degree_code: nextCode,
-                                degree_other: nextDegree?.is_other
-                                  ? form.education?.degree_other || ''
-                                  : '',
-                                major: '',
-                              });
-                            }}
-                            required
-                          >
-                            <option value="">
-                              {educationLevelId
-                                ? 'Select degree'
-                                : 'Select course level first'}
-                            </option>
-                            {filteredDegrees.map(degree => (
-                              <option key={degree.code} value={degree.code}>
-                                {degree.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="offline-leads-field">
-                          <label htmlFor="ol-major">Major *</label>
-                          <input
-                            id="ol-major"
-                            value={form.education?.major || ''}
-                            onChange={e => updateEducation({ major: e.target.value })}
-                            placeholder="e.g. Computer Science"
-                            disabled={!form.education?.degree_code}
-                            required={Boolean(form.education?.degree_code)}
-                          />
-                        </div>
-                      </div>
-                      {selectedDegree?.is_other && (
-                        <input
-                          id="ol-degree-other"
-                          className="offline-leads-degree-other"
-                          value={form.education?.degree_other || ''}
-                          onChange={e => updateEducation({ degree_other: e.target.value })}
-                          placeholder="Enter degree"
-                          required
-                        />
-                      )}
+                    <div className="offline-leads-field">
+                      <label htmlFor="ol-study-years">Full-Time Study Years *</label>
+                      <select
+                        id="ol-study-years"
+                        value={form.education?.full_time_study_years || ''}
+                        disabled={!educationLevelId}
+                        onChange={e =>
+                          updateEducation({ full_time_study_years: e.target.value })
+                        }
+                        required
+                      >
+                        <option value="">
+                          {educationLevelId
+                            ? filteredStudyYears.length
+                              ? 'Select study years'
+                              : 'No study years for this level'
+                            : 'Select level first'}
+                        </option>
+                        {filteredStudyYears.map(option => (
+                          <option key={option.code} value={option.code}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
                     </div>
+                    <div className="offline-leads-field">
+                      <label htmlFor="ol-program">Programs *</label>
+                      <select
+                        id="ol-program"
+                        value={form.education?.program_code || ''}
+                        disabled={!educationLevelId}
+                        onChange={e => {
+                          const nextCode = e.target.value;
+                          const program = findQualificationProgram(
+                            qualificationPrograms,
+                            nextCode
+                          );
+                          const mapped = program?.majors ?? [];
+                          const autoMajor = mapped.length === 1 ? mapped[0].label : '';
+                          updateEducation({
+                            program_code: nextCode,
+                            major: autoMajor,
+                          });
+                        }}
+                        required
+                      >
+                        <option value="">
+                          {educationLevelId
+                            ? filteredPrograms.length
+                              ? 'Select program'
+                              : 'No programs for this level'
+                            : 'Select level first'}
+                        </option>
+                        {filteredPrograms.map(program => (
+                          <option key={program.code} value={program.code}>
+                            {program.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="offline-leads-field">
+                      <label htmlFor="ol-major">Major *</label>
+                      <select
+                        id="ol-major"
+                        value={
+                          filteredMajors.some(major => major.label === majorSelectValue)
+                            ? majorSelectValue
+                            : ''
+                        }
+                        disabled={!form.education?.program_code}
+                        onChange={e => updateEducation({ major: e.target.value })}
+                        required={Boolean(form.education?.program_code)}
+                      >
+                        <option value="">
+                          {form.education?.program_code
+                            ? filteredMajors.length
+                              ? 'Select major'
+                              : 'No majors for this program'
+                            : 'Select program first'}
+                        </option>
+                        {filteredMajors.map(major => (
+                          <option key={major.code || major.id} value={major.label}>
+                            {major.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="offline-leads-form-grid offline-leads-form-grid--3">
                     <div className="offline-leads-field">
                       <label htmlFor="ol-university">University *</label>
                       <input
@@ -1013,60 +1168,140 @@ export default function OfflineLeadsPage() {
 
                 <section className="offline-leads-panel">
                   <h4 className="offline-leads-panel__title">Study Interest</h4>
-                  <div className="offline-leads-form-grid offline-leads-form-grid--3">
+                  <div className="offline-leads-form-grid offline-leads-form-grid--4">
                     <div className="offline-leads-field">
                       <label htmlFor="ol-target-destination">Target Destination *</label>
-                      <select
+                      <SearchableMultiSelect
                         id="ol-target-destination"
-                        value={form.target_destination_iso2 || ''}
-                        onChange={e => updateForm({ target_destination_iso2: e.target.value })}
-                        required
-                      >
-                        <option value="">Select country</option>
-                        {countries.map(country => (
-                          <option key={country.iso2} value={country.iso2}>
-                            {country.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="offline-leads-field">
-                      <label htmlFor="ol-target-program">Target Programs *</label>
-                      <select
-                        id="ol-target-program"
-                        value={form.target_program_code || ''}
-                        onChange={e =>
+                        compact
+                        preferDropUp
+                        values={form.target_destination_iso2s || []}
+                        options={countries.map(country => ({
+                          value: country.iso2,
+                          label: country.name,
+                        }))}
+                        onChange={values =>
                           updateForm({
-                            target_program_code: e.target.value,
-                            target_course_code: '',
+                            target_destination_iso2s: values.slice(0, 6),
+                            ...(values.length
+                              ? {}
+                              : {
+                                  target_level_id: undefined,
+                                  target_major_ids: [],
+                                  target_program_codes: [],
+                                }),
                           })
                         }
+                        maxSelections={6}
+                        placeholder="Select up to 6 countries"
+                        hint="Max 6 countries"
+                        required
+                      />
+                    </div>
+                    <div className="offline-leads-field">
+                      <label htmlFor="ol-target-level">Target Levels *</label>
+                      <select
+                        id="ol-target-level"
+                        value={targetLevelId}
+                        disabled={!form.target_destination_iso2s?.length}
+                        onChange={e => {
+                          const nextLevelId = e.target.value
+                            ? Number(e.target.value)
+                            : undefined;
+                          updateForm({
+                            target_level_id: nextLevelId,
+                            target_major_ids: [],
+                            target_program_codes: [],
+                          });
+                        }}
                         required
                       >
-                        <option value="">Select program</option>
-                        {programs.map(program => (
-                          <option key={program.code} value={program.code}>
-                            {program.label}
+                        <option value="">
+                          {form.target_destination_iso2s?.length
+                            ? 'Select level'
+                            : 'Select destination first'}
+                        </option>
+                        {levelSelectOptions(levels).map(option => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
                           </option>
                         ))}
                       </select>
                     </div>
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-target-course">Target Courses *</label>
-                      <select
-                        id="ol-target-course"
-                        value={form.target_course_code || ''}
-                        onChange={e => updateForm({ target_course_code: e.target.value })}
-                        disabled={!form.target_program_code}
-                        required={Boolean(form.target_program_code)}
-                      >
-                        <option value="">Select course</option>
-                        {targetCourses.map(course => (
-                          <option key={course.code} value={course.code}>
-                            {course.label}
-                          </option>
-                        ))}
-                      </select>
+                      <label htmlFor="ol-target-majors">Target Majors *</label>
+                      <SearchableMultiSelect
+                        id="ol-target-majors"
+                        compact
+                        preferDropUp
+                        values={(form.target_major_ids || []).map(String)}
+                        options={studyInterestMajors.map(major => ({
+                          value: String(major.id),
+                          label: major.label,
+                        }))}
+                        onChange={values => {
+                          const nextMajorIds = values
+                            .map(Number)
+                            .filter(id => Number.isFinite(id) && id > 0)
+                            .slice(0, 3);
+                          const majorIdSet = new Set(nextMajorIds);
+                          const nextProgramCodes = (form.target_program_codes || []).filter(
+                            code => {
+                              const program = findQualificationProgram(
+                                qualificationPrograms,
+                                code
+                              );
+                              return (program?.majors ?? []).some(major =>
+                                majorIdSet.has(major.id)
+                              );
+                            }
+                          );
+                          updateForm({
+                            target_major_ids: nextMajorIds,
+                            target_program_codes: nextProgramCodes,
+                          });
+                        }}
+                        maxSelections={3}
+                        disabled={!form.target_level_id}
+                        placeholder={
+                          form.target_level_id
+                            ? studyInterestMajors.length
+                              ? 'Select up to 3 majors'
+                              : 'No majors for this level'
+                            : 'Select level first'
+                        }
+                        hint="Max 3 majors"
+                        emptyMessage="No majors for this level"
+                        required
+                      />
+                    </div>
+                    <div className="offline-leads-field">
+                      <label htmlFor="ol-target-programs">Target Programs *</label>
+                      <SearchableMultiSelect
+                        id="ol-target-programs"
+                        compact
+                        preferDropUp
+                        values={form.target_program_codes || []}
+                        options={studyInterestPrograms.map(program => ({
+                          value: program.code,
+                          label: program.name,
+                        }))}
+                        onChange={values =>
+                          updateForm({
+                            target_program_codes: values,
+                          })
+                        }
+                        disabled={!form.target_major_ids?.length}
+                        placeholder={
+                          form.target_major_ids?.length
+                            ? studyInterestPrograms.length
+                              ? 'Select programs'
+                              : 'No programs for selected majors'
+                            : 'Select majors first'
+                        }
+                        emptyMessage="No programs for selected majors"
+                        required
+                      />
                     </div>
                   </div>
                 </section>

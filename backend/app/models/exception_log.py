@@ -31,9 +31,11 @@ class ExceptionLog(Base):
     related_resource: Mapped[str | None] = mapped_column(String(100), nullable=True)
     related_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     attempt_timestamp: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=func.now(), index=True
+        DateTime(timezone=True), nullable=False, default=func.now(), index=True
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), index=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # How the issue was fixed — required when status is RESOLVED
     resolution_comment: Mapped[str | None] = mapped_column(Text, nullable=True)

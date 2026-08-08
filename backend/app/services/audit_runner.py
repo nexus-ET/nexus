@@ -14,6 +14,7 @@ from app.schemas.security_audit import SecurityAuditRunOut, SecurityCheckResult 
 from app.services.audit_logger import write_audit_log
 from app.services.notification_service import NotificationService
 from app.services.security_audit import SecurityCheckResult, run_all_security_checks
+from app.utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ def _persist_run(
         triggered_by_user_id=triggered_by_user_id,
         results_json=json.dumps([check.to_dict() for check in checks], default=str),
         started_at=started_at,
-        completed_at=datetime.utcnow(),
+        completed_at=utc_now(),
     )
     db.add(run)
     db.commit()
@@ -132,7 +133,7 @@ def run_security_audit_suite(
     triggered_by: str = "scheduled",
     triggered_by_user_id: int | None = None,
 ) -> tuple[SecurityAuditRun, bool]:
-    started_at = datetime.utcnow()
+    started_at = utc_now()
     checks = run_all_security_checks()
     failed = [check for check in checks if not check.passed]
 

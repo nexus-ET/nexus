@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.lead import Lead
@@ -236,6 +237,60 @@ def merge_profile_with_students_master(
     return merged
 
 
+def _normalize_email(value: str | None) -> str | None:
+    token = (value or "").strip().lower()
+    return token or None
+
+
+def _sync_email_to_lead_and_bookings(
+    db: Session,
+    *,
+    lead: Lead | None,
+    booking_id: int,
+    email: str | None,
+) -> None:
+    """Keep leads + booking contact email aligned with students_master on profile save."""
+    from app.models.counselling_booking import CounsellingBooking
+
+    normalized = _normalize_email(email)
+    if not normalized:
+        return
+
+    if lead is not None:
+        current = _normalize_email(lead.email)
+        if current != normalized:
+            conflict = (
+                db.query(Lead.id)
+                .filter(
+                    func.lower(Lead.email) == normalized,
+                    Lead.id != lead.id,
+                )
+                .first()
+            )
+            if conflict:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A lead with this email already exists.",
+                )
+            lead.email = normalized
+
+        (
+            db.query(CounsellingBooking)
+            .filter(CounsellingBooking.lead_id == lead.id)
+            .update(
+                {CounsellingBooking.candidate_email: normalized},
+                synchronize_session=False,
+            )
+        )
+        return
+
+    booking = (
+        db.query(CounsellingBooking).filter(CounsellingBooking.id == booking_id).first()
+    )
+    if booking is not None:
+        booking.candidate_email = normalized
+
+
 def upsert_students_master(
     db: Session,
     *,
@@ -265,7 +320,7 @@ def upsert_students_master(
         record.date_of_birth = payload.date_of_birth
         record.gender = payload.gender
         record.marital_status = payload.marital_status
-        record.email = (payload.email or "").strip() or None
+        record.email = _normalize_email(payload.email)
 
         record.phone_country_iso2 = _normalize_iso2(payload.phone_country_iso2)
         record.phone_local = _normalize_phone_local(payload.phone_local)
@@ -288,6 +343,13 @@ def upsert_students_master(
         record.zipcode = (loc.zipcode or "").strip() or None
         if record.country_iso2 and not get_country_by_iso2(db, record.country_iso2):
             raise HTTPException(status_code=400, detail="Select a valid location country.")
+
+        _sync_email_to_lead_and_bookings(
+            db,
+            lead=lead,
+            booking_id=booking_id,
+            email=record.email,
+        )
 
     if scope in {"academia", "full"}:
         edu_payload = OfflineLeadEducation(

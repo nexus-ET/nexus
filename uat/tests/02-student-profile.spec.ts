@@ -68,9 +68,10 @@ test.describe('Student profile submission', () => {
       page.getByText(/Aspiration|Destination|Degree|Major|Country|Vision|Preference/i).first()
     ).toBeVisible({ timeout: 30_000 });
 
-    await page.getByRole('button', { name: /PERSONAL PROFILE/i }).click({ force: true });
+    // Tab label shortened from "PERSONAL PROFILE" → "Personal" in intake session workspace.
+    await page.getByRole('button', { name: /^(Personal|PERSONAL PROFILE)$/i }).click({ force: true });
     await expect(
-      page.getByText(/Personal|Name|Email|Phone|Gender|Nationality|Save|Profile/i).first()
+      page.getByText(/Personal|Name|Email|Phone|Gender|Nationality|Save|Profile|First name/i).first()
     ).toBeVisible({ timeout: 30_000 });
   });
 

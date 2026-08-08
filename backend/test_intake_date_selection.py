@@ -22,6 +22,12 @@ def test_parse_date_selection_accepts_meta_list_id():
     assert _parse_date_selection("date:2026-07-01", dates) == 2
 
 
+def test_parse_date_selection_accepts_selected_display_label():
+    dates = [date(2026, 8, 10), date(2026, 8, 11)]
+    assert _parse_date_selection("Selected Mon, Aug 10, 2026", dates) == 1
+    assert _resolve_selected_date("Selected Mon, Aug 10, 2026", dates) == date(2026, 8, 10)
+
+
 def test_parse_date_selection_rejects_okay():
     dates = [date(2026, 6, 30), date(2026, 7, 1)]
     assert _parse_date_selection("okay", dates) is None
@@ -72,3 +78,4 @@ def test_parse_time_selection_uses_slot_id_not_embedded_digits():
     ]
     assert _parse_time_selection("time:49", slots) == 1
     assert _parse_time_selection("time:52", slots) == 4
+    assert _parse_time_selection("Selected 10:00 AM", slots) == 1

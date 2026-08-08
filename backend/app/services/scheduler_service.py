@@ -110,6 +110,30 @@ def start_security_scheduler() -> BackgroundScheduler | None:
     )
     logger.info("Counsellor session reminder job registered (every 1 minute).")
 
+    # Nexus Intel regulatory scrapers — hourly tick; each config uses its own interval.
+    _scheduler.add_job(
+        run_scheduled_intel_scrapers,
+        trigger="interval",
+        hours=1,
+        id="nexus_intel_regulatory_scrapers",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info("Nexus Intel scraper job registered (hourly due-check).")
+
+    # FlowX SLA evaluation — amber at T-24h, breached after due; nudge hooks later.
+    _scheduler.add_job(
+        run_scheduled_flowx_sla,
+        trigger="interval",
+        minutes=15,
+        id="flowx_sla_evaluation",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info("FlowX SLA evaluation job registered (every 15 minutes).")
+
     _scheduler.start()
     logger.info("Operational scheduler started.")
     return _scheduler
@@ -174,3 +198,39 @@ def run_scheduled_admin_session_reminders() -> None:
             )
     except Exception:
         logger.exception("Scheduled counsellor session reminder job failed.")
+
+
+def run_scheduled_intel_scrapers() -> None:
+    from app.db.database import SessionLocal
+    from app.services.nexus_intel import run_due_scrapers
+
+    db = SessionLocal()
+    try:
+        result = run_due_scrapers(db)
+        if result.get("ran"):
+            logger.info(
+                "Nexus Intel scrapers finished. ran=%s reviews_created=%s",
+                result.get("ran"),
+                result.get("reviews_created"),
+            )
+    except Exception:
+        logger.exception("Scheduled Nexus Intel scraper job failed.")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def run_scheduled_flowx_sla() -> None:
+    from app.db.database import SessionLocal
+    from app.services import flowx as flowx_service
+
+    db = SessionLocal()
+    try:
+        updated = flowx_service.evaluate_sla_breach(db)
+        if updated:
+            logger.info("FlowX SLA evaluation finished. updated=%s", updated)
+    except Exception:
+        logger.exception("Scheduled FlowX SLA evaluation failed.")
+        db.rollback()
+    finally:
+        db.close()

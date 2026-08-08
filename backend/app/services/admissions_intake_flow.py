@@ -727,6 +727,7 @@ def _format_slot_time(slot_time: str) -> str:
 
 
 def _get_active_consultation_booking(db: Session, lead: Lead):
+    """Latest PENDING/SCHEDULED counselling booking for the lead (by booking id)."""
     from app.models.counselling_booking import CounsellingBooking
     from app.services.counselling_service import PENDING_STATUS, SCHEDULED_STATUS
 
@@ -736,7 +737,9 @@ def _get_active_consultation_booking(db: Session, lead: Lead):
             CounsellingBooking.lead_id == lead.id,
             CounsellingBooking.status.in_([PENDING_STATUS, SCHEDULED_STATUS]),
         )
-        .order_by(CounsellingBooking.updated_at.desc(), CounsellingBooking.id.desc())
+        # Prefer the newest booking row — staff rebooks leave older SCHEDULED rows
+        # until cancelled, and lead.consultation_scheduled_at can lag behind.
+        .order_by(CounsellingBooking.id.desc())
         .first()
     )
 
@@ -757,7 +760,6 @@ def _load_active_consultation_bookings_map(db: Session, lead_ids: list[int]) -> 
         )
         .order_by(
             CounsellingBooking.lead_id.asc(),
-            CounsellingBooking.updated_at.desc(),
             CounsellingBooking.id.desc(),
         )
         .all()
@@ -770,9 +772,9 @@ def _load_active_consultation_bookings_map(db: Session, lead_ids: list[int]) -> 
 
 
 def _lead_has_active_consultation_booking(db: Session, lead: Lead) -> bool:
-    if lead.consultation_scheduled_at:
+    if _get_active_consultation_booking(db, lead) is not None:
         return True
-    return _get_active_consultation_booking(db, lead) is not None
+    return bool(lead.consultation_scheduled_at)
 
 
 def _build_consultation_session_profile_fields(
@@ -794,15 +796,21 @@ def _build_consultation_session_profile_fields(
     pending_date = str(context.get("pending_session_date_label") or "").strip() or None
     pending_time = str(context.get("pending_session_time_label") or "").strip() or None
     in_time_step = step == INTAKE_STEP_PICK_TIME
+    reschedule_in_progress = bool(context.get("reschedule_in_progress"))
 
-    # Authoritative source: active counselling booking / scheduled timestamp.
-    # Do this first — intake can remain on PICK_TIME after a successful book +
-    # assign, and the "Pending selection" placeholder must not win.
     resolved_booking = booking
     if resolved_booking is None and db is not None:
         resolved_booking = _get_active_consultation_booking(db, lead)
 
-    if resolved_booking and getattr(resolved_booking, "scheduled_time", None):
+    # Mid time-pick: date already chosen — show the pending date even when an
+    # older booking/timestamp still exists (normal during WhatsApp reschedule).
+    if in_time_step and selected_raw:
+        try:
+            session_date = pending_date or _format_slot_date(date.fromisoformat(str(selected_raw)))
+        except ValueError:
+            session_date = pending_date
+        session_time = pending_time or "Pending selection"
+    elif resolved_booking and getattr(resolved_booking, "scheduled_time", None):
         session_date = _format_slot_date(resolved_booking.scheduled_time.date())
         session_time = _format_slot_time(resolved_booking.scheduled_time.strftime("%H:%M"))
         if resolved_booking.admin_id and db is not None:
@@ -811,19 +819,15 @@ def _build_consultation_session_profile_fields(
                 counsellor_name = _format_admin_name(admin)
     else:
         scheduled_at = getattr(lead, "consultation_scheduled_at", None)
-        if scheduled_at:
+        if scheduled_at and (reschedule_in_progress or not (pending_date or pending_time)):
             session_date = _format_slot_date(scheduled_at.date())
             session_time = _format_slot_time(scheduled_at.strftime("%H:%M"))
-        elif in_time_step and selected_raw:
-            # Mid-picker: date chosen, waiting for (or confirming) a time.
-            try:
-                session_date = pending_date or _format_slot_date(date.fromisoformat(str(selected_raw)))
-            except ValueError:
-                session_date = pending_date
-            session_time = pending_time or "Pending selection"
         elif pending_date or pending_time:
             session_date = pending_date
             session_time = pending_time
+        elif scheduled_at:
+            session_date = _format_slot_date(scheduled_at.date())
+            session_time = _format_slot_time(scheduled_at.strftime("%H:%M"))
 
     appointment_status = "Not booked"
     if session_date and session_time and session_time != "Pending selection":
@@ -1935,20 +1939,26 @@ def _handle_marketing_consent_selection(
 def _begin_reschedule_booking(db: Session, lead: Lead) -> None:
     """Start reschedule flow without clearing the confirmed session from the UI."""
     context = _load_context(lead)
+    # Clear prior date/time picks but keep reschedule_in_progress — otherwise
+    # _repair_intake_if_booking_already_active snaps PICK_* back to COMPLETE while
+    # the old booking still exists, and the time-slot menu never sends.
+    _clear_booking_selection_context(context, clear_reschedule_flag=False)
     context["reschedule_in_progress"] = True
-    _clear_booking_selection_context(context)
-    context.pop("pending_session_date_label", None)
-    context.pop("pending_session_time_label", None)
     _save_context(db, lead, context)
 
 
-def _clear_booking_selection_context(context: dict[str, Any]) -> None:
+def _clear_booking_selection_context(
+    context: dict[str, Any],
+    *,
+    clear_reschedule_flag: bool = True,
+) -> None:
     context.pop("selected_date", None)
     context.pop("time_slot_ids", None)
     context.pop("date_options", None)
     context.pop("pending_session_date_label", None)
     context.pop("pending_session_time_label", None)
-    context.pop("reschedule_in_progress", None)
+    if clear_reschedule_flag:
+        context.pop("reschedule_in_progress", None)
 
 
 def release_lead_consultation_slot(
@@ -1993,11 +2003,17 @@ def format_booking_summary(
     db: Session | None = None,
 ) -> str:
     first = (lead.full_name or "there").split()[0]
-    scheduled = lead.consultation_scheduled_at
-    if not scheduled and db is not None:
+    # Authoritative: latest active counselling booking. lead.consultation_scheduled_at
+    # can point at a superseded WhatsApp slot after staff rebooks.
+    scheduled = None
+    if db is not None:
         booking = _get_active_consultation_booking(db, lead)
-        if booking:
+        if booking and booking.scheduled_time:
             scheduled = booking.scheduled_time
+            if lead.consultation_scheduled_at != scheduled:
+                lead.consultation_scheduled_at = scheduled
+    if not scheduled:
+        scheduled = lead.consultation_scheduled_at
     if not scheduled:
         if lead.wants_consultation_call:
             return (
@@ -2176,8 +2192,17 @@ def _offered_dates_for_lead(db: Session, lead: Lead, *, limit: int = 8) -> list[
     return _available_dates(db, limit=limit)
 
 
+def _strip_selected_prefix(text: str) -> str:
+    """Normalize chat/history labels like 'Selected Mon, Aug 10, 2026'."""
+    cleaned = (text or "").strip()
+    match = re.match(r"^selected\s*[:\-]?\s*(.+)$", cleaned, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return cleaned
+
+
 def _resolve_selected_date(text: str, dates: list[date]) -> date | None:
-    cleaned = text.strip()
+    cleaned = _strip_selected_prefix(text)
     lowered = cleaned.lower()
     if lowered.startswith("date:"):
         try:
@@ -2185,7 +2210,7 @@ def _resolve_selected_date(text: str, dates: list[date]) -> date | None:
         except ValueError:
             pass
 
-    choice = _parse_date_selection(text, dates)
+    choice = _parse_date_selection(cleaned, dates)
     if choice is not None:
         return dates[choice - 1]
 
@@ -2205,7 +2230,7 @@ def _normalize_date_label(label: str) -> str:
 
 
 def _parse_date_selection(text: str, dates: list[date]) -> int | None:
-    cleaned = text.strip()
+    cleaned = _strip_selected_prefix(text)
     lowered = cleaned.lower()
 
     if lowered.startswith("date:"):
@@ -2218,7 +2243,7 @@ def _parse_date_selection(text: str, dates: list[date]) -> int | None:
             pass
         return None
 
-    choice = _parse_choice_number(text, len(dates))
+    choice = _parse_choice_number(cleaned, len(dates))
     if choice is not None:
         return choice
 
@@ -2242,7 +2267,7 @@ def _parse_date_selection(text: str, dates: list[date]) -> int | None:
 
 
 def _parse_time_selection(text: str, slots: list[ConsultationSlot], context: dict[str, Any] | None = None) -> int | None:
-    cleaned = text.strip()
+    cleaned = _strip_selected_prefix(text)
     lowered = cleaned.lower()
 
     if lowered.startswith("time:"):

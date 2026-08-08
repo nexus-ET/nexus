@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.business import Business
 from app.models.user import User
+from app.utils.timezone import utc_now
 
 DEFAULT_BUSINESS_ID = 1
 DOMAIN_PATTERN = re.compile(
@@ -20,6 +21,19 @@ EMAIL_DOMAIN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 OFFICE_PHONE_PATTERN = re.compile(r"^\+?[0-9()\-\s.]{7,50}$")
+
+UPLOADS_ROOT = Path(__file__).resolve().parents[1] / "uploads"
+BUSINESS_LOGO_DIR = UPLOADS_ROOT / "business"
+ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+MAX_LOGO_BYTES = 5 * 1024 * 1024
+LOGO_CONTENT_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+}
 
 
 def resolve_business_id_for_user(user: User) -> int:
@@ -109,11 +123,132 @@ def update_business_profile(
     business.office_mobile_number = cleaned_office_mobile
     business.web_url = cleaned_web_url
     business.email_domain = cleaned_email_domain.lower() if cleaned_email_domain else None
-    business.updated_at = datetime.utcnow()
+    business.updated_at = utc_now()
 
     db.commit()
     db.refresh(business)
     return _serialize_business(business)
+
+
+def save_business_logo(
+    db: Session,
+    business_id: int,
+    *,
+    content: bytes,
+    filename: str | None,
+) -> dict:
+    if not content:
+        raise HTTPException(status_code=400, detail="Logo file is empty.")
+    if len(content) > MAX_LOGO_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail="Logo must be 5 MB or smaller.",
+        )
+
+    suffix = Path(filename or "logo.png").suffix.lower()
+    if suffix == ".jpeg":
+        suffix = ".jpg"
+    if suffix not in ALLOWED_LOGO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Logo must be a PNG, JPG, GIF, WebP, or SVG image.",
+        )
+
+    business = db.query(Business).filter(Business.id == business_id).first()
+    if not business:
+        if business_id == DEFAULT_BUSINESS_ID:
+            business = ensure_default_business(db)
+        else:
+            business = Business(id=business_id, name="Default Business")
+            db.add(business)
+            db.flush()
+
+    target_dir = BUSINESS_LOGO_DIR / str(business_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # Overwrite any previous logo file (including different extensions).
+    for existing in target_dir.glob("logo.*"):
+        try:
+            existing.unlink()
+        except OSError:
+            pass
+
+    destination = target_dir / f"logo{suffix}"
+    destination.write_bytes(content)
+
+    relative_path = f"business/{business_id}/logo{suffix}"
+    business.logo_path = relative_path
+    business.updated_at = utc_now()
+    db.commit()
+    db.refresh(business)
+    return _serialize_business(business)
+
+
+def resolve_business_logo_file(db: Session, business_id: int) -> tuple[Path, str]:
+    business = db.query(Business).filter(Business.id == business_id).first()
+    if not business or not business.logo_path:
+        raise HTTPException(status_code=404, detail="Company logo not found.")
+
+    relative = Path(business.logo_path)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise HTTPException(status_code=404, detail="Company logo not found.")
+
+    uploads_root = UPLOADS_ROOT.resolve()
+    path = (uploads_root / relative).resolve()
+    try:
+        path.relative_to(uploads_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Company logo not found.") from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Company logo not found.")
+
+    media_type = LOGO_CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
+    return path, media_type
+
+
+def try_resolve_business_logo_path(db: Session, business_id: int) -> Path | None:
+    """Return the on-disk logo path when present; never raises for missing logos."""
+    try:
+        path, _media_type = resolve_business_logo_file(db, business_id)
+        return path
+    except HTTPException:
+        return None
+
+
+def format_business_address_lines_from_profile(profile: dict) -> list[str]:
+    """Build printable address lines from a serialized business profile dict."""
+    lines: list[str] = []
+    for key in ("address_line1", "address_line2", "address_line3"):
+        cleaned = (profile.get(key) or "").strip()
+        if cleaned:
+            lines.append(cleaned)
+    city_state_zip = ", ".join(
+        part
+        for part in (
+            (profile.get("city") or "").strip(),
+            (profile.get("state") or "").strip(),
+            (profile.get("zip_code") or "").strip(),
+        )
+        if part
+    )
+    if city_state_zip:
+        lines.append(city_state_zip)
+    country = (profile.get("country") or "").strip()
+    if country:
+        lines.append(country)
+    return lines
+
+
+def get_business_pdf_branding(db: Session, business_id: int = DEFAULT_BUSINESS_ID) -> dict:
+    """Tenant branding for PDF headers/footers (name, address, optional logo path)."""
+    profile = get_business_profile(db, business_id)
+    name = (profile.get("business_name") or "NEXUS").strip() or "NEXUS"
+    logo_path = try_resolve_business_logo_path(db, int(profile.get("business_id") or business_id))
+    return {
+        "business_name": name,
+        "address_lines": format_business_address_lines_from_profile(profile),
+        "logo_path": str(logo_path) if logo_path else None,
+    }
 
 
 def _optional_text(value: str | None, *, allow_multiline: bool = False) -> str | None:
@@ -180,6 +315,7 @@ def _is_valid_web_url(value: str) -> bool:
 
 
 def _serialize_business(business: Business) -> dict:
+    has_logo = bool(business.logo_path)
     return {
         "business_id": business.id,
         "business_name": business.name,
@@ -195,5 +331,7 @@ def _serialize_business(business: Business) -> dict:
         "office_mobile_number": business.office_mobile_number,
         "web_url": business.web_url,
         "email_domain": business.email_domain,
+        "has_logo": has_logo,
+        "logo_url": "/api/v1/settings/business-profile/logo" if has_logo else None,
         "updated_at": business.updated_at,
     }

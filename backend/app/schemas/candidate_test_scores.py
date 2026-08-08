@@ -13,6 +13,9 @@ class TestName(str, Enum):
     TOEFL = "TOEFL"
     SAT = "SAT"
     GRE = "GRE"
+    GMAT = "GMAT"
+    ACT = "ACT"
+    LSAT_MCAT = "LSAT_MCAT"
     PTE = "PTE"
     DUOLINGO = "DUOLINGO"
 
@@ -42,10 +45,10 @@ OVERALL_SCORE_CONFIG: dict[TestName, OverallScoreConfig] = {
         auto_method="average",
     ),
     TestName.TOEFL: OverallScoreConfig(
-        data_type="integer",
-        max_length=3,
-        min_score=0,
-        max_score=120,
+        data_type="float",
+        max_length=6,
+        min_score=0.0,
+        max_score=120.0,
         auto_method="sum",
     ),
     TestName.SAT: OverallScoreConfig(
@@ -61,6 +64,27 @@ OVERALL_SCORE_CONFIG: dict[TestName, OverallScoreConfig] = {
         min_score=260,
         max_score=340,
         auto_method="sum",
+    ),
+    TestName.GMAT: OverallScoreConfig(
+        data_type="integer",
+        max_length=3,
+        min_score=205,
+        max_score=805,
+        auto_method="none",
+    ),
+    TestName.ACT: OverallScoreConfig(
+        data_type="integer",
+        max_length=2,
+        min_score=1,
+        max_score=36,
+        auto_method="average",
+    ),
+    TestName.LSAT_MCAT: OverallScoreConfig(
+        data_type="integer",
+        max_length=3,
+        min_score=120,
+        max_score=528,
+        auto_method="none",
     ),
     TestName.PTE: OverallScoreConfig(
         data_type="integer",
@@ -113,31 +137,31 @@ TEST_SECTION_CONFIG: dict[TestName, list[TestSectionConfig]] = {
     TestName.TOEFL: [
         TestSectionConfig(
             section_name="Reading",
-            data_type="integer",
-            max_length=2,
-            min_score=0,
-            max_score=30,
+            data_type="float",
+            max_length=4,
+            min_score=0.0,
+            max_score=30.0,
         ),
         TestSectionConfig(
             section_name="Listening",
-            data_type="integer",
-            max_length=2,
-            min_score=0,
-            max_score=30,
+            data_type="float",
+            max_length=4,
+            min_score=0.0,
+            max_score=30.0,
         ),
         TestSectionConfig(
             section_name="Speaking",
-            data_type="integer",
-            max_length=2,
-            min_score=0,
-            max_score=30,
+            data_type="float",
+            max_length=4,
+            min_score=0.0,
+            max_score=30.0,
         ),
         TestSectionConfig(
             section_name="Writing",
-            data_type="integer",
-            max_length=2,
-            min_score=0,
-            max_score=30,
+            data_type="float",
+            max_length=4,
+            min_score=0.0,
+            max_score=30.0,
         ),
     ],
     TestName.SAT: [
@@ -170,6 +194,61 @@ TEST_SECTION_CONFIG: dict[TestName, list[TestSectionConfig]] = {
             max_length=3,
             min_score=130,
             max_score=170,
+        ),
+    ],
+    TestName.GMAT: [
+        TestSectionConfig(
+            section_name="Quantitative",
+            data_type="integer",
+            max_length=2,
+            min_score=60,
+            max_score=90,
+        ),
+        TestSectionConfig(
+            section_name="Verbal",
+            data_type="integer",
+            max_length=2,
+            min_score=60,
+            max_score=90,
+        ),
+    ],
+    TestName.ACT: [
+        TestSectionConfig(
+            section_name="English",
+            data_type="integer",
+            max_length=2,
+            min_score=1,
+            max_score=36,
+        ),
+        TestSectionConfig(
+            section_name="Math",
+            data_type="integer",
+            max_length=2,
+            min_score=1,
+            max_score=36,
+        ),
+        TestSectionConfig(
+            section_name="Reading",
+            data_type="integer",
+            max_length=2,
+            min_score=1,
+            max_score=36,
+        ),
+        TestSectionConfig(
+            section_name="Science",
+            data_type="integer",
+            max_length=2,
+            min_score=1,
+            max_score=36,
+        ),
+    ],
+    TestName.LSAT_MCAT: [
+        TestSectionConfig(
+            section_name="Overall",
+            data_type="integer",
+            max_length=3,
+            min_score=120,
+            max_score=528,
         ),
     ],
     TestName.PTE: [
@@ -254,3 +333,11 @@ class CandidateTestScoresResponse(BaseModel):
     booking_id: int
     lead_id: int | None
     scores: list[CandidateTestScoreOut]
+
+
+class CandidateTestScoreAttemptDeleteRequest(BaseModel):
+    score_ids: list[int] = Field(..., min_length=1)
+
+
+class CandidateTestScoreAttemptReplaceRequest(CandidateTestScoreSaveRequest):
+    score_ids: list[int] = Field(..., min_length=1)

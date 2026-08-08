@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from app.utils.timezone import utc_now
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -164,7 +165,7 @@ def update_digital_presence_link(
     record.url = fields["url"]
     record.category = fields["category"]
     record.admission_value_note = fields["admission_value_note"]
-    record.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    record.updated_at = utc_now()
     db.commit()
     return get_digital_presence_links(db, booking_id=booking_id, lead=lead)
 

@@ -26,6 +26,7 @@ class CandidateEducation(Base):
     )
     degree_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     degree_other: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    full_time_study_years: Mapped[str | None] = mapped_column(String(10), nullable=True)
     major: Mapped[str | None] = mapped_column(String(255), nullable=True)
     university_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     university_affiliation: Mapped[str | None] = mapped_column(String(255), nullable=True)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,6 +27,10 @@ class CounsellingBooking(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     outcome_key: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     wrap_up_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+    # Sub-process 1.1 counselor workspace (academic / english / gap / goals / financial).
+    intake_assessment: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now()
+    )

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Bot, Archive, Map } from 'lucide-react';
 import { apiFetch } from '../utils/api';
+import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 import LeadStudyInterestPanel from '../components/LeadStudyInterestPanel';
 import StudentJourneyPanel from '../components/StudentJourneyPanel';
 import LeadQueueSidebarFilters from '../components/LeadQueueSidebarFilters';
@@ -227,6 +228,7 @@ const isHandoffLead = (lead: Lead): boolean => {
 };
 
 export default function HandoffsView() {
+  const { formatTime, formatDateGroup } = useBusinessTimezone();
   const [leadsQueue, setLeadsQueue] = useState<Lead[]>([]);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -659,50 +661,6 @@ export default function HandoffsView() {
     }, 10);
   };
 
-  const formatTime = (dateStr?: any): string => {
-    if (!dateStr) return '';
-    try {
-      const strDate = String(dateStr).trim();
-      const timeMatch = strDate.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-      if (!timeMatch) return strDate;
-      const rawHours = parseInt(timeMatch[1], 10);
-      const rawMinutes = parseInt(timeMatch[2], 10);
-      const computedDate = new Date();
-      computedDate.setHours(rawHours, rawMinutes, 0, 0);
-      const timezoneOffsetMinutes = computedDate.getTimezoneOffset();
-      computedDate.setMinutes(computedDate.getMinutes() - timezoneOffsetMinutes);
-      return `${String(computedDate.getHours()).padStart(2, '0')}:${String(computedDate.getMinutes()).padStart(2, '0')}`;
-    } catch (e) {
-      const fallbackMatch = String(dateStr).match(/\d{2}:\d{2}/);
-      return fallbackMatch ? fallbackMatch[0] : String(dateStr);
-    }
-  };
-
-  const getDateGroupLabel = (dateStr?: string): string => {
-    if (!dateStr) return 'System Events';
-    try {
-      let cleanStr = dateStr.trim().replace(' ', 'T');
-      if (!cleanStr.endsWith('Z') && !cleanStr.includes('+') && !cleanStr.includes('-')) {
-        cleanStr += 'Z';
-      }
-      const parsedDate = new Date(cleanStr);
-      if (isNaN(parsedDate.getTime())) return 'System Events';
-      const localTargetDate = new Date(parsedDate.getTime() - (parsedDate.getTimezoneOffset() * 60000));
-      localTargetDate.setHours(0, 0, 0, 0);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const diffTime = today.getTime() - localTargetDate.getTime();
-      const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-      if (diffDays === 0) return 'Today';
-      if (diffDays === 1) return 'Yesterday';
-      if (diffDays > 1 && diffDays < 7) {
-        return localTargetDate.toLocaleDateString('en-US', { weekday: 'long' });
-      }
-      return localTargetDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    } catch (e) {
-      return 'System Events';
-    }
-  };
 
   const groupedMessages = useMemo(() => {
     if (!selectedLead) return {};
@@ -755,13 +713,13 @@ export default function HandoffsView() {
 
     const groups: { [key: string]: MessagePayload[] } = {};
     processed.forEach((msg) => {
-      const label = getDateGroupLabel(msg.created_at);
+      const label = formatDateGroup(msg.created_at);
       if (!groups[label]) groups[label] = [];
       groups[label].push(msg);
     });
 
     return groups;
-  }, [selectedLead]);
+  }, [selectedLead, formatDateGroup]);
 
   const hasNoMessages = useMemo(() => {
     return Object.keys(groupedMessages).length === 0;
@@ -1211,7 +1169,7 @@ export default function HandoffsView() {
                 disabled={!messageText.trim()}
                 style={{
                   ...styles.actionSendButton,
-                  backgroundColor: !messageText.trim() ? '#cbd5e1' : '#16a34a'
+                  backgroundColor: !messageText.trim() ? '#cbd5e1' : '#322f86'
                 }}
               >
                 Send
@@ -1327,7 +1285,7 @@ const styles = {
   cardBottomRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' } as React.CSSProperties,
   cardMainFrame: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', marginBottom: '4px' } as React.CSSProperties,
   leadCardNameRow: { display: 'flex', alignItems: 'center', gap: '6px', flex: 1, minWidth: 0 } as React.CSSProperties,
-  leadCardName: { margin: 0, fontSize: '14px', fontWeight: '700', color: '#1e3a8a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 } as React.CSSProperties,
+  leadCardName: { margin: 0, fontSize: '14px', fontWeight: '700', color: '#322f86', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 } as React.CSSProperties,
   receivedCountBadge: {
     flexShrink: 0,
     display: 'inline-grid',
@@ -1414,7 +1372,7 @@ const styles = {
   headerOverviewButton: {
     border: '1px solid #cbd5e1',
     backgroundColor: '#ffffff',
-    color: '#03045e',
+    color: '#322f86',
     padding: '8px 12px',
     borderRadius: '8px',
     fontSize: '12px',

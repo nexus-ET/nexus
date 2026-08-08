@@ -26,6 +26,7 @@ import { usePushNotifications } from '../hooks/usePushNotifications';
 import MetaLeadSyncPanel from '../components/dashboard/MetaLeadSyncPanel';
 import PendingAdvisorQuestionsPanel, { PendingAdvisorQuestion } from '../components/dashboard/PendingAdvisorQuestionsPanel';
 import CalendarAlertsWidget from '../components/dashboard/CalendarAlertsWidget';
+import NexusIntelTriviaWidget from '../components/dashboard/NexusIntelTriviaWidget';
 import type { CalendarIntakeAlert } from '../types/hierarchicalIntake';
 import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 
@@ -120,7 +121,9 @@ const NexusDashboard: React.FC = () => {
 
   const [dashboard, setDashboard] = useState<DashboardSummary>(INITIAL_DASHBOARD);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
-  const [allowedRoutes, setAllowedRoutes] = useState<string[]>(['/']);
+  // null until session resolves so header/sidebar don't paint a partial menu
+  // (Academia requires currentUser role + routes — early route-only paints delay it).
+  const [allowedRoutes, setAllowedRoutes] = useState<string[] | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -139,7 +142,12 @@ const NexusDashboard: React.FC = () => {
 
   const currentPath = normalizePath(location.pathname);
   const isMessagingHub = currentPath === '/messaging-hub';
-  const isMyBookings = currentPath === '/my-bookings';
+  const isMyBookings =
+    currentPath === '/my-bookings' || currentPath.startsWith('/my-bookings/');
+  const isNexusIntel =
+    currentPath === '/nexus-intel' || currentPath.startsWith('/nexus-intel/');
+  const isFlowx = currentPath === '/flowx' || currentPath.startsWith('/flowx/');
+  const isFlowxBrickDashboard = currentPath.startsWith('/flowx/countries/');
   const isLeadQueuePage =
     currentPath === '/ai-active' ||
     currentPath === '/handoffs' ||
@@ -147,9 +155,12 @@ const NexusDashboard: React.FC = () => {
     currentPath.startsWith('/prospects/') ||
     currentPath.startsWith('/students/');
   const isFullBleedPage = isMessagingHub || isMyBookings || isLeadQueuePage;
-  const canAccessCurrentRoute = isAllowedRoute(currentPath, allowedRoutes);
+  const canAccessCurrentRoute =
+    allowedRoutes !== null && isAllowedRoute(currentPath, allowedRoutes);
   const canUseAcademiaCommandSearch =
-    canAccessAcademiaHub(currentUser) && isAllowedRoute('/academia', allowedRoutes);
+    canAccessAcademiaHub(currentUser) &&
+    allowedRoutes !== null &&
+    isAllowedRoute('/academia', allowedRoutes);
 
   // Keep left-nav module in sync when the route belongs to a header module.
   useEffect(() => {
@@ -194,8 +205,30 @@ const NexusDashboard: React.FC = () => {
 
     try {
       const data = await apiFetch('permissions/my-role');
-      const payload = data as { allowed_routes?: string[] };
+      const payload = data as {
+        allowed_routes?: string[];
+        role?: string | null;
+      };
       setAllowedRoutes(payload.allowed_routes?.length ? payload.allowed_routes : ['/']);
+      // Keep role available for Academia/Counselling gates if profile hasn't hydrated yet.
+      if (payload.role) {
+        setCurrentUser(prev => {
+          if (prev) {
+            if (prev.admin_role?.name || prev.role) return prev;
+            return {
+              ...prev,
+              role: prev.role || payload.role,
+              admin_role: prev.admin_role || { name: payload.role },
+            };
+          }
+          return {
+            id: 0,
+            email: '',
+            role: payload.role,
+            admin_role: { name: payload.role },
+          };
+        });
+      }
     } catch {
       setAllowedRoutes(['/']);
     }
@@ -215,15 +248,44 @@ const NexusDashboard: React.FC = () => {
       }
 
       try {
-        const [userData] = await Promise.all([
+        // Fetch in parallel, but apply BOTH results in one commit so Academia
+        // (needs role from users/me) appears with the rest of the menu.
+        const [userData, permData] = await Promise.all([
           apiFetch('users/me')
             .then(data => data as CurrentUser)
             .catch(() => null),
-          loadAllowedRoutes(),
+          apiFetch('permissions/my-role')
+            .then(
+              data =>
+                data as {
+                  allowed_routes?: string[];
+                  role?: string | null;
+                }
+            )
+            .catch(() => null),
         ]);
-        if (!cancelled) {
-          setCurrentUser(userData);
-        }
+        if (cancelled) return;
+
+        const routes = permData?.allowed_routes?.length ? permData.allowed_routes : ['/'];
+        const roleName = userData?.admin_role?.name || userData?.role || permData?.role || null;
+        const hydratedUser: CurrentUser | null = userData
+          ? {
+              ...userData,
+              role: userData.role || roleName,
+              admin_role: userData.admin_role || (roleName ? { name: roleName } : null),
+            }
+          : roleName
+            ? {
+                id: 0,
+                email: '',
+                role: roleName,
+                admin_role: { name: roleName },
+                is_superuser: false,
+              }
+            : null;
+
+        setCurrentUser(hydratedUser);
+        setAllowedRoutes(routes);
       } finally {
         if (!cancelled) {
           setSessionReady(true);
@@ -235,7 +297,7 @@ const NexusDashboard: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [loadAllowedRoutes]);
+  }, []);
 
   useEffect(() => {
     const handlePermissionsChanged = () => {
@@ -417,13 +479,17 @@ const NexusDashboard: React.FC = () => {
               ? 'flex min-h-0 flex-col overflow-hidden p-0'
               : isMessagingHub
                 ? 'flex min-h-0 flex-col overflow-hidden p-4 md:p-6'
-                : 'overflow-y-auto p-8'
+                : isFlowxBrickDashboard
+                  ? 'flex min-h-0 flex-col overflow-hidden p-4 md:p-5'
+                : isNexusIntel || isFlowx
+                  ? 'flex min-h-0 flex-col overflow-hidden p-8'
+                  : 'overflow-y-auto p-8'
           }`}
         >
           <div className="absolute inset-0 z-0 pointer-events-none opacity-15" style={{ backgroundImage: 'radial-gradient(var(--color-text-muted) 1px, transparent 1px)', backgroundSize: '24px 24px' }} />
 
           {location.pathname === '/' ? (
-            <div className="relative z-10 max-w-7xl mx-auto space-y-8">
+            <div className="relative z-10 mx-auto w-full max-w-none space-y-8">
               
               {error && (
                 <div className="p-4 bg-alert/10 border border-alert/20 rounded-xl text-xs text-alert font-medium">
@@ -450,6 +516,10 @@ const NexusDashboard: React.FC = () => {
 
               {canAccessAcademiaHub(currentUser) ? (
                 <CalendarAlertsWidget alerts={dashboard.calendar_alerts ?? []} />
+              ) : null}
+
+              {allowedRoutes !== null && isAllowedRoute('/nexus-intel', allowedRoutes) ? (
+                <NexusIntelTriviaWidget />
               ) : null}
 
               {/* --- 4-CARD DATA HERO ROW --- */}
@@ -591,11 +661,11 @@ const NexusDashboard: React.FC = () => {
               Loading…
             </div>
           ) : !canAccessCurrentRoute ? (
-            <Navigate to={allowedRoutes[0] || '/'} replace />
+            <Navigate to={(allowedRoutes && allowedRoutes[0]) || '/'} replace />
           ) : (
             <div
               className={`relative z-10 w-full animate-in fade-in slide-in-from-bottom-2 duration-300 ${
-                isFullBleedPage ? 'flex min-h-0 flex-1 flex-col' : 'h-full'
+                isFullBleedPage || isNexusIntel || isFlowx ? 'flex min-h-0 flex-1 flex-col' : 'h-full'
               }`}
             >
               <Outlet

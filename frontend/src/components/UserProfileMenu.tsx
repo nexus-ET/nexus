@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { LogOut, UserCircle } from 'lucide-react';
+import { Brain, LogOut, UserCircle } from 'lucide-react';
+import { useIntelPreferences, useUpdateIntelPreferences } from '../hooks/useNexusIntel';
 
 interface UserProfileMenuProps {
   firstName: string;
@@ -21,6 +22,9 @@ const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
 }) => {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const prefsQuery = useIntelPreferences();
+  const updatePrefs = useUpdateIntelPreferences();
+  const prefs = prefsQuery.data;
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -65,7 +69,7 @@ const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-[calc(100%+0.5rem)] min-w-[180px] rounded-xl border border-border-subtle bg-card shadow-xl py-1.5 z-50">
+        <div className="absolute right-0 top-[calc(100%+0.5rem)] min-w-[220px] rounded-xl border border-border-subtle bg-card shadow-xl py-1.5 z-50">
           <Link
             to="/my-profile"
             onClick={() => setOpen(false)}
@@ -74,6 +78,34 @@ const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
             <UserCircle size={16} />
             My Profile
           </Link>
+          <Link
+            to="/nexus-intel/controls"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2 px-3 py-2.5 text-sm text-text-main hover:bg-surface-bg transition-colors"
+          >
+            <Brain size={16} />
+            Nexus Intel controls
+          </Link>
+          <div className="my-1 border-t border-border-subtle" />
+          <label className="flex items-center justify-between gap-3 px-3 py-2 text-xs text-text-main hover:bg-surface-bg cursor-pointer">
+            <span>Show Intel Tips</span>
+            <input
+              type="checkbox"
+              checked={prefs?.enable_contextual_tips ?? true}
+              onChange={e => updatePrefs.mutate({ enable_contextual_tips: e.target.checked })}
+              className="h-3.5 w-3.5"
+            />
+          </label>
+          <label className="flex items-center justify-between gap-3 px-3 py-2 text-xs text-text-main hover:bg-surface-bg cursor-pointer">
+            <span>Daily Trivia</span>
+            <input
+              type="checkbox"
+              checked={prefs?.enable_daily_trivia ?? true}
+              onChange={e => updatePrefs.mutate({ enable_daily_trivia: e.target.checked })}
+              className="h-3.5 w-3.5"
+            />
+          </label>
+          <div className="my-1 border-t border-border-subtle" />
           <button
             type="button"
             onClick={() => {

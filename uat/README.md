@@ -8,6 +8,7 @@ Pre-staging User Acceptance Testing for core Nexus workflows:
 - Appointment booking / counselling schedule
 - WhatsApp counselling queue & journey / exception visibility
 - Screen-by-screen SIT (`tests/sit/`) — profile, shortlist, counsellor dashboard
+- New modules (`tests/06-new-modules.spec.ts`) — IntelX, FlowX, Book Appointment, Session workspace (Aspirations, Future Insights, ROI Calculator)
 
 Full 5-phase pre-staging gate (SIT + Pytest + WhatsApp mocks + RBAC + E2E/load):
 see `qa/PRE_STAGING_AGENT_PROMPT.md` and `qa/run_pre_staging.ps1`.
@@ -42,6 +43,10 @@ The Vite app proxies `/api` to the local backend, so Playwright only needs the f
 UAT_BASE_URL=https://nexus-dev.edutrust.in
 ```
 
+## Case catalog (next run)
+
+Full numbered list of the **44 application cases** (+ auth setup): [`CASE_CATALOG.md`](./CASE_CATALOG.md).
+
 ## Run (headless)
 
 ```powershell
@@ -50,7 +55,7 @@ npm test
 npm run summary
 ```
 
-Reports:
+Expect **45** Playwright entries (1 setup + 44 cases). Reports:
 
 | Artifact | Path |
 |----------|------|

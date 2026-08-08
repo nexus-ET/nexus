@@ -9,13 +9,20 @@ export function validateLocationFields(
   return null;
 }
 
-export function validateStudyInterestFields(
-  targetDestinationIso2?: string,
-  targetProgramCode?: string,
-  targetCourseCode?: string
-): string | null {
-  if (!targetDestinationIso2) return 'Target destination is required.';
-  if (!targetProgramCode) return 'Target program is required.';
-  if (!targetCourseCode) return 'Target course is required.';
+export function validateStudyInterestFields(options: {
+  targetDestinationIso2s?: string[];
+  targetLevelId?: number | string | null;
+  targetMajorIds?: number[];
+  targetProgramCodes?: string[];
+}): string | null {
+  const destinations = options.targetDestinationIso2s || [];
+  if (!destinations.length) return 'Select at least one target destination.';
+  if (destinations.length > 6) return 'Select up to 6 target destinations.';
+  if (!options.targetLevelId) return 'Target level is required.';
+  const majors = options.targetMajorIds || [];
+  if (!majors.length) return 'Select at least one target major.';
+  if (majors.length > 3) return 'Select up to 3 target majors.';
+  const programs = options.targetProgramCodes || [];
+  if (!programs.length) return 'Select at least one target program.';
   return null;
 }

@@ -74,7 +74,20 @@ def office_today(db: Session | None = None) -> date:
 
 
 def utc_now() -> datetime:
+    """Timezone-aware UTC instant for event timestamps (TIMESTAMPTZ / DateTime(timezone=True))."""
     return datetime.now(ZoneInfo("UTC"))
+
+
+def utc_now_naive() -> datetime:
+    """Naive UTC wall-clock. Prefer utc_now() for new event writes into TIMESTAMPTZ columns."""
+    return utc_now().replace(tzinfo=None)
+
+
+def as_utc(value: datetime) -> datetime:
+    """Normalize a datetime to timezone-aware UTC for comparisons and storage."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=ZoneInfo("UTC"))
+    return value.astimezone(ZoneInfo("UTC"))
 
 
 def format_timezone_label(tz_name: str) -> str:

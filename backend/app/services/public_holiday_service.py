@@ -10,6 +10,7 @@ from app.models.dynamic_setting import DynamicSetting
 from app.models.public_holiday import PublicHoliday
 from app.models.user import User
 from app.services.settings_service import is_working_day
+from app.utils.timezone import utc_now
 
 PRIVATE_HOLIDAY_LABEL = "Private holiday"
 MAX_HOLIDAY_NAME_LENGTH = 100
@@ -200,7 +201,7 @@ def save_public_holiday(
     else:
         row.name = normalized_name
         row.updated_by_user_id = updated_by_user_id
-        row.updated_at = datetime.utcnow()
+        row.updated_at = utc_now()
 
     db.commit()
     db.refresh(row)
@@ -250,7 +251,7 @@ def bulk_save_public_holidays(
             continue
         row.name = normalized_name
         row.updated_by_user_id = updated_by_user_id
-        row.updated_at = datetime.utcnow()
+        row.updated_at = utc_now()
 
     db.commit()
     return get_public_holidays_payload(db)

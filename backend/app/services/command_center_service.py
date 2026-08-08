@@ -11,6 +11,7 @@ from app.models.lead import Lead
 from app.models.security_audit_run import SecurityAuditRun
 from app.models.team_chat_message import TeamChatMessage
 from app.models.user import User
+from app.utils.timezone import utc_now
 from app.services.pipeline_service import (
     AWAITING_DOCS_STAGE,
     COUNSELLING_STAGE,
@@ -74,7 +75,7 @@ def get_pipeline_board(db: Session, admin_id: int | None = None) -> dict:
                 booking_by_lead[booking.lead_id] = booking.id
 
     columns: dict[str, list[dict]] = {stage["key"]: [] for stage in PIPELINE_STAGES}
-    now = datetime.utcnow()
+    now = utc_now()
     stalled_threshold = now - timedelta(days=STALLED_STAGE_THRESHOLD_DAYS)
 
     for lead in leads:
@@ -133,8 +134,8 @@ def assign_lead_to_admin(db: Session, *, lead_id: int, admin_id: int) -> Lead:
     lead.assigned_advisor_id = admin_id
     if not lead.admission_stage:
         lead.admission_stage = COUNSELLING_STAGE
-        lead.admission_stage_entered_at = datetime.utcnow()
-    lead.updated_at = datetime.utcnow()
+        lead.admission_stage_entered_at = utc_now()
+    lead.updated_at = utc_now()
     db.commit()
     db.refresh(lead)
     return lead
@@ -227,7 +228,7 @@ def mark_messages_read(db: Session, *, reader_user_id: int, up_to_message_id: in
         )
         .all()
     )
-    now = datetime.utcnow()
+    now = utc_now()
     for row in rows:
         row.read_at = now
         row.delivery_status = "read"

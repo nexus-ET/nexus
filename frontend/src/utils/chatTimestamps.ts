@@ -1,18 +1,17 @@
-const minuteKey = (iso: string): string => {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
-  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}-${date.getHours()}:${date.getMinutes()}`;
-};
+import { getApiMinuteKey, formatApiClockTime } from './timezone';
 
 /**
  * Show timestamp (outgoing) or sender name + avatar + timestamp (incoming)
  * on the first message of each consecutive run with the same sender and minute.
+ *
+ * Pass businessTimezone so clustering matches displayed clock times.
  */
 export const shouldShowMessageTimestamp = <T>(
   messages: T[],
   index: number,
   getSenderId: (message: T) => number,
-  getCreatedAt: (message: T) => string
+  getCreatedAt: (message: T) => string,
+  businessTimezone = 'UTC'
 ): boolean => {
   const current = messages[index];
   if (!current) return false;
@@ -21,13 +20,15 @@ export const shouldShowMessageTimestamp = <T>(
   if (!previous) return true;
 
   const sameSender = getSenderId(current) === getSenderId(previous);
-  const sameMinute = minuteKey(getCreatedAt(current)) === minuteKey(getCreatedAt(previous));
+  const sameMinute =
+    getApiMinuteKey(getCreatedAt(current), businessTimezone) ===
+    getApiMinuteKey(getCreatedAt(previous), businessTimezone);
 
   return !(sameSender && sameMinute);
 };
 
-export const formatMessageTime = (iso: string): string =>
-  new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+export const formatMessageTime = (iso: string, businessTimezone = 'UTC'): string =>
+  formatApiClockTime(iso, businessTimezone);
 
 /**
  * Show sender name, avatar, and timestamp on the first message of each

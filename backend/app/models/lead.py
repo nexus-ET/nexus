@@ -81,15 +81,17 @@ class Lead(Base):
     resolution_reason: Mapped[str] = mapped_column(String(255), nullable=True) 
 
     admission_stage: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
-    admission_stage_entered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    admission_stage_entered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     status_definition_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("status_definitions.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
-    status_entered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    documents_submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status_entered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    documents_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Live Messaging Relationship Engine
     # 🔥 FIXED: Using native lowercase list[...] notation natively supported by 
@@ -100,10 +102,12 @@ class Lead(Base):
         cascade="all, delete-orphan"
     )
 
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
-    archived_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    # Timestamps (UTC / TIMESTAMPTZ). consultation_scheduled_at stays naive business-local.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now()
+    )
+    archived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 def get_dashboard_metrics(db: Session) -> dict:

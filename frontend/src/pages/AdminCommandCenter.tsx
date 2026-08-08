@@ -35,7 +35,7 @@ const PulseWidgets: React.FC = () => {
             <widget.icon className="h-4 w-4" />
             <p className="text-xs font-medium">{widget.label}</p>
           </div>
-          <p className="mt-2 text-2xl font-semibold text-[#03045e]">{widget.value}</p>
+          <p className="mt-2 text-2xl font-semibold text-[#322f86]">{widget.value}</p>
         </div>
       ))}
     </div>
@@ -48,7 +48,7 @@ const TaskWidget: React.FC = () => {
   return (
     <div className="rounded-xl border border-[#84d2f6]/50 bg-white shadow-sm">
       <div className="border-b border-[#84d2f6]/40 px-4 py-3">
-        <h3 className="text-sm font-semibold text-[#03045e]">Session Wrap-up Tasks</h3>
+        <h3 className="text-sm font-semibold text-[#322f86]">Session Wrap-up Tasks</h3>
         <p className="text-xs text-[#386fa4]">{tasks.length} open action items</p>
       </div>
       <div className="custom-scrollbar max-h-56 space-y-2 overflow-y-auto p-3">
@@ -57,7 +57,7 @@ const TaskWidget: React.FC = () => {
         ) : (
           tasks.map(task => (
             <div key={task.id} className="rounded-lg bg-[#f7f9f9] px-3 py-2">
-              <p className="text-sm font-medium text-[#03045e]">{task.title}</p>
+              <p className="text-sm font-medium text-[#322f86]">{task.title}</p>
               <p className="text-[10px] text-[#386fa4]">
                 {task.candidate_name} · {new Date(task.created_at).toLocaleDateString()}
               </p>
@@ -80,7 +80,7 @@ const CommandCenterLayout: React.FC = () => {
   return (
     <div className="space-y-4 p-4 md:p-6">
       <div>
-        <h1 className="text-2xl font-bold text-[#03045e]">Mission Control</h1>
+        <h1 className="text-2xl font-bold text-[#322f86]">Mission Control</h1>
         <p className="text-sm text-[#386fa4]">
           Real-time operational hub for counselling, pipeline execution, and team collaboration.
         </p>

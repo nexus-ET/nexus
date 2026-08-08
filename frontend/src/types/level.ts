@@ -30,4 +30,10 @@ export const FALLBACK_LEVELS: LevelRecord[] = [
     name: 'Doctoral',
     description: 'Doctorate and research-intensive doctoral study.',
   },
+  {
+    id: 5,
+    code: 'INTEGRATED',
+    name: 'Integrated Degree',
+    description: 'Integrated undergraduate and postgraduate pathways.',
+  },
 ];

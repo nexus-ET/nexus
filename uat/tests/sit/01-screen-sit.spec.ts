@@ -20,7 +20,8 @@ test.describe('SIT: Student Profile Input Screen', () => {
       return;
     }
 
-    await page.getByRole('button', { name: /PERSONAL PROFILE/i }).click({ force: true });
+    // Tab label shortened from "PERSONAL PROFILE" → "Personal" in intake session workspace.
+    await page.getByRole('button', { name: /^(Personal|PERSONAL PROFILE)$/i }).click({ force: true });
     await expect(page.locator('input, textarea, select').first()).toBeVisible({ timeout: 30_000 });
 
     // Client-side required affordances: Save / validation language present on form.

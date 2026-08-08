@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.models.lead import Lead, LeadStage
 from app.models.message import Message
 from app.services.phone_utils import phone_match_keys
+from app.utils.timezone import utc_now
 
 
 def lead_has_advisor_messages(db: Session, lead_id: int) -> bool:
@@ -42,7 +43,7 @@ def is_active_handoff_conversation(db: Session, lead: Lead) -> bool:
 def ensure_handoff_for_inbound(db: Session, lead: Lead) -> None:
     lead.stage = LeadStage.HANDOFF
     lead.is_human_locked = True
-    lead.updated_at = datetime.utcnow()
+    lead.updated_at = utc_now()
 
 
 AI_AUTO_HANDOFF_REASON_PREFIXES = (
@@ -82,11 +83,11 @@ def release_ai_handoff(db: Session, lead: Lead) -> None:
     lead.is_human_locked = False
     lead.handoff_reason = None
     lead.handoff_ai_confidence = None
-    lead.updated_at = datetime.utcnow()
+    lead.updated_at = utc_now()
 
 
 def touch_lead_activity(db: Session, lead: Lead) -> None:
-    lead.updated_at = datetime.utcnow()
+    lead.updated_at = utc_now()
 
 
 def _inbound_lead_rank(db: Session, lead: Lead) -> tuple[int, int, int, int, datetime]:

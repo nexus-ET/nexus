@@ -410,6 +410,7 @@ def sync_schema_columns() -> None:
             "zip_code": "VARCHAR(30)",
             "office_phone_number": "VARCHAR(50)",
             "office_mobile_number": "VARCHAR(50)",
+            "logo_path": "VARCHAR(500)",
         }
         with engine.begin() as conn:
             for column_name, column_type in address_columns.items():
@@ -541,6 +542,10 @@ def sync_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE counselling_bookings ADD COLUMN wrap_up_notes TEXT"))
             if "completed_at" not in booking_columns:
                 conn.execute(text("ALTER TABLE counselling_bookings ADD COLUMN completed_at TIMESTAMP"))
+            if "intake_assessment" not in booking_columns:
+                conn.execute(
+                    text("ALTER TABLE counselling_bookings ADD COLUMN intake_assessment JSONB")
+                )
 
     if not inspector.has_table("admission_history"):
         from app.models.admission_history import AdmissionHistory

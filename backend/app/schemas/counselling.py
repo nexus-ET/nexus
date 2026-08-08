@@ -22,6 +22,18 @@ class BookingCreateRequest(BaseModel):
     notes: str | None = None
 
 
+class StaffBookingCreateRequest(BaseModel):
+    scheduled_time: datetime
+    admin_id: int
+    candidate_name: str = Field(min_length=1, max_length=255)
+    candidate_email: EmailStr | None = None
+    candidate_phone: str | None = None
+    lead_id: int | None = None
+    session_purpose: str | None = Field(default=None, max_length=120)
+    notes: str | None = None
+    create_lead: bool = False
+
+
 class BookingAssignRequest(BaseModel):
     booking_id: int
     admin_id: int
@@ -65,6 +77,70 @@ class AvailableAdminsResponse(BaseModel):
     admins: list[AvailableAdminOut]
 
 
+class CounsellorOut(BaseModel):
+    id: int
+    name: str
+    email: str
+
+
+class CounsellorsResponse(BaseModel):
+    counsellors: list[CounsellorOut]
+
+
+class SessionPurposeOut(BaseModel):
+    label: str
+    description: str = ""
+
+
+class BookingSessionConfigResponse(BaseModel):
+    slot_duration_minutes: int
+    purposes: list[SessionPurposeOut]
+    office_hours_start: str
+    office_hours_end: str
+    allow_bookings: bool
+
+
+class CounsellorAvailabilitySlotOut(BaseModel):
+    start: datetime
+    label: str
+    available: bool
+    reason: str | None = None
+    booking_id: int | None = None
+    candidate_name: str | None = None
+    lead_id: int | None = None
+
+
+class CounsellorAvailabilityResponse(BaseModel):
+    date: date
+    admin_id: int
+    slot_duration_minutes: int
+    day_status: str = "open"
+    bookable: bool = True
+    slots: list[CounsellorAvailabilitySlotOut]
+
+
+class CounsellorAvailabilityWeekResponse(BaseModel):
+    admin_id: int
+    start_date: date
+    slot_duration_minutes: int
+    days: list[CounsellorAvailabilityResponse]
+
+
+class BookingContactCheckResponse(BaseModel):
+    email_taken: bool
+    phone_taken: bool
+    email_lead_id: int | None = None
+    phone_lead_id: int | None = None
+
+
+class BookingNotificationStatusOut(BaseModel):
+    whatsapp: str | None = None
+    email: str | None = None
+    whatsapp_admin: str | None = None
+    email_admin: str | None = None
+    push: str | None = None
+
+
 class BookingOut(BaseModel):
     id: int
     scheduled_time: datetime
@@ -75,6 +151,7 @@ class BookingOut(BaseModel):
     candidate_phone: str | None = None
     status: BookingStatus
     notes: str | None = None
+    notifications: BookingNotificationStatusOut | None = None
 
 
 class MyBookingOut(BookingOut):

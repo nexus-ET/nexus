@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from app.utils.timezone import utc_now
 
 AWAY_THRESHOLD = timedelta(minutes=5)
 
@@ -12,24 +13,24 @@ class PresenceTracker:
         self._last_seen: dict[int, datetime] = {}
 
     def user_connected(self, user_id: int) -> None:
-        now = datetime.utcnow()
+        now = utc_now()
         self._connected.add(user_id)
         self._last_active[user_id] = now
 
     def user_disconnected(self, user_id: int) -> None:
-        now = datetime.utcnow()
+        now = utc_now()
         self._connected.discard(user_id)
         self._last_seen[user_id] = self._last_active.get(user_id, now)
 
     def heartbeat(self, user_id: int) -> None:
-        self._last_active[user_id] = datetime.utcnow()
+        self._last_active[user_id] = utc_now()
         self._connected.add(user_id)
 
     def is_connected(self, user_id: int) -> bool:
         return user_id in self._connected
 
     def snapshot(self, user_id: int) -> dict:
-        now = datetime.utcnow()
+        now = utc_now()
         if user_id not in self._connected:
             last_seen = self._last_seen.get(user_id) or self._last_active.get(user_id)
             away_seconds = int((now - last_seen).total_seconds()) if last_seen else None

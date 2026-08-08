@@ -34,6 +34,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_ROOT = BACKEND_ROOT.parent / "frontend"
 ENV_FILE = BACKEND_ROOT / ".env"
 DEV_LOCK_FILE = BACKEND_ROOT / ".dev-stack.lock"
+_ENV_WRITE_LOCK = threading.Lock()
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_BACKEND_PORT = 8002
@@ -180,11 +181,21 @@ def _release_whatsapp_webhook_handoff(env: dict[str, str]) -> None:
         print(result.stdout.strip(), file=sys.stderr)
 
 
+def _read_env_text(path: Path) -> str:
+    raw = path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-8", "cp1252", "mbcs"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def _load_env_file() -> dict[str, str]:
     values: dict[str, str] = {}
     if not ENV_FILE.is_file():
         return values
-    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+    for line in _read_env_text(ENV_FILE).splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -250,21 +261,36 @@ def load_dev_config(args: argparse.Namespace) -> DevConfig:
 
 
 def _update_env_key(key: str, value: str) -> None:
+    """Update a single KEY=value in backend/.env (best-effort; never raises)."""
     if not ENV_FILE.is_file():
         return
-    lines = ENV_FILE.read_text(encoding="utf-8").splitlines(keepends=True)
-    found = False
-    updated: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith(f"{key}=") and not stripped.startswith("#"):
-            updated.append(f"{key}={value}\n")
-            found = True
-        else:
-            updated.append(line if line.endswith("\n") else f"{line}\n")
-    if not found:
-        updated.append(f"{key}={value}\n")
-    ENV_FILE.write_text("".join(updated), encoding="utf-8")
+    with _ENV_WRITE_LOCK:
+        try:
+            lines = _read_env_text(ENV_FILE).splitlines(keepends=True)
+            found = False
+            updated: list[str] = []
+            for line in lines:
+                # Normalize to str in case of odd encodings / free-threaded races.
+                text = line if isinstance(line, str) else str(line)
+                stripped = text.strip()
+                if stripped.startswith(f"{key}=") and not stripped.startswith("#"):
+                    updated.append(f"{key}={value}\n")
+                    found = True
+                else:
+                    updated.append(text if text.endswith("\n") else f"{text}\n")
+            if not found:
+                updated.append(f"{key}={value}\n")
+            payload = "".join(updated)
+            # Atomic-ish replace avoids truncated .env if another process holds a lock briefly.
+            tmp_path = ENV_FILE.with_suffix(ENV_FILE.suffix + ".tmp")
+            tmp_path.write_text(payload, encoding="utf-8")
+            tmp_path.replace(ENV_FILE)
+        except OSError as exc:
+            print(
+                f"[tunnel] WARNING: could not update {key} in .env ({exc}). "
+                f"Set {key}={value} manually if needed.",
+                file=sys.stderr,
+            )
 
 
 def _venv_uvicorn() -> Path:
@@ -448,22 +474,49 @@ def free_port(port: int, *, kill_backends: bool = False) -> list[int]:
     return stopped
 
 
-def _wait_for_backend_ready(host: str, port: int, *, timeout: float = 120.0) -> bool:
-    """Poll until uvicorn accepts connections (avoids Vite ECONNREFUSED on startup)."""
+def _wait_for_backend_ready(
+    host: str,
+    port: int,
+    *,
+    timeout: float = 300.0,
+    proc: subprocess.Popen[str] | None = None,
+) -> bool:
+    """Poll until uvicorn accepts connections (avoids Vite ECONNREFUSED on startup).
+
+    Cold Neon + SQLAlchemy create_all routinely takes 90–180s; keep the budget
+    generous and surface progress so the wait does not look hung.
+    """
     import urllib.error
     import urllib.request
 
     url = f"http://{host}:{port}/docs"
     deadline = time.time() + timeout
-    print(f"[backend] waiting for readiness at {url} ...")
+    started = time.time()
+    last_progress = 0.0
+    print(
+        f"[backend] waiting for readiness at {url} "
+        f"(up to {int(timeout)}s; cold DB sync can take a few minutes) ..."
+    )
     while time.time() < deadline:
+        if proc is not None and proc.poll() is not None:
+            print(
+                f"ERROR: backend process exited early (code {proc.returncode}). "
+                "Check [backend] logs above for import or database errors.",
+                file=sys.stderr,
+            )
+            return False
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
                 if resp.status == 200:
-                    print(f"[backend] ready on http://{host}:{port}")
+                    elapsed = time.time() - started
+                    print(f"[backend] ready on http://{host}:{port} ({elapsed:.0f}s)")
                     return True
         except (urllib.error.URLError, TimeoutError, OSError):
             pass
+        elapsed = time.time() - started
+        if elapsed - last_progress >= 15.0:
+            print(f"[backend] still starting... {elapsed:.0f}s elapsed (DB sync / bootstrap)")
+            last_progress = elapsed
         time.sleep(0.5)
     return False
 
@@ -583,7 +636,13 @@ def _stream_process(
         text = line.rstrip()
         print(f"[{prefix}] {text}")
         if on_line:
-            on_line(text)
+            try:
+                on_line(text)
+            except Exception as exc:  # noqa: BLE001 — keep stream alive
+                print(
+                    f"[{prefix}] WARNING: line handler failed: {exc}",
+                    file=sys.stderr,
+                )
 
 
 def parse_args() -> argparse.Namespace:
@@ -738,10 +797,13 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
             daemon=True,
         ).start()
 
-        if not _wait_for_backend_ready(config.host, config.backend_port):
+        if not _wait_for_backend_ready(
+            config.host, config.backend_port, proc=backend_proc
+        ):
             print(
                 "ERROR: backend did not become ready in time. "
-                "Check [backend] logs above for import or database errors.",
+                "Check [backend] logs above for import or database errors "
+                "(cold Neon create_all often exceeds 2 minutes).",
                 file=sys.stderr,
             )
             return 1

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from app.utils.timezone import utc_now
 import logging
 import threading
 from datetime import datetime, timezone
@@ -70,7 +71,7 @@ def _upsert_setting(db: Session, key: str, value: str, updated_by_user_id: int |
         db.add(row)
     else:
         row.value = value
-        row.updated_at = datetime.utcnow()
+        row.updated_at = utc_now()
         row.updated_by_user_id = updated_by_user_id
     db.commit()
     clear_settings_cache()

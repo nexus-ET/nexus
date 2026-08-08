@@ -220,7 +220,7 @@ const InstitutionWizardStep1 = forwardRef<
                 value={field.value || ''}
                 onChange={field.onChange}
                 placeholder="Select ranking tier..."
-                hint="Example: Top 300 (Highly Research-Intensive)"
+                hint="Example: Top 300 (Research-Intensive)"
                 options={[...RANKING_TIER_OPTIONS]}
               />
             )}

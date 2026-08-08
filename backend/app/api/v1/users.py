@@ -1,4 +1,5 @@
 import traceback
+from app.utils.timezone import utc_now
 from datetime import datetime, timezone
 from typing import List
 
@@ -158,7 +159,7 @@ def _role_display_name(user: UserModel) -> str:
 
 
 def _now_utc_naive() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return utc_now()
 
 
 def _validate_status_reason(

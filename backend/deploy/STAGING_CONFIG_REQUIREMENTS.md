@@ -1,6 +1,40 @@
-# Staging config requirements (2026-07-26 release)
+# Staging config requirements
 
-**Do not copy this into `.env` automatically.** Apply keys manually on the Staging server (`nexus-dev` / Hostinger) after review.
+**Do not copy this into `.env` automatically.** Apply keys manually on the Staging server (`nexus-dev` / Hostinger) after review.  
+**Never overwrite** staging `/var/www/nexus/backend/.env` with develop tunnel/ngrok values, and never overwrite local develop `.env` with staging Neon URLs.
+
+---
+
+## 2026-08-08 additions (IntelX / FlowX / Book Appointment / Session)
+
+New runtime code ships with **safe defaults** in `app/config.py`. Staging `.env` only needs these if you want to override defaults or enable Meta booking templates.
+
+| Key | Required? | Notes |
+|-----|-----------|--------|
+| `SMTP_FROM_NAME` | Optional | Display name for outbound mail (code default: `Nexus Counselling`) |
+| `WHATSAPP_BOOKING_TEMPLATE` | Recommended for WA confirms outside 24h | Default `et_booking_confirmation` — must be **APPROVED** in Meta |
+| `WHATSAPP_BOOKING_TEMPLATE_LANGUAGE` | With template | Default `en` |
+| `WHATSAPP_ADMIN_BOOKING_TEMPLATE` | Recommended | Default `et_booking_assigned` — Meta **APPROVED** |
+| `WHATSAPP_ADMIN_BOOKING_TEMPLATE_LANGUAGE` | With template | Default `en` |
+| `INTEL_SCRAPER_BROWSER_FALLBACK` | Optional | Default `true` for Cloudflare/JS scraper sites |
+
+**Post-deploy seeds (not `.env`):**
+
+```bash
+cd /var/www/nexus/backend && source .venv/bin/activate
+python scripts/ensure_navigation_rbac.py
+# Nav routes: /book-appointment, /nexus-intel, /flowx
+```
+
+Register WA templates once (from a machine with Meta token configured — usually develop, then reuse names on staging):
+
+```bash
+python scripts/register_whatsapp_booking_templates.py
+```
+
+---
+
+## Baseline (2026-07-26 and earlier)
 
 This release does **not** introduce new mandatory secrets beyond what Staging already needs for mail and Meta. It **expands how existing settings are used**.
 
@@ -24,6 +58,8 @@ This release does **not** introduce new mandatory secrets beyond what Staging al
 | `META_LEAD_SYNC_ENABLED` | Recommended | `true` on Staging if sync should run |
 | `R2_BUCKET_NAME` | Yes if uploads used | Must be **`nexus-edutrust-staging`** (not develop bucket) |
 | Other `R2_*` | As today | Account, keys, public URL for Staging |
+
+**IntelX Scraper Admin (Playwright):** Deploy scripts install Chromium / `chrome-headless-shell` via `python -m playwright install chromium`. Staging is **Linux** — there is no Windows Firewall dialog. Backend already binds `127.0.0.1` only. Optional env: `INTEL_SCRAPER_BROWSER_FALLBACK=true` (default).
 
 **Do not** overwrite Staging `.env` with develop ngrok / tunnel values.
 

@@ -1,5 +1,4 @@
 export type ProfilePanelTab =
-  | 'profile_pulse'
   | 'aspirations'
   | 'profile'
   | 'academia'
@@ -8,12 +7,12 @@ export type ProfilePanelTab =
   | 'test_scores'
   | 'work_projects'
   | 'projects_research'
-  | 'university_shortlist';
+  | 'university_shortlist'
+  | 'profile_pulse';
 
 export const PROFILE_PANEL_TAB_LABELS: Record<ProfilePanelTab, string> = {
-  profile_pulse: 'PROFILE PULSE',
   aspirations: 'ASPIRATIONS',
-  profile: 'PERSONAL PROFILE',
+  profile: 'PERSONAL',
   academia: 'ACADEMIA',
   non_academia: 'NON-ACADEMIA',
   digital_presence: 'DIGITAL PRESENCE',
@@ -21,4 +20,5 @@ export const PROFILE_PANEL_TAB_LABELS: Record<ProfilePanelTab, string> = {
   work_projects: 'PROFESSIONAL',
   projects_research: 'PROJECTS & RESEARCH',
   university_shortlist: 'SHORTLIST',
+  profile_pulse: 'PROFILE PULSE',
 };

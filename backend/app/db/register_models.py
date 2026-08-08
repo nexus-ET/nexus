@@ -30,6 +30,7 @@ def register_all_models() -> None:
     from app.models.education_major import EducationMajor  # noqa: F401
     from app.models.education_major_level import EducationMajorLevel  # noqa: F401
     from app.models.gpa_cgpa_score import GpaCgpaScore  # noqa: F401
+    from app.models.full_time_study_year import FullTimeStudyYear  # noqa: F401
     from app.models.internal_message import InternalMessage  # noqa: F401
     from app.models.lead import Lead  # noqa: F401
     from app.models.lead_quarantine import LeadQuarantine  # noqa: F401
@@ -78,4 +79,27 @@ def register_all_models() -> None:
     from app.models.academic_calendar import (  # noqa: F401
         GlobalAcademicTemplate,
         ProgramIntakeAssignment,
+    )
+    from app.models.nexus_intel import (  # noqa: F401
+        IntelAcademyModule,
+        IntelAiChatLog,
+        IntelGlossary,
+        IntelScrapeReview,
+        IntelScraperConfig,
+        IntelTrivia,
+        IntelTriviaAnswer,
+        IntelUserPreferences,
+    )
+    from app.models.flowx import (  # noqa: F401
+        FlowxAuditLog,
+        FlowxCountryWorkflow,
+        FlowxEnrollment,
+        FlowxEnrollmentTrack,
+        FlowxPathwayRegistry,
+        FlowxStage,
+        FlowxSubprocessLink,
+        FlowxTask,
+        FlowxTaskTemplate,
+        FlowxTrack,
+        FlowxWorkflowRule,
     )

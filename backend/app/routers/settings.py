@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Request, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api import deps
@@ -27,6 +28,8 @@ from app.services import public_holiday_service, settings_service
 from app.services.business_profile_service import (
     get_business_profile,
     resolve_business_id_for_user,
+    resolve_business_logo_file,
+    save_business_logo,
     update_business_profile,
 )
 from app.services.audit_service import log_action
@@ -120,6 +123,30 @@ def read_business_profile(
     return BusinessProfileOut(**get_business_profile(db, business_id))
 
 
+@router.get("/settings/business-branding")
+@router.get("/settings/business-branding/")
+def read_business_branding(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.require_counselling_admin),
+):
+    """Read-only tenant chrome for PDF/report headers (name, address, logo flag)."""
+    business_id = resolve_business_id_for_user(current_user)
+    profile = get_business_profile(db, business_id)
+    return {
+        "business_id": profile["business_id"],
+        "business_name": profile["business_name"],
+        "address_line1": profile["address_line1"],
+        "address_line2": profile["address_line2"],
+        "address_line3": profile["address_line3"],
+        "city": profile["city"],
+        "state": profile["state"],
+        "country": profile["country"],
+        "zip_code": profile["zip_code"],
+        "has_logo": profile["has_logo"],
+        "logo_url": profile["logo_url"],
+    }
+
+
 @router.put("/settings/business-profile", response_model=BusinessProfileOut)
 @router.put("/settings/business-profile/", response_model=BusinessProfileOut)
 @limiter.limit(STRICT_RATE_LIMIT)
@@ -149,6 +176,38 @@ def save_business_profile(
         email_domain=payload.email_domain,
     )
     return BusinessProfileOut(**updated)
+
+
+@router.post("/settings/business-profile/logo", response_model=BusinessProfileOut)
+@router.post("/settings/business-profile/logo/", response_model=BusinessProfileOut)
+@limiter.limit(STRICT_RATE_LIMIT)
+@log_action("upload_business_logo", "business")
+async def upload_business_logo(
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.require_super_admin),
+):
+    business_id = resolve_business_id_for_user(current_user)
+    content = await file.read()
+    updated = save_business_logo(
+        db,
+        business_id,
+        content=content,
+        filename=file.filename,
+    )
+    return BusinessProfileOut(**updated)
+
+
+@router.get("/settings/business-profile/logo")
+@router.get("/settings/business-profile/logo/")
+def read_business_logo(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.require_counselling_admin),
+):
+    business_id = resolve_business_id_for_user(current_user)
+    path, media_type = resolve_business_logo_file(db, business_id)
+    return FileResponse(path, media_type=media_type, filename=path.name)
 
 
 @router.get("/settings/public-holidays", response_model=PublicHolidaysResponse)

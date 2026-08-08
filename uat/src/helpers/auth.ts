@@ -13,14 +13,15 @@ export async function loginViaUi(page: Page): Promise<void> {
   const { email, password } = requireCredentials();
 
   await page.goto('/login');
-  await expect(page.getByRole('heading', { name: /NEXUS Login/i })).toBeVisible();
+  // Login shell was redesigned (Nexus Intel / FlowX) — heading is no longer "NEXUS Login".
+  await expect(page.getByRole('heading', { name: /Sign in to Nexus Intel/i })).toBeVisible();
 
   await page.locator('input[name="username"]').fill(email);
   await page.locator('input[name="password"]').fill(password);
-  await page.getByRole('button', { name: /Sign in to Nexus/i }).click();
+  await page.getByRole('button', { name: /^Sign In$/i }).click();
 
   await expect(page).not.toHaveURL(/\/login$/, { timeout: 30_000 });
-  await expect(page.locator('body')).not.toContainText('Invalid email or password');
+  await expect(page.locator('body')).not.toContainText(/Invalid email or password|Login failed/i);
 
   await page.waitForFunction(() => Boolean(sessionStorage.getItem('token')), null, {
     timeout: 15_000,

@@ -184,7 +184,7 @@ const Analytics: React.FC = () => {
   );
 
   return (
-    <div className="relative z-10 max-w-7xl mx-auto space-y-5 pb-10">
+    <div className="relative z-10 mx-auto w-full max-w-none space-y-5 pb-10">
       <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 mb-2">

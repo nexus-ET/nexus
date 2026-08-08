@@ -33,10 +33,11 @@ from app.services.security_service import input_sanitizer
 from app.services.settings_service import (
     get_bool_setting,
     get_int_setting,
+    get_setting,
     get_time_setting,
     is_working_day,
 )
-from app.utils.timezone import office_now, office_today
+from app.utils.timezone import office_now, office_today, utc_now
 
 PENDING_STATUS = "PENDING"
 SCHEDULED_STATUS = "SCHEDULED"
@@ -172,9 +173,8 @@ def _ensure_bookable_day(db: Session, scheduled: datetime) -> None:
         )
 
 
-def _iter_day_slot_times(db: Session, day: date) -> list[datetime]:
-    if not is_bookable_day(db, day):
-        return []
+def _iter_office_slot_times(db: Session, day: date) -> list[datetime]:
+    """Office-hour slot starts for a calendar day (ignores holidays / working-day rules)."""
     slots: list[datetime] = []
     day_start = _get_office_start(db)
     day_end = _get_office_end(db)
@@ -185,6 +185,20 @@ def _iter_day_slot_times(db: Session, day: date) -> list[datetime]:
         slots.append(cursor)
         cursor += timedelta(minutes=slot_minutes)
     return slots
+
+
+def _iter_day_slot_times(db: Session, day: date) -> list[datetime]:
+    if not is_bookable_day(db, day):
+        return []
+    return _iter_office_slot_times(db, day)
+
+
+def _day_closure_reason(db: Session, day: date) -> str | None:
+    if is_public_holiday(db, day):
+        return "holiday"
+    if not is_working_day(db, day):
+        return "weekend"
+    return None
 
 
 def _format_day_label(day: date) -> str:
@@ -372,7 +386,7 @@ def cancel_active_counselling_bookings_for_lead(
                 }
             )
         booking.status = CANCELLED_STATUS
-        booking.updated_at = datetime.utcnow()
+        booking.updated_at = utc_now()
     if commit and bookings:
         db.commit()
     return alert_snapshots
@@ -435,7 +449,7 @@ def upsert_pending_booking_for_lead(
         existing.candidate_name = candidate_name
         existing.candidate_email = email
         existing.candidate_phone = phone
-        existing.updated_at = datetime.utcnow()
+        existing.updated_at = utc_now()
         if commit:
             db.commit()
             db.refresh(existing)
@@ -485,7 +499,7 @@ def sync_pending_bookings_from_leads(db: Session) -> int:
                 and active.scheduled_time != _normalize_time(lead.consultation_scheduled_at)
             ):
                 active.scheduled_time = _normalize_time(lead.consultation_scheduled_at)
-                active.updated_at = datetime.utcnow()
+                active.updated_at = utc_now()
                 updated += 1
             continue
 
@@ -741,6 +755,441 @@ def get_schedule_grid(
     }
 
 
+DEFAULT_SESSION_PURPOSES: tuple[tuple[str, str], ...] = (
+    ("General Counselling", "Initial study-abroad guidance, goals, and pathway overview"),
+    ("Visa Application Help", "Visa forms, evidence checklist, and interview prep support"),
+    ("Documentation", "Collecting, reviewing, and organizing application documents"),
+    ("University Shortlisting", "Matching destinations, institutions, and programs"),
+    ("Test Prep Guidance", "IELTS/TOEFL/GRE/GMAT planning and score targets"),
+    ("Application Review", "Application drafts, essays, and submission readiness"),
+)
+
+
+def get_session_purposes(db: Session) -> list[dict[str, str]]:
+    default_raw = "\n".join(
+        f"{label} | {description}" for label, description in DEFAULT_SESSION_PURPOSES
+    )
+    raw = get_setting("COUNSELING_SESSION_PURPOSES", default_raw, db=db) or ""
+    purposes: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for line in raw.replace(",", "\n").splitlines():
+        cleaned = line.strip()
+        if not cleaned:
+            continue
+        if "|" in cleaned:
+            label_part, desc_part = cleaned.split("|", 1)
+            label = label_part.strip()
+            description = desc_part.strip()
+        else:
+            label = cleaned
+            description = ""
+        if not label:
+            continue
+        key = label.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        if not description:
+            description = next(
+                (item[1] for item in DEFAULT_SESSION_PURPOSES if item[0].casefold() == key),
+                "Counselling session category",
+            )
+        purposes.append({"label": label, "description": description})
+    if purposes:
+        return purposes
+    return [{"label": label, "description": description} for label, description in DEFAULT_SESSION_PURPOSES]
+
+
+def get_booking_session_config(db: Session) -> dict:
+    start = _get_office_start(db)
+    end = _get_office_end(db)
+    return {
+        "slot_duration_minutes": _get_slot_minutes(db),
+        "purposes": get_session_purposes(db),
+        "office_hours_start": start.strftime("%H:%M"),
+        "office_hours_end": end.strftime("%H:%M"),
+        "allow_bookings": get_bool_setting(db, "ALLOW_BOOKINGS", True),
+    }
+
+
+def list_counsellors(db: Session) -> list[dict]:
+    admins = (
+        _admin_users_query(db)
+        .order_by(User.first_name.asc(), User.last_name.asc(), User.email.asc())
+        .all()
+    )
+    return [
+        {"id": admin.id, "name": _format_admin_name(admin), "email": admin.email}
+        for admin in admins
+    ]
+
+
+def get_counsellor_availability(db: Session, admin_id: int, slot_day: date) -> dict:
+    admin = _get_admin_user(db, admin_id)
+    duration = _get_slot_minutes(db)
+    closure_reason = _day_closure_reason(db, slot_day)
+    day_status = closure_reason or "open"
+    office_slots = _iter_office_slot_times(db, slot_day)
+
+    if closure_reason:
+        return {
+            "date": slot_day,
+            "admin_id": admin.id,
+            "slot_duration_minutes": duration,
+            "day_status": day_status,
+            "bookable": False,
+            "slots": [
+                {
+                    "start": slot_start,
+                    "label": _format_slot_range(db, slot_start),
+                    "available": False,
+                    "reason": closure_reason,
+                    "booking_id": None,
+                    "candidate_name": None,
+                    "lead_id": None,
+                }
+                for slot_start in office_slots
+            ],
+        }
+
+    now = office_now(db)
+    max_per_slot = get_max_bookings_per_slot(db)
+    range_start = datetime.combine(slot_day, _get_office_start(db))
+    range_end = datetime.combine(slot_day, _get_office_end(db))
+
+    day_bookings = (
+        db.query(CounsellingBooking)
+        .filter(
+            CounsellingBooking.scheduled_time >= range_start,
+            CounsellingBooking.scheduled_time < range_end,
+            CounsellingBooking.status.in_([PENDING_STATUS, SCHEDULED_STATUS]),
+        )
+        .all()
+    )
+
+    counts: dict[datetime, int] = {}
+    counsellor_busy: dict[datetime, CounsellingBooking] = {}
+    for booking in day_bookings:
+        key = _normalize_time(booking.scheduled_time)
+        counts[key] = counts.get(key, 0) + 1
+        if booking.admin_id == admin.id and booking.status == SCHEDULED_STATUS:
+            counsellor_busy[key] = booking
+
+    slots: list[dict] = []
+    for slot_start in office_slots:
+        if slot_start <= now:
+            slots.append(
+                {
+                    "start": slot_start,
+                    "label": _format_slot_range(db, slot_start),
+                    "available": False,
+                    "reason": "past",
+                    "booking_id": None,
+                    "candidate_name": None,
+                    "lead_id": None,
+                }
+            )
+            continue
+        busy_booking = counsellor_busy.get(slot_start)
+        if busy_booking is not None:
+            slots.append(
+                {
+                    "start": slot_start,
+                    "label": _format_slot_range(db, slot_start),
+                    "available": False,
+                    "reason": "counsellor_busy",
+                    "booking_id": busy_booking.id,
+                    "candidate_name": busy_booking.candidate_name,
+                    "lead_id": busy_booking.lead_id,
+                }
+            )
+            continue
+        if counts.get(slot_start, 0) >= max_per_slot:
+            slots.append(
+                {
+                    "start": slot_start,
+                    "label": _format_slot_range(db, slot_start),
+                    "available": False,
+                    "reason": "slot_full",
+                    "booking_id": None,
+                    "candidate_name": None,
+                    "lead_id": None,
+                }
+            )
+            continue
+        slots.append(
+            {
+                "start": slot_start,
+                "label": _format_slot_range(db, slot_start),
+                "available": True,
+                "reason": None,
+                "booking_id": None,
+                "candidate_name": None,
+                "lead_id": None,
+            }
+        )
+
+    return {
+        "date": slot_day,
+        "admin_id": admin.id,
+        "slot_duration_minutes": duration,
+        "day_status": day_status,
+        "bookable": True,
+        "slots": slots,
+    }
+
+
+def get_counsellor_availability_week(
+    db: Session,
+    admin_id: int,
+    start_date: date,
+    *,
+    days: int = 7,
+) -> dict:
+    admin = _get_admin_user(db, admin_id)
+    safe_days = max(1, min(int(days), 14))
+    day_payloads = [
+        get_counsellor_availability(db, admin.id, start_date + timedelta(days=offset))
+        for offset in range(safe_days)
+    ]
+    return {
+        "admin_id": admin.id,
+        "start_date": start_date,
+        "days": day_payloads,
+        "slot_duration_minutes": _get_slot_minutes(db),
+    }
+
+
+def check_booking_contact_duplicates(
+    db: Session,
+    *,
+    email: str | None,
+    phone: str | None,
+    exclude_lead_id: int | None = None,
+) -> dict:
+    email_taken = False
+    phone_taken = False
+    email_lead_id: int | None = None
+    phone_lead_id: int | None = None
+
+    normalized_email = (email or "").strip().lower()
+    if normalized_email:
+        email_query = db.query(Lead).filter(Lead.email == normalized_email)
+        if exclude_lead_id:
+            email_query = email_query.filter(Lead.id != exclude_lead_id)
+        email_lead = email_query.first()
+        if email_lead:
+            email_taken = True
+            email_lead_id = email_lead.id
+
+    normalized_phone = (phone or "").strip()
+    if normalized_phone:
+        phone_query = db.query(Lead).filter(Lead.phone_number == normalized_phone)
+        if exclude_lead_id:
+            phone_query = phone_query.filter(Lead.id != exclude_lead_id)
+        phone_lead = phone_query.first()
+        if phone_lead:
+            phone_taken = True
+            phone_lead_id = phone_lead.id
+
+    return {
+        "email_taken": email_taken,
+        "phone_taken": phone_taken,
+        "email_lead_id": email_lead_id,
+        "phone_lead_id": phone_lead_id,
+    }
+
+
+def create_booking_candidate_lead(
+    db: Session,
+    *,
+    candidate_name: str,
+    candidate_email: str | None,
+    candidate_phone: str | None,
+    commit: bool = False,
+) -> Lead:
+    """Create a minimal Offline lead for staff Book Appointment (new candidate)."""
+    from app.models.lead import LeadChannel, LeadStage
+    from app.services.student_status_service import on_lead_created
+
+    sanitized_name = input_sanitizer(candidate_name) or "Candidate"
+    email = (candidate_email or "").strip().lower() or None
+    phone = (candidate_phone or "").strip() or None
+    if not email and not phone:
+        raise HTTPException(
+            status_code=400,
+            detail="Email or phone is required to create a new candidate lead.",
+        )
+
+    duplicates = check_booking_contact_duplicates(db, email=email, phone=phone)
+    if duplicates["email_taken"]:
+        raise HTTPException(
+            status_code=409,
+            detail="A registered user already exists with this email. Select the existing candidate instead.",
+        )
+    if duplicates["phone_taken"]:
+        raise HTTPException(
+            status_code=409,
+            detail="A registered user already exists with this phone number. Select the existing candidate instead.",
+        )
+
+    lead = Lead(
+        full_name=sanitized_name,
+        email=email,
+        phone_number=phone,
+        channel=LeadChannel.OFFLINE,
+        source="book_appointment",
+        stage=LeadStage.HANDOFF,
+        is_human_locked=True,
+        admission_stage="COUNSELLING",
+        admission_stage_entered_at=utc_now(),
+    )
+    db.add(lead)
+    db.flush()
+    on_lead_created(db, lead, source="Book Appointment")
+    if commit:
+        db.commit()
+        db.refresh(lead)
+    return lead
+
+
+def _compose_booking_notes(session_purpose: str | None, notes: str | None) -> str | None:
+    purpose = (session_purpose or "").strip()
+    body = (notes or "").strip()
+    if purpose and body:
+        return f"Purpose: {purpose}\n{body}"
+    if purpose:
+        return f"Purpose: {purpose}"
+    return body or None
+
+
+def create_staff_booking(
+    db: Session,
+    scheduled_time: datetime,
+    admin_id: int,
+    candidate_name: str,
+    candidate_email: str | None = None,
+    candidate_phone: str | None = None,
+    lead_id: int | None = None,
+    session_purpose: str | None = None,
+    notes: str | None = None,
+    *,
+    create_lead: bool = False,
+) -> CounsellingBooking:
+    """Create a SCHEDULED booking assigned to a counsellor (staff Book Appointment flow)."""
+    _ensure_bookings_enabled(db)
+    normalized = _normalize_time(scheduled_time)
+    _ensure_bookable_day(db, normalized)
+
+    allowed_starts = {_normalize_time(slot) for slot in _iter_day_slot_times(db, normalized.date())}
+    if normalized not in allowed_starts:
+        raise HTTPException(
+            status_code=400,
+            detail="Selected time is outside bookable office slots.",
+        )
+    if normalized <= office_now(db):
+        raise HTTPException(status_code=400, detail="Cannot book a time in the past.")
+
+    admin = _get_admin_user(db, admin_id)
+    conflict = (
+        db.query(CounsellingBooking)
+        .filter(
+            CounsellingBooking.admin_id == admin.id,
+            CounsellingBooking.status == SCHEDULED_STATUS,
+            CounsellingBooking.scheduled_time == normalized,
+        )
+        .with_for_update()
+        .first()
+    )
+    if conflict:
+        raise HTTPException(
+            status_code=409,
+            detail="Selected counsellor already has a booking at this time.",
+        )
+
+    _ensure_slot_capacity(db, normalized)
+
+    if session_purpose:
+        allowed_purposes = {p["label"].casefold() for p in get_session_purposes(db)}
+        if session_purpose.strip().casefold() not in allowed_purposes:
+            raise HTTPException(status_code=400, detail="Invalid session purpose.")
+
+    resolved_lead_id = lead_id
+    try:
+        if create_lead and not resolved_lead_id:
+            lead = create_booking_candidate_lead(
+                db,
+                candidate_name=candidate_name,
+                candidate_email=candidate_email,
+                candidate_phone=candidate_phone,
+                commit=False,
+            )
+            resolved_lead_id = lead.id
+
+        email, phone = _resolve_contact_fields(
+            db, candidate_email, candidate_phone, resolved_lead_id
+        )
+        sanitized_name = input_sanitizer(candidate_name) or "Candidate"
+        combined_notes = _compose_booking_notes(session_purpose, notes)
+        sanitized_notes = input_sanitizer(combined_notes) if combined_notes else None
+
+        booking = CounsellingBooking(
+            scheduled_time=normalized,
+            candidate_name=sanitized_name,
+            candidate_email=email,
+            candidate_phone=phone,
+            lead_id=resolved_lead_id,
+            admin_id=admin.id,
+            status=SCHEDULED_STATUS,
+            notes=sanitized_notes,
+        )
+        db.add(booking)
+        db.flush()
+
+        if booking.lead_id:
+            # Supersede any older PENDING/SCHEDULED rows so WhatsApp reschedule
+            # always surfaces this latest booking.
+            prior = (
+                db.query(CounsellingBooking)
+                .filter(
+                    CounsellingBooking.lead_id == booking.lead_id,
+                    CounsellingBooking.id != booking.id,
+                    CounsellingBooking.status.in_([PENDING_STATUS, SCHEDULED_STATUS]),
+                )
+                .all()
+            )
+            for old in prior:
+                old.status = CANCELLED_STATUS
+                old.updated_at = utc_now()
+
+            lead = db.query(Lead).filter(Lead.id == booking.lead_id).first()
+            if lead:
+                now = utc_now()
+                lead.consultation_scheduled_at = normalized
+                if not lead.admission_stage:
+                    lead.admission_stage = "COUNSELLING"
+                    lead.admission_stage_entered_at = now
+                from app.services.student_status_service import on_counselling_scheduled
+
+                on_counselling_scheduled(
+                    db,
+                    lead,
+                    booking_id=booking.id,
+                    counsellor_id=admin.id,
+                    changed_by_type="admin",
+                )
+
+        db.commit()
+        db.refresh(booking)
+        return booking
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+
 def get_available_admins(
     db: Session,
     timestamp: datetime,
@@ -990,7 +1439,7 @@ def _get_owned_booking(db: Session, user_id: int, booking_id: int) -> Counsellin
 
 def _build_counselling_note_timeline_items(note: CounsellingNote) -> list[dict]:
     items: list[dict] = []
-    timestamp = note.updated_at or note.created_at or datetime.utcnow()
+    timestamp = note.updated_at or note.created_at or utc_now()
 
     if note.ai_transcription and note.ai_transcription.strip():
         items.append(
@@ -1008,7 +1457,7 @@ def _build_counselling_note_timeline_items(note: CounsellingNote) -> list[dict]:
 
     note_sections: list[tuple[str, str | None]] = [
         ("Session notes", note.officer_recommendations),
-        ("Preferred universities", note.preferred_universities),
+        ("Recommended Institutions", note.preferred_universities),
         ("Scholarship interests", note.scholarship_interests),
         ("Career goals", note.career_goals),
     ]
@@ -1066,7 +1515,7 @@ def _build_data_exchange(messages: list[dict]) -> tuple[list[dict], list[dict]]:
         if not media_url:
             continue
         participant = message.get("participant") or "system"
-        created_at = message.get("created_at") or datetime.utcnow()
+        created_at = message.get("created_at") or utc_now()
         file_name = message.get("file_name")
         text = (message.get("text") or "").strip()
         title = file_name or (text[:80] + "…" if len(text) > 80 else text) or "Shared file"
@@ -1495,6 +1944,61 @@ def save_booking_candidate_test_scores(
         booking_id=booking_id,
         lead=lead,
         payload=payload,
+    )
+    return response.model_dump()
+
+
+def delete_booking_candidate_test_score_attempt(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    score_ids: list[int],
+) -> dict:
+    from app.services.candidate_test_scores_service import delete_candidate_test_score_attempt
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    response = delete_candidate_test_score_attempt(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        score_ids=score_ids,
+    )
+    return response.model_dump()
+
+
+def replace_booking_candidate_test_score_attempt(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    payload,
+) -> dict:
+    from app.schemas.candidate_test_scores import (
+        CandidateTestScoreAttemptReplaceRequest,
+        CandidateTestScoreSaveRequest,
+    )
+    from app.services.candidate_test_scores_service import replace_candidate_test_score_attempt
+
+    if not isinstance(payload, CandidateTestScoreAttemptReplaceRequest):
+        payload = CandidateTestScoreAttemptReplaceRequest.model_validate(payload)
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    save_payload = CandidateTestScoreSaveRequest.model_validate(
+        payload.model_dump(exclude={"score_ids"})
+    )
+    response = replace_candidate_test_score_attempt(
+        db,
+        booking_id=booking_id,
+        lead=lead,
+        score_ids=payload.score_ids,
+        payload=save_payload,
     )
     return response.model_dump()
 
@@ -1985,11 +2489,11 @@ def assign_booking(db: Session, booking_id: int, admin_id: int) -> CounsellingBo
     try:
         booking.admin_id = admin.id
         booking.status = SCHEDULED_STATUS
-        booking.updated_at = datetime.utcnow()
+        booking.updated_at = utc_now()
         if booking.lead_id:
             lead = db.query(Lead).filter(Lead.id == booking.lead_id).first()
             if lead:
-                now = datetime.utcnow()
+                now = utc_now()
                 if not lead.admission_stage:
                     lead.admission_stage = "COUNSELLING"
                     lead.admission_stage_entered_at = now
@@ -2051,7 +2555,7 @@ def cancel_booking(db: Session, booking_id: int) -> CounsellingBooking:
 
     booking.status = CANCELLED_STATUS
     booking.admin_id = None
-    booking.updated_at = datetime.utcnow()
+    booking.updated_at = utc_now()
     db.commit()
     db.refresh(booking)
 
@@ -2106,7 +2610,7 @@ def switch_booking_admin(
 
     try:
         booking.admin_id = target_admin.id
-        booking.updated_at = datetime.utcnow()
+        booking.updated_at = utc_now()
         db.commit()
         db.refresh(booking)
         return booking
@@ -2240,7 +2744,7 @@ def get_booking_communications(db: Session, booking_id: int) -> dict:
         file_name: str | None = None,
     ) -> None:
         clean_text = text or ""
-        timestamp = created_at or datetime.utcnow()
+        timestamp = created_at or utc_now()
         normalized = _normalize_message_text(clean_text)
         if normalized:
             for seen_text, seen_at in seen_message_events:
@@ -2349,3 +2853,171 @@ def get_my_booking_communications(db: Session, user_id: int, booking_id: int) ->
         raise HTTPException(status_code=404, detail="User not found.")
     _get_viewable_booking(db, user, booking_id)
     return get_booking_communications(db, booking_id)
+
+
+def _default_intake_assessment() -> dict:
+    from app.schemas.intake_assessment import IntakeAssessmentPayload
+
+    return IntakeAssessmentPayload().model_dump()
+
+
+def _seed_intake_assessment_from_profile(
+    assessment: dict,
+    *,
+    lead,
+    aspirations: dict | None,
+    study: dict,
+    educations: list,
+) -> dict:
+    """Pre-fill empty counselor fields from pre-intake profile / aspirations."""
+    asp = (aspirations or {}).get("aspirations") if isinstance(aspirations, dict) else None
+    if not isinstance(asp, dict):
+        asp = aspirations if isinstance(aspirations, dict) else {}
+
+    goals = assessment.get("goals") or {}
+    if not goals.get("countries"):
+        countries = list(asp.get("study_countries_iso2") or [])
+        preferred = study.get("country") or getattr(lead, "preferred_country", None)
+        if preferred and preferred not in countries:
+            countries = [preferred, *countries]
+        goals["countries"] = [c for c in countries if c and str(c).upper() != "OTHER"]
+    if not goals.get("colleges"):
+        goals["colleges"] = list(asp.get("discipline_university_college") or [])[:12]
+    if not goals.get("intake_year"):
+        years = asp.get("intake_years") or []
+        goals["intake_year"] = years[0] if years else (utc_now().year + 1)
+    if not goals.get("intake_season"):
+        seasons = asp.get("intake_seasons") or []
+        season_map = {
+            "JAN_FEB_SPRING": "Spring",
+            "APR_MAY_SUMMER": "Summer",
+            "JUL_AUG_SEP_OCT_AUTUMN": "Fall",
+            "FEB_MAR_SEM1_AUS_NZ": "Spring",
+            "JUL_AUG_SEM2_AUS_NZ": "Fall",
+            "APRIL_JAPAN": "Spring",
+        }
+        goals["intake_season"] = season_map.get(seasons[0], "Fall") if seasons else "Fall"
+    assessment["goals"] = goals
+
+    academic = assessment.get("academic") or {}
+    if not academic.get("grading_scale_code") and educations:
+        first = educations[0] if isinstance(educations[0], dict) else {}
+        academic["grading_scale_code"] = first.get("gpa_cgpa_code")
+    assessment["academic"] = academic
+
+    financial = assessment.get("financial") or {}
+    if not financial.get("funding_source"):
+        funding = asp.get("funding_sources") or []
+        source_map = {
+            "FAMILY_SPONSORED": "Family Sponsor",
+            "EDUCATIONAL_LOAN": "Educational Loan",
+            "GRANT_SCHOLARSHIP": "Scholarship",
+        }
+        if funding and isinstance(funding[0], dict):
+            financial["funding_source"] = source_map.get(funding[0].get("source"))
+        elif asp.get("funding_source"):
+            financial["funding_source"] = source_map.get(asp.get("funding_source"))
+    budget_map = {
+        "BUDGET_FRIENDLY": (8000, 20000),
+        "MID_RANGE": (20000, 40000),
+        "PREMIUM": (40000, 65000),
+        "HIGH_INVESTMENT": (65000, 100000),
+        "NEEDS_FULL_FUNDING": (0, 15000),
+    }
+    budgets = asp.get("budget") or []
+    if budgets and financial.get("budget_min", 0) == 0 and financial.get("budget_max", 40000) == 40000:
+        lo, hi = budget_map.get(budgets[0], (10000, 45000))
+        financial["budget_min"] = lo
+        financial["budget_max"] = hi
+    assessment["financial"] = financial
+
+    english = assessment.get("english") or {}
+    tests = asp.get("english_tests") or []
+    if "WAIVER_NOT_REQUIRED" in tests:
+        english["language_waiver_eligible"] = True
+    assessment["english"] = english
+    return assessment
+
+
+def get_booking_intake_assessment(db: Session, user_id: int, booking_id: int) -> dict:
+    """Load Sub-Process 1.1 counselor workspace + profile snapshot for the session."""
+    from app.services.candidate_education_service import get_candidate_educations
+    from app.services.candidate_test_scores_service import get_candidate_test_scores
+    from app.services.work_experience_service import get_work_experiences
+    from app.schemas.intake_assessment import IntakeAssessmentPayload
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+
+    raw = getattr(booking, "intake_assessment", None) or {}
+    has_saved = bool(raw)
+    try:
+        assessment = IntakeAssessmentPayload.model_validate(raw).model_dump()
+    except Exception:
+        assessment = _default_intake_assessment()
+        has_saved = False
+
+    educations = get_candidate_educations(db, booking_id=booking_id, lead=lead).model_dump()
+    tests = get_candidate_test_scores(db, booking_id=booking_id, lead=lead).model_dump()
+    work = get_work_experiences(db, booking_id=booking_id, lead=lead).model_dump()
+    aspirations = None
+    try:
+        raw_asp = get_booking_candidate_aspirations(db, user_id, booking_id)
+        aspirations = raw_asp.model_dump() if hasattr(raw_asp, "model_dump") else raw_asp
+    except Exception:
+        aspirations = None
+
+    study = resolve_lead_study_interest(lead) if lead else {}
+    if not has_saved:
+        assessment = _seed_intake_assessment_from_profile(
+            assessment,
+            lead=lead,
+            aspirations=aspirations,
+            study=study,
+            educations=educations.get("educations") or [],
+        )
+
+    return {
+        "booking_id": booking.id,
+        "lead_id": booking.lead_id,
+        "assessment": assessment,
+        "profile_snapshot": {
+            "educations": educations.get("educations") or [],
+            "test_scores": tests.get("scores") or tests.get("test_scores") or [],
+            "work_experiences": work.get("experiences") or [],
+            "aspirations": aspirations,
+            "preferred_country": study.get("country") or getattr(lead, "preferred_country", None),
+            "course_interest": study.get("course") or study.get("program"),
+            "candidate_name": booking.candidate_name
+            or (lead.full_name if lead else None)
+            or "Candidate",
+        },
+    }
+
+
+def save_booking_intake_assessment(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    payload,
+) -> dict:
+    from app.schemas.intake_assessment import IntakeAssessmentPayload
+    from app.utils.timezone import utc_now
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    parsed = (
+        payload
+        if isinstance(payload, IntakeAssessmentPayload)
+        else IntakeAssessmentPayload.model_validate(payload)
+    )
+    booking.intake_assessment = parsed.model_dump()
+    booking.updated_at = utc_now()
+    db.commit()
+    db.refresh(booking)
+    return get_booking_intake_assessment(db, user_id, booking_id)

@@ -187,37 +187,137 @@ def get_target_course_by_code(db: Session, code: str) -> TargetCourse | None:
 
 def resolve_study_interest_fields(
     db: Session, payload: OfflineLeadCreate
-) -> dict[str, str]:
-    destination_iso2 = (payload.target_destination_iso2 or "").strip().upper() or None
-    program_code = (payload.target_program_code or "").strip().upper() or None
-    course_code = (payload.target_course_code or "").strip().upper() or None
+) -> dict[str, object]:
+    from app.models.education_major import EducationMajor
+    from app.models.program_education_major_mapping import ProgramEducationMajorMapping
+    from app.services.levels import get_level
+    from app.services.qualification_programs import get_qualification_program_by_code
 
-    if not destination_iso2:
+    iso2s = [
+        (item or "").strip().upper()
+        for item in (getattr(payload, "target_destination_iso2s", None) or [])
+        if (item or "").strip()
+    ]
+    # Backward-compatible single destination payloads.
+    if not iso2s:
+        legacy = (getattr(payload, "target_destination_iso2", None) or "").strip().upper()
+        if legacy:
+            iso2s = [legacy]
+
+    if not iso2s:
         raise HTTPException(status_code=400, detail="Target destination is required.")
+    if len(iso2s) > 6:
+        raise HTTPException(status_code=400, detail="Select up to 6 target destinations.")
 
-    country = get_country_by_iso2(db, destination_iso2)
-    if not country:
-        raise HTTPException(status_code=400, detail="Select a valid target destination country.")
+    destination_names: list[str] = []
+    for iso2 in iso2s:
+        country = get_country_by_iso2(db, iso2)
+        if not country:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Select a valid target destination country ({iso2}).",
+            )
+        destination_names.append(country.name)
 
-    if not program_code:
+    level_id = getattr(payload, "target_level_id", None)
+    if not level_id:
+        raise HTTPException(status_code=400, detail="Target level is required.")
+    level = get_level(db, int(level_id))
+    if not level:
+        raise HTTPException(status_code=400, detail="Select a valid target level.")
+
+    major_ids = [
+        int(item)
+        for item in (getattr(payload, "target_major_ids", None) or [])
+        if item is not None
+    ]
+    if not major_ids:
+        raise HTTPException(status_code=400, detail="Target major is required.")
+    if len(major_ids) > 3:
+        raise HTTPException(status_code=400, detail="Select up to 3 target majors.")
+
+    majors = (
+        db.query(EducationMajor)
+        .filter(
+            EducationMajor.id.in_(major_ids),
+            EducationMajor.is_active.is_(True),
+            EducationMajor.program_id.is_(None),
+        )
+        .all()
+    )
+    majors_by_id = {major.id: major for major in majors}
+    if len(majors_by_id) != len(set(major_ids)):
+        raise HTTPException(status_code=400, detail="Select valid target majors.")
+
+    mapped_major_ids = {
+        row[0]
+        for row in (
+            db.query(ProgramEducationMajorMapping.education_major_id)
+            .join(Program, Program.id == ProgramEducationMajorMapping.program_id)
+            .filter(
+                Program.level_id == level.id,
+                Program.is_active.is_(True),
+                ProgramEducationMajorMapping.education_major_id.in_(major_ids),
+            )
+            .all()
+        )
+    }
+    if mapped_major_ids != set(major_ids):
+        raise HTTPException(
+            status_code=400,
+            detail="Selected majors must belong to the chosen target level.",
+        )
+
+    program_codes = [
+        (item or "").strip().upper()
+        for item in (getattr(payload, "target_program_codes", None) or [])
+        if (item or "").strip()
+    ]
+    if not program_codes:
         raise HTTPException(status_code=400, detail="Target program is required.")
 
-    program = get_target_program_by_code(db, program_code)
-    if not program:
-        raise HTTPException(status_code=400, detail="Select a valid target program.")
+    resolved_programs: list[Program] = []
+    for code in program_codes:
+        program = get_qualification_program_by_code(db, code)
+        if not program or program.level_id != level.id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Select a valid target program for the chosen level ({code}).",
+            )
+        linked = (
+            db.query(ProgramEducationMajorMapping.id)
+            .filter(
+                ProgramEducationMajorMapping.program_id == program.id,
+                ProgramEducationMajorMapping.education_major_id.in_(major_ids),
+            )
+            .first()
+        )
+        if not linked:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Program {code} is not linked to the selected majors.",
+            )
+        resolved_programs.append(program)
 
-    if not course_code:
-        raise HTTPException(status_code=400, detail="Target course is required.")
-
-    course = get_target_course_by_code(db, course_code)
-    if not course or course.program_id != program.id:
-        raise HTTPException(status_code=400, detail="Select a valid target course.")
+    major_labels = [majors_by_id[major_id].label for major_id in major_ids]
+    program_names = [program.name for program in resolved_programs]
+    program_codes_out = [program.code for program in resolved_programs]
+    destination_label = ", ".join(destination_names)
+    programs_label = ", ".join(program_names)
 
     return {
-        "target_destination_iso2": country.iso2,
-        "target_destination": country.name,
-        "target_program_code": program.code,
-        "target_program": program.label,
-        "target_course_code": course.code,
-        "target_course": course.label,
+        "target_destination_iso2s": iso2s,
+        "target_destinations": destination_names,
+        "target_destination_iso2": iso2s[0],
+        "target_destination": destination_label,
+        "target_level_id": level.id,
+        "target_level_name": level.name,
+        "target_major_ids": major_ids,
+        "target_majors": major_labels,
+        "target_program_codes": program_codes_out,
+        "target_programs": program_names,
+        "target_program_code": program_codes_out[0] if program_codes_out else None,
+        "target_program": programs_label,
+        "target_course_code": None,
+        "target_course": None,
     }

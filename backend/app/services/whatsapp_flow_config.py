@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from app.utils.timezone import utc_now
 
 
 def is_whatsapp_flow_enabled() -> bool:
@@ -13,7 +14,7 @@ def get_whatsapp_flow_id() -> str:
 
 
 def build_flow_token(lead_id: int) -> str:
-    return f"nexus-lead-{lead_id}-{int(datetime.utcnow().timestamp())}"
+    return f"nexus-lead-{lead_id}-{int(utc_now().timestamp())}"
 
 
 def parse_lead_id_from_flow_token(flow_token: str) -> int | None:

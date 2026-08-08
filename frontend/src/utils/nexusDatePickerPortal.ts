@@ -6,3 +6,10 @@ export const nexusDatePickerPortalProps = {
   popperClassName: 'nexus-datepicker-popper',
   popperProps: { strategy: 'fixed' as const },
 };
+
+/** Use for date pickers rendered inside high z-index modals (session drawer / score capture). */
+export const nexusDatePickerModalPortalProps = {
+  ...nexusDatePickerPortalProps,
+  portalId: 'nexus-datepicker-modal-portal',
+  popperClassName: 'nexus-datepicker-popper nexus-datepicker-popper--modal',
+};

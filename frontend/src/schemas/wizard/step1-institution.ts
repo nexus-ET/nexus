@@ -30,8 +30,8 @@ export const INSTITUTION_TYPE_OPTIONS = [
 
 export const RANKING_TIER_OPTIONS = [
   { value: 'Top 100 (Global Elite)', label: 'Top 100 (Global Elite)' },
-  { value: 'Top 300 (Highly Research-Intensive)', label: 'Top 300 (Highly Research-Intensive)' },
-  { value: 'Top 500 (Broad Academic Excellence)', label: 'Top 500 (Broad Academic Excellence)' },
+  { value: 'Top 300 (Research-Intensive)', label: 'Top 300 (Research-Intensive)' },
+  { value: 'Top 500 (Academic Excellence)', label: 'Top 500 (Academic Excellence)' },
   { value: 'Others', label: 'Others' },
 ] as const;
 

@@ -227,6 +227,7 @@ def _seed_fresh_reference_data(engine) -> None:
     from app.models.country import Country
     from app.models.education_degree import EducationDegree
     from app.models.gpa_cgpa_score import GpaCgpaScore
+    from app.models.full_time_study_year import FullTimeStudyYear
     from app.models.level import Level
     from app.models.academia_institution import CampusType
     from app.models.status_definition import StatusDefinition
@@ -234,6 +235,7 @@ def _seed_fresh_reference_data(engine) -> None:
     from app.services.countries import DEFAULT_COUNTRIES
     from app.services.education_degrees import DEFAULT_EDUCATION_DEGREES, LEVEL_CODE_TO_ID
     from app.services.gpa_cgpa_scores import DEFAULT_GPA_CGPA_SCORES
+    from app.services.full_time_study_years import DEFAULT_FULL_TIME_STUDY_YEARS
     from app.services.status_definitions_seed import V3_INSERT_SQL
 
     Session = sessionmaker(bind=engine)
@@ -354,6 +356,27 @@ def _seed_fresh_reference_data(engine) -> None:
                         code=str(item["code"]),
                         label=str(item["label"]),
                         is_other=bool(item.get("is_other", False)),
+                        is_active=True,
+                        sort_order=int(item.get("sort_order") or 0),
+                    )
+                )
+            db.commit()
+
+        if db.query(FullTimeStudyYear).count() == 0:
+            print("  Seeding full_time_study_years...")
+            from app.services.levels import get_level_by_code
+
+            for item in DEFAULT_FULL_TIME_STUDY_YEARS:
+                level = get_level_by_code(db, str(item["level_code"]))
+                if level is None:
+                    raise RuntimeError(
+                        f"Level '{item['level_code']}' is required to seed full_time_study_years."
+                    )
+                db.add(
+                    FullTimeStudyYear(
+                        code=str(item["code"]),
+                        label=str(item["label"]),
+                        level_id=level.id,
                         is_active=True,
                         sort_order=int(item.get("sort_order") or 0),
                     )

@@ -18,9 +18,10 @@ from app.services.offline_leads_service import (
 
 REQUIRED_OFFLINE_FIELDS = {
     "location": {"city": "Bengaluru", "state": "Karnataka", "country_iso2": "IN"},
-    "target_destination_iso2": "GB",
-    "target_program_code": "COMPUTER_SCIENCE_IT",
-    "target_course_code": "MSC_DATA_SCIENCE",
+    "target_destination_iso2s": ["GB"],
+    "target_level_id": 2,
+    "target_major_ids": [3],
+    "target_program_codes": ["BBA"],
 }
 
 

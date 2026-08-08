@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 class CandidateEducationInput(BaseModel):
     degree_code: str | None = Field(default=None, max_length=50)
     degree_other: str | None = Field(default=None, max_length=255)
+    full_time_study_years: str | None = Field(default=None, max_length=10)
     major: str | None = Field(default=None, max_length=255)
     university_name: str | None = Field(default=None, max_length=255)
     university_affiliation: str | None = Field(default=None, max_length=255)
@@ -22,6 +23,14 @@ class CandidateEducationInput(BaseModel):
         if value is None:
             return None
         normalized = value.strip().upper()
+        return normalized or None
+
+    @field_validator("full_time_study_years")
+    @classmethod
+    def normalize_study_years(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
         return normalized or None
 
     @field_validator(
@@ -44,6 +53,8 @@ class CandidateEducationOut(BaseModel):
     degree_code: str | None
     degree_label: str | None
     degree_other: str | None
+    full_time_study_years: str | None
+    full_time_study_years_label: str | None = None
     major: str | None
     university_name: str | None
     university_affiliation: str | None

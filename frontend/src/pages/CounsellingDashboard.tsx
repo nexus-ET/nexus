@@ -11,6 +11,7 @@ import StudentJourneyPanel from '../components/StudentJourneyPanel';
 import PipelineAnalyticsPanel, { PipelineAnalyticsData } from '../components/PipelineAnalyticsPanel';
 import PeriodAgendaShell, { type PeriodDaySummary } from '../components/PeriodAgendaShell';
 import { useConfirmation } from '../context/ConfirmationContext';
+import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 
 const toIsoDate = (value: Date): string => {
   const year = value.getFullYear();
@@ -206,20 +207,11 @@ const participantStyles: Record<
   },
 };
 
-const formatCommunicationTime = (value: string): string => {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(undefined, {
-    day: 'numeric',
-    month: 'short',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-};
 
 type DateFilterMode = 'single' | 'multiple';
 
 const CounsellingDashboard: React.FC = () => {
+  const { formatDateTime } = useBusinessTimezone();
   const openConfirm = useConfirmation();
   const [dateFilterMode, setDateFilterMode] = useState<DateFilterMode>('single');
   const [startDate, setStartDate] = useState<Date>(() => {
@@ -1559,7 +1551,7 @@ const CounsellingDashboard: React.FC = () => {
                           {message.participant_label}
                         </span>
                         <span className="text-[11px] text-text-muted whitespace-nowrap">
-                          {formatCommunicationTime(message.created_at)}
+                          {formatDateTime(message.created_at, { second: undefined })}
                         </span>
                       </div>
                       <div className={`rounded-lg border px-3 py-2 text-sm whitespace-pre-wrap break-words ${styles.bubble}`}>
