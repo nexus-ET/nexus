@@ -19,6 +19,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
+    cols = {c["name"] for c in inspector.get_columns("businesses")}
+    if "logo_path" in cols:
+        return
     op.add_column("businesses", sa.Column("logo_path", sa.String(length=500), nullable=True))
 
 

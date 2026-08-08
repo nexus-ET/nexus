@@ -18,6 +18,9 @@ depends_on = None
 
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
+    if inspector.has_table("intel_ai_chat_logs"):
+        return
     op.create_table(
         "intel_ai_chat_logs",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),

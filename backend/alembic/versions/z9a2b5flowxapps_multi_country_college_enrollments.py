@@ -31,32 +31,40 @@ def upgrade() -> None:
     if lead_idx is not None:
         op.drop_index("idx_flowx_enrollments_lead", table_name="flowx_enrollments")
 
-    op.add_column(
-        "flowx_enrollments",
-        sa.Column(
-            "institution_id",
-            sa.Integer(),
-            sa.ForeignKey("institutions.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-    )
-    op.add_column(
-        "flowx_enrollments",
-        sa.Column(
-            "college_id",
-            sa.Integer(),
-            sa.ForeignKey("colleges.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-    )
-    op.create_index("idx_flowx_enrollments_lead", "flowx_enrollments", ["lead_id"])
-    op.create_index("idx_flowx_enrollments_institution", "flowx_enrollments", ["institution_id"])
-    op.create_index("idx_flowx_enrollments_college", "flowx_enrollments", ["college_id"])
+    cols = {c["name"] for c in inspector.get_columns("flowx_enrollments")}
+    if "institution_id" not in cols:
+        op.add_column(
+            "flowx_enrollments",
+            sa.Column(
+                "institution_id",
+                sa.Integer(),
+                sa.ForeignKey("institutions.id", ondelete="SET NULL"),
+                nullable=True,
+            ),
+        )
+    if "college_id" not in cols:
+        op.add_column(
+            "flowx_enrollments",
+            sa.Column(
+                "college_id",
+                sa.Integer(),
+                sa.ForeignKey("colleges.id", ondelete="SET NULL"),
+                nullable=True,
+            ),
+        )
+
+    indexes = {i["name"] for i in sa.inspect(bind).get_indexes("flowx_enrollments")}
+    if "idx_flowx_enrollments_lead" not in indexes:
+        op.create_index("idx_flowx_enrollments_lead", "flowx_enrollments", ["lead_id"])
+    if "idx_flowx_enrollments_institution" not in indexes:
+        op.create_index("idx_flowx_enrollments_institution", "flowx_enrollments", ["institution_id"])
+    if "idx_flowx_enrollments_college" not in indexes:
+        op.create_index("idx_flowx_enrollments_college", "flowx_enrollments", ["college_id"])
 
     # One application per lead × country × college (NULL college treated as 0).
     op.execute(
         """
-        CREATE UNIQUE INDEX uq_flowx_enrollment_application
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_flowx_enrollment_application
         ON flowx_enrollments (lead_id, country_workflow_id, (COALESCE(college_id, 0)))
         """
     )

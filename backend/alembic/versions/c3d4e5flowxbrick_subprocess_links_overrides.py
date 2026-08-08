@@ -18,30 +18,29 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "flowx_task_templates",
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
+    inspector = sa.inspect(op.get_bind())
+    tmpl_cols = (
+        {c["name"] for c in inspector.get_columns("flowx_task_templates")}
+        if inspector.has_table("flowx_task_templates")
+        else set()
     )
-    op.add_column(
-        "flowx_task_templates",
-        sa.Column("is_optional", sa.Boolean(), nullable=False, server_default=sa.text("false")),
-    )
-    op.add_column(
-        "flowx_task_templates",
-        sa.Column("override_action", sa.String(32), nullable=True),
-    )
-    op.add_column(
-        "flowx_task_templates",
-        sa.Column("override_reason", sa.Text(), nullable=True),
-    )
-    op.add_column(
-        "flowx_task_templates",
-        sa.Column("overridden_at", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.add_column(
-        "flowx_task_templates",
+
+    def _add_tmpl(name: str, column: sa.Column) -> None:
+        if name not in tmpl_cols:
+            op.add_column("flowx_task_templates", column)
+
+    _add_tmpl("is_active", sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")))
+    _add_tmpl("is_optional", sa.Column("is_optional", sa.Boolean(), nullable=False, server_default=sa.text("false")))
+    _add_tmpl("override_action", sa.Column("override_action", sa.String(32), nullable=True))
+    _add_tmpl("override_reason", sa.Column("override_reason", sa.Text(), nullable=True))
+    _add_tmpl("overridden_at", sa.Column("overridden_at", sa.DateTime(timezone=True), nullable=True))
+    _add_tmpl(
+        "overridden_by",
         sa.Column("overridden_by", sa.Integer(), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
     )
+
+    if inspector.has_table("flowx_subprocess_links"):
+        return
 
     op.create_table(
         "flowx_subprocess_links",

@@ -18,17 +18,37 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    # Already on country-workflow schema (common when staging was synced from develop).
+    if inspector.has_table("flowx_country_workflows"):
+        return
+
     # Drop lead-centric v1 tables (re-anchor to country templates).
-    op.drop_index("idx_flowx_audit_pipeline", table_name="flowx_audit_logs")
-    op.drop_table("flowx_audit_logs")
-    op.drop_index("idx_flowx_tasks_sla", table_name="flowx_tasks")
-    op.drop_index("idx_flowx_tasks_track_status", table_name="flowx_tasks")
-    op.drop_table("flowx_tasks")
-    op.drop_index("idx_flowx_tracks_pipeline", table_name="flowx_tracks")
-    op.drop_table("flowx_tracks")
-    op.drop_index("idx_flowx_pipelines_status", table_name="flowx_pipelines")
-    op.drop_index("idx_flowx_pipelines_lead", table_name="flowx_pipelines")
-    op.drop_table("flowx_pipelines")
+    if inspector.has_table("flowx_audit_logs"):
+        indexes = {i["name"] for i in inspector.get_indexes("flowx_audit_logs")}
+        if "idx_flowx_audit_pipeline" in indexes:
+            op.drop_index("idx_flowx_audit_pipeline", table_name="flowx_audit_logs")
+        op.drop_table("flowx_audit_logs")
+    if inspector.has_table("flowx_tasks"):
+        indexes = {i["name"] for i in inspector.get_indexes("flowx_tasks")}
+        if "idx_flowx_tasks_sla" in indexes:
+            op.drop_index("idx_flowx_tasks_sla", table_name="flowx_tasks")
+        if "idx_flowx_tasks_track_status" in indexes:
+            op.drop_index("idx_flowx_tasks_track_status", table_name="flowx_tasks")
+        op.drop_table("flowx_tasks")
+    if inspector.has_table("flowx_tracks"):
+        indexes = {i["name"] for i in inspector.get_indexes("flowx_tracks")}
+        if "idx_flowx_tracks_pipeline" in indexes:
+            op.drop_index("idx_flowx_tracks_pipeline", table_name="flowx_tracks")
+        op.drop_table("flowx_tracks")
+    if inspector.has_table("flowx_pipelines"):
+        indexes = {i["name"] for i in inspector.get_indexes("flowx_pipelines")}
+        if "idx_flowx_pipelines_status" in indexes:
+            op.drop_index("idx_flowx_pipelines_status", table_name="flowx_pipelines")
+        if "idx_flowx_pipelines_lead" in indexes:
+            op.drop_index("idx_flowx_pipelines_lead", table_name="flowx_pipelines")
+        op.drop_table("flowx_pipelines")
     # Keep flowx_workflow_rules.
 
     op.create_table(

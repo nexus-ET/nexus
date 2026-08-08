@@ -41,50 +41,72 @@ PATHWAY_SEEDS = [
 
 
 def upgrade() -> None:
-    op.create_table(
-        "flowx_pathway_registry",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("pathway_type", sa.String(64), nullable=False),
-        sa.Column("pathway_name", sa.String(255), nullable=False),
-        sa.Column("is_custom", sa.Boolean(), nullable=False, server_default=sa.text("false")),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.UniqueConstraint("pathway_name", name="uq_flowx_pathway_registry_name"),
-    )
-    op.create_index("idx_flowx_pathway_type", "flowx_pathway_registry", ["pathway_type"])
-
-    pathway_table = sa.table(
-        "flowx_pathway_registry",
-        sa.column("id", postgresql.UUID(as_uuid=True)),
-        sa.column("pathway_type", sa.String),
-        sa.column("pathway_name", sa.String),
-        sa.column("is_custom", sa.Boolean),
-    )
     import uuid
 
-    op.bulk_insert(
-        pathway_table,
-        [
-            {
-                "id": str(uuid.uuid4()),
-                "pathway_type": ptype,
-                "pathway_name": pname,
-                "is_custom": False,
-            }
-            for ptype, pname in PATHWAY_SEEDS
-        ],
+    inspector = sa.inspect(op.get_bind())
+    enroll_cols = (
+        {c["name"] for c in inspector.get_columns("flowx_enrollments")}
+        if inspector.has_table("flowx_enrollments")
+        else set()
     )
+    if (
+        inspector.has_table("flowx_pathway_registry")
+        and "university_name" in enroll_cols
+        and "application_status" in enroll_cols
+    ):
+        return
 
-    op.add_column("flowx_enrollments", sa.Column("university_name", sa.String(255), nullable=True))
-    op.add_column(
-        "flowx_enrollments",
+    if not inspector.has_table("flowx_pathway_registry"):
+        op.create_table(
+            "flowx_pathway_registry",
+            sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
+            sa.Column("pathway_type", sa.String(64), nullable=False),
+            sa.Column("pathway_name", sa.String(255), nullable=False),
+            sa.Column("is_custom", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+            sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+            sa.UniqueConstraint("pathway_name", name="uq_flowx_pathway_registry_name"),
+        )
+        op.create_index("idx_flowx_pathway_type", "flowx_pathway_registry", ["pathway_type"])
+
+        pathway_table = sa.table(
+            "flowx_pathway_registry",
+            sa.column("id", postgresql.UUID(as_uuid=True)),
+            sa.column("pathway_type", sa.String),
+            sa.column("pathway_name", sa.String),
+            sa.column("is_custom", sa.Boolean),
+        )
+        op.bulk_insert(
+            pathway_table,
+            [
+                {
+                    "id": str(uuid.uuid4()),
+                    "pathway_type": ptype,
+                    "pathway_name": pname,
+                    "is_custom": False,
+                }
+                for ptype, pname in PATHWAY_SEEDS
+            ],
+        )
+
+    inspector = sa.inspect(op.get_bind())
+    enroll_cols = {c["name"] for c in inspector.get_columns("flowx_enrollments")}
+    indexes = {i["name"] for i in inspector.get_indexes("flowx_enrollments")}
+
+    def _add(col_name: str, column: sa.Column) -> None:
+        if col_name not in enroll_cols:
+            op.add_column("flowx_enrollments", column)
+
+    _add("university_name", sa.Column("university_name", sa.String(255), nullable=True))
+    _add(
+        "campus_id",
         sa.Column("campus_id", sa.Integer(), sa.ForeignKey("campuses.id", ondelete="SET NULL"), nullable=True),
     )
-    op.add_column(
-        "flowx_enrollments",
+    _add(
+        "level_id",
         sa.Column("level_id", sa.Integer(), sa.ForeignKey("levels.id", ondelete="SET NULL"), nullable=True),
     )
-    op.add_column(
-        "flowx_enrollments",
+    _add(
+        "qualification_program_id",
         sa.Column(
             "qualification_program_id",
             postgresql.UUID(as_uuid=True),
@@ -92,8 +114,8 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
-    op.add_column(
-        "flowx_enrollments",
+    _add(
+        "intake_id",
         sa.Column(
             "intake_id",
             sa.Integer(),
@@ -101,33 +123,37 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
-    op.add_column("flowx_enrollments", sa.Column("pathway_type", sa.String(64), nullable=True))
-    op.add_column("flowx_enrollments", sa.Column("pathway_name", sa.String(255), nullable=True))
-    op.add_column("flowx_enrollments", sa.Column("portal_url", sa.Text(), nullable=True))
-    op.add_column("flowx_enrollments", sa.Column("portal_username", sa.String(255), nullable=True))
-    op.add_column("flowx_enrollments", sa.Column("portal_password_hint", sa.Text(), nullable=True))
-    op.add_column("flowx_enrollments", sa.Column("institutional_app_id", sa.String(255), nullable=True))
-    op.add_column(
-        "flowx_enrollments",
+    _add("pathway_type", sa.Column("pathway_type", sa.String(64), nullable=True))
+    _add("pathway_name", sa.Column("pathway_name", sa.String(255), nullable=True))
+    _add("portal_url", sa.Column("portal_url", sa.Text(), nullable=True))
+    _add("portal_username", sa.Column("portal_username", sa.String(255), nullable=True))
+    _add("portal_password_hint", sa.Column("portal_password_hint", sa.Text(), nullable=True))
+    _add("institutional_app_id", sa.Column("institutional_app_id", sa.String(255), nullable=True))
+    _add(
+        "application_status",
         sa.Column("application_status", sa.String(64), nullable=False, server_default="drafting"),
     )
-    op.add_column(
-        "flowx_enrollments",
+    _add(
+        "fee_status",
         sa.Column("fee_status", sa.String(64), nullable=False, server_default="not_required"),
     )
-    op.add_column("flowx_enrollments", sa.Column("fee_amount", sa.Numeric(10, 2), nullable=True))
-    op.add_column(
-        "flowx_enrollments",
+    _add("fee_amount", sa.Column("fee_amount", sa.Numeric(10, 2), nullable=True))
+    _add(
+        "fee_currency",
         sa.Column("fee_currency", sa.String(10), nullable=False, server_default="USD"),
     )
-    op.add_column("flowx_enrollments", sa.Column("internal_target_date", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("flowx_enrollments", sa.Column("official_deadline", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("flowx_enrollments", sa.Column("submitted_at", sa.DateTime(timezone=True), nullable=True))
+    _add("internal_target_date", sa.Column("internal_target_date", sa.DateTime(timezone=True), nullable=True))
+    _add("official_deadline", sa.Column("official_deadline", sa.DateTime(timezone=True), nullable=True))
+    _add("submitted_at", sa.Column("submitted_at", sa.DateTime(timezone=True), nullable=True))
 
-    op.create_index("idx_flowx_enrollments_campus", "flowx_enrollments", ["campus_id"])
-    op.create_index("idx_flowx_enrollments_intake", "flowx_enrollments", ["intake_id"])
-    op.create_index("idx_flowx_enrollments_program", "flowx_enrollments", ["qualification_program_id"])
-    op.create_index("idx_flowx_enrollments_app_status", "flowx_enrollments", ["application_status"])
+    if "idx_flowx_enrollments_campus" not in indexes:
+        op.create_index("idx_flowx_enrollments_campus", "flowx_enrollments", ["campus_id"])
+    if "idx_flowx_enrollments_intake" not in indexes:
+        op.create_index("idx_flowx_enrollments_intake", "flowx_enrollments", ["intake_id"])
+    if "idx_flowx_enrollments_program" not in indexes:
+        op.create_index("idx_flowx_enrollments_program", "flowx_enrollments", ["qualification_program_id"])
+    if "idx_flowx_enrollments_app_status" not in indexes:
+        op.create_index("idx_flowx_enrollments_app_status", "flowx_enrollments", ["application_status"])
 
     # Refine uniqueness: lead × country × college × intake
     op.execute("DROP INDEX IF EXISTS uq_flowx_enrollment_application")
