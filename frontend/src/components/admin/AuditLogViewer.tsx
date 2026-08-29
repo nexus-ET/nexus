@@ -237,6 +237,14 @@ const AuditLogViewer: React.FC = () => {
     void loadLogs();
   }, [loadLogs]);
 
+  const pageNumbers = useMemo(() => {
+    const pages: number[] = [];
+    const start = Math.max(1, page - 2);
+    const end = Math.min(totalPages, page + 2);
+    for (let i = start; i <= end; i += 1) pages.push(i);
+    return pages;
+  }, [page, totalPages]);
+
   const columns: ReportColumn<AuditLogRecord>[] = useMemo(
     () => [
       {
@@ -481,7 +489,7 @@ const AuditLogViewer: React.FC = () => {
         <p className="text-xs text-text-muted">
           Showing page {page} of {totalPages} · {totalCount.toLocaleString()} total entries
         </p>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <select
             value={limit}
             onChange={event => {
@@ -500,16 +508,35 @@ const AuditLogViewer: React.FC = () => {
             type="button"
             disabled={page <= 1 || loading}
             onClick={() => setPage(prev => Math.max(1, prev - 1))}
-            className="p-2 rounded-lg border border-border-subtle disabled:opacity-40"
+            className="inline-flex items-center gap-1 rounded-lg border border-border-subtle px-2.5 py-1.5 text-xs font-semibold text-text-muted hover:text-text-main disabled:opacity-40"
+            aria-label="Previous page"
           >
             <ChevronLeft size={16} />
+            Previous
           </button>
+          {pageNumbers.map(pageNumber => (
+            <button
+              key={pageNumber}
+              type="button"
+              disabled={loading}
+              onClick={() => setPage(pageNumber)}
+              className={`min-w-8 rounded-lg border px-2 py-1.5 text-xs font-semibold ${
+                pageNumber === page
+                  ? 'border-accent bg-accent text-text-dark-bg'
+                  : 'border-border-subtle text-text-muted hover:text-text-main'
+              }`}
+            >
+              {pageNumber}
+            </button>
+          ))}
           <button
             type="button"
             disabled={page >= totalPages || loading}
-            onClick={() => setPage(prev => prev + 1)}
-            className="p-2 rounded-lg border border-border-subtle disabled:opacity-40"
+            onClick={() => setPage(prev => Math.min(totalPages, prev + 1))}
+            className="inline-flex items-center gap-1 rounded-lg border border-border-subtle px-2.5 py-1.5 text-xs font-semibold text-text-muted hover:text-text-main disabled:opacity-40"
+            aria-label="Next page"
           >
+            Next
             <ChevronRight size={16} />
           </button>
         </div>

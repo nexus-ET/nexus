@@ -6,7 +6,6 @@ import { useQuery } from '@tanstack/react-query';
 
 import { apiFetch } from '../../utils/api';
 import { fetchAcademiaListItems } from '../../utils/academiaList';
-import { isDuplicateProgramName } from '../../utils/frameworkNameUniqueness';
 import { useAcademiaLevels } from '../../hooks/useLevels';
 import { levelSelectOptions } from '../../constants/levels';
 import { ACADEMIC_FRAMEWORK_LABELS } from '../../schemas/academicFrameworkHierarchy';
@@ -16,12 +15,9 @@ import {
   type ProgramFormValues,
 } from '../../schemas/programSchema';
 import type { DegreeRecord } from '../../types/academicFramework';
-import type {
-  EducationMajorRecord,
-  ProgramMajorMappingListResponse,
-} from '../../types/educationMajor';
-import type { InstitutionIntakeRecord } from '../../types/academicCalendar';
-import { intakeDisplayName } from '../../types/academicCalendar';
+import type { CountryRecord } from '../../types/country';
+import type { EducationMajorRecord, ProgramMajorMappingListResponse } from '../../types/educationMajor';
+import type { EducationSubMajorRecord } from '../../types/educationSubMajor';
 import type { InstitutionRecord } from '../../types/institutions';
 import {
   buildMajorColorById,
@@ -50,7 +46,7 @@ const DegreeFormModal: React.FC<DegreeFormModalProps> = ({ open, degree, onClose
     watch,
     setValue,
     getValues,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, dirtyFields },
     setError,
   } = useForm<ProgramFormValues>({
     resolver: zodResolver(programSchema),
@@ -59,19 +55,12 @@ const DegreeFormModal: React.FC<DegreeFormModalProps> = ({ open, degree, onClose
   });
 
   const isActive = watch('is_active');
+  const countryId = watch('country_id');
   const institutionId = watch('institution_id');
-  const intakeIds = watch('intake_ids') ?? [];
   const levelId = watch('level_id');
   const majorIds = watch('major_ids') ?? [];
-
-  const programsForLevelQuery = useQuery({
-    queryKey: ['academia-programs-for-duplicate-check', levelId],
-    queryFn: () =>
-      fetchAcademiaListItems<DegreeRecord>('academia/degrees', {
-        level_id: String(levelId),
-      }),
-    enabled: open && Boolean(levelId),
-  });
+  const subMajorIds = watch('sub_major_ids') ?? [];
+  const programUrl = watch('program_url');
 
   const majorsQuery = useQuery({
     queryKey: ['academia-majors-for-program-form'],
@@ -83,6 +72,12 @@ const DegreeFormModal: React.FC<DegreeFormModalProps> = ({ open, degree, onClose
     enabled: open,
   });
 
+  const subMajorsQuery = useQuery({
+    queryKey: ['academia-sub-majors-for-program-form'],
+    queryFn: () => fetchAcademiaListItems<EducationSubMajorRecord>('academia/education-sub-majors'),
+    enabled: open,
+  });
+
   const programMajorMappingsQuery = useQuery({
     queryKey: ['academia-program-major-mappings-for-program-form', degree?.id],
     queryFn: () =>
@@ -90,26 +85,40 @@ const DegreeFormModal: React.FC<DegreeFormModalProps> = ({ open, degree, onClose
     enabled: open && Boolean(degree?.id),
   });
 
-  const institutionsQuery = useQuery({
-    queryKey: ['academia-institutions-for-program-form'],
-    queryFn: () => fetchAcademiaListItems<InstitutionRecord>('academia/institutions'),
+  const countriesQuery = useQuery({
+    queryKey: ['academia-countries-for-program-form'],
+    queryFn: () =>
+      fetchAcademiaListItems<CountryRecord>('academia/countries', {
+        sort_by: 'name',
+        sort_dir: 'asc',
+      }),
     enabled: open,
   });
 
-  const openIntakesQuery = useQuery({
-    queryKey: ['academia-open-intakes-for-program', institutionId],
-    queryFn: () =>
-      apiFetch<InstitutionIntakeRecord[]>(
-        `academia/institutions/${institutionId}/intakes/open`
-      ),
-    enabled: open && Boolean(institutionId),
+  const institutionsQuery = useQuery({
+    queryKey: ['academia-institutions-for-program-form', countryId],
+    queryFn: () => {
+      const extra: Record<string, string | string[] | undefined> = {
+        sort_by: 'name',
+        sort_order: 'asc',
+      };
+      if (countryId) extra.country_id = String(countryId);
+      return fetchAcademiaListItems<InstitutionRecord>('academia/institutions/summary', extra);
+    },
+    enabled: open && Boolean(countryId),
   });
 
+  const countries = countriesQuery.data ?? [];
   const institutions = institutionsQuery.data ?? [];
-  const openIntakes = openIntakesQuery.data ?? [];
   const majors = majorsQuery.data ?? [];
+  const subMajors = subMajorsQuery.data ?? [];
   const majorColorByLabel = useMemo(() => buildMajorColorByLabel(majors), [majors]);
   const majorColorById = useMemo(() => buildMajorColorById(majors), [majors]);
+
+  const countryOptions = useMemo(
+    () => countries.map(item => ({ value: String(item.id), label: item.name })),
+    [countries]
+  );
 
   const institutionOptions = useMemo(
     () => institutions.map(item => ({ value: String(item.id), label: item.name })),
@@ -133,10 +142,56 @@ const DegreeFormModal: React.FC<DegreeFormModalProps> = ({ open, degree, onClose
     [majorColorById, majorColorByLabel, majors]
   );
 
+  const selectedMajorIdSet = useMemo(
+    () => new Set(majorIds.map(Number).filter(id => Number.isInteger(id) && id > 0)),
+    [majorIds]
+  );
+
+  const subMajorOptions = useMemo(() => {
+    const visible =
+      selectedMajorIdSet.size === 0
+        ? []
+        : subMajors.filter(item => selectedMajorIdSet.has(Number(item.major_id)));
+    return [...visible]
+      .sort((left, right) =>
+        left.name.localeCompare(right.name, undefined, { sensitivity: 'base' })
+      )
+      .map(item => {
+        const parentId = Number(item.major_id);
+        return {
+          value: String(item.id),
+          label:
+            selectedMajorIdSet.size === 1 || !item.major_label
+              ? item.name
+              : `${item.name} (${item.major_label})`,
+          color: resolveMajorColor(
+            {
+              id: parentId,
+              label: item.major_label || '',
+              color: item.major_color,
+            },
+            majorColorByLabel,
+            majorColorById
+          ),
+        };
+      });
+  }, [majorColorById, majorColorByLabel, selectedMajorIdSet, subMajors]);
+
+  const subMajorSelectedDisplay = useMemo(() => {
+    if (subMajorIds.length === 0) return undefined;
+    const labels = subMajorIds
+      .map(id => subMajors.find(item => Number(item.id) === Number(id))?.name)
+      .filter((label): label is string => Boolean(label));
+    if (labels.length > 0) {
+      return labels.length === 1 ? labels[0] : `${labels[0]} +${labels.length - 1} more`;
+    }
+    return `${subMajorIds.length} sub-major${subMajorIds.length === 1 ? '' : 's'} selected`;
+  }, [subMajorIds, subMajors]);
+
   const majorSelectedDisplay = useMemo(() => {
     if (majorIds.length === 0) return undefined;
     const labels = majorIds
-      .map(id => majors.find(major => major.id === id)?.label)
+      .map(id => majors.find(major => Number(major.id) === Number(id))?.label)
       .filter((label): label is string => Boolean(label));
     if (labels.length > 0) {
       return labels.length === 1 ? labels[0] : `${labels[0]} +${labels.length - 1} more`;
@@ -179,15 +234,26 @@ const DegreeFormModal: React.FC<DegreeFormModalProps> = ({ open, degree, onClose
       if (cancelled) return;
 
       const resolvedMajorIds = resolveMajorIdsForProgram(record);
+      const resolvedSubMajorIds = [
+        ...new Set(
+          (record.sub_major_ids ?? [])
+            .map(Number)
+            .filter(id => Number.isInteger(id) && id > 0)
+        ),
+      ];
       reset({
+        country_id: record.country_id ?? 0,
         level_id: record.level_id,
         major_ids: resolvedMajorIds,
+        sub_major_ids: resolvedSubMajorIds,
         code: record.code || '',
         name: record.name || '',
         description: record.description || null,
+        program_url: record.program_url || null,
         is_active: record.is_active ?? true,
         sort_order: record.sort_order ?? 0,
-        institution_id: record.institution_id ?? null,
+        institution_id: record.institution_id ?? record.institution_ids?.[0] ?? 0,
+        college_id: record.college_id ?? null,
         intake_ids: record.intake_ids ?? [],
       });
     };
@@ -225,30 +291,48 @@ const DegreeFormModal: React.FC<DegreeFormModalProps> = ({ open, degree, onClose
     }
   }, [institutionId, setValue]);
 
+  useEffect(() => {
+    if (!open || !countryId || !institutionId) return;
+    const match = institutions.some(item => Number(item.id) === Number(institutionId));
+    if (institutionsQuery.isLoading) return;
+    if (institutions.length && !match) {
+      setValue('institution_id', 0, { shouldDirty: true });
+      setValue('intake_ids', []);
+    }
+  }, [countryId, institutionId, institutions, institutionsQuery.isLoading, open, setValue]);
+
+  useEffect(() => {
+    if (!open) return;
+    // Do not drop hydrated sub-majors while majors are still loading on edit.
+    if (degree && majorIds.length === 0) return;
+    const allowedMajors = new Set(majorIds.map(Number));
+    const current = (getValues('sub_major_ids') ?? []).map(Number);
+    const next = current.filter(id => {
+      const row = subMajors.find(item => Number(item.id) === Number(id));
+      return Boolean(row && allowedMajors.has(Number(row.major_id)));
+    });
+    if (next.length === current.length) return;
+    setValue('sub_major_ids', next, { shouldDirty: false });
+  }, [degree, getValues, majorIds, open, setValue, subMajors]);
+
   if (!open) return null;
 
-  const toggleIntake = (intakeId: number) => {
-    const next = intakeIds.includes(intakeId)
-      ? intakeIds.filter(id => id !== intakeId)
-      : [...intakeIds, intakeId];
-    setValue('intake_ids', next, { shouldValidate: true });
-  };
-
   const onSubmit = handleSubmit(async values => {
-    if (
-      isDuplicateProgramName(
-        values.name,
-        values.level_id,
-        programsForLevelQuery.data ?? [],
-        degree?.id ?? null
-      )
-    ) {
-      setError('name', {
-        message: 'A program with this name already exists for the selected level.',
-      });
-      return;
-    }
     try {
+      const resolvedInstitutionId = [
+        values.institution_id,
+        degree?.institution_id,
+        degree?.institution_ids?.[0],
+      ]
+        .map(Number)
+        .find(id => Number.isInteger(id) && id > 0);
+      const resolvedCountryId = [values.country_id, degree?.country_id]
+        .map(Number)
+        .find(id => Number.isInteger(id) && id > 0);
+      if (!resolvedInstitutionId) {
+        setError('institution_id', { message: 'Institution is required' });
+        return;
+      }
       const resolvedMajorIds = [
         ...new Set(
           (values.major_ids ?? getValues('major_ids') ?? [])
@@ -256,18 +340,38 @@ const DegreeFormModal: React.FC<DegreeFormModalProps> = ({ open, degree, onClose
             .filter(id => Number.isInteger(id) && id > 0)
         ),
       ];
-      const payload = {
+      const resolvedSubMajorIds = [
+        ...new Set(
+          (values.sub_major_ids ?? getValues('sub_major_ids') ?? [])
+            .map(Number)
+            .filter(id => Number.isInteger(id) && id > 0)
+        ),
+      ];
+      const identity = {
         name: values.name.trim(),
         code: values.code?.trim() ? values.code.trim().toUpperCase() : null,
         description: values.description?.trim() || null,
+        program_url: values.program_url?.trim() || null,
         level_id: values.level_id,
+      };
+      const payload: Record<string, unknown> = {
         major_ids: resolvedMajorIds,
+        sub_major_ids: resolvedSubMajorIds,
         is_active: values.is_active,
         sort_order: values.sort_order ?? 0,
-        institution_id: values.institution_id ?? null,
+        country_id: resolvedCountryId ?? null,
+        institution_id: resolvedInstitutionId,
+        college_id: values.college_id ?? null,
         intake_ids: values.intake_ids ?? [],
       };
       if (degree) {
+        const nameChanged = identity.name !== (degree.name || '').trim();
+        const levelChanged = Number(values.level_id) !== Number(degree.level_id);
+        if (nameChanged) payload.name = identity.name;
+        if (levelChanged) payload.level_id = identity.level_id;
+        if (identity.code && identity.code !== (degree.code || '')) payload.code = identity.code;
+        if (dirtyFields.description) payload.description = identity.description;
+        if (dirtyFields.program_url) payload.program_url = identity.program_url;
         await apiFetch(`academia/degrees/${degree.id}`, {
           method: 'PUT',
           body: JSON.stringify(payload),
@@ -275,80 +379,203 @@ const DegreeFormModal: React.FC<DegreeFormModalProps> = ({ open, degree, onClose
       } else {
         await apiFetch('academia/degrees', {
           method: 'POST',
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ ...payload, ...identity }),
         });
       }
       onSaved();
       onClose();
     } catch (err) {
-      setError('root', {
-        message: err instanceof Error ? err.message : 'Failed to save program',
-      });
+      const message = err instanceof Error ? err.message : 'Failed to save program';
+      if (!degree && message.includes('already exists for the selected level')) {
+        setError('name', { message });
+      } else {
+        setError('root', { message });
+      }
     }
   });
 
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
-      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border-subtle bg-card shadow-2xl">
+      <div className="max-h-[90vh] w-full max-w-6xl overflow-y-auto rounded-2xl border border-border-subtle bg-card shadow-2xl">
         <div className="flex items-center justify-between border-b border-border-subtle px-5 py-4">
           <div>
             <h3 className="text-lg font-bold text-text-main">
               {degree ? 'Edit Program' : 'Create Program'}
             </h3>
             <p className="text-xs text-text-muted">
-              Level → Major → Program → Assign Open intake terms
+              Level → Country → Institution → Major → Program
             </p>
           </div>
           <button type="button" onClick={onClose} className="rounded-md p-1 text-text-muted hover:bg-surface-bg">
             <X size={18} />
           </button>
         </div>
-        <form onSubmit={onSubmit} noValidate className="space-y-4 p-5">
-          <Controller
-            control={control}
-            name="level_id"
-            render={({ field }) => (
-              <SearchableSelect
-                label="Level"
-                value={field.value ? String(field.value) : ''}
-                options={levelSelectOptions(levels)}
-                onChange={value => field.onChange(value ? Number(value) : 0)}
-                placeholder="Select level..."
-                required
-              />
-            )}
-          />
-          {errors.level_id ? <p className="text-sm text-alert">{errors.level_id.message}</p> : null}
+        <form onSubmit={onSubmit} noValidate className="grid grid-cols-1 gap-x-3 gap-y-2.5 p-5 md:grid-cols-3">
+          <div>
+            <Controller
+              control={control}
+              name="country_id"
+              render={({ field }) => (
+                <SearchableSelect
+                  label="Country"
+                  value={field.value ? String(field.value) : ''}
+                  options={countryOptions}
+                  onChange={value => field.onChange(value ? Number(value) : 0)}
+                  placeholder={
+                    countriesQuery.isLoading ? 'Loading countries...' : 'Select country...'
+                  }
+                  required
+                />
+              )}
+            />
+            {errors.country_id ? <p className="text-sm text-alert">{errors.country_id.message}</p> : null}
+          </div>
 
-          <Controller
-            control={control}
-            name="major_ids"
-            render={({ field }) => (
-              <SearchableMultiSelect
-                label={ACADEMIC_FRAMEWORK_LABELS.major}
-                values={(field.value ?? []).map(String)}
-                options={majorOptions}
-                onChange={values =>
-                  field.onChange(
-                    values
-                      .map(Number)
-                      .filter(id => Number.isInteger(id) && id > 0)
-                  )
-                }
-                placeholder={
-                  majorsQuery.isLoading
-                    ? 'Loading majors...'
-                    : majorOptions.length === 0
-                      ? 'No majors available'
-                      : 'Select one or more majors'
-                }
-                disabled={majorsQuery.isLoading}
-                hint="Optional. Map this program to one or more catalog majors from the Majors page."
-                selectedDisplay={majorSelectedDisplay}
-              />
-            )}
-          />
-          {errors.major_ids ? <p className="text-sm text-alert">{errors.major_ids.message}</p> : null}
+          <div>
+            <Controller
+              control={control}
+              name="institution_id"
+              render={({ field }) => (
+                <SearchableSelect
+                  label="Institution"
+                  value={field.value ? String(field.value) : ''}
+                  options={institutionOptions}
+                  onChange={value => field.onChange(value ? Number(value) : 0)}
+                  placeholder={
+                    !countryId
+                      ? 'Select a country first'
+                      : institutionsQuery.isLoading
+                        ? 'Loading institutions...'
+                        : institutionOptions.length === 0
+                          ? 'No institutions for this country'
+                          : 'Select institution...'
+                  }
+                  disabled={!countryId || institutionsQuery.isLoading}
+                  required
+                />
+              )}
+            />
+            {errors.institution_id ? (
+              <p className="text-sm text-alert">{errors.institution_id.message}</p>
+            ) : null}
+          </div>
+
+          <div>
+            <Controller
+              control={control}
+              name="level_id"
+              render={({ field }) => (
+                <SearchableSelect
+                  label="Level"
+                  value={field.value ? String(field.value) : ''}
+                  options={levelSelectOptions(levels)}
+                  onChange={value => field.onChange(value ? Number(value) : 0)}
+                  placeholder="Select level..."
+                  required
+                />
+              )}
+            />
+            {errors.level_id ? <p className="text-sm text-alert">{errors.level_id.message}</p> : null}
+          </div>
+
+          <div>
+            <Controller
+              control={control}
+              name="major_ids"
+              render={({ field }) => (
+                <SearchableMultiSelect
+                  label={ACADEMIC_FRAMEWORK_LABELS.major}
+                  values={(field.value ?? []).map(String)}
+                  options={majorOptions}
+                  onChange={values =>
+                    field.onChange(
+                      values
+                        .map(Number)
+                        .filter(id => Number.isInteger(id) && id > 0)
+                    )
+                  }
+                  placeholder={
+                    majorsQuery.isLoading
+                      ? 'Loading majors...'
+                      : majorOptions.length === 0
+                        ? 'No majors available'
+                        : 'Select one or more majors'
+                  }
+                  disabled={majorsQuery.isLoading}
+                  hint="Optional. Map this program to one or more catalog majors from the Majors page."
+                  selectedDisplay={majorSelectedDisplay}
+                  preferDropUp
+                />
+              )}
+            />
+            {errors.major_ids ? <p className="text-sm text-alert">{errors.major_ids.message}</p> : null}
+          </div>
+
+          <div>
+            <Controller
+              control={control}
+              name="sub_major_ids"
+              render={({ field }) => (
+                <SearchableMultiSelect
+                  label={ACADEMIC_FRAMEWORK_LABELS.subMajor}
+                  values={(field.value ?? []).map(String)}
+                  options={subMajorOptions}
+                  onChange={values =>
+                    field.onChange(
+                      values
+                        .map(Number)
+                        .filter(id => Number.isInteger(id) && id > 0)
+                    )
+                  }
+                  placeholder={
+                    majorIds.length === 0
+                      ? 'Select a major first'
+                      : subMajorsQuery.isLoading
+                        ? 'Loading sub-majors...'
+                        : subMajorOptions.length === 0
+                          ? 'No sub-majors for selected majors'
+                          : 'Select one or more sub-majors'
+                  }
+                  disabled={majorIds.length === 0 || subMajorsQuery.isLoading}
+                  hint="Optional. Select any number of sub-majors under the chosen majors."
+                  selectedDisplay={
+                    subMajorIds.length > 1
+                      ? `${subMajorIds.length} selected`
+                      : subMajorSelectedDisplay
+                  }
+                  preferDropUp
+                />
+              )}
+            />
+            {errors.sub_major_ids ? (
+              <p className="text-sm text-alert">{errors.sub_major_ids.message}</p>
+            ) : null}
+          </div>
+
+          <label className="block space-y-1 text-sm">
+            <span className="flex items-center justify-between gap-2 font-medium text-text-main">
+              <span>Program URL</span>
+              {programUrl && /^https?:\/\//i.test(programUrl) ? (
+                <a
+                  href={programUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs font-medium text-accent hover:underline"
+                >
+                  View Website
+                </a>
+              ) : null}
+            </span>
+            <input
+              {...register('program_url')}
+              type="url"
+              placeholder="https://..."
+              className="w-full rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent"
+            />
+            {errors.program_url ? (
+              <p className="text-sm text-alert">{errors.program_url.message}</p>
+            ) : null}
+          </label>
 
           <label className="block space-y-1 text-sm">
             <span className="font-medium text-text-main">Program name *</span>
@@ -370,84 +597,6 @@ const DegreeFormModal: React.FC<DegreeFormModalProps> = ({ open, degree, onClose
             {errors.code ? <p className="text-sm text-alert">{errors.code.message}</p> : null}
           </label>
 
-          <Controller
-            control={control}
-            name="description"
-            render={({ field, fieldState }) => (
-              <RichTextEditor
-                label="Description"
-                content={field.value || ''}
-                onChange={field.onChange}
-                maxLength={5000}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
-
-          <Controller
-            control={control}
-            name="institution_id"
-            render={({ field }) => (
-              <SearchableSelect
-                label="Institution (for intake assignment)"
-                value={field.value ? String(field.value) : ''}
-                options={[
-                  { value: '', label: 'No institution — catalog only' },
-                  ...institutionOptions,
-                ]}
-                onChange={value => field.onChange(value ? Number(value) : null)}
-                placeholder={
-                  institutionsQuery.isLoading ? 'Loading institutions...' : 'Select institution...'
-                }
-              />
-            )}
-          />
-
-          {institutionId ? (
-            <div className="space-y-2 rounded-xl border border-border-subtle bg-surface-bg/50 p-4">
-              <div>
-                <p className="text-sm font-semibold text-text-main">Assign Available Terms *</p>
-                <p className="text-xs text-text-muted">
-                  Select at least one Open intake when publishing this program.
-                </p>
-              </div>
-              {openIntakesQuery.isLoading ? (
-                <p className="text-sm text-text-muted">Loading open intakes...</p>
-              ) : openIntakes.length === 0 ? (
-                <p className="text-sm text-alert">
-                  No Open intakes found for this institution. Configure the academic calendar first.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {openIntakes.map(intake => (
-                    <label
-                      key={intake.id}
-                      className="flex cursor-pointer items-start gap-3 rounded-lg border border-border-subtle bg-card px-3 py-2"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={intakeIds.includes(intake.id)}
-                        onChange={() => toggleIntake(intake.id)}
-                        className="mt-1 rounded border-border-subtle"
-                      />
-                      <span>
-                        <span className="block text-sm font-semibold text-text-main">
-                          {intakeDisplayName(intake)}
-                        </span>
-                        <span className="text-xs text-text-muted">
-                          {intake.term_name} · {intake.intake_type} · {intake.status}
-                        </span>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              )}
-              {errors.intake_ids ? (
-                <p className="text-sm text-alert">{errors.intake_ids.message}</p>
-              ) : null}
-            </div>
-          ) : null}
-
           <ActiveStatusField
             entityType="program"
             entityId={degree?.id}
@@ -456,9 +605,25 @@ const DegreeFormModal: React.FC<DegreeFormModalProps> = ({ open, degree, onClose
             onChange={next => setValue('is_active', next)}
           />
 
-          {errors.root ? <p className="text-sm text-alert">{errors.root.message}</p> : null}
+          <div className="md:col-span-3">
+            <Controller
+              control={control}
+              name="description"
+              render={({ field, fieldState }) => (
+                <RichTextEditor
+                  label="Description"
+                  content={field.value || ''}
+                  onChange={field.onChange}
+                  maxLength={5000}
+                  error={fieldState.error?.message}
+                />
+              )}
+            />
+          </div>
 
-          <div className="flex justify-end gap-3 pt-2">
+          {errors.root ? <p className="text-sm text-alert md:col-span-3">{errors.root.message}</p> : null}
+
+          <div className="flex justify-end gap-3 pt-2 md:col-span-3">
             <button type="button" onClick={onClose} className="rounded-xl border border-border-subtle px-4 py-2 text-sm font-semibold text-text-muted">
               Cancel
             </button>

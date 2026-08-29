@@ -14,13 +14,14 @@ class QualificationProgramMajorRead(BaseModel):
 class QualificationProgramRead(BaseModel):
     """Public read model for framework qualification programs (`programs` table)."""
 
-    id: str
+    id: int
     code: str
     name: str
     label: str
     level_id: int
     level_code: str | None = None
     level_name: str | None = None
+    program_url: str | None = None
     sort_order: int = 0
     majors: list[QualificationProgramMajorRead] = Field(default_factory=list)
 

@@ -20,6 +20,7 @@ export const resolveBaseUrl = (): string => {
 const BASE_URL = resolveBaseUrl();
 
 const TOKEN_KEY = 'token';
+const POST_LOGIN_REDIRECT_KEY = 'nexus:postLoginRedirect';
 
 /** Per-tab session storage so multiple users can be logged in across tabs/windows. */
 export const getStoredToken = (): string | null => {
@@ -54,7 +55,31 @@ export const getCurrentUserId = (): number | null => {
 export const clearSession = (): void => {
   sessionStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(POST_LOGIN_REDIRECT_KEY);
 };
+
+export function isSafeInternalPath(path: string | null | undefined): boolean {
+  if (!path || typeof path !== 'string') return false;
+  const trimmed = path.trim();
+  if (!trimmed.startsWith('/') || trimmed.startsWith('//') || trimmed.startsWith('/\\')) return false;
+  if (trimmed.includes('://')) return false;
+  const pathname = trimmed.split(/[?#]/)[0] || '/';
+  return pathname !== '/login' && !pathname.startsWith('/login/');
+}
+
+export function rememberPostLoginRedirect(path?: string): void {
+  const target =
+    path?.trim() ||
+    `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (!isSafeInternalPath(target)) return;
+  sessionStorage.setItem(POST_LOGIN_REDIRECT_KEY, target);
+}
+
+export function consumePostLoginRedirect(): string | null {
+  const stored = sessionStorage.getItem(POST_LOGIN_REDIRECT_KEY)?.trim() || null;
+  sessionStorage.removeItem(POST_LOGIN_REDIRECT_KEY);
+  return stored && isSafeInternalPath(stored) ? stored : null;
+}
 
 export const isValidTokenFormat = (token: string | null | undefined): boolean => {
   if (!token) return false;
@@ -74,12 +99,15 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
   }
 }
 
+/** Allow small client/server clock drift before treating a token as expired. */
+const TOKEN_EXPIRY_SKEW_MS = 120_000;
+
 export const isTokenExpired = (token: string | null | undefined): boolean => {
   if (!isValidTokenFormat(token)) return true;
   const payload = decodeJwtPayload(token!);
   // Do not force-logout on decode quirks — only when exp is present and past.
   if (!payload || payload.exp == null) return false;
-  return Date.now() >= Number(payload.exp) * 1000;
+  return Date.now() >= Number(payload.exp) * 1000 + TOKEN_EXPIRY_SKEW_MS;
 };
 
 export const hasValidSession = (): boolean => {
@@ -89,9 +117,32 @@ export const hasValidSession = (): boolean => {
 
 const redirectToLogin = (): void => {
   if (window.location.pathname.startsWith('/login')) return;
+  const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   clearSession();
+  rememberPostLoginRedirect(returnTo);
   window.location.href = '/login';
 };
+
+/** Best-effort telemetry — a 401/429 here must not eject the user from a form. */
+function isNonSessionEndpoint(endpoint: string): boolean {
+  const path = endpoint.replace(/^\//, '').split(/[?#]/)[0].toLowerCase();
+  return (
+    path.startsWith('reports/exception-logs') ||
+    path.startsWith('audit-events') ||
+    path.startsWith('analytics')
+  );
+}
+
+function shouldRedirectOnAuthFailure(
+  endpoint: string,
+  status: number | undefined,
+  authRedirect: boolean
+): boolean {
+  if (!authRedirect) return false;
+  if (status === 429) return false;
+  if (isNonSessionEndpoint(endpoint)) return false;
+  return status === 401;
+}
 
 const formatApiErrorDetail = (detail: unknown): string => {
   if (typeof detail === 'string') return detail;
@@ -108,8 +159,35 @@ const formatApiErrorDetail = (detail: unknown): string => {
       .filter((msg): msg is string => Boolean(msg));
     if (messages.length > 0) return messages.join(' ');
   }
+  if (detail && typeof detail === 'object') {
+    const rec = detail as { message?: unknown; matches?: unknown };
+    if (Array.isArray(rec.matches) && rec.matches.length) {
+      return JSON.stringify(detail);
+    }
+    if (typeof rec.message === 'string' && rec.message.trim()) return rec.message.trim();
+  }
   return JSON.stringify(detail);
 };
+
+export function formatApiUiError(
+  error: unknown,
+  fallback: string,
+  options?: { retrying?: boolean }
+): string {
+  const raw = error instanceof Error ? error.message.trim() : '';
+  const retrySuffix = options?.retrying ? ' Retrying…' : ' Please try again.';
+
+  if (/bad gateway|gateway timeout|service unavailable/i.test(raw)) {
+    const gatewayLabel = /bad gateway/i.test(raw) ? ' (Bad Gateway)' : '';
+    return `Backend unavailable${gatewayLabel}.${retrySuffix}`;
+  }
+
+  if (/failed to fetch|networkerror|network request failed|load failed/i.test(raw)) {
+    return `Backend unavailable or network connection lost.${retrySuffix}`;
+  }
+
+  return raw || fallback;
+}
 
 /**
  * A clean, agnostic universal network abstraction client wrapper.
@@ -135,6 +213,12 @@ export type ApiFetchOptions = RequestInit & {
   timeoutMs?: number;
   /** Optional label for audit log when this request loads data (control + value). */
   auditContext?: { label: string; value?: string };
+  /**
+   * When false, expired tokens / HTTP 401 throw without forcing /login.
+   * Use for best-effort background polls (presence, unread, notification inbox)
+   * so a flaky auth blip does not eject the user mid-interaction.
+   */
+  authRedirect?: boolean;
 };
 
 function mergeAbortSignals(...signals: AbortSignal[]): AbortSignal {
@@ -153,11 +237,16 @@ function mergeAbortSignals(...signals: AbortSignal[]): AbortSignal {
 }
 
 export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
-  const { timeoutMs = API_FETCH_TIMEOUT_MS, auditContext, ...requestInit } = options ?? {};
+  const {
+    timeoutMs = API_FETCH_TIMEOUT_MS,
+    auditContext,
+    authRedirect = true,
+    ...requestInit
+  } = options ?? {};
   const token = getStoredToken();
 
   if (token && isTokenExpired(token)) {
-    redirectToLogin();
+    if (authRedirect) redirectToLogin();
     throw new Error('Session expired. Please log in again.');
   }
 
@@ -223,14 +312,16 @@ export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
       if (errorText) detail = errorText;
     }
 
-    reportApiFailure({
-      endpoint: cleanEndpoint,
-      kind: 'http',
-      status: response.status,
-      detail: typeof detail === 'string' ? detail.slice(0, 500) : undefined,
-    });
+    if (response.status !== 401 && response.status !== 429) {
+      reportApiFailure({
+        endpoint: cleanEndpoint,
+        kind: 'http',
+        status: response.status,
+        detail: typeof detail === 'string' ? detail.slice(0, 500) : undefined,
+      });
+    }
 
-    if (response.status === 401) {
+    if (shouldRedirectOnAuthFailure(cleanEndpoint, response.status, authRedirect)) {
       redirectToLogin();
     }
 
@@ -260,11 +351,12 @@ export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
 
 /** Fetch a binary response (e.g. PDF export) with the same auth/session handling as apiFetch. */
 export async function apiFetchBlob(endpoint: string, options?: ApiFetchOptions): Promise<Blob> {
-  const { timeoutMs = API_FETCH_TIMEOUT_MS, auditContext, ...requestInit } = options ?? {};
+  const { timeoutMs = API_FETCH_TIMEOUT_MS, auditContext, authRedirect = true, ...requestInit } =
+    options ?? {};
   const token = getStoredToken();
 
   if (token && isTokenExpired(token)) {
-    redirectToLogin();
+    if (authRedirect) redirectToLogin();
     throw new Error('Session expired. Please log in again.');
   }
 
@@ -329,14 +421,16 @@ export async function apiFetchBlob(endpoint: string, options?: ApiFetchOptions):
       if (errorText) detail = errorText;
     }
 
-    reportApiFailure({
-      endpoint: cleanEndpoint,
-      kind: 'http',
-      status: response.status,
-      detail: typeof detail === 'string' ? detail.slice(0, 500) : undefined,
-    });
+    if (response.status !== 401 && response.status !== 429) {
+      reportApiFailure({
+        endpoint: cleanEndpoint,
+        kind: 'http',
+        status: response.status,
+        detail: typeof detail === 'string' ? detail.slice(0, 500) : undefined,
+      });
+    }
 
-    if (response.status === 401) {
+    if (shouldRedirectOnAuthFailure(cleanEndpoint, response.status, authRedirect)) {
       redirectToLogin();
     }
 
@@ -386,7 +480,9 @@ export async function apiUpload(endpoint: string, formData: FormData) {
     } catch {
       if (errorText) detail = errorText;
     }
-    if (response.status === 401) redirectToLogin();
+    if (shouldRedirectOnAuthFailure(cleanEndpoint, response.status, true)) {
+      redirectToLogin();
+    }
     throw new Error(detail);
   }
 

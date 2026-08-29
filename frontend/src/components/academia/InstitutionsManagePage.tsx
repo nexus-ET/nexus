@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   History,
@@ -11,7 +11,12 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { INSTITUTION_TYPE_OPTIONS } from '../../schemas/wizard/step1-institution';
+import type { InstitutionTypeRecord } from '../../types/institutionTypes';
+import {
+  fetchInstitutionTypes,
+  institutionTypeSelectOptions,
+  resolveLegacyInstitutionTypeId,
+} from '../../types/institutionTypes';
 import {
   INSTITUTIONS_NEW_PATH,
   institutionEditPath,
@@ -21,6 +26,7 @@ import { apiFetch } from '../../utils/api';
 import { fetchAcademiaListItems } from '../../utils/academiaList';
 import type { DegreeRecord } from '../../types/academicFramework';
 import type { EducationMajorRecord } from '../../types/educationMajor';
+import type { EducationSubMajorRecord } from '../../types/educationSubMajor';
 import type { GlobalAcademicTemplate } from '../../types/academicCalendar';
 import {
   DEFAULT_INSTITUTION_SUMMARY_SORT,
@@ -37,23 +43,64 @@ import EntityStatusBadge from './EntityStatusBadge';
 import FrameworkSortableHeader from './FrameworkSortableHeader';
 import FrameworkTablePagination from './FrameworkTablePagination';
 import InstitutionsTableSkeleton from './InstitutionsTableSkeleton';
+import SearchableSelect from './SearchableSelect';
+import InstitutionFilterSelect from './InstitutionFilterSelect';
 import { useConfirmation } from '../../context/ConfirmationContext';
+import {
+  applyFilterParamUpdates,
+  appendMultiParam,
+  readMultiParam,
+  type FilterParamValue,
+} from '../../utils/filterParams';
+import type { CampusRecord } from '../../types/institutions';
+import { campusDescriptionPreview } from '../../utils/campusDescription';
 
 interface GeographyOption {
   id: number;
   name: string;
 }
 
+async function fetchGeographyOptions(
+  endpoint: 'academia/states' | 'academia/cities',
+  scopeKey: 'country_id' | 'state_id',
+  scopeIds: string[],
+  extraParams?: Record<string, string | undefined>
+): Promise<GeographyOption[]> {
+  if (scopeIds.length === 0) return [];
+
+  const fetchForScope = (scopeId: string) =>
+    fetchAcademiaListItems<GeographyOption>(endpoint, {
+      ...extraParams,
+      [scopeKey]: scopeId,
+    });
+
+  if (scopeIds.length === 1) {
+    return fetchForScope(scopeIds[0]);
+  }
+
+  const batches = await Promise.all(scopeIds.map(fetchForScope));
+  const byId = new Map<number, GeographyOption>();
+  for (const batch of batches) {
+    for (const item of batch) {
+      byId.set(item.id, item);
+    }
+  }
+  return Array.from(byId.values()).sort((left, right) => left.name.localeCompare(right.name));
+}
+
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 
 const SORTABLE_COLUMNS: InstitutionSummarySortBy[] = [
+  'id',
   'name',
   'city',
   'state',
   'country',
   'institution_type',
+  'level_count',
   'program_count',
   'major_count',
+  'sub_major_count',
   'course_count',
   'campus_count',
   'college_count',
@@ -65,10 +112,32 @@ const isSortableColumn = (
   key: InstitutionSummaryColumnKey
 ): key is InstitutionSummarySortBy => SORTABLE_COLUMNS.includes(key as InstitutionSummarySortBy);
 
+/** Prefer snake_case API fields; fall back to camelCase if a proxy renames them. */
+function summaryCount(
+  row: InstitutionSummaryRecord,
+  key:
+    | 'level_count'
+    | 'program_count'
+    | 'major_count'
+    | 'sub_major_count'
+    | 'course_count'
+    | 'campus_count'
+    | 'college_count'
+    | 'intake_count'
+    | 'picture_count'
+): number {
+  const direct = row[key];
+  if (typeof direct === 'number' && Number.isFinite(direct)) return direct;
+  const camel = key.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
+  const fallback = (row as Record<string, unknown>)[camel];
+  return typeof fallback === 'number' && Number.isFinite(fallback) ? fallback : 0;
+}
+
 const COUNT_COLUMN_KEYS = new Set<InstitutionSummaryColumnKey>([
   'level_count',
   'program_count',
   'major_count',
+  'sub_major_count',
   'course_count',
   'campus_count',
   'college_count',
@@ -84,6 +153,7 @@ const INSTITUTION_COLUMN_STEP: Partial<Record<InstitutionSummaryColumnKey, numbe
   level_count: 3,
   program_count: 3,
   major_count: 3,
+  sub_major_count: 3,
   course_count: 3,
   intake_count: 4,
   picture_count: 5,
@@ -96,7 +166,10 @@ const CENTER_TEXT_COLUMN_KEYS = new Set<InstitutionSummaryColumnKey>([
   'institution_type',
 ]);
 
+const ID_COLUMN_KEYS = new Set<InstitutionSummaryColumnKey>(['id', 'institution_type_id']);
+
 const CENTER_ALIGNED_COLUMN_KEYS = new Set<InstitutionSummaryColumnKey>([
+  ...ID_COLUMN_KEYS,
   ...CENTER_TEXT_COLUMN_KEYS,
   ...COUNT_COLUMN_KEYS,
   'status',
@@ -110,14 +183,17 @@ const STACKED_HEADER_COLUMN_KEYS = new Set<InstitutionSummaryColumnKey>([
 ]);
 
 const COLUMN_WIDTHS: Partial<Record<InstitutionSummaryColumnKey, string>> = {
-  name: '14%',
+  id: '4.5%',
+  name: '13%',
   city: '7%',
   state: '7%',
   country: '7%',
   institution_type: '9%',
+  institution_type_id: '6%',
   level_count: '5.5%',
   program_count: '6.5%',
   major_count: '6%',
+  sub_major_count: '6%',
   course_count: '6%',
   campus_count: '7%',
   college_count: '7%',
@@ -140,6 +216,9 @@ const columnHeaderClass = (key: InstitutionSummaryColumnKey): string => {
 };
 
 const columnCellClass = (key: InstitutionSummaryColumnKey): string => {
+  if (ID_COLUMN_KEYS.has(key)) {
+    return 'px-1.5 py-3 text-center text-sm tabular-nums align-top text-text-muted';
+  }
   if (COUNT_COLUMN_KEYS.has(key)) {
     return 'px-1.5 py-3 text-center text-sm font-bold tabular-nums align-top text-text-main';
   }
@@ -161,10 +240,13 @@ const getColumnWidth = (key: InstitutionSummaryColumnKey): string | undefined =>
 const defaultVisibleColumns = (): InstitutionSummaryColumnKey[] =>
   INSTITUTION_SUMMARY_COLUMN_DEFS.filter(column => column.defaultVisible).map(column => column.key);
 
+const LOCKED_COLUMN_KEYS = new Set<InstitutionSummaryColumnKey>(['id', 'name']);
+
 const normalizeVisibleColumns = (
   columns: Set<InstitutionSummaryColumnKey>
 ): Set<InstitutionSummaryColumnKey> => {
   columns.delete('created_at');
+  columns.add('id');
   columns.add('name');
   return columns;
 };
@@ -235,13 +317,31 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
   const [cities, setCities] = useState<GeographyOption[]>([]);
   const [programs, setPrograms] = useState<DegreeRecord[]>([]);
   const [majors, setMajors] = useState<EducationMajorRecord[]>([]);
+  const [subMajors, setSubMajors] = useState<EducationSubMajorRecord[]>([]);
   const [intakeTemplates, setIntakeTemplates] = useState<GlobalAcademicTemplate[]>([]);
+  const [institutionTypes, setInstitutionTypes] = useState<InstitutionTypeRecord[]>([]);
+  const filterCatalogsLoadedRef = useRef(false);
+  const searchParamsRef = useRef(searchParams);
+  searchParamsRef.current = searchParams;
   const [visibleColumns, setVisibleColumns] = useState<Set<InstitutionSummaryColumnKey>>(
     readVisibleColumns
   );
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
   const [togglingStatusId, setTogglingStatusId] = useState<number | null>(null);
+  const [expandedCampusesInstitutionId, setExpandedCampusesInstitutionId] = useState<
+    number | null
+  >(null);
+  const [campusesByInstitution, setCampusesByInstitution] = useState<
+    Record<number, CampusRecord[]>
+  >({});
+  const [campusesLoadingId, setCampusesLoadingId] = useState<number | null>(null);
+  const [campusesError, setCampusesError] = useState<string | null>(null);
   const columnMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const institutionTypeOptions = useMemo(
+    () => institutionTypeSelectOptions(institutionTypes),
+    [institutionTypes]
+  );
 
   const page = Math.max(Number(searchParams.get('page') || '1'), 1);
   const rawPageSize = Number(searchParams.get('page_size') || '25');
@@ -252,25 +352,31 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
   const sortOrder =
     (searchParams.get('sort_order') as InstitutionSummarySortOrder) ||
     DEFAULT_INSTITUTION_SUMMARY_SORT.sortOrder;
-  const countryId = searchParams.get('country_id') || '';
-  const stateId = searchParams.get('state_id') || '';
-  const cityId = searchParams.get('city_id') || '';
+  const countryIds = readMultiParam(searchParams, 'country_id');
+  const stateIds = readMultiParam(searchParams, 'state_id');
+  const cityIds = readMultiParam(searchParams, 'city_id');
   const statusFilter = searchParams.get('status') || '';
-  const institutionType = searchParams.get('institution_type') || '';
-  const programId = searchParams.get('program_id') || '';
-  const majorId = searchParams.get('major_id') || '';
-  const templateId = searchParams.get('template_id') || '';
+  const institutionTypeIds = readMultiParam(searchParams, 'institution_type_id');
+  const programIds = readMultiParam(searchParams, 'program_id');
+  const majorIds = readMultiParam(searchParams, 'major_id');
+  const subMajorIds = readMultiParam(searchParams, 'sub_major_id');
+  const templateIds = readMultiParam(searchParams, 'template_id');
+  const countryId = countryIds[0] || '';
+  const stateId = stateIds[0] || '';
+  const cityId = cityIds[0] || '';
+  const institutionTypeId = institutionTypeIds[0] || '';
+  const programId = programIds[0] || '';
+  const majorId = majorIds[0] || '';
+  const subMajorId = subMajorIds[0] || '';
+  const templateId = templateIds[0] || '';
   const query = searchParams.get('q') || '';
 
-  const updateParams = useCallback(
-    (updates: Record<string, string | null>, options?: { resetPage?: boolean }) => {
+  const updateFilterParams = useCallback(
+    (updates: Record<string, FilterParamValue>, options?: { resetPage?: boolean }) => {
       setSearchParams(
         prev => {
           const next = new URLSearchParams(prev);
-          for (const [key, value] of Object.entries(updates)) {
-            if (value == null || value === '') next.delete(key);
-            else next.set(key, value);
-          }
+          applyFilterParamUpdates(next, updates);
           if (options?.resetPage !== false && !('page' in updates)) {
             next.set('page', '1');
           }
@@ -284,14 +390,15 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
 
   const hasActiveFilters = Boolean(
     query ||
-      countryId ||
-      stateId ||
-      cityId ||
+      countryIds.length ||
+      stateIds.length ||
+      cityIds.length ||
       statusFilter ||
-      institutionType ||
-      programId ||
-      majorId ||
-      templateId
+      institutionTypeIds.length ||
+      programIds.length ||
+      majorIds.length ||
+      subMajorIds.length ||
+      templateIds.length
   );
 
   const clearAllFilters = () => {
@@ -310,115 +417,235 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
   useEffect(() => {
     const timeout = window.setTimeout(() => {
       if (searchDraft === query) return;
-      updateParams({ q: searchDraft || null });
+      updateFilterParams({ q: searchDraft || null });
     }, 300);
     return () => window.clearTimeout(timeout);
-  }, [query, searchDraft, updateParams]);
+  }, [query, searchDraft, updateFilterParams]);
 
   useEffect(() => {
     setSearchDraft(query);
   }, [query]);
 
-  useEffect(() => {
-    void fetchAcademiaListItems<GeographyOption>('academia/countries')
-      .then(setCountries)
-      .catch(() => setCountries([]));
-    void fetchAcademiaListItems<DegreeRecord>('academia/degrees', { sort_by: 'name', sort_dir: 'asc' })
-      .then(setPrograms)
-      .catch(() => setPrograms([]));
-    void fetchAcademiaListItems<EducationMajorRecord>('academia/education-majors', {
-      sort_by: 'name',
-      sort_dir: 'asc',
-    })
-      .then(setMajors)
-      .catch(() => setMajors([]));
-    void apiFetch<GlobalAcademicTemplate[]>('academia/academic-templates')
-      .then(data => setIntakeTemplates(Array.isArray(data) ? data : []))
-      .catch(() => setIntakeTemplates([]));
+  const loadFilterCatalogs = useCallback(() => {
+    if (filterCatalogsLoadedRef.current) return;
+    filterCatalogsLoadedRef.current = true;
+    void Promise.all([
+      fetchAcademiaListItems<DegreeRecord>('academia/degrees', {
+        sort_by: 'name',
+        sort_dir: 'asc',
+      })
+        .then(setPrograms)
+        .catch(() => setPrograms([])),
+      fetchAcademiaListItems<EducationMajorRecord>('academia/education-majors', {
+        sort_by: 'name',
+        sort_dir: 'asc',
+      })
+        .then(setMajors)
+        .catch(() => setMajors([])),
+      fetchAcademiaListItems<EducationSubMajorRecord>('academia/education-sub-majors', {
+        sort_by: 'name',
+        sort_dir: 'asc',
+      })
+        .then(setSubMajors)
+        .catch(() => setSubMajors([])),
+      apiFetch<GlobalAcademicTemplate[]>('academia/academic-templates')
+        .then(nextTemplates => setIntakeTemplates(Array.isArray(nextTemplates) ? nextTemplates : []))
+        .catch(() => setIntakeTemplates([])),
+    ]);
   }, []);
 
   useEffect(() => {
-    if (!countryId) {
+    let cancelled = false;
+    void fetchInstitutionTypes()
+      .then(types => {
+        if (!cancelled) setInstitutionTypes(types);
+      })
+      .catch(() => {
+        if (!cancelled) setInstitutionTypes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const legacyType = searchParams.get('institution_type');
+    if (!legacyType || institutionTypeIds.length || institutionTypes.length === 0) {
+      return;
+    }
+    const mappedId = resolveLegacyInstitutionTypeId(legacyType, institutionTypes);
+    updateFilterParams({
+      institution_type_id: mappedId ? [mappedId] : null,
+      institution_type: null,
+    });
+  }, [institutionTypeIds.length, institutionTypes, searchParams, updateFilterParams]);
+
+  useEffect(() => {
+    if (programIds.length || majorIds.length || subMajorIds.length || templateIds.length) {
+      loadFilterCatalogs();
+    }
+  }, [loadFilterCatalogs, majorIds.length, programIds.length, subMajorIds.length, templateIds.length]);
+
+  useEffect(() => {
+    void fetchAcademiaListItems<GeographyOption>('academia/countries', {
+      with_institutions: 'true',
+      sort_by: 'name',
+      sort_dir: 'asc',
+    })
+      .then(setCountries)
+      .catch(() => setCountries([]));
+  }, []);
+
+  useEffect(() => {
+    if (countryIds.length === 0) {
       setStates([]);
       return;
     }
-    void fetchAcademiaListItems<GeographyOption>('academia/states', { country_id: countryId })
+    void fetchGeographyOptions('academia/states', 'country_id', countryIds)
       .then(setStates)
       .catch(() => setStates([]));
-  }, [countryId]);
+  }, [countryIds.join('|')]);
 
   useEffect(() => {
-    if (!countryId) {
+    if (countryIds.length === 0) {
       setCities([]);
       return;
     }
-    void fetchAcademiaListItems<GeographyOption>('academia/cities', {
-      country_id: countryId,
-      state_id: stateId || undefined,
-    })
-      .then(setCities)
-      .catch(() => setCities([]));
-  }, [countryId, stateId]);
+    const load = async () => {
+      try {
+        if (stateIds.length > 0) {
+          setCities(
+            await fetchGeographyOptions('academia/cities', 'state_id', stateIds, {
+              country_id: countryIds.length === 1 ? countryIds[0] : undefined,
+            })
+          );
+          return;
+        }
+        setCities(await fetchGeographyOptions('academia/cities', 'country_id', countryIds));
+      } catch {
+        setCities([]);
+      }
+    };
+    void load();
+  }, [countryIds.join('|'), stateIds.join('|')]);
 
-  const loadSummary = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams();
-      if (query.trim()) params.set('q', query.trim());
-      if (countryId) params.set('country_id', countryId);
-      if (stateId) params.set('state_id', stateId);
-      if (cityId) params.set('city_id', cityId);
-      if (statusFilter === 'active') params.set('is_active', 'true');
-      if (statusFilter === 'inactive') params.set('is_active', 'false');
-      if (institutionType) params.set('institution_type', institutionType);
-      if (programId) params.set('program_id', programId);
-      if (majorId) params.set('major_id', majorId);
-      if (templateId) params.set('template_id', templateId);
-      params.set('page', String(page));
-      params.set('page_size', String(pageSize));
-      params.set('sort_by', sortBy);
-      params.set('sort_order', sortOrder);
+  const summaryQueryKey = useMemo(
+    () =>
+      [
+        query,
+        countryIds.join('|'),
+        stateIds.join('|'),
+        cityIds.join('|'),
+        statusFilter,
+        institutionTypeIds.join('|'),
+        programIds.join('|'),
+        majorIds.join('|'),
+        subMajorIds.join('|'),
+        templateIds.join('|'),
+        page,
+        pageSize,
+        sortBy,
+        sortOrder,
+      ].join('\0'),
+    [
+      cityIds.join('|'),
+      countryIds.join('|'),
+      institutionTypeIds.join('|'),
+      majorIds.join('|'),
+      page,
+      pageSize,
+      programIds.join('|'),
+      query,
+      sortBy,
+      sortOrder,
+      stateIds.join('|'),
+      statusFilter,
+      subMajorIds.join('|'),
+      templateIds.join('|'),
+    ]
+  );
 
-      const data = await apiFetch<InstitutionSummaryListResponse>(
-        `academia/institutions/summary?${params.toString()}`
-      );
-      setItems(Array.isArray(data.items) ? data.items : []);
-      setTotal(data.total || 0);
-      setTotalPages(data.total_pages || 0);
-      setActiveCount(data.active_count ?? 0);
-      setInactiveCount(data.inactive_count ?? 0);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load institutions');
-      setItems([]);
-      setTotal(0);
-      setTotalPages(0);
-      setActiveCount(0);
-      setInactiveCount(0);
-    } finally {
-      setLoading(false);
-    }
-  }, [
-    cityId,
-    countryId,
-    institutionType,
-    templateId,
-    majorId,
-    page,
-    pageSize,
-    programId,
-    query,
-    sortBy,
-    sortOrder,
-    stateId,
-    statusFilter,
-  ]);
+  const loadSummary = useCallback(
+    async (signal?: AbortSignal) => {
+      const paramsSnapshot = searchParamsRef.current;
+      const q = paramsSnapshot.get('q') || '';
+      const nextCountryIds = readMultiParam(paramsSnapshot, 'country_id');
+      const nextStateIds = readMultiParam(paramsSnapshot, 'state_id');
+      const nextCityIds = readMultiParam(paramsSnapshot, 'city_id');
+      const nextStatusFilter = paramsSnapshot.get('status') || '';
+      const nextInstitutionTypeIds = readMultiParam(paramsSnapshot, 'institution_type_id');
+      const nextProgramIds = readMultiParam(paramsSnapshot, 'program_id');
+      const nextMajorIds = readMultiParam(paramsSnapshot, 'major_id');
+      const nextSubMajorIds = readMultiParam(paramsSnapshot, 'sub_major_id');
+      const nextTemplateIds = readMultiParam(paramsSnapshot, 'template_id');
+      const nextPage = Math.max(Number(paramsSnapshot.get('page') || '1'), 1);
+      const rawNextPageSize = Number(paramsSnapshot.get('page_size') || '25');
+      const nextPageSize = (PAGE_SIZE_OPTIONS as readonly number[]).includes(rawNextPageSize)
+        ? (rawNextPageSize as (typeof PAGE_SIZE_OPTIONS)[number])
+        : 25;
+      const nextSortBy =
+        (paramsSnapshot.get('sort_by') as InstitutionSummarySortBy) ||
+        DEFAULT_INSTITUTION_SUMMARY_SORT.sortBy;
+      const nextSortOrder =
+        (paramsSnapshot.get('sort_order') as InstitutionSummarySortOrder) ||
+        DEFAULT_INSTITUTION_SUMMARY_SORT.sortOrder;
+
+      setLoading(true);
+      setError(null);
+      try {
+        const params = new URLSearchParams();
+        if (q.trim()) params.set('q', q.trim());
+        appendMultiParam(params, 'country_id', nextCountryIds);
+        appendMultiParam(params, 'state_id', nextStateIds);
+        appendMultiParam(params, 'city_id', nextCityIds);
+        if (nextStatusFilter === 'active') params.set('is_active', 'true');
+        if (nextStatusFilter === 'inactive') params.set('is_active', 'false');
+        appendMultiParam(params, 'institution_type_id', nextInstitutionTypeIds);
+        appendMultiParam(params, 'program_id', nextProgramIds);
+        appendMultiParam(params, 'major_id', nextMajorIds);
+        appendMultiParam(params, 'sub_major_id', nextSubMajorIds);
+        appendMultiParam(params, 'template_id', nextTemplateIds);
+        params.set('page', String(nextPage));
+        params.set('page_size', String(nextPageSize));
+        params.set('sort_by', nextSortBy);
+        params.set('sort_order', nextSortOrder);
+
+        const data = await apiFetch<InstitutionSummaryListResponse>(
+          `academia/institutions/summary?${params.toString()}`,
+          { signal }
+        );
+        if (signal?.aborted) return;
+        setItems(Array.isArray(data.items) ? data.items : []);
+        setTotal(data.total || 0);
+        setTotalPages(data.total_pages || 0);
+        setActiveCount(data.active_count ?? 0);
+        setInactiveCount(data.inactive_count ?? 0);
+      } catch (err) {
+        if (signal?.aborted) return;
+        setError(err instanceof Error ? err.message : 'Failed to load institutions');
+        setItems([]);
+        setTotal(0);
+        setTotalPages(0);
+        setActiveCount(0);
+        setInactiveCount(0);
+      } finally {
+        if (!signal?.aborted) {
+          setLoading(false);
+        }
+      }
+    },
+    [summaryQueryKey]
+  );
 
   useEffect(() => {
+    const controller = new AbortController();
     const timeout = window.setTimeout(() => {
-      void loadSummary();
+      void loadSummary(controller.signal);
     }, 150);
-    return () => window.clearTimeout(timeout);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
   }, [loadSummary]);
 
   useEffect(() => {
@@ -444,20 +671,20 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
 
   const toggleSort = (column: InstitutionSummarySortBy) => {
     if (sortBy === column) {
-      updateParams(
+      updateFilterParams(
         { sort_order: sortOrder === 'asc' ? 'desc' : 'asc', page: String(page) },
         { resetPage: false }
       );
       return;
     }
-    updateParams({ sort_by: column, sort_order: 'asc', page: String(page) }, { resetPage: false });
+    updateFilterParams({ sort_by: column, sort_order: 'asc', page: String(page) }, { resetPage: false });
   };
 
   const toggleColumn = (key: InstitutionSummaryColumnKey) => {
     setVisibleColumns(prev => {
       const next = new Set(prev);
       if (next.has(key)) {
-        if (key === 'name') return prev;
+        if (LOCKED_COLUMN_KEYS.has(key)) return prev;
         next.delete(key);
       } else {
         next.add(key);
@@ -465,6 +692,37 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
       return next;
     });
   };
+
+  const toggleCampusesPanel = useCallback(
+    async (institutionId: number) => {
+      if (expandedCampusesInstitutionId === institutionId) {
+        setExpandedCampusesInstitutionId(null);
+        setCampusesError(null);
+        return;
+      }
+      setExpandedCampusesInstitutionId(institutionId);
+      setCampusesError(null);
+      if (campusesByInstitution[institutionId]) return;
+
+      setCampusesLoadingId(institutionId);
+      try {
+        const data = await apiFetch<CampusRecord[]>(
+          `academia/campuses?institution_id=${institutionId}`
+        );
+        setCampusesByInstitution(current => ({
+          ...current,
+          [institutionId]: Array.isArray(data) ? data : [],
+        }));
+      } catch (err) {
+        setCampusesError(
+          err instanceof Error ? err.message : 'Failed to load campuses for this institution.'
+        );
+      } finally {
+        setCampusesLoadingId(null);
+      }
+    },
+    [campusesByInstitution, expandedCampusesInstitutionId]
+  );
 
   const handleDeleteInstitution = async (name: string, id: number) => {
     if (!(await openConfirm({
@@ -521,6 +779,24 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
     }
   };
 
+  const visibleSubMajors = useMemo(() => {
+    if (majorIds.length === 0) return subMajors;
+    const allowed = new Set(majorIds);
+    return subMajors.filter(item => allowed.has(String(item.major_id)));
+  }, [majorIds, subMajors]);
+
+  useEffect(() => {
+    if (subMajorIds.length === 0 || majorIds.length === 0 || subMajors.length === 0) return;
+    const allowed = new Set(majorIds);
+    const nextSubMajorIds = subMajorIds.filter(id => {
+      const selected = subMajors.find(item => String(item.id) === id);
+      return selected ? allowed.has(String(selected.major_id)) : false;
+    });
+    if (nextSubMajorIds.length !== subMajorIds.length) {
+      updateFilterParams({ sub_major_id: nextSubMajorIds.length ? nextSubMajorIds : null });
+    }
+  }, [majorIds, subMajorIds, subMajors, updateFilterParams]);
+
   const visibleColumnDefs = useMemo(
     () =>
       INSTITUTION_SUMMARY_COLUMN_DEFS.filter(
@@ -536,21 +812,40 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
         key === 'name'
           ? row.name
           : key === 'level_count'
-            ? row.level_count ?? 0
+            ? summaryCount(row, 'level_count')
             : key === 'program_count'
-              ? row.program_count ?? 0
+              ? summaryCount(row, 'program_count')
               : key === 'major_count'
-                ? row.major_count ?? 0
-                : key === 'course_count'
-                  ? row.course_count ?? 0
+                ? summaryCount(row, 'major_count')
+                : key === 'sub_major_count'
+                  ? summaryCount(row, 'sub_major_count')
+                  : key === 'course_count'
+                    ? summaryCount(row, 'course_count')
                   : key === 'campus_count'
-                    ? row.campus_count ?? 0
+                    ? summaryCount(row, 'campus_count')
                     : key === 'college_count'
-                      ? row.college_count ?? 0
+                      ? summaryCount(row, 'college_count')
                       : key === 'intake_count'
-                        ? row.intake_count ?? 0
-                        : row.picture_count ?? 0;
+                        ? summaryCount(row, 'intake_count')
+                        : summaryCount(row, 'picture_count');
       const isUnavailable = key !== 'name' && value === 0;
+      if (key === 'campus_count' && value > 0) {
+        const isExpanded = expandedCampusesInstitutionId === row.id;
+        return (
+          <button
+            type="button"
+            onClick={() => void toggleCampusesPanel(row.id)}
+            className={`inline-block min-w-6 text-center font-bold hover:underline ${
+              isExpanded ? 'text-text-main' : 'text-accent'
+            }`}
+            title={isExpanded ? 'Hide campus list' : 'Show campus descriptions'}
+            aria-expanded={isExpanded}
+            aria-label={`${row.name}: ${value} campuses. ${isExpanded ? 'Hide' : 'Show'} campus list`}
+          >
+            {value}
+          </button>
+        );
+      }
       return (
         <Link
           to={`${institutionEditPath(row.id)}?step=${wizardStep}`}
@@ -572,6 +867,8 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
     }
 
     switch (key) {
+      case 'id':
+        return row.id;
       case 'code':
         return row.code || '—';
       case 'city':
@@ -583,9 +880,11 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
       case 'institution_type':
         return (
           <span className="block text-center whitespace-normal break-words">
-            {row.institution_type || '—'}
+            {row.institution_type_name || '—'}
           </span>
         );
+      case 'institution_type_id':
+        return row.institution_type_id ?? '—';
       case 'status':
         return (
           <div className="flex justify-center">
@@ -631,213 +930,295 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
     }
   };
 
-  const selectClassName =
-    'rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm text-text-main outline-none focus:border-accent';
+  const filterFieldClass = 'min-w-[6rem] flex-1 basis-[6rem]';
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="relative" ref={columnMenuRef}>
-          <button
-            type="button"
-            onClick={() => setColumnMenuOpen(open => !open)}
-            className="inline-flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm font-semibold text-text-main hover:border-accent/40"
-            aria-expanded={columnMenuOpen}
-            aria-haspopup="true"
-          >
-            <Settings2 size={16} />
-            Columns
-          </button>
-          {columnMenuOpen ? (
-            <div className="absolute left-0 z-20 mt-2 w-56 rounded-xl border border-border-subtle bg-card p-3 shadow-lg">
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
-                Visible columns
-              </p>
-              <div className="space-y-2">
-                {INSTITUTION_SUMMARY_COLUMN_DEFS.filter(column => column.key !== 'created_at').map(
-                  column => (
-                  <label key={column.key} className="flex items-center gap-2 text-sm text-text-main">
-                    <input
-                      type="checkbox"
-                      checked={visibleColumns.has(column.key)}
-                      disabled={column.key === 'name'}
-                      onChange={() => toggleColumn(column.key)}
-                    />
-                    {column.label}
-                  </label>
-                  )
-                )}
-              </div>
-            </div>
-          ) : null}
-        </div>
-        <button
-          type="button"
-          onClick={() => navigate(INSTITUTIONS_NEW_PATH)}
-          className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-text-dark-bg"
-        >
-          <Plus size={16} />
-          Add Institution
-        </button>
-      </div>
-
-      <div className="space-y-4 rounded-2xl border border-border-subtle bg-card shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border-subtle px-6 py-4">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <h2 className="shrink-0 text-[22px] font-bold leading-none text-text-main">
+            Manage Institutions
+          </h2>
           <input
             type="search"
             value={searchDraft}
             onChange={event => setSearchDraft(event.target.value)}
             placeholder="Search institution names..."
-            className="w-full max-w-md rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent"
+            className="w-64 max-w-full rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent sm:w-80"
+            aria-label="Search institution names"
           />
-          <div className="flex flex-wrap items-center gap-3 text-sm">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-3 py-1 font-semibold text-success">
-              {activeCount} Active
-            </span>
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-text-muted/10 px-3 py-1 font-semibold text-text-muted">
-              {inactiveCount} Inactive
-            </span>
-          </div>
         </div>
+        <div className="ml-auto flex flex-wrap items-center gap-3">
+          <div className="relative" ref={columnMenuRef}>
+            <button
+              type="button"
+              onClick={() => setColumnMenuOpen(open => !open)}
+              className="inline-flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm font-semibold text-text-main hover:border-accent/40"
+              aria-expanded={columnMenuOpen}
+              aria-haspopup="true"
+            >
+              <Settings2 size={16} />
+              Columns
+            </button>
+            {columnMenuOpen ? (
+              <div className="absolute right-0 z-20 mt-2 w-56 rounded-xl border border-border-subtle bg-card p-3 shadow-lg">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
+                  Visible columns
+                </p>
+                <div className="space-y-2">
+                  {INSTITUTION_SUMMARY_COLUMN_DEFS.filter(column => column.key !== 'created_at').map(
+                    column => (
+                    <label key={column.key} className="flex items-center gap-2 text-sm text-text-main">
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns.has(column.key)}
+                        disabled={LOCKED_COLUMN_KEYS.has(column.key)}
+                        onChange={() => toggleColumn(column.key)}
+                      />
+                      {column.label}
+                    </label>
+                    )
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-text-muted/10 px-3 py-1 text-sm font-semibold text-text-muted">
+            {inactiveCount} Inactive
+          </span>
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-3 py-1 text-sm font-semibold text-success">
+            {activeCount} Active
+          </span>
+          <button
+            type="button"
+            onClick={() => navigate(INSTITUTIONS_NEW_PATH)}
+            className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-text-dark-bg"
+          >
+            <Plus size={16} />
+            Add Institution
+          </button>
+        </div>
+      </div>
 
-        <div className="grid grid-cols-1 gap-3 px-6 md:grid-cols-2 xl:grid-cols-4">
-          <label className="space-y-1 text-sm">
-            <span className="font-semibold text-text-muted">Country</span>
-            <select
-              value={countryId}
-              onChange={event =>
-                updateParams({
-                  country_id: event.target.value || null,
+      <div className="space-y-4 rounded-2xl border border-border-subtle bg-card shadow-sm">
+        <div className="flex flex-wrap items-end gap-1.5 px-6 pt-4">
+          <div className={filterFieldClass}>
+            <InstitutionFilterSelect
+              label="Country"
+              singleValue={countryId}
+              multiValues={countryIds}
+              options={countries.map(country => ({
+                value: String(country.id),
+                label: country.name,
+              }))}
+              allLabel="All countries"
+              onSingleChange={value =>
+                updateFilterParams({
+                  country_id: value || null,
                   state_id: null,
                   city_id: null,
                 })
               }
-              className={`${selectClassName} w-full`}
-            >
-              <option value="">All countries</option>
-              {countries.map(country => (
-                <option key={country.id} value={String(country.id)}>
-                  {country.name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="space-y-1 text-sm">
-            <span className="font-semibold text-text-muted">State</span>
-            <select
-              value={stateId}
-              disabled={!countryId}
-              onChange={event =>
-                updateParams({
-                  state_id: event.target.value || null,
+              onMultiChange={values =>
+                updateFilterParams({
+                  country_id: values.length ? values : null,
+                  state_id: null,
                   city_id: null,
                 })
               }
-              className={`${selectClassName} w-full disabled:opacity-50`}
-            >
-              <option value="">{countryId ? 'All states' : 'Select country first'}</option>
-              {states.map(state => (
-                <option key={state.id} value={String(state.id)}>
-                  {state.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              placeholder="All countries"
+            />
+          </div>
 
-          <label className="space-y-1 text-sm">
-            <span className="font-semibold text-text-muted">City</span>
-            <select
-              value={cityId}
-              disabled={!stateId}
-              onChange={event => updateParams({ city_id: event.target.value || null })}
-              className={`${selectClassName} w-full disabled:opacity-50`}
-            >
-              <option value="">{stateId ? 'All cities' : 'Select state first'}</option>
-              {cities.map(city => (
-                <option key={city.id} value={String(city.id)}>
-                  {city.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className={filterFieldClass}>
+            <InstitutionFilterSelect
+              label="State"
+              singleValue={stateId}
+              multiValues={stateIds}
+              disabled={countryIds.length === 0}
+              options={states.map(state => ({
+                value: String(state.id),
+                label: state.name,
+              }))}
+              allLabel={countryIds.length ? 'All states' : 'Select country first'}
+              onSingleChange={value =>
+                updateFilterParams({
+                  state_id: value || null,
+                  city_id: null,
+                })
+              }
+              onMultiChange={values =>
+                updateFilterParams({
+                  state_id: values.length ? values : null,
+                  city_id: null,
+                })
+              }
+              placeholder={countryIds.length ? 'All states' : 'Select country first'}
+            />
+          </div>
 
-          <label className="space-y-1 text-sm">
-            <span className="font-semibold text-text-muted">Status</span>
-            <select
+          <div className={filterFieldClass}>
+            <InstitutionFilterSelect
+              label="City"
+              singleValue={cityId}
+              multiValues={cityIds}
+              disabled={countryIds.length === 0}
+              options={cities.map(city => ({
+                value: String(city.id),
+                label: city.name,
+              }))}
+              allLabel={
+                stateIds.length || countryIds.length ? 'All cities' : 'Select country first'
+              }
+              onSingleChange={value => updateFilterParams({ city_id: value || null })}
+              onMultiChange={values =>
+                updateFilterParams({ city_id: values.length ? values : null })
+              }
+              placeholder={
+                stateIds.length || countryIds.length ? 'All cities' : 'Select country first'
+              }
+            />
+          </div>
+
+          <div className={filterFieldClass}>
+            <SearchableSelect
+              label="Status"
               value={statusFilter}
-              onChange={event => updateParams({ status: event.target.value || null })}
-              className={`${selectClassName} w-full`}
-            >
-              <option value="">All statuses</option>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
-          </label>
+              options={[
+                { value: '', label: 'All statuses' },
+                { value: 'active', label: 'Active' },
+                { value: 'inactive', label: 'Inactive' },
+              ]}
+              onChange={value => updateFilterParams({ status: value || null })}
+              placeholder="All statuses"
+            />
+          </div>
 
-          <label className="space-y-1 text-sm">
-            <span className="font-semibold text-text-muted">Program Type</span>
-            <select
-              value={institutionType}
-              onChange={event => updateParams({ institution_type: event.target.value || null })}
-              className={`${selectClassName} w-full`}
-            >
-              <option value="">All program types</option>
-              {INSTITUTION_TYPE_OPTIONS.map(option => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className={filterFieldClass}>
+            <InstitutionFilterSelect
+              label="Institution Type"
+              singleValue={institutionTypeId}
+              multiValues={institutionTypeIds}
+              options={institutionTypeOptions}
+              allLabel="All institution types"
+              onSingleChange={value =>
+                updateFilterParams({ institution_type_id: value || null })
+              }
+              onMultiChange={values =>
+                updateFilterParams({
+                  institution_type_id: values.length ? values : null,
+                })
+              }
+              placeholder="All institution types"
+            />
+          </div>
 
-          <label className="space-y-1 text-sm">
-            <span className="font-semibold text-text-muted">Program</span>
-            <select
-              value={programId}
-              onChange={event => updateParams({ program_id: event.target.value || null })}
-              className={`${selectClassName} w-full`}
-            >
-              <option value="">All programs</option>
-              {programs.map(program => (
-                <option key={program.id} value={program.id}>
-                  {program.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className={filterFieldClass}>
+            <InstitutionFilterSelect
+              label="Program"
+              singleValue={programId}
+              multiValues={programIds}
+              onOpen={loadFilterCatalogs}
+              options={programs.map(program => ({
+                value: program.id,
+                label: program.name,
+              }))}
+              allLabel="All programs"
+              onSingleChange={value => updateFilterParams({ program_id: value || null })}
+              onMultiChange={values =>
+                updateFilterParams({ program_id: values.length ? values : null })
+              }
+              placeholder="All programs"
+            />
+          </div>
 
-          <label className="space-y-1 text-sm">
-            <span className="font-semibold text-text-muted">Major</span>
-            <select
-              value={majorId}
-              onChange={event => updateParams({ major_id: event.target.value || null })}
-              className={`${selectClassName} w-full`}
-            >
-              <option value="">All majors</option>
-              {majors.map(major => (
-                <option key={major.id} value={String(major.id)}>
-                  {major.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className={filterFieldClass}>
+            <InstitutionFilterSelect
+              label="Major"
+              singleValue={majorId}
+              multiValues={majorIds}
+              onOpen={loadFilterCatalogs}
+              options={majors.map(major => ({
+                value: String(major.id),
+                label: major.label,
+                color: major.color,
+              }))}
+              allLabel="All majors"
+              onSingleChange={value => {
+                const next: Record<string, FilterParamValue> = { major_id: value || null };
+                if (value && subMajorIds.length) {
+                  const allowed = new Set([value]);
+                  const nextSubMajorIds = subMajorIds.filter(id => {
+                    const selected = subMajors.find(item => String(item.id) === id);
+                    return selected ? allowed.has(String(selected.major_id)) : false;
+                  });
+                  if (nextSubMajorIds.length !== subMajorIds.length) {
+                    next.sub_major_id = nextSubMajorIds.length ? nextSubMajorIds : null;
+                  }
+                }
+                updateFilterParams(next);
+              }}
+              onMultiChange={values => {
+                const next: Record<string, FilterParamValue> = {
+                  major_id: values.length ? values : null,
+                };
+                if (values.length && subMajorIds.length) {
+                  const allowed = new Set(values);
+                  const nextSubMajorIds = subMajorIds.filter(id => {
+                    const selected = subMajors.find(item => String(item.id) === id);
+                    return selected ? allowed.has(String(selected.major_id)) : false;
+                  });
+                  if (nextSubMajorIds.length !== subMajorIds.length) {
+                    next.sub_major_id = nextSubMajorIds.length ? nextSubMajorIds : null;
+                  }
+                }
+                updateFilterParams(next);
+              }}
+              placeholder="All majors"
+            />
+          </div>
 
-          <label className="space-y-1 text-sm">
-            <span className="font-semibold text-text-muted">Intakes</span>
-            <select
-              value={templateId}
-              onChange={event => updateParams({ template_id: event.target.value || null })}
-              className={`${selectClassName} w-full`}
-            >
-              <option value="">All intakes</option>
-              {intakeTemplates.map(template => (
-                <option key={template.id} value={String(template.id)}>
-                  {template.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className={filterFieldClass}>
+            <InstitutionFilterSelect
+              label="Sub-Majors"
+              singleValue={subMajorId}
+              multiValues={subMajorIds}
+              onOpen={loadFilterCatalogs}
+              options={visibleSubMajors.map(item => ({
+                value: String(item.id),
+                label:
+                  majorIds.length === 1 || !item.major_label
+                    ? item.name
+                    : `${item.name} (${item.major_label})`,
+                color: item.major_color,
+              }))}
+              allLabel="All sub-majors"
+              onSingleChange={value => updateFilterParams({ sub_major_id: value || null })}
+              onMultiChange={values =>
+                updateFilterParams({ sub_major_id: values.length ? values : null })
+              }
+              placeholder="All sub-majors"
+            />
+          </div>
+
+          <div className={filterFieldClass}>
+            <InstitutionFilterSelect
+              label="Intakes"
+              singleValue={templateId}
+              multiValues={templateIds}
+              onOpen={loadFilterCatalogs}
+              options={intakeTemplates.map(template => ({
+                value: String(template.id),
+                label: template.name,
+              }))}
+              allLabel="All intakes"
+              onSingleChange={value => updateFilterParams({ template_id: value || null })}
+              onMultiChange={values =>
+                updateFilterParams({ template_id: values.length ? values : null })
+              }
+              placeholder="All intakes"
+            />
+          </div>
         </div>
 
         {loading && items.length === 0 ? (
@@ -911,69 +1292,143 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-subtle/70">
-                {items.map(row => (
-                  <tr key={row.id} className="hover:bg-surface-bg/40">
-                    {visibleColumnDefs.map(column => (
-                      <td key={column.key} className={columnCellClass(column.key)}>
-                        {renderCell(row, column.key)}
-                      </td>
-                    ))}
-                    <td className="px-1.5 py-3 text-center align-top">
-                      <div className="flex flex-wrap items-start justify-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => navigate(institutionEditPath(row.id))}
-                          title="Edit"
-                          aria-label={`Edit ${row.name}`}
-                          className="inline-flex self-start rounded-lg p-1.5 text-text-muted hover:bg-surface-bg"
-                        >
-                          <Pencil size={14} />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={togglingStatusId === row.id}
-                          onClick={() => void handleToggleInstitutionStatus(row)}
-                          title={row.is_active ? 'Set Inactive' : 'Set Active'}
-                          aria-label={
-                            row.is_active
-                              ? `Set ${row.name} inactive`
-                              : `Set ${row.name} active`
-                          }
-                          className={`inline-flex self-start rounded-lg p-1.5 hover:bg-surface-bg disabled:opacity-50 ${
-                            row.is_active
-                              ? 'text-alert hover:bg-alert/10'
-                              : 'text-success hover:bg-success/10'
-                          }`}
-                        >
-                          {togglingStatusId === row.id ? (
-                            <Loader2 size={14} className="animate-spin" />
-                          ) : row.is_active ? (
-                            <PowerOff size={14} />
-                          ) : (
-                            <Power size={14} />
-                          )}
-                        </button>
-                        <Link
-                          to={{ pathname: institutionHistoryPath(row.id), search: searchParams.toString() }}
-                          title="History"
-                          aria-label={`History for ${row.name}`}
-                          className="inline-flex self-start rounded-lg p-1.5 text-text-muted hover:bg-surface-bg"
-                        >
-                          <History size={14} />
-                        </Link>
-                        <button
-                          type="button"
-                          onClick={() => void handleDeleteInstitution(row.name, row.id)}
-                          title="Delete"
-                          aria-label={`Delete ${row.name}`}
-                          className="inline-flex self-start rounded-lg p-1.5 text-alert hover:bg-alert/10"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {items.map(row => {
+                  const campusesExpanded = expandedCampusesInstitutionId === row.id;
+                  const campusesForRow = campusesByInstitution[row.id] ?? [];
+                  return (
+                    <Fragment key={row.id}>
+                      <tr className="hover:bg-surface-bg/40">
+                        {visibleColumnDefs.map(column => (
+                          <td key={column.key} className={columnCellClass(column.key)}>
+                            {renderCell(row, column.key)}
+                          </td>
+                        ))}
+                        <td className="px-1.5 py-3 text-center align-top">
+                          <div className="flex flex-wrap items-start justify-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => navigate(institutionEditPath(row.id))}
+                              title="Edit"
+                              aria-label={`Edit ${row.name}`}
+                              className="inline-flex self-start rounded-lg p-1.5 text-text-muted hover:bg-surface-bg"
+                            >
+                              <Pencil size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={togglingStatusId === row.id}
+                              onClick={() => void handleToggleInstitutionStatus(row)}
+                              title={row.is_active ? 'Set Inactive' : 'Set Active'}
+                              aria-label={
+                                row.is_active
+                                  ? `Set ${row.name} inactive`
+                                  : `Set ${row.name} active`
+                              }
+                              className={`inline-flex self-start rounded-lg p-1.5 hover:bg-surface-bg disabled:opacity-50 ${
+                                row.is_active
+                                  ? 'text-alert hover:bg-alert/10'
+                                  : 'text-success hover:bg-success/10'
+                              }`}
+                            >
+                              {togglingStatusId === row.id ? (
+                                <Loader2 size={14} className="animate-spin" />
+                              ) : row.is_active ? (
+                                <PowerOff size={14} />
+                              ) : (
+                                <Power size={14} />
+                              )}
+                            </button>
+                            <Link
+                              to={{ pathname: institutionHistoryPath(row.id), search: searchParams.toString() }}
+                              title="History"
+                              aria-label={`History for ${row.name}`}
+                              className="inline-flex self-start rounded-lg p-1.5 text-text-muted hover:bg-surface-bg"
+                            >
+                              <History size={14} />
+                            </Link>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteInstitution(row.name, row.id)}
+                              title="Delete"
+                              aria-label={`Delete ${row.name}`}
+                              className="inline-flex self-start rounded-lg p-1.5 text-alert hover:bg-alert/10"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      {campusesExpanded ? (
+                        <tr className="bg-surface-bg/50">
+                          <td
+                            colSpan={visibleColumnDefs.length + 1}
+                            className="px-4 py-3"
+                          >
+                            {campusesLoadingId === row.id ? (
+                              <div className="flex items-center gap-2 text-sm text-text-muted">
+                                <Loader2 size={14} className="animate-spin" />
+                                Loading campuses...
+                              </div>
+                            ) : campusesError ? (
+                              <p className="text-sm text-alert">{campusesError}</p>
+                            ) : campusesForRow.length === 0 ? (
+                              <p className="text-sm text-text-muted">No campuses found.</p>
+                            ) : (
+                              <div className="overflow-x-auto rounded-xl border border-border-subtle bg-card">
+                                <table className="min-w-full text-sm">
+                                  <thead className="bg-surface-bg text-left text-xs uppercase tracking-wide text-text-muted">
+                                    <tr>
+                                      <th className="px-3 py-2 font-semibold">ID</th>
+                                      <th className="px-3 py-2 font-semibold">Campus</th>
+                                      <th className="px-3 py-2 font-semibold">Location</th>
+                                      <th className="px-3 py-2 font-semibold">Description</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {campusesForRow.map(campus => {
+                                      const descriptionCell = campusDescriptionPreview(
+                                        campus.description
+                                      );
+                                      return (
+                                        <tr key={campus.id} className="border-t border-border-subtle/70">
+                                          <td className="px-3 py-2 tabular-nums text-text-muted">
+                                            {campus.id}
+                                          </td>
+                                          <td className="px-3 py-2 font-semibold text-text-main">
+                                            {campus.name}
+                                          </td>
+                                          <td className="px-3 py-2 text-text-muted">
+                                            {campus.location_label || '—'}
+                                          </td>
+                                          <td className="max-w-xl px-3 py-2 text-text-muted">
+                                            <span
+                                              className="block truncate"
+                                              title={descriptionCell.title}
+                                            >
+                                              {descriptionCell.preview}
+                                            </span>
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                                <div className="border-t border-border-subtle px-3 py-2">
+                                  <Link
+                                    to={`${institutionEditPath(row.id)}?step=1`}
+                                    className="text-xs font-semibold text-accent hover:underline"
+                                  >
+                                    Edit campuses in institution wizard
+                                  </Link>
+                                </div>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -986,8 +1441,8 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
             total={total}
             totalPages={totalPages}
             pageSizeOptions={PAGE_SIZE_OPTIONS}
-            onPageChange={nextPage => updateParams({ page: String(nextPage) }, { resetPage: false })}
-            onPageSizeChange={nextSize => updateParams({ page_size: String(nextSize) })}
+            onPageChange={nextPage => updateFilterParams({ page: String(nextPage) }, { resetPage: false })}
+            onPageSizeChange={nextSize => updateFilterParams({ page_size: String(nextSize) })}
           />
         ) : null}
       </div>

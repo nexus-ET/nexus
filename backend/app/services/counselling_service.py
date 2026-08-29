@@ -47,6 +47,7 @@ SCHEDULE_DAYS = 14
 VISIBLE_PENDING_COLUMNS = 3
 MAX_SCHEDULE_GRID_RANGE_DAYS = 31
 MY_BOOKINGS_ADMIN_ROLE_NAMES = {"Super Admin", "Web Admin"}
+DEFAULT_SAME_DAY_BOOKING_LEAD_MINUTES = 120
 
 ADMIN_CELL_LABELS = {
     "available": "Available",
@@ -99,15 +100,40 @@ def _get_office_end(db: Session) -> time:
     return get_time_setting(db, "OFFICE_HOURS_END", time(19, 0))
 
 
+def _get_same_day_booking_lead_minutes(db: Session) -> int:
+    """Admin-configured minimum notice before today's office closing time."""
+    return get_int_setting(
+        db,
+        "SAME_DAY_BOOKING_LEAD_MINUTES",
+        DEFAULT_SAME_DAY_BOOKING_LEAD_MINUTES,
+    )
+
+
 def get_max_bookings_per_slot(db: Session) -> int:
     return get_int_setting(db, "MAX_BOOKINGS_PER_SLOT", 5)
 
 
+def _same_day_booking_window_is_open(db: Session, now: datetime) -> bool:
+    """Allow today through the configured close-time-minus-lead cutoff.
+
+    ``now`` is business-timezone wall clock (from ``office_now`` at call sites).
+    Both closing time and minimum lead are read from live DynamicSetting values.
+    """
+    office_start = datetime.combine(now.date(), _get_office_start(db))
+    office_close = datetime.combine(now.date(), _get_office_end(db))
+    last_booking_at = office_close - timedelta(
+        minutes=_get_same_day_booking_lead_minutes(db)
+    )
+    return office_start < office_close and max(now, office_start) <= last_booking_at
+
+
 def list_whatsapp_bookable_dates(db: Session, *, limit: int = 8, days_ahead: int = 21) -> list[date]:
     """Dates that still have at least one open counselling slot in the schedule."""
-    today = office_today(db)
+    now = office_now(db)
+    today = now.date()
     dates: list[date] = []
-    for offset in range(1, days_ahead + 1):
+    first_offset = 0 if _same_day_booking_window_is_open(db, now) else 1
+    for offset in range(first_offset, days_ahead + 1):
         slot_day = today + timedelta(days=offset)
         if not is_bookable_day(db, slot_day):
             continue
@@ -124,6 +150,8 @@ def get_bookable_slot_starts(db: Session, slot_day: date) -> list[datetime]:
         return []
 
     now = office_now(db)
+    if slot_day == now.date() and not _same_day_booking_window_is_open(db, now):
+        return []
     max_per_slot = get_max_bookings_per_slot(db)
     range_start = datetime.combine(slot_day, _get_office_start(db))
     range_end = datetime.combine(slot_day, _get_office_end(db))
@@ -765,36 +793,52 @@ DEFAULT_SESSION_PURPOSES: tuple[tuple[str, str], ...] = (
 )
 
 
+def _parse_session_purpose_lines(raw: str) -> list[dict[str, str]]:
+    """Parse purpose lines. One purpose per line; commas inside descriptions are kept."""
+    purposes: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    for line in str(raw or "").splitlines():
+        cleaned = line.strip()
+        if not cleaned:
+            continue
+
+        # Legacy: a single line of comma-separated labels (no pipe descriptions).
+        if "|" not in cleaned and "," in cleaned:
+            tokens = [token.strip() for token in cleaned.split(",") if token.strip()]
+        else:
+            tokens = [cleaned]
+
+        for token in tokens:
+            if "|" in token:
+                label_part, desc_part = token.split("|", 1)
+                label = label_part.strip()
+                description = desc_part.strip()
+            else:
+                label = token.strip()
+                description = ""
+            if not label:
+                continue
+            key = label.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            if not description:
+                description = next(
+                    (item[1] for item in DEFAULT_SESSION_PURPOSES if item[0].casefold() == key),
+                    "Counselling session category",
+                )
+            purposes.append({"label": label, "description": description})
+
+    return purposes
+
+
 def get_session_purposes(db: Session) -> list[dict[str, str]]:
     default_raw = "\n".join(
         f"{label} | {description}" for label, description in DEFAULT_SESSION_PURPOSES
     )
     raw = get_setting("COUNSELING_SESSION_PURPOSES", default_raw, db=db) or ""
-    purposes: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for line in raw.replace(",", "\n").splitlines():
-        cleaned = line.strip()
-        if not cleaned:
-            continue
-        if "|" in cleaned:
-            label_part, desc_part = cleaned.split("|", 1)
-            label = label_part.strip()
-            description = desc_part.strip()
-        else:
-            label = cleaned
-            description = ""
-        if not label:
-            continue
-        key = label.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        if not description:
-            description = next(
-                (item[1] for item in DEFAULT_SESSION_PURPOSES if item[0].casefold() == key),
-                "Counselling session category",
-            )
-        purposes.append({"label": label, "description": description})
+    purposes = _parse_session_purpose_lines(raw)
     if purposes:
         return purposes
     return [{"label": label, "description": description} for label, description in DEFAULT_SESSION_PURPOSES]
@@ -819,7 +863,12 @@ def list_counsellors(db: Session) -> list[dict]:
         .all()
     )
     return [
-        {"id": admin.id, "name": _format_admin_name(admin), "email": admin.email}
+        {
+            "id": admin.id,
+            "name": _format_admin_name(admin),
+            "email": admin.email,
+            "phone": (getattr(admin, "phone_number", None) or "").strip() or None,
+        }
         for admin in admins
     ]
 
@@ -1399,6 +1448,64 @@ def get_viewable_booking_for_lead(db: Session, user: User, lead_id: int) -> Coun
     return viewable[0]
 
 
+def list_viewable_bookings_for_lead(db: Session, user: User, lead_id: int) -> list[dict]:
+    """All viewable counselling bookings for a lead, newest scheduled_time first."""
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead profile not found.")
+
+    bookings = (
+        db.query(CounsellingBooking)
+        .filter(
+            CounsellingBooking.lead_id == lead_id,
+            CounsellingBooking.admin_id.isnot(None),
+        )
+        .order_by(CounsellingBooking.scheduled_time.desc(), CounsellingBooking.id.desc())
+        .all()
+    )
+    viewable = [
+        booking
+        for booking in bookings
+        if booking.admin_id == user.id or _my_bookings_view_all(user)
+    ]
+    calendar_today = office_today(db)
+    admin_cache: dict[int, User | None] = {}
+    items: list[dict] = []
+    for booking in viewable:
+        admin_id = booking.admin_id
+        if admin_id not in admin_cache:
+            admin_cache[admin_id] = (
+                db.query(User).filter(User.id == admin_id).first() if admin_id else None
+            )
+        scheduled = booking.scheduled_time
+        if scheduled is not None:
+            section = _booking_section_for_date(scheduled.date(), calendar_today)
+        else:
+            section = "past"
+        items.append(
+            _serialize_my_booking(db, booking, admin_cache[admin_id], section, lead=lead)
+        )
+    return items
+
+
+def count_bookings_for_lead_ids(db: Session, lead_ids: list[int]) -> dict[int, int]:
+    """Total counselling bookings linked to each lead (any counsellor)."""
+    if not lead_ids:
+        return {}
+    from sqlalchemy import func
+
+    rows = (
+        db.query(CounsellingBooking.lead_id, func.count(CounsellingBooking.id))
+        .filter(
+            CounsellingBooking.lead_id.in_(lead_ids),
+            CounsellingBooking.admin_id.isnot(None),
+        )
+        .group_by(CounsellingBooking.lead_id)
+        .all()
+    )
+    return {int(lead_id): int(count) for lead_id, count in rows if lead_id is not None}
+
+
 def get_lead_profile_booking_context(db: Session, user: User, lead_id: int) -> dict:
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
@@ -1927,6 +2034,91 @@ def save_booking_candidate_aspirations(
     booking = _get_viewable_booking(db, user, booking_id)
     lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
     return save_booking_aspirations(db, booking, lead, user_id, payload)
+
+
+def get_booking_candidate_registration(db: Session, user_id: int, booking_id: int) -> dict:
+    from app.services.student_registration_service import get_booking_registration
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+    return get_booking_registration(db, booking, lead)
+
+
+def save_booking_candidate_registration(
+    db: Session,
+    user_id: int,
+    booking_id: int,
+    payload,
+) -> dict:
+    from app.schemas.student_registration import StudentRegistrationSaveRequest
+    from app.services.student_registration_service import (
+        get_booking_registration,
+        save_booking_registration,
+        status_id_for_registration,
+    )
+
+    if not isinstance(payload, StudentRegistrationSaveRequest):
+        payload = StudentRegistrationSaveRequest.model_validate(payload)
+
+    user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    booking = _get_viewable_booking(db, user, booking_id)
+    lead = db.query(Lead).filter(Lead.id == booking.lead_id).first() if booking.lead_id else None
+
+    record, registration = save_booking_registration(
+        db,
+        booking,
+        lead,
+        user_id,
+        payload,
+        commit=False,
+    )
+
+    target_status_id = status_id_for_registration(registration)
+    if target_status_id is not None:
+        if not booking.lead_id or not lead:
+            raise HTTPException(
+                status_code=400,
+                detail="Booking is not linked to a lead, so pipeline status cannot be updated.",
+            )
+        if registration.agrees_to_register is True and registration.assigned_account_manager_id:
+            lead.assigned_advisor_id = registration.assigned_account_manager_id
+        notes = (registration.notes or "").strip()
+        if registration.agrees_to_register is True:
+            invoice_label = (
+                registration.invoice_number or registration.invoice_id or "invoice"
+            )
+            status_notes = notes or (
+                f"Payment confirmed on {invoice_label}. Student qualified as prospect."
+            )
+        elif registration.decline_outcome == "follow_up":
+            status_notes = notes or "Student declined to register — follow-up."
+        elif registration.decline_outcome == "not_interested":
+            status_notes = notes or "Student declined to register — not interested."
+        else:
+            status_notes = notes or "Student declined to register — deferred."
+        apply_result = update_my_booking_status(
+            db,
+            user_id,
+            booking_id,
+            target_status_id,
+            status_notes,
+        )
+        lead = db.query(Lead).filter(Lead.id == booking.lead_id).first()
+        serialized = get_booking_registration(db, booking, lead)
+        serialized["status_definition_id"] = apply_result.get("status_definition_id")
+        serialized["status_stage_name"] = apply_result.get("stage_name")
+        serialized["students_master_id"] = record.id
+        serialized["registration_complete"] = True
+        return serialized
+
+    db.commit()
+    db.refresh(record)
+    return get_booking_registration(db, booking, lead)
 
 
 def get_booking_candidate_test_scores(db: Session, user_id: int, booking_id: int) -> dict:
@@ -2884,9 +3076,24 @@ def get_booking_communications(db: Session, booking_id: int) -> dict:
 
 
 def get_my_booking_communications(db: Session, user_id: int, booking_id: int) -> dict:
+    """Return WhatsApp history for a booking the caller is allowed to view.
+
+    Regular counsellors are scoped to ``CounsellingBooking.admin_id == user_id``.
+    Roles with My Bookings view-all may open any assigned booking.
+    """
     user = db.query(User).options(joinedload(User.admin_role_ref)).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
+
+    owned = (
+        db.query(CounsellingBooking)
+        .filter(CounsellingBooking.id == booking_id, CounsellingBooking.admin_id == user_id)
+        .first()
+    )
+    if owned:
+        return get_booking_communications(db, booking_id)
+
+    # Managers / Super Admin: allow view of bookings assigned to other counsellors.
     _get_viewable_booking(db, user, booking_id)
     return get_booking_communications(db, booking_id)
 

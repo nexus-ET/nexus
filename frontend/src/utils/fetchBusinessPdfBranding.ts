@@ -9,6 +9,9 @@ interface BusinessProfileResponse extends BusinessProfileAddressSource {
   business_name?: string | null;
   has_logo?: boolean;
   logo_url?: string | null;
+  office_phone_number?: string | null;
+  office_email?: string | null;
+  email_domain?: string | null;
 }
 
 /**
@@ -21,6 +24,9 @@ export async function fetchBusinessPdfBranding(): Promise<PdfBusinessBranding> {
   const branding: PdfBusinessBranding = {
     businessName: (profile.business_name || '').trim() || undefined,
     addressLines: formatBusinessAddressLines(profile),
+    phone: (profile.office_phone_number || '').trim() || undefined,
+    email: (profile.office_email || '').trim() || undefined,
+    website: (profile.email_domain || '').trim() || undefined,
     logoDataUrl: null,
   };
 

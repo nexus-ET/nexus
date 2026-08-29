@@ -273,28 +273,17 @@ def render_deterministic_intake_text(
 
             if named:
                 return (
-                    f"{named}please *tap the button below* and choose the *program (degree)* "
-                    "you are targeting."
+                    f"{named}let's find the right study path. 🎓 "
+                    "*Open the program list* and choose the degree you are targeting."
                 )
             return (
-                "Please *tap the button below* and choose the *program (degree)* "
-                "you are targeting."
+                "Let's find the right study path. 🎓 "
+                "*Open the program list* and choose the degree you are targeting."
             )
 
         return (
-
-            f"{thanks}*Which program (degree) are you targeting?*\n\n"
-
-            "*Tap the button below* to choose:\n"
-
-            "• *Bachelor's Degree* (3-4 years)\n"
-
-            "• *Master's Degree* (1-2 years)\n"
-
-            "• *Integrated master's* (3-5 years)\n"
-
-            "• *Doctorate* (3-7 years)"
-
+            f"{thanks}🎓 *Which program (degree) would you like to study?*\n\n"
+            "Open the program list to compare the available degree paths."
         )
 
 
@@ -329,11 +318,8 @@ def render_deterministic_intake_text(
 
         great = "Great!" if first == "there" else f"Great, {first}!"
         return (
-
-            f"{great} *Which major are you targeting?*\n\n"
-
-            "For example: *Computer Science*, *Business Administration*."
-
+            f"{great} 📚 *Which subject area excites you most?*\n\n"
+            "Explore popular fields below, or type a different major."
         )
 
 
@@ -427,11 +413,9 @@ def render_deterministic_intake_text(
             )
 
         return (
-
-            f"{thanks}*Which country are you targeting?*\n\n"
-
-            "For example: *US*, *UK*, *JP*, *AU*, *NZ*."
-
+            f"{thanks}🌍 *Where would you love to study?*\n\n"
+            "Explore popular destinations such as the *UK*, *USA*, *Canada* and *Australia* below, "
+            "or type another country."
         )
 
 
@@ -440,12 +424,12 @@ def render_deterministic_intake_text(
 
         if named:
             return (
-                f"{named}would you like a *free consultation call* with a *{BRAND_NAME}* "
-                "admissions advisor? Tap *Yes, please* or *No thanks* below."
+                f"{named}would you like a *free 1-to-1 consultation* with a *{BRAND_NAME}* "
+                "admissions advisor? 🎯 Tap your choice below."
             )
         return (
-            f"Would you like a *free consultation call* with a *{BRAND_NAME}* "
-            "admissions advisor? Tap *Yes, please* or *No thanks* below."
+            f"Would you like a *free 1-to-1 consultation* with a *{BRAND_NAME}* "
+            "admissions advisor? 🎯 Tap your choice below."
         )
 
 
@@ -473,7 +457,10 @@ def render_deterministic_intake_text(
             return "That date is full. *Tap below* to choose another consultation date."
 
         perfect = "Perfect!" if first == "there" else f"Perfect, {first}!"
-        return f"{perfect} *Tap the button below* to choose your *consultation date*."
+        return (
+            f"{perfect} 📅 *Let's reserve your free advisor call.* "
+            "Open the booking form to choose a date and time together."
+        )
 
 
 
@@ -492,8 +479,8 @@ def render_deterministic_intake_text(
             )
 
         if named:
-            return f"{named}*tap below* to choose your *consultation time*."
-        return "*Tap below* to choose your *consultation time*."
+            return f"{named}⏰ *choose the consultation time that suits you best*."
+        return "⏰ *Choose the consultation time that suits you best.*"
 
 
 

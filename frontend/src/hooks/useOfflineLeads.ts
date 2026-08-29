@@ -25,6 +25,7 @@ export function useOfflineLeads(query: OfflineLeadsQuery) {
     queryKey: ['offline-leads', query],
     queryFn: () => apiFetch(buildOfflineLeadsUrl(query)),
     placeholderData: previous => previous,
+    refetchOnMount: 'always',
   });
 }
 

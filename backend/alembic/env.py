@@ -30,7 +30,8 @@ from app.config import settings
 config = context.config
 
 # 2. Set the sqlalchemy.url dynamically from our settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# ConfigParser treats % as interpolation; URL-encoded passwords use %40, etc.
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

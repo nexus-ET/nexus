@@ -23,6 +23,7 @@ from app.services.whatsapp_webhook_env import (
     resolve_webhook_callback_url,
     should_process_inbound_phone_number_id,
 )
+from app.utils.safe_console import safe_print
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ def _log_handshake(
         f"hub.challenge={normalized_challenge!r}"
     )
     logger.info(message)
-    print(f"[Meta Webhook] {message}")
+    safe_print(f"[Meta Webhook] {message}")
 
 
 @router.get("/webhook/info")
@@ -137,18 +138,18 @@ async def verify_meta_webhook(
     if missing:
         detail = f"Missing required query parameters: {', '.join(missing)}"
         logger.warning("Meta webhook handshake rejected: %s", detail)
-        print(f"[Meta Webhook] REJECTED 400: {detail}")
+        safe_print(f"[Meta Webhook] REJECTED 400: {detail}")
         return Response(content=detail, status_code=400, media_type="text/plain")
 
     if not expected_token:
         detail = "Server misconfiguration: WEBHOOK_VERIFY_TOKEN is not set"
         logger.error("Meta webhook handshake rejected: %s", detail)
-        print(f"[Meta Webhook] REJECTED 403: {detail}")
+        safe_print(f"[Meta Webhook] REJECTED 403: {detail}")
         return Response(content="Forbidden", status_code=403, media_type="text/plain")
 
     if mode == "subscribe" and received_token == expected_token:
         logger.info("Meta webhook verification succeeded; echoing hub.challenge=%r", challenge)
-        print(f"[Meta Webhook] SUCCESS 200: echoing hub.challenge={challenge!r}")
+        safe_print(f"[Meta Webhook] SUCCESS 200: echoing hub.challenge={challenge!r}")
         return PlainTextResponse(content=challenge)
 
     logger.warning(
@@ -158,7 +159,7 @@ async def verify_meta_webhook(
         len(expected_token),
         len(received_token),
     )
-    print(
+    safe_print(
         "[Meta Webhook] REJECTED 403: "
         f"mode={mode!r} token_match={received_token == expected_token} "
         f"(expected_token_len={len(expected_token)}, received_token_len={len(received_token)})"
@@ -177,7 +178,7 @@ async def _parse_meta_webhook_payload(request: Request) -> dict[str, Any] | None
     raw = await request.body()
     if not raw or not raw.strip():
         logger.warning("Meta webhook POST with empty body (content-type=%r)", content_type)
-        print(f"[Meta Webhook] ignored empty POST body (content-type={content_type!r})")
+        safe_print(f"[Meta Webhook] ignored empty POST body (content-type={content_type!r})")
         return None
 
     text = raw.decode("utf-8-sig", errors="replace").strip()
@@ -200,7 +201,7 @@ async def _parse_meta_webhook_payload(request: Request) -> dict[str, Any] | None
             len(text),
             text[:500],
         )
-        print(
+        safe_print(
             "[Meta Webhook] INVALID JSON — "
             f"{exc} | content-type={content_type!r} len={len(text)} "
             f"body_prefix={text[:500]!r}"
@@ -248,7 +249,7 @@ async def receive_meta_webhook(
         return Response(status_code=200)
 
     logger.info("Meta webhook raw JSON payload: %s", payload)
-    print(f"[Meta Webhook] raw JSON payload: {payload}")
+    safe_print(f"[Meta Webhook] raw JSON payload: {payload}")
 
     # Leadgen: extract leadgen_id(s), fetch Graph details async, persist via save_lead().
     background_tasks.add_task(process_leadgen_webhook_payload, payload)

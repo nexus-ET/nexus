@@ -42,6 +42,10 @@ from app.schemas.student_aspirations import (
     StudentAspirationsResponse,
     StudentAspirationsSaveRequest,
 )
+from app.schemas.student_registration import (
+    StudentRegistrationResponse,
+    StudentRegistrationSaveRequest,
+)
 from app.schemas.candidate_test_scores import (
     CandidateTestScoreAttemptDeleteRequest,
     CandidateTestScoreAttemptReplaceRequest,
@@ -256,6 +260,44 @@ def save_my_booking_aspirations(
         booking_id,
         payload,
     )
+
+
+@router.get("/bookings/mine/{booking_id}/registration", response_model=StudentRegistrationResponse)
+@router.get("/bookings/mine/{booking_id}/registration/", response_model=StudentRegistrationResponse)
+def get_my_booking_registration(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    return counselling_service.get_booking_candidate_registration(db, current_user.id, booking_id)
+
+
+@router.put("/bookings/mine/{booking_id}/registration", response_model=StudentRegistrationResponse)
+@router.put("/bookings/mine/{booking_id}/registration/", response_model=StudentRegistrationResponse)
+@log_action("save_booking_registration", "counselling_booking", resource_id_key="booking_id")
+def save_my_booking_registration(
+    request: Request,
+    booking_id: int,
+    payload: StudentRegistrationSaveRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    result = counselling_service.save_booking_candidate_registration(
+        db,
+        current_user.id,
+        booking_id,
+        payload,
+    )
+    if result.get("lead_id"):
+        from app.services.websocket_service import broadcast_nexus_event
+
+        background_tasks.add_task(
+            broadcast_nexus_event,
+            "pipeline.updated",
+            {"lead_id": result.get("lead_id")},
+        )
+    return result
 
 
 @router.get("/bookings/mine/{booking_id}/test-scores", response_model=CandidateTestScoresResponse)
@@ -786,7 +828,7 @@ def list_recommended_institutions(
     ),
     program_ids: list[str] | None = Query(
         default=None,
-        description="Optional qualification program UUIDs used to filter institutions.",
+        description="Optional qualification program ids used to filter institutions.",
     ),
     db: Session = Depends(get_db),
     _: User = Depends(deps.get_current_active_user),

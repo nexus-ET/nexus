@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { gotoAppPath } from '../src/helpers/auth';
 import { loadUatEnv } from '../src/helpers/env';
+import { workspaceTab } from '../src/helpers/workspaceTabs';
 
 /**
  * UAT — Student profile submission surfaces (multi-tab candidate dossier).
@@ -42,12 +43,13 @@ test.describe('Student profile submission', () => {
       return;
     }
 
-    await expect(page.getByRole('button', { name: /PROFILE PULSE/i })).toBeVisible({
+    await expect(workspaceTab(page, /^PROFILE$/i)).toBeVisible({
       timeout: 45_000,
     });
+    await workspaceTab(page, /^PROFILE$/i).click({ force: true });
     await expect(
-      page.getByRole('button', { name: /ASPIRATIONS|PERSONAL PROFILE|SHORTLIST/i }).first()
-    ).toBeVisible();
+      workspaceTab(page, /^(Aspirations|Personal)$/i).first()
+    ).toBeVisible({ timeout: 30_000 });
   });
 
   test('Aspirations and Personal Profile tabs render editable student info surfaces', async ({
@@ -63,13 +65,13 @@ test.describe('Student profile submission', () => {
       return;
     }
 
-    await page.getByRole('button', { name: /ASPIRATIONS/i }).click({ force: true });
+    await workspaceTab(page, /^PROFILE$/i).click({ force: true });
+    await workspaceTab(page, /^Aspirations$/i).click({ force: true });
     await expect(
       page.getByText(/Aspiration|Destination|Degree|Major|Country|Vision|Preference/i).first()
     ).toBeVisible({ timeout: 30_000 });
 
-    // Tab label shortened from "PERSONAL PROFILE" → "Personal" in intake session workspace.
-    await page.getByRole('button', { name: /^(Personal|PERSONAL PROFILE)$/i }).click({ force: true });
+    await workspaceTab(page, /^Personal$/i).click({ force: true });
     await expect(
       page.getByText(/Personal|Name|Email|Phone|Gender|Nationality|Save|Profile|First name/i).first()
     ).toBeVisible({ timeout: 30_000 });
@@ -77,7 +79,7 @@ test.describe('Student profile submission', () => {
 
   test('Academia tab exposes education history for matching inputs', async ({ page }) => {
     const { leadId } = loadUatEnv();
-    await gotoAppPath(page, `/students/counselling/${leadId}`);
+    await gotoAppPath(page, `/students/counselling/${leadId}?subprocess=1.3`);
     await expect(page.getByText(/^Loading…$/)).toHaveCount(0, { timeout: 60_000 });
 
     if (await page.getByText(/No counselling booking is available/i).isVisible().catch(() => false)) {
@@ -85,7 +87,8 @@ test.describe('Student profile submission', () => {
       return;
     }
 
-    await page.getByRole('button', { name: /^ACADEMIA$/i }).click({ force: true });
+    await workspaceTab(page, /^CREDENTIALS$/i).click({ force: true });
+    await workspaceTab(page, /^Academia$/i).click({ force: true });
     await expect(
       page.getByText(/Education|School|GPA|Degree|Institution|Add|Academic|No education/i).first()
     ).toBeVisible({ timeout: 30_000 });

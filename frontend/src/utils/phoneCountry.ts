@@ -195,6 +195,46 @@ export function computeAgeFromDob(dob: string | null | undefined): number | null
   return computeAgeAsOf(dob, new Date());
 }
 
+export function computeAgePartsAsOf(
+  dob: string | null | undefined,
+  referenceDate: string | Date | null | undefined = new Date()
+): { years: number; months: number; days: number } | null {
+  if (!dob || !referenceDate) return null;
+  const birth = new Date(`${dob}T00:00:00`);
+  const rawRef = referenceDate instanceof Date ? referenceDate : new Date(referenceDate);
+  if (Number.isNaN(birth.getTime()) || Number.isNaN(rawRef.getTime())) return null;
+
+  const ref = new Date(rawRef.getFullYear(), rawRef.getMonth(), rawRef.getDate());
+  if (birth > ref) return null;
+
+  let years = ref.getFullYear() - birth.getFullYear();
+  let months = ref.getMonth() - birth.getMonth();
+  let days = ref.getDate() - birth.getDate();
+
+  if (days < 0) {
+    months -= 1;
+    const daysInPrevMonth = new Date(ref.getFullYear(), ref.getMonth(), 0).getDate();
+    days += daysInPrevMonth;
+  }
+  if (months < 0) {
+    years -= 1;
+    months += 12;
+  }
+
+  if (years < 0) return null;
+  return { years, months, days };
+}
+
+/** e.g. "(Age: 18Y 3M 4D)" from DOB vs today (or a reference date). */
+export function formatAgeYmd(
+  dob: string | null | undefined,
+  referenceDate: string | Date | null | undefined = new Date()
+): string | null {
+  const parts = computeAgePartsAsOf(dob, referenceDate);
+  if (!parts) return null;
+  return `(Age: ${parts.years}Y ${parts.months}M ${parts.days}D)`;
+}
+
 export function computeAgeAsOf(
   dob: string | null | undefined,
   referenceDate: string | Date | null | undefined

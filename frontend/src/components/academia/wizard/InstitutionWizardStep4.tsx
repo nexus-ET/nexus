@@ -56,6 +56,8 @@ import {
   getUnlinkableIndicesForDisplayedScope,
   groupProgramsForOfferings,
   institutionScopeKey,
+  majorGroupHeading,
+  offeringMatchesCollege,
   offeringScopeKey,
   stampOfferingScope,
   type GroupedProgramLink,
@@ -169,12 +171,22 @@ function hydrateSavedOffering(raw: WizardCourseOfferingItem): SavedCourseOfferin
   };
 }
 
+function offeringProgramUrl(offering: { program_url?: string | null }): string {
+  return (offering.program_url || '').trim();
+}
+
+function isPositiveIntId(value: string | number | null | undefined): boolean {
+  const parsed = Number(String(value ?? '').trim());
+  return Number.isInteger(parsed) && parsed > 0;
+}
+
 function offeringNeedsEnrichment(offering: SavedCourseOffering): boolean {
   const hasCourse = Number(offering.course_id) > 0;
   const hasStaleScopeLabel =
     Boolean(offering.display_label) &&
     !hasCourse &&
     offering.display_label.includes('Course #0');
+  // Program URLs are backfilled on draft load (one SQL). Do not N+1 GET degrees/{id}.
   return !offering.display_label || hasStaleScopeLabel;
 }
 
@@ -193,41 +205,28 @@ async function loadEnrichmentMaps(
   }
 
   const courseIds = new Set<number>();
-  const programIds = new Set<string>();
   const majorIds = new Set<number>();
 
   for (const offering of needing) {
-    if (Number(offering.course_id) > 0) {
-      courseIds.add(offering.course_id);
-    }
-    const programId = offering.program_id?.trim();
-    if (programId) {
-      programIds.add(programId);
-    }
     if (Number(offering.major_id) > 0) {
       majorIds.add(offering.major_id);
     }
+    const hasCourse = Number(offering.course_id) > 0;
+    const hasLabel = Boolean(offering.display_label);
+    // Payload labels already have names; do not N+1 GET education_courses
+    // (wizard course_id is often a target_courses id after catalog rebuild).
+    if (hasCourse && !hasLabel && isPositiveIntId(offering.course_id)) {
+      courseIds.add(offering.course_id);
+    }
   }
 
-  const [courseEntries, programEntries, majorEntries] = await Promise.all([
+  const [courseEntries, majorEntries] = await Promise.all([
     Promise.all(
       [...courseIds].map(async id => {
         try {
           return [id, await apiFetch<CourseRecord>(`academia/courses/${id}`)] as const;
         } catch {
           return [id, null] as const;
-        }
-      })
-    ),
-    Promise.all(
-      [...programIds].map(async id => {
-        try {
-          return [
-            normalizeProgramId(id),
-            await apiFetch<DegreeRecord>(`academia/degrees/${id}`),
-          ] as const;
-        } catch {
-          return [normalizeProgramId(id), null] as const;
         }
       })
     ),
@@ -244,14 +243,11 @@ async function loadEnrichmentMaps(
       })
     ),
   ]);
-
   return {
     courses: new Map(
       courseEntries.filter((entry): entry is [number, CourseRecord] => entry[1] !== null)
     ),
-    programs: new Map(
-      programEntries.filter((entry): entry is [string, DegreeRecord] => entry[1] !== null)
-    ),
+    programs: new Map(),
     majors: new Map(
       majorEntries.filter((entry): entry is [number, EducationMajorRecord] => entry[1] !== null)
     ),
@@ -265,6 +261,15 @@ function enrichOfferingsWithMaps(
 ): SavedCourseOffering[] {
   const levelMap = new Map(levels.map(level => [level.id, level.name]));
 
+  const withProgramUrl = (
+    next: SavedCourseOffering,
+    program?: DegreeRecord
+  ): SavedCourseOffering => {
+    if (offeringProgramUrl(next)) return next;
+    const url = program?.program_url?.trim() || null;
+    return url ? { ...next, program_url: url } : next;
+  };
+
   return offerings.map(offering => {
     const saved = offering as SavedCourseOffering;
     const hasCourse = Number(offering.course_id) > 0;
@@ -272,9 +277,12 @@ function enrichOfferingsWithMaps(
       Boolean(saved.display_label) &&
       !hasCourse &&
       saved.display_label.includes('Course #0');
+    const knownProgram = String(offering.program_id || '').trim()
+      ? maps.programs.get(normalizeProgramId(offering.program_id))
+      : undefined;
 
     if (saved.display_label && !hasStaleScopeLabel) {
-      return hydrateSavedOffering(offering);
+      return withProgramUrl(hydrateSavedOffering(offering), knownProgram);
     }
 
     if (hasCourse) {
@@ -285,22 +293,26 @@ function enrichOfferingsWithMaps(
         const program = programId ? maps.programs.get(normalizeProgramId(programId)) : undefined;
         let resolvedLevelId = offering.level_id || program?.level_id || 0;
 
-        return {
-          ...hydrateWizardCourseOffering({
-            ...offering,
-            level_id: resolvedLevelId,
-            program_id: programId,
-            major_id: offering.major_id || course.major_id || 0,
-          }),
-          display_label:
-            course.hierarchy_breadcrumb ||
-            buildDisplayLabel({
-              levelName: levelMap.get(resolvedLevelId) || course.degree_name,
-              programName: program?.name || course.degree_name || course.program_name,
-              majorName: course.major_name,
-              courseName: course.name || course.label,
+        return withProgramUrl(
+          {
+            ...hydrateWizardCourseOffering({
+              ...offering,
+              level_id: resolvedLevelId,
+              program_id: programId,
+              major_id: offering.major_id || course.major_id || 0,
+              program_url: offering.program_url || program?.program_url || null,
             }),
-        };
+            display_label:
+              course.hierarchy_breadcrumb ||
+              buildDisplayLabel({
+                levelName: levelMap.get(resolvedLevelId) || course.degree_name,
+                programName: program?.name || course.degree_name || course.program_name,
+                majorName: course.major_name,
+                courseName: course.name || course.label,
+              }),
+          },
+          program
+        );
       }
     }
 
@@ -332,24 +344,28 @@ function enrichOfferingsWithMaps(
       }
     }
 
-    return {
-      ...hydrateWizardCourseOffering({
-        ...offering,
-        level_id: levelId,
-        program_id: programId,
-        major_id: majorId,
-      }),
-      display_label:
-        buildDisplayLabel({
-          levelName,
-          programName,
-          majorName,
-        }) ||
-        levelName ||
-        programName ||
-        majorName ||
-        (hasCourse ? `Course #${offering.course_id}` : 'Academic scope'),
-    };
+    return withProgramUrl(
+      {
+        ...hydrateWizardCourseOffering({
+          ...offering,
+          level_id: levelId,
+          program_id: programId,
+          major_id: majorId,
+          program_url: offering.program_url || program?.program_url || null,
+        }),
+        display_label:
+          buildDisplayLabel({
+            levelName,
+            programName,
+            majorName,
+          }) ||
+          levelName ||
+          programName ||
+          majorName ||
+          (hasCourse ? `Course #${offering.course_id}` : 'Academic scope'),
+      },
+      program
+    );
   });
 }
 
@@ -755,6 +771,105 @@ function resolveLinkedAcademicRow(
   return { levelName, programName, majorName, courseName };
 }
 
+function lookupProgramRecord(
+  offering: WizardCourseOfferingItem,
+  context: {
+    programLookup: Map<string, DegreeRecord>;
+  }
+): DegreeRecord | undefined {
+  const programId = offering.program_id?.trim();
+  if (!programId) return undefined;
+  return (
+    context.programLookup.get(normalizeProgramId(programId)) ||
+    context.programLookup.get(programId)
+  );
+}
+
+/**
+ * Majors to list this offering under. One-major offerings stay in that group;
+ * program-scope rows (no major_id) expand to every mapped major when known.
+ */
+function resolveOfferingMajorGroups(
+  offering: SavedCourseOffering,
+  row: { majorName: string },
+  context: {
+    programLookup: Map<string, DegreeRecord>;
+    majorInstances: EducationMajorRecord[];
+    catalogLookup: Map<number, CourseRecord>;
+  }
+): Array<{ id: number; name: string }> {
+  const offeringMajorId = Number(offering.major_id) || 0;
+  if (offeringMajorId > 0) {
+    const fromInstance = context.majorInstances.find(item => item.id === offeringMajorId);
+    const catalogCourse =
+      Number(offering.course_id) > 0 ? context.catalogLookup.get(offering.course_id) : undefined;
+    const name =
+      (row.majorName && row.majorName !== '—' ? row.majorName : '') ||
+      fromInstance?.label?.trim() ||
+      catalogCourse?.major_name?.trim() ||
+      '';
+    return [{ id: offeringMajorId, name: majorGroupHeading(name) }];
+  }
+
+  const program = lookupProgramRecord(offering, context);
+  const groups: Array<{ id: number; name: string }> = [];
+  const seen = new Set<string>();
+  const push = (id: number, name: string) => {
+    const heading = majorGroupHeading(name);
+    const key = `${id}|${heading.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    groups.push({ id, name: heading });
+  };
+
+  const ids = [...(program?.major_ids ?? [])];
+  const names = [...(program?.major_names ?? [])];
+  if (ids.length > 0) {
+    ids.forEach((id, index) => {
+      const fromInstance = context.majorInstances.find(item => item.id === id);
+      push(id, names[index] || fromInstance?.label || '');
+    });
+  } else if (names.length > 0) {
+    names.forEach(name => push(0, name));
+  }
+
+  const programId = normalizeProgramId(offering.program_id);
+  if (groups.length === 0 && programId) {
+    for (const major of context.majorInstances) {
+      if (normalizeProgramId(major.program_id) === programId) {
+        push(major.id, major.label);
+      }
+    }
+  }
+
+  const catalogCourse =
+    Number(offering.course_id) > 0 ? context.catalogLookup.get(offering.course_id) : undefined;
+  if (groups.length === 0 && catalogCourse) {
+    const catalogIds = courseCatalogMajorIdsOf(catalogCourse);
+    if (catalogIds.length > 0) {
+      catalogIds.forEach((id, index) => {
+        const fromInstance = context.majorInstances.find(item => item.id === id);
+        push(
+          id,
+          catalogCourse.major_names?.[index] ||
+            catalogCourse.major_name ||
+            fromInstance?.label ||
+            ''
+        );
+      });
+    } else if (catalogCourse.major_names?.length) {
+      catalogCourse.major_names.forEach(name => push(0, name));
+    } else if (catalogCourse.major_name) {
+      push(Number(catalogCourse.major_id) || 0, catalogCourse.major_name);
+    }
+  }
+
+  if (groups.length === 0) {
+    return [{ id: 0, name: majorGroupHeading(row.majorName) }];
+  }
+  return groups;
+}
+
 const InstitutionWizardStep4 = forwardRef<
   WizardStepHandle<WizardCourseOfferingItem[]>,
   InstitutionWizardStep4Props
@@ -834,6 +949,7 @@ const InstitutionWizardStep4 = forwardRef<
         type: 'college',
         collegeLocalId,
         collegeName: college?.name || 'College',
+        collegeId: college?.id ?? null,
       };
     }
     return { type: 'institution' };
@@ -1444,6 +1560,7 @@ const InstitutionWizardStep4 = forwardRef<
             course_code: course.code || null,
             credits: null,
             syllabus_outline: null,
+            program_url: program?.program_url?.trim() || null,
           }),
           display_label: buildDisplayLabel({
             levelName,
@@ -1486,10 +1603,17 @@ const InstitutionWizardStep4 = forwardRef<
         ...panelEnrichment.programLookup.entries(),
         ...programLookup.entries(),
       ]),
-      majorInstances:
-        panelEnrichment.majorInstances.length > 0
-          ? panelEnrichment.majorInstances
-          : majorInstances,
+      majorInstances: (() => {
+        const seen = new Set<string>();
+        const merged: EducationMajorRecord[] = [];
+        for (const item of [...panelEnrichment.majorInstances, ...majorInstances]) {
+          const key = `${item.id}|${normalizeProgramId(item.program_id)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push(item);
+        }
+        return merged;
+      })(),
       catalogLookup: new Map([
         ...panelEnrichment.catalogLookup.entries(),
         ...catalogLookup.entries(),
@@ -1498,6 +1622,63 @@ const InstitutionWizardStep4 = forwardRef<
     [catalogLookup, levels, majorInstances, panelEnrichment, programLookup]
   );
 
+  const linkedProgramIdsKey = useMemo(
+    () =>
+      [
+        ...new Set(
+          courses
+            .filter(isLinkedAcademicItem)
+            .map(item => normalizeProgramId(item.program_id))
+            .filter(Boolean)
+        ),
+      ]
+        .sort()
+        .join(','),
+    [courses]
+  );
+
+  useEffect(() => {
+    if (!isHierarchy || !linkedProgramIdsKey) return;
+    let cancelled = false;
+    void apiFetch<ProgramMajorMappingListResponse>('academia/program-major-mappings')
+      .then(mappings => {
+        if (cancelled) return;
+        const wanted = new Set(linkedProgramIdsKey.split(','));
+        const instances: EducationMajorRecord[] = (mappings.items || [])
+          .filter(item => wanted.has(normalizeProgramId(item.program_id)))
+          .map(item => ({
+            id: item.education_major_id,
+            label: item.major_label,
+            code: item.major_code ?? null,
+            color: item.major_color ?? null,
+            program_id: String(item.program_id),
+            program_name: item.program_name ?? null,
+            level_id: item.level_id ?? null,
+            level_name: item.level_name ?? null,
+            is_other: false,
+            sort_order: 0,
+            is_active: true,
+          }));
+        if (instances.length === 0) return;
+        setPanelEnrichment(prev => {
+          const existing = new Set(
+            prev.majorInstances.map(
+              item => `${item.id}|${normalizeProgramId(item.program_id)}`
+            )
+          );
+          const extra = instances.filter(
+            item => !existing.has(`${item.id}|${normalizeProgramId(item.program_id)}`)
+          );
+          if (extra.length === 0) return prev;
+          return { ...prev, majorInstances: [...prev.majorInstances, ...extra] };
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isHierarchy, linkedProgramIdsKey]);
+
   const resolvedPanelRows = useMemo(() => {
     type ResolvedEntry = {
       course: SavedCourseOffering;
@@ -1505,7 +1686,7 @@ const InstitutionWizardStep4 = forwardRef<
       key: string;
       indices: number[];
       row: ReturnType<typeof resolveLinkedAcademicRow>;
-      courseItems: Array<{ name: string; index: number }>;
+      courseItems: Array<{ name: string; index: number; courseId?: number }>;
     };
 
     const grouped: ResolvedEntry[] = [];
@@ -1530,14 +1711,24 @@ const InstitutionWizardStep4 = forwardRef<
             key: groupKey,
             indices: [entry.index],
             row,
-            courseItems: [{ name: row.courseName, index: entry.index }],
+            courseItems: [
+              {
+                name: row.courseName,
+                index: entry.index,
+                courseId: Number(entry.course.course_id) || undefined,
+              },
+            ],
           });
           continue;
         }
 
         const group = grouped[existingIdx];
         group.indices.push(entry.index);
-        group.courseItems.push({ name: row.courseName, index: entry.index });
+        group.courseItems.push({
+          name: row.courseName,
+          index: entry.index,
+          courseId: Number(entry.course.course_id) || undefined,
+        });
         group.row = {
           ...group.row,
           courseName: mergeMajorNames(group.row.courseName, row.courseName),
@@ -1850,7 +2041,8 @@ const InstitutionWizardStep4 = forwardRef<
         return getCollegeOwnedUnlinkIndices(
           courses,
           scope.collegeLocalId,
-          candidateIndices
+          candidateIndices,
+          scope.collegeId
         );
       }
       let indices = getUnlinkableIndicesForScope(scope, candidateIndices);
@@ -2060,6 +2252,7 @@ const InstitutionWizardStep4 = forwardRef<
           program_id: program ? String(program.id) : programId,
           major_id: majorId,
           course_id: 0,
+          program_url: program?.program_url?.trim() || null,
         }),
         display_label: buildDisplayLabel({
           levelName: levels.find(item => item.id === resolvedLevelId)?.name ?? levelName,
@@ -2089,17 +2282,16 @@ const InstitutionWizardStep4 = forwardRef<
   }, [catalogLookup, courseAffiliationContext, selectableCourseIds]);
 
   const pendingScopeItemsToAdd = useMemo(() => {
-    const writableScopeKey = isHierarchy
-      ? activeScope.type === 'institution'
-        ? institutionScopeKey()
-        : collegeScopeKey(activeScope.collegeLocalId)
-      : null;
     const existingKeys = new Set(
       courses
         .filter(isLinkedAcademicItem)
-        .filter(
-          item => !isHierarchy || offeringScopeKey(item) === writableScopeKey
-        )
+        .filter(item => {
+          if (!isHierarchy) return true;
+          if (activeScope.type === 'institution') {
+            return offeringScopeKey(item) === institutionScopeKey();
+          }
+          return offeringMatchesCollege(item, activeScope);
+        })
         .map(academicEntryKey)
     );
 
@@ -2312,11 +2504,6 @@ const InstitutionWizardStep4 = forwardRef<
       return;
     }
 
-    const writableScopeKey = isHierarchy
-      ? editTargetScope.type === 'institution'
-        ? institutionScopeKey()
-        : collegeScopeKey(editTargetScope.collegeLocalId)
-      : null;
     const skipIndices = editingAcademicGroup
       ? new Set(editingAcademicGroup.replaceIndices)
       : null;
@@ -2327,7 +2514,13 @@ const InstitutionWizardStep4 = forwardRef<
     const existingKeys = new Set(
       coursesBase
         .filter(isLinkedAcademicItem)
-        .filter(item => !isHierarchy || offeringScopeKey(item) === writableScopeKey)
+        .filter(item => {
+          if (!isHierarchy) return true;
+          if (editTargetScope.type === 'institution') {
+            return offeringScopeKey(item) === institutionScopeKey();
+          }
+          return offeringMatchesCollege(item, editTargetScope);
+        })
         .map(academicEntryKey)
     );
 
@@ -2440,9 +2633,17 @@ const InstitutionWizardStep4 = forwardRef<
       const entries = courses
         .map((offering, index) => ({ offering, index }))
         .filter(({ offering }) => offeringSet.has(offering));
-      return groupProgramsForOfferings(entries, offering =>
-        resolveLinkedAcademicRow(offering, panelRowContext)
-      );
+      return groupProgramsForOfferings(entries, offering => {
+        const row = resolveLinkedAcademicRow(offering, panelRowContext);
+        return {
+          ...row,
+          programUrl:
+            offering.program_url?.trim() ||
+            lookupProgramRecord(offering, panelRowContext)?.program_url?.trim() ||
+            null,
+          majorGroups: resolveOfferingMajorGroups(offering, row, panelRowContext),
+        };
+      });
     },
     [courses, panelRowContext]
   );
@@ -2498,13 +2699,19 @@ const InstitutionWizardStep4 = forwardRef<
         setCollegeOverrides(prev => new Set([...prev, collegeLocalId]));
         const college = colleges.find(item => (item.local_id || item.name) === collegeLocalId);
         if (!college) return;
+        const collegeScope: Extract<WizardAcademicsEntityScope, { type: 'college' }> = {
+          type: 'college',
+          collegeLocalId,
+          collegeName: college.name,
+          collegeId: college.id ?? null,
+        };
         const institutionOfferings = courses.filter(
           item =>
             isLinkedAcademicItem(item) && offeringScopeKey(item) === institutionScopeKey()
         );
         const existingKeys = new Set(
           courses
-            .filter(item => offeringScopeKey(item) === collegeScopeKey(collegeLocalId))
+            .filter(item => offeringMatchesCollege(item, collegeScope))
             .map(academicEntryKey)
         );
         const toAdd = institutionOfferings
@@ -2521,9 +2728,14 @@ const InstitutionWizardStep4 = forwardRef<
         next.delete(collegeLocalId);
         return next;
       });
-      setCourses(prev =>
-        prev.filter(item => offeringScopeKey(item) !== collegeScopeKey(collegeLocalId))
-      );
+      const college = colleges.find(item => (item.local_id || item.name) === collegeLocalId);
+      const collegeScope: Extract<WizardAcademicsEntityScope, { type: 'college' }> = {
+        type: 'college',
+        collegeLocalId,
+        collegeName: college?.name || '',
+        collegeId: college?.id ?? null,
+      };
+      setCourses(prev => prev.filter(item => !offeringMatchesCollege(item, collegeScope)));
     },
     [colleges, courses]
   );
@@ -2541,9 +2753,15 @@ const InstitutionWizardStep4 = forwardRef<
       for (const college of colleges) {
         const collegeLocalId = college.local_id || college.name;
         if (collegeOverrides.has(collegeLocalId)) continue;
+        const collegeScope: Extract<WizardAcademicsEntityScope, { type: 'college' }> = {
+          type: 'college',
+          collegeLocalId,
+          collegeName: college.name,
+          collegeId: college.id ?? null,
+        };
         const existingKeys = new Set(
           courses
-            .filter(item => offeringScopeKey(item) === collegeScopeKey(collegeLocalId))
+            .filter(item => offeringMatchesCollege(item, collegeScope))
             .map(academicEntryKey)
         );
         for (const offering of institutionOfferings) {
@@ -2602,9 +2820,13 @@ const InstitutionWizardStep4 = forwardRef<
         variant: 'warning',
       });
       if (!confirmed) return;
-      setCourses(prev =>
-        prev.filter(item => offeringScopeKey(item) !== collegeScopeKey(collegeLocalId))
-      );
+      const collegeScope: Extract<WizardAcademicsEntityScope, { type: 'college' }> = {
+        type: 'college',
+        collegeLocalId,
+        collegeName: college?.name || '',
+        collegeId: college?.id ?? null,
+      };
+      setCourses(prev => prev.filter(item => !offeringMatchesCollege(item, collegeScope)));
       setCollegeOverrides(prev => {
         const next = new Set(prev);
         next.delete(collegeLocalId);
@@ -3029,6 +3251,11 @@ const InstitutionWizardStep4 = forwardRef<
                               <Fragment key={`${item.index}:${item.name}`}>
                                 {itemIndex > 0 ? <span className="mr-1">,</span> : null}
                                 <span>{item.name}</span>
+                                {item.courseId ? (
+                                  <span className="ml-1 tabular-nums text-text-muted">
+                                    ID {item.courseId}
+                                  </span>
+                                ) : null}
                                 <button
                                   type="button"
                                   onClick={() => setEditingIndex(item.index)}

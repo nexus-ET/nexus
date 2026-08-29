@@ -131,6 +131,7 @@ npm ci
 npm run build
 
 echo "==> systemd service..."
+chmod +x "${BACKEND}/deploy/run-nexus-backend.sh"
 cp "${BACKEND}/deploy/nexus-backend.service" /etc/systemd/system/nexus-backend.service
 systemctl daemon-reload
 systemctl enable nexus-backend

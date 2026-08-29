@@ -26,7 +26,8 @@ api.interceptors.request.use((config) => {
   return Promise.reject(error);
 });
 
-// Debugging interceptor for 502/Proxy errors
+// Debugging interceptor for 502/Proxy errors.
+// Do not redirect to /login on 401/429 — telemetry and rate limits must not clear the session.
 api.interceptors.response.use(
   (response) => response,
   (error) => {

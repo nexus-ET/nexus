@@ -208,6 +208,7 @@ class OfflineLeadListItem(BaseModel):
     date_of_birth: str | None = None
     age: int | None = None
     created_at: datetime | None = None
+    booking_count: int = 0
 
     model_config = ConfigDict(from_attributes=True)
 

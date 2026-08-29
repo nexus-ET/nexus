@@ -103,7 +103,7 @@ def _courses_query(
     *,
     query: str | None = None,
     major_id: int | None = None,
-    degree_id: uuid.UUID | None = None,
+    degree_id: int | None = None,
     level_id: int | None = None,
 ):
     q = db.query(EducationCourse)
@@ -160,7 +160,7 @@ def list_education_courses_admin(
     *,
     query: str | None = None,
     major_id: int | None = None,
-    degree_id: uuid.UUID | None = None,
+    degree_id: int | None = None,
     level_id: int | None = None,
     page: int = 1,
     page_size: int = 25,
@@ -201,7 +201,7 @@ def list_education_courses_admin(
 def list_education_courses_by_program(
     db: Session,
     *,
-    program_id: uuid.UUID,
+    program_id: int,
     query: str | None = None,
 ) -> list[EducationCourse]:
     q = _courses_query(db, query=query, degree_id=program_id)

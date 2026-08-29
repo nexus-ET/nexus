@@ -246,8 +246,8 @@ class FlowxEnrollment(Base):
     level_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("levels.id", ondelete="SET NULL"), nullable=True
     )
-    qualification_program_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("programs.id", ondelete="SET NULL"), nullable=True, index=True
+    qualification_program_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("programs.id", ondelete="SET NULL"), nullable=True, index=True
     )
     intake_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("institution_intakes.id", ondelete="SET NULL"), nullable=True, index=True

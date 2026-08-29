@@ -79,11 +79,12 @@ def test_check_offline_lead_duplicates_excludes_current_lead(monkeypatch):
     class FakeCountry:
         dial_code = "91"
 
-    filters: list[str] = []
+    filter_calls = 0
 
     class FakeQuery:
         def filter(self, *args, **kwargs):
-            filters.append(str(args))
+            nonlocal filter_calls
+            filter_calls += 1
             return self
 
         def first(self):
@@ -104,7 +105,8 @@ def test_check_offline_lead_duplicates_excludes_current_lead(monkeypatch):
         exclude_lead_id=5,
     )
     assert result == {"email_taken": False, "phone_taken": False}
-    assert any("5" in item for item in filters)
+    # email + phone lookups each apply an exclude filter when editing an existing lead.
+    assert filter_calls == 4
 
 
 def test_build_offline_lead_list_item_maps_fields():

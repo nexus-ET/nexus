@@ -6,7 +6,12 @@ export * from './step4-courses';
 export * from './step5-intakes';
 export * from './step6-pictures';
 export * from './wizardUiSteps';
-export { WIZARD_STEP_LABELS, WIZARD_UI_STEP_COUNT, normalizePublishReportSteps } from './wizardUiSteps';
+export {
+  WIZARD_STEP_LABELS,
+  WIZARD_UI_STEP_COUNT,
+  formatAuditFieldLabel,
+  normalizePublishReportSteps,
+} from './wizardUiSteps';
 
 export interface WizardDraft {
   id: number;

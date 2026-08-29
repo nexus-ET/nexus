@@ -51,6 +51,7 @@ import { wizardInputClass, wizardLabelClass, wizardSchoolMetaRowClass, wizardSch
 import { useConfirmation } from '../../../context/ConfirmationContext';
 import WizardCollegeTabBar from './WizardCollegeTabBar';
 import EmptyListMessage from '../../ui/EmptyListMessage';
+import ReadOnlyIdField from '../ReadOnlyIdField';
 
 interface InstitutionWizardStep3Props {
   defaultColleges: WizardCollegeItem[];
@@ -491,16 +492,22 @@ const InstitutionWizardStep3 = forwardRef<
       );
       return false;
     }
-    if (!(await trigger())) {
-      setDraftError('Please fix the highlighted fields before leaving this tab.');
-      return false;
-    }
     setColleges(prev =>
       prev.map((item, index) => (index === editingIndex ? draft : item))
     );
     setDraftError(null);
+    // An incomplete tab must not trap the user on it. Keep the edits, flag what is
+    // still missing near the tab bar, and let the step save enforce the full schema.
+    const parsed = wizardCollegeItemSchema.safeParse(draft);
+    setListError(
+      parsed.success
+        ? null
+        : `"${draft.name.trim()}" is incomplete — ${
+            parsed.error.issues[0]?.message || 'fix the highlighted fields'
+          }`
+    );
     return true;
-  }, [colleges, editingIndex, getValues, trigger]);
+  }, [colleges, editingIndex, getValues]);
 
   const openCollegeTab = useCallback(
     async (tabKey: string) => {
@@ -666,6 +673,7 @@ const InstitutionWizardStep3 = forwardRef<
               key: collegeTabKey(college, index),
               label: liveName?.trim() || 'Untitled school',
               title: liveName?.trim() || 'Untitled school / college',
+              badge: college.id ? `ID ${college.id}` : null,
               removable: true,
             };
           })}
@@ -685,6 +693,11 @@ const InstitutionWizardStep3 = forwardRef<
           <div className="mt-4 space-y-4">
             <div className="rounded-xl border border-border-subtle bg-surface-bg/40 p-4">
               <h4 className="text-base font-bold text-text-main">{institutionName || 'Institution'}</h4>
+              {institutionId ? (
+                <p className="mt-1 text-sm tabular-nums text-text-muted">
+                  Institution ID {institutionId}
+                </p>
+              ) : null}
               <p className="mt-1 text-sm text-text-muted">
                 {colleges.length === 0
                   ? 'No schools or colleges yet. Click “Add school / college” to create the first tab.'
@@ -706,6 +719,10 @@ const InstitutionWizardStep3 = forwardRef<
                     className="rounded-xl border border-border-subtle bg-card p-4 text-left hover:border-accent/40 hover:bg-accent/5"
                   >
                     <p className="font-semibold text-text-main">{college.name || 'Untitled school'}</p>
+                    <p className="mt-1 text-xs tabular-nums text-text-muted">
+                      {college.id ? `College ID ${college.id}` : 'Unsaved college'}
+                      {institutionId ? ` · Institution ID ${institutionId}` : ''}
+                    </p>
                     <p className="mt-1 text-xs text-text-muted">
                       {[college.code, college.category || 'College', college.dean_name]
                         .filter(Boolean)
@@ -728,6 +745,10 @@ const InstitutionWizardStep3 = forwardRef<
               {watch('name')?.trim() || 'School / College details'}
             </h4>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {watch('id') ? <ReadOnlyIdField label="College ID" value={watch('id')} /> : null}
+              {institutionId ? (
+                <ReadOnlyIdField label="Institution ID" value={institutionId} />
+              ) : null}
               <div className={`md:col-span-2 ${wizardSchoolNamingRowClass}`}>
                 <div>
                   <label className={wizardLabelClass}>School / College Code</label>

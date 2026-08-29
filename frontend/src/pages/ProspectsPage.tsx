@@ -9,6 +9,11 @@ import {
   useProspectsPage,
 } from '../hooks/useProspects';
 import {
+  defaultSubprocessForBasePath,
+  hasPipelineWorkspace,
+  readPipelineSubprocess,
+} from '../utils/studentPipelineProcess';
+import {
   buildProspectsPath,
   parseLeadIdParam,
   PROSPECTS_PAGE_SIZE_KEY,
@@ -57,6 +62,10 @@ export default function ProspectsPage({
   );
   const debouncedFilters = useDebouncedValue(filters, 350);
   const activeTab = readDetailTab(searchParams);
+  const defaultPipelineSubprocess = defaultSubprocessForBasePath(basePath);
+  const pipelineSubprocess = defaultPipelineSubprocess
+    ? readPipelineSubprocess(searchParams, defaultPipelineSubprocess)
+    : null;
   const selectedLeadId = parseLeadIdParam(leadIdParam);
 
   const scrollStorageKey = prospectsScrollStorageKey(filters, basePath);
@@ -65,11 +74,18 @@ export default function ProspectsPage({
   useEffect(() => {
     const legacyLeadId = searchParams.get('leadId');
     if (legacyLeadId && !leadIdParam) {
-      navigate(buildProspectsPath(parseLeadIdParam(legacyLeadId), filters, activeTab, basePath), {
-        replace: true,
-      });
+      navigate(
+        buildProspectsPath(
+          parseLeadIdParam(legacyLeadId),
+          filters,
+          activeTab,
+          basePath,
+          pipelineSubprocess
+        ),
+        { replace: true }
+      );
     }
-  }, [searchParams, leadIdParam, filters, activeTab, navigate, basePath]);
+  }, [searchParams, leadIdParam, filters, activeTab, navigate, basePath, pipelineSubprocess]);
 
   const listQuery = useProspectsPage(debouncedFilters);
   const detailQuery = useProspectDetail(selectedLeadId);
@@ -131,22 +147,34 @@ export default function ProspectsPage({
     if (next.pageSize != null && isTablePageSize(next.pageSize)) {
       storeTablePageSize(PROSPECTS_PAGE_SIZE_KEY, next.pageSize);
     }
-    navigate(buildProspectsPath(selectedLeadId, merged, activeTab, basePath), { replace: true });
+    navigate(
+      buildProspectsPath(selectedLeadId, merged, activeTab, basePath, pipelineSubprocess),
+      { replace: true }
+    );
   };
 
   const handleSelectLead = (leadId: number) => {
     if (isCompact) setManualFocus(true);
-    navigate(buildProspectsPath(leadId, filters, activeTab, basePath), { replace: true });
+    navigate(
+      buildProspectsPath(leadId, filters, activeTab, basePath, pipelineSubprocess),
+      { replace: true }
+    );
   };
 
   const handleBackToList = () => {
     setManualFocus(false);
-    navigate(buildProspectsPath(null, filters, activeTab, basePath), { replace: true });
+    navigate(
+      buildProspectsPath(null, filters, activeTab, basePath, pipelineSubprocess),
+      { replace: true }
+    );
   };
 
   const handleTabChange = (tab: ProspectDetailTab) => {
     if (!selectedLeadId) return;
-    navigate(buildProspectsPath(selectedLeadId, filters, tab, basePath), { replace: true });
+    navigate(
+      buildProspectsPath(selectedLeadId, filters, tab, basePath, pipelineSubprocess),
+      { replace: true }
+    );
   };
 
   const handleToggleFocus = () => {
@@ -174,6 +202,7 @@ export default function ProspectsPage({
         totalPages={totalPages}
         hasMorePages={hasMorePages}
         isLoading={listQuery.isLoading}
+        showTitleRow={!hasPipelineWorkspace(basePath)}
       />
 
       <div className="prospects-page__panels">
@@ -206,6 +235,7 @@ export default function ProspectsPage({
           isFocusMode={focusMode}
           onToggleFocus={handleToggleFocus}
           studentProfileTabs={basePath === '/students/counselling'}
+          pipelinePath={hasPipelineWorkspace(basePath) ? basePath : undefined}
         />
       </div>
     </div>

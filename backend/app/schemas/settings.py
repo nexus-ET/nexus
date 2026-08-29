@@ -50,6 +50,11 @@ class DynamicSettingUpdateRequest(BaseModel):
     value: str = Field(min_length=0)
 
 
+class BusinessContactEntry(BaseModel):
+    type: str = Field(min_length=1, max_length=60)
+    value: str = Field(min_length=1, max_length=250)
+
+
 class BusinessProfileOut(BaseModel):
     business_id: int
     business_name: str
@@ -63,6 +68,10 @@ class BusinessProfileOut(BaseModel):
     zip_code: str | None = None
     office_phone_number: str | None = None
     office_mobile_number: str | None = None
+    office_phone_active: bool = True
+    office_mobile_active: bool = True
+    office_phone_contacts: list[BusinessContactEntry] = Field(default_factory=list)
+    office_email_contacts: list[BusinessContactEntry] = Field(default_factory=list)
     web_url: str | None = None
     email_domain: str | None = None
     has_logo: bool = False
@@ -82,6 +91,10 @@ class BusinessProfileUpdateRequest(BaseModel):
     zip_code: str | None = Field(default=None, max_length=30)
     office_phone_number: str | None = Field(default=None, max_length=50)
     office_mobile_number: str | None = Field(default=None, max_length=50)
+    office_phone_active: bool = True
+    office_mobile_active: bool = True
+    office_phone_contacts: list[BusinessContactEntry] = Field(default_factory=list)
+    office_email_contacts: list[BusinessContactEntry] = Field(default_factory=list)
     web_url: str | None = Field(default=None, max_length=500)
     email_domain: str | None = Field(default=None, max_length=255)
 

@@ -10,7 +10,10 @@ Or against a live tunnel/server:
 
 from __future__ import annotations
 
+import io
 import os
+import sys
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -82,6 +85,52 @@ def test_meta_handshake_strips_whitespace(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.text == TEST_CHALLENGE
+
+
+def test_meta_post_with_flag_emoji_survives_cp1252_console(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_console = io.BytesIO()
+    cp1252_console = io.TextIOWrapper(raw_console, encoding="cp1252", errors="strict")
+    monkeypatch.setattr(sys, "stdout", cp1252_console)
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "metadata": {"phone_number_id": "123"},
+                            "messages": [
+                                {
+                                    "from": "15551234567",
+                                    "id": "wamid.test",
+                                    "type": "interactive",
+                                    "interactive": {
+                                        "type": "list_reply",
+                                        "list_reply": {"id": "USA", "title": "🇺🇸 USA"},
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ],
+    }
+
+    with (
+        patch.object(webhooks, "should_process_inbound_phone_number_id", return_value=True),
+        patch.object(webhooks, "process_leadgen_webhook_payload", new_callable=AsyncMock),
+        patch.object(webhooks, "process_meta_webhook_payload", new_callable=AsyncMock) as process_messages,
+    ):
+        response = client.post(WEBHOOK_PATH, json=payload)
+
+    assert response.status_code == 200
+    process_messages.assert_awaited_once_with(payload)
+    cp1252_console.flush()
+    assert b"USA" in raw_console.getvalue()
 
 
 @pytest.mark.skipif(

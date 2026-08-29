@@ -1,6 +1,7 @@
 export type ProfilePanelTab =
   | 'aspirations'
   | 'profile'
+  | 'billing'
   | 'academia'
   | 'non_academia'
   | 'digital_presence'
@@ -13,6 +14,7 @@ export type ProfilePanelTab =
 export const PROFILE_PANEL_TAB_LABELS: Record<ProfilePanelTab, string> = {
   aspirations: 'ASPIRATIONS',
   profile: 'PERSONAL',
+  billing: 'BILLING',
   academia: 'ACADEMIA',
   non_academia: 'NON-ACADEMIA',
   digital_presence: 'DIGITAL PRESENCE',

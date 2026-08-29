@@ -1,9 +1,13 @@
+import logging
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.models.lead import Lead, get_dashboard_metrics
 from app.services.conversation_audit_service import get_pending_advisor_questions
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -54,9 +58,23 @@ async def get_dashboard_summary(limit: int = 5, db: Session = Depends(get_db)):
         }
     ] if metrics["escalation_queue"] > 0 else []
 
-    from app.services.hierarchical_intake_service import list_calendar_intake_alerts
+    # Optional side panels must not take down the whole home dashboard
+    # (e.g. schema drift on Institution columns used only by calendar alerts).
+    calendar_alerts: list = []
+    try:
+        from app.services.hierarchical_intake_service import list_calendar_intake_alerts
 
-    calendar_alerts = list_calendar_intake_alerts(db, limit=10)
+        calendar_alerts = list_calendar_intake_alerts(db, limit=10)
+    except Exception:
+        logger.exception("dashboard/summary: calendar intake alerts unavailable")
+        db.rollback()
+
+    pending_advisor_questions: list = []
+    try:
+        pending_advisor_questions = get_pending_advisor_questions(db, limit=10)
+    except Exception:
+        logger.exception("dashboard/summary: pending advisor questions unavailable")
+        db.rollback()
 
     return {
         **metrics,
@@ -65,5 +83,5 @@ async def get_dashboard_summary(limit: int = 5, db: Session = Depends(get_db)):
         "notifications": notifications,
         "calendar_alerts": [alert.model_dump() for alert in calendar_alerts],
         "leads": [_map_lead_for_dashboard(lead) for lead in pipeline_leads],
-        "pending_advisor_questions": get_pending_advisor_questions(db, limit=10),
+        "pending_advisor_questions": pending_advisor_questions,
     }

@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { isAllowedRoute, isRouteActive, normalizePath } from '../utils/routeAccess';
-import { STUDENT_PIPELINE_NAV, STUDENT_PIPELINE_PATHS } from '../config/studentPipelineNav';
+import { isAllowedRoute, isNavLinkActive, isRouteActive, normalizePath } from '../utils/routeAccess';
+import {
+  OFFLINE_LEADS_NAV_GROUP,
+  STUDENT_PIPELINE_NAV_GROUPS,
+  STUDENT_PIPELINE_PATHS,
+} from '../config/studentPipelineNav';
 import { ACADEMIA_HUB_SECTIONS } from '../config/academiaHubNav';
 import {
   findModuleById,
@@ -91,13 +95,22 @@ const Sidebar: React.FC<SidebarProps> = ({
     findModuleById(navModules, activeModuleId) ?? findModuleForPath(navModules, currentPath);
   const moduleSections = activeModule ? getModuleSidebarSections(activeModule) : [];
 
-  const leadNavItems = [
-    { path: '/ai-active', label: 'AI Active' },
-    { path: '/handoffs', label: 'Handoffs' },
-    { path: '/prospects', label: 'All Prospects' },
-    { path: '/offline-leads', label: 'Offline Leads' },
-    { path: '/archive', label: 'Archive' },
-    { path: '/quarantine', label: 'Lead Quarantine' },
+  const leadNavGroups = [
+    {
+      key: 'online-leads',
+      label: 'Online Leads',
+      items: [
+        { path: '/ai-active', label: 'AI Active' },
+        { path: '/handoffs', label: 'Handoffs' },
+        { path: '/prospects', label: 'All Prospects' },
+        { path: '/archive', label: 'Archive' },
+      ],
+    },
+    {
+      key: 'leads-management',
+      label: 'Leads Management',
+      items: [{ path: '/quarantine', label: 'Lead Quarantine' }],
+    },
   ];
 
   const userNavItems = [
@@ -118,11 +131,26 @@ const Sidebar: React.FC<SidebarProps> = ({
     ...(canAccessCounselling ? [{ path: '/counselling', label: 'Manage Appointments' }] : []),
   ];
 
-  const studentNavItems = STUDENT_PIPELINE_NAV.filter(item => isRouteAllowed(item.path));
-  const showStudentsSection = studentNavItems.length > 0;
+  const studentNavGroups = [
+    {
+      key: OFFLINE_LEADS_NAV_GROUP.key,
+      label: OFFLINE_LEADS_NAV_GROUP.label,
+      items: OFFLINE_LEADS_NAV_GROUP.items.filter(item => isRouteAllowed(item.path)),
+    },
+    ...STUDENT_PIPELINE_NAV_GROUPS.map(group => ({
+      ...group,
+      items: group.items.filter(item => isRouteAllowed(item.path)),
+    })),
+  ].filter(group => group.items.length > 0);
+  const showStudentsSection = studentNavGroups.length > 0;
 
-  const visibleLeadNavItems = leadNavItems.filter(item => isRouteAllowed(item.path));
-  const showLeadsSection = visibleLeadNavItems.length > 0;
+  const visibleLeadNavGroups = leadNavGroups
+    .map(group => ({
+      ...group,
+      items: group.items.filter(item => isRouteAllowed(item.path)),
+    }))
+    .filter(group => group.items.length > 0);
+  const showLeadsSection = visibleLeadNavGroups.length > 0;
   const visibleUserNavItems = userNavItems.filter(item => isRouteAllowed(item.path));
   const showUsersSection = visibleUserNavItems.length > 0;
   const visibleReportNavItems = reportNavItems.filter(item => isRouteAllowed(item.path));
@@ -150,15 +178,18 @@ const Sidebar: React.FC<SidebarProps> = ({
   }, [location.pathname, unreadMessageCount, setMessagingHubPulse]);
 
   useEffect(() => {
-    if (STUDENT_PIPELINE_PATHS.some(path => isRouteActive(currentPath, path))) {
+    if (
+      STUDENT_PIPELINE_PATHS.some(path => isRouteActive(currentPath, path)) ||
+      ['/express-leads', '/offline-leads'].some(path => isRouteActive(currentPath, path))
+    ) {
       setIsStudentsOpen(true);
     }
     if (['/book-appointment', '/my-bookings', '/counselling'].some(path => isRouteActive(currentPath, path))) {
       setIsAppointmentsOpen(true);
     }
     if (
-      ['/ai-active', '/handoffs', '/prospects', '/offline-leads', '/archive', '/quarantine'].some(
-        path => isRouteActive(currentPath, path)
+      ['/ai-active', '/handoffs', '/prospects', '/archive', '/quarantine'].some(path =>
+        isRouteActive(currentPath, path)
       )
     ) {
       setIsLeadsOpen(true);
@@ -275,7 +306,11 @@ const Sidebar: React.FC<SidebarProps> = ({
                     <div className={section.title && isSidebarOpen ? 'ml-1 space-y-1' : 'space-y-1'}>
                       {section.links.map(link => {
                         const Icon = link.icon;
-                        const active = isRouteActive(currentPath, link.path);
+                        const active = isNavLinkActive(
+                          location.pathname,
+                          location.search,
+                          link.path
+                        );
                         return (
                           <Link
                             key={link.path}
@@ -285,7 +320,9 @@ const Sidebar: React.FC<SidebarProps> = ({
                               active
                                 ? 'bg-white/20 text-white border-l-2 border-chart-secondary shadow-sm'
                                 : 'text-white/85 hover:bg-white/10 hover:text-white'
-                            } ${!isSidebarOpen ? 'justify-center' : ''}`}
+                            } ${!isSidebarOpen ? 'justify-center' : ''} ${
+                              link.nested && isSidebarOpen ? 'ml-4' : ''
+                            }`}
                           >
                             {Icon ? (
                               <Icon size={18} className="shrink-0 text-current" />
@@ -371,19 +408,26 @@ const Sidebar: React.FC<SidebarProps> = ({
                 </button>
 
                 {isSidebarOpen && isLeadsOpen && (
-                  <div className="mt-1 ml-4 pl-4 border-l border-border-subtle space-y-1">
-                    {visibleLeadNavItems.map(item => (
-                      <Link
-                        key={item.path}
-                        to={item.path}
-                        className={`flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium transition-all ${
-                          isRouteActive(currentPath, item.path)
-                            ? 'bg-card/60 text-text-main border-l-2 border-accent'
-                            : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
-                        }`}
-                      >
-                        <span>{item.label}</span>
-                      </Link>
+                  <div className="mt-1 ml-4 pl-4 border-l border-border-subtle space-y-3">
+                    {visibleLeadNavGroups.map(group => (
+                      <div key={group.key} className="space-y-1">
+                        <p className="px-3 pt-1 text-xs font-bold uppercase tracking-wider text-text-muted">
+                          {group.label}
+                        </p>
+                        {group.items.map(item => (
+                          <Link
+                            key={item.path}
+                            to={item.path}
+                            className={`flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium transition-all ${
+                              isRouteActive(currentPath, item.path)
+                                ? 'bg-card/60 text-text-main border-l-2 border-accent'
+                                : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
+                            }`}
+                          >
+                            <span>{item.label}</span>
+                          </Link>
+                        ))}
+                      </div>
                     ))}
                   </div>
                 )}
@@ -412,19 +456,26 @@ const Sidebar: React.FC<SidebarProps> = ({
                 </button>
 
                 {isSidebarOpen && isStudentsOpen && (
-                  <div className="mt-1 ml-4 pl-4 border-l border-border-subtle space-y-1">
-                    {studentNavItems.map(item => (
-                      <Link
-                        key={item.path}
-                        to={item.path}
-                        className={`flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium transition-all ${
-                          isRouteActive(currentPath, item.path)
-                            ? 'bg-card/60 text-text-main border-l-2 border-accent'
-                            : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
-                        }`}
-                      >
-                        <span>{item.label}</span>
-                      </Link>
+                  <div className="mt-1 ml-4 pl-4 border-l border-border-subtle space-y-3">
+                    {studentNavGroups.map(group => (
+                      <div key={group.key} className="space-y-1">
+                        <p className="px-3 pt-1 text-xs font-bold uppercase tracking-wider text-text-muted">
+                          {group.label}
+                        </p>
+                        {group.items.map(item => (
+                          <Link
+                            key={item.path}
+                            to={item.path}
+                            className={`flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium transition-all ${
+                              isRouteActive(currentPath, item.path)
+                                ? 'bg-card/60 text-text-main border-l-2 border-accent'
+                                : 'text-text-dark-bg hover:bg-card/40 hover:text-text-dark-bg'
+                            }`}
+                          >
+                            <span>{item.label}</span>
+                          </Link>
+                        ))}
+                      </div>
                     ))}
                   </div>
                 )}

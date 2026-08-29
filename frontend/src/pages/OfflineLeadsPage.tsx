@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowUp, ArrowUpDown, Pencil, Plus, Search, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Map as MapIcon, Pencil, Plus, Search, X } from 'lucide-react';
 import { useCreateOfflineLead, useOfflineLeadDuplicateCheck, useOfflineLeads, useUpdateOfflineLead } from '../hooks/useOfflineLeads';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useCountries } from '../hooks/useCountries';
@@ -14,7 +15,12 @@ import {
 } from '../hooks/useQualificationPrograms';
 import { useEducationMajors } from '../hooks/useEducationMajors';
 import SearchableMultiSelect from '../components/academia/SearchableMultiSelect';
+import CounsellingSessionDrawer from '../components/CounsellingSessionDrawer';
+import LeadBookingsModal from '../components/LeadBookingsModal';
+import StudentJourneyPanel from '../components/StudentJourneyPanel';
 import { useConfirmation } from '../context/ConfirmationContext';
+import type { LeadBookingSummary } from '../hooks/useLeadBookings';
+import { bookAppointmentHref } from '../utils/bookAppointmentHref';
 import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 import {
   buildEducationPayload,
@@ -22,8 +28,8 @@ import {
 } from '../utils/offlineLeadEducation';
 import { gpaCgpaToFormFields, validateGpaCgpaScore } from '../utils/gpaCgpaScore';
 import {
-  computeAgeAsOf,
   computeAgeFromDob,
+  formatAgeYmd,
   formatPhoneCountryLabel,
   parseStoredPhone,
   phoneLocalToDigits,
@@ -57,7 +63,103 @@ import {
 import './OfflineLeadsPage.css';
 
 const OFFLINE_LEADS_PAGE_SIZE_KEY = 'nexus.offlineLeads.pageSize';
+const OFFLINE_LEADS_COLUMNS_KEY = 'nexus.offlineLeads.visibleColumns.v7';
 const PAGE_SIZE_OPTIONS = TABLE_PAGE_SIZE_OPTIONS;
+
+type OfflineLeadColumnKey =
+  | 'full_name'
+  | 'student_id'
+  | 'source'
+  | 'email'
+  | 'phone_number'
+  | 'date_of_birth'
+  | 'program'
+  | 'major'
+  | 'university'
+  | 'graduation_year'
+  | 'gpa_cgpa'
+  | 'study_interest'
+  | 'city'
+  | 'state'
+  | 'country'
+  | 'booking'
+  | 'new_booking'
+  | 'lead_status'
+  | 'status'
+  | 'created_at';
+
+const OFFLINE_LEAD_COLUMN_DEFS: Array<{
+  key: OfflineLeadColumnKey;
+  label: string;
+  defaultVisible: boolean;
+  required?: boolean;
+}> = [
+  { key: 'full_name', label: 'Name', defaultVisible: true, required: true },
+  { key: 'student_id', label: 'Student ID', defaultVisible: true },
+  { key: 'source', label: 'Source', defaultVisible: true },
+  { key: 'email', label: 'Email', defaultVisible: true },
+  { key: 'phone_number', label: 'Phone', defaultVisible: true },
+  { key: 'date_of_birth', label: 'Date of Birth', defaultVisible: true },
+  { key: 'program', label: 'Program', defaultVisible: false },
+  { key: 'major', label: 'Major', defaultVisible: false },
+  { key: 'university', label: 'University', defaultVisible: false },
+  { key: 'graduation_year', label: 'Graduation Year', defaultVisible: false },
+  { key: 'gpa_cgpa', label: 'GPA / CGPA', defaultVisible: false },
+  { key: 'study_interest', label: 'Destination / Interest', defaultVisible: false },
+  { key: 'city', label: 'City', defaultVisible: false },
+  { key: 'state', label: 'State', defaultVisible: false },
+  { key: 'country', label: 'Country', defaultVisible: false },
+  { key: 'booking', label: 'Booking', defaultVisible: true },
+  { key: 'new_booking', label: 'New Booking', defaultVisible: true },
+  { key: 'lead_status', label: 'Lead Status', defaultVisible: true },
+  { key: 'status', label: 'Chat Status', defaultVisible: true },
+  { key: 'created_at', label: 'Date Added', defaultVisible: true },
+];
+
+const OFFLINE_LEAD_COLUMN_OPTIONS = OFFLINE_LEAD_COLUMN_DEFS.map(column => ({
+  value: column.key,
+  label: column.label,
+}));
+
+const REQUIRED_OFFLINE_LEAD_COLUMNS = OFFLINE_LEAD_COLUMN_DEFS.filter(column => column.required).map(
+  column => column.key
+);
+
+function defaultOfflineLeadColumns(): OfflineLeadColumnKey[] {
+  return OFFLINE_LEAD_COLUMN_DEFS.filter(column => column.defaultVisible).map(column => column.key);
+}
+
+function normalizeOfflineLeadColumns(keys: string[]): OfflineLeadColumnKey[] {
+  const allowed = new Set(OFFLINE_LEAD_COLUMN_DEFS.map(column => column.key));
+  const selected = new Set(
+    keys.filter((key): key is OfflineLeadColumnKey => allowed.has(key as OfflineLeadColumnKey))
+  );
+  for (const key of REQUIRED_OFFLINE_LEAD_COLUMNS) {
+    selected.add(key);
+  }
+  return OFFLINE_LEAD_COLUMN_DEFS.map(column => column.key).filter(key => selected.has(key));
+}
+
+function readStoredOfflineLeadColumns(): OfflineLeadColumnKey[] {
+  try {
+    const raw = localStorage.getItem(OFFLINE_LEADS_COLUMNS_KEY);
+    if (!raw) return defaultOfflineLeadColumns();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return defaultOfflineLeadColumns();
+    const normalized = normalizeOfflineLeadColumns(parsed.map(String));
+    return normalized.length ? normalized : defaultOfflineLeadColumns();
+  } catch {
+    return defaultOfflineLeadColumns();
+  }
+}
+
+function storeOfflineLeadColumns(columns: OfflineLeadColumnKey[]) {
+  try {
+    localStorage.setItem(OFFLINE_LEADS_COLUMNS_KEY, JSON.stringify(columns));
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
 
 const EMPTY_FORM: OfflineLeadCreatePayload = {
   first_name: '',
@@ -190,27 +292,23 @@ function formatDateAdded(value?: string | null): string {
   }
 }
 
-function formatDateOfBirthCell(dob?: string | null, registeredAt?: string | null): string {
+function formatDateOfBirthCell(dob?: string | null): ReactNode {
   if (!dob) return '—';
   try {
     const birth = new Date(`${dob}T00:00:00`);
     if (Number.isNaN(birth.getTime())) return dob;
     const dobLabel = birth.toLocaleDateString([], {
-      month: 'short',
       day: 'numeric',
+      month: 'short',
       year: 'numeric',
     });
-    if (!registeredAt) return dobLabel;
-    const registered = new Date(registeredAt);
-    if (Number.isNaN(registered.getTime())) return dobLabel;
-    const age = computeAgeAsOf(dob, registered);
-    if (age === null) return dobLabel;
-    const registeredLabel = registered.toLocaleDateString([], {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
-    return `${dobLabel} (Age: ${age} as of ${registeredLabel})`;
+    const ageLabel = formatAgeYmd(dob);
+    return (
+      <>
+        <div>{dobLabel}</div>
+        {ageLabel ? <div className="offline-leads-table__age">{ageLabel}</div> : null}
+      </>
+    );
   } catch {
     return dob;
   }
@@ -227,6 +325,116 @@ function formatStudyInterestCell(lead: OfflineLeadItem): string {
       : lead.target_program || lead.target_course || '';
   const majors = lead.target_majors?.length ? lead.target_majors.join(', ') : '';
   return [destinations, lead.target_level_name, majors, programs].filter(Boolean).join(' · ') || '—';
+}
+
+function formatLeadSourceLabel(source?: string | null): string {
+  return String(source || '').toUpperCase() === 'EXPRESS' ? 'Express Lead' : 'Offline Lead';
+}
+
+function columnHeaderClass(key: OfflineLeadColumnKey): string | undefined {
+  if (key === 'date_of_birth') return 'offline-leads-table__dob';
+  return undefined;
+}
+
+function renderOfflineLeadCell(
+  lead: OfflineLeadItem,
+  key: OfflineLeadColumnKey,
+  handlers?: {
+    onViewJourney?: (lead: OfflineLeadItem) => void;
+    onOpenBookings?: (lead: OfflineLeadItem) => void;
+    onEditLead?: (lead: OfflineLeadItem) => void;
+  }
+): ReactNode {
+  switch (key) {
+    case 'full_name':
+      return lead.full_name || '—';
+    case 'student_id':
+      return (
+        <button
+          type="button"
+          className="offline-leads-journey-link"
+          onClick={() => handlers?.onEditLead?.(lead)}
+          title={`Edit ${lead.full_name || `lead #${lead.id}`}`}
+        >
+          {lead.id}
+        </button>
+      );
+    case 'source':
+      return formatLeadSourceLabel(lead.source);
+    case 'email':
+      return lead.email?.includes('@edutrust.nexus') ? '—' : lead.email || '—';
+    case 'phone_number':
+      return lead.phone_number || '—';
+    case 'date_of_birth':
+      return formatDateOfBirthCell(lead.date_of_birth);
+    case 'program':
+      return lead.program || lead.degree || '—';
+    case 'major':
+      return lead.major || '—';
+    case 'university':
+      return lead.university || '—';
+    case 'graduation_year':
+      return lead.graduation_year ?? '—';
+    case 'gpa_cgpa':
+      return lead.gpa_cgpa || '—';
+    case 'study_interest':
+      return formatStudyInterestCell(lead);
+    case 'city':
+      return lead.city || '—';
+    case 'state':
+      return lead.state || '—';
+    case 'country':
+      return lead.country || '—';
+    case 'booking': {
+      const count = lead.booking_count ?? 0;
+      if (count <= 0) {
+        return <span className="text-text-muted">0</span>;
+      }
+      return (
+        <button
+          type="button"
+          className="offline-leads-journey-link"
+          onClick={() => handlers?.onOpenBookings?.(lead)}
+          title="View counselling bookings"
+        >
+          {count}
+        </button>
+      );
+    }
+    case 'new_booking':
+      return (
+        <Link
+          to={bookAppointmentHref({
+            id: lead.id,
+            full_name: lead.full_name || '',
+            email: lead.email,
+            phone_number: lead.phone_number,
+          })}
+          className="offline-leads-journey-link"
+          title={`Book appointment for ${lead.full_name || `lead #${lead.id}`}`}
+        >
+          Book Now
+        </Link>
+      );
+    case 'lead_status':
+      return (
+        <button
+          type="button"
+          className="offline-leads-journey-link"
+          onClick={() => handlers?.onViewJourney?.(lead)}
+          title="View student journey timeline"
+        >
+          <MapIcon size={13} />
+          View Journey
+        </button>
+      );
+    case 'status':
+      return <span className={statusClass(lead.status_label)}>{lead.status_label}</span>;
+    case 'created_at':
+      return formatDateAdded(lead.created_at);
+    default:
+      return '—';
+  }
 }
 
 function statusClass(label: string): string {
@@ -250,14 +458,32 @@ function SortIcon({
 
 export default function OfflineLeadsPage() {
   const openConfirm = useConfirmation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const consumedEditRef = useRef<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<TablePageSize>(() =>
     readStoredTablePageSize(OFFLINE_LEADS_PAGE_SIZE_KEY)
   );
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(() => searchParams.get('q') || '');
   const [status, setStatus] = useState<OfflineLeadStatusFilter>('ALL');
   const [sortBy, setSortBy] = useState<OfflineLeadSortField>('created_at');
   const [sortDir, setSortDir] = useState<OfflineLeadSortDirection>('desc');
+  const [visibleColumns, setVisibleColumns] = useState<OfflineLeadColumnKey[]>(readStoredOfflineLeadColumns);
+  const [journeyModal, setJourneyModal] = useState<{
+    studentId: number;
+    studentName: string;
+  } | null>(null);
+  const [bookingsModal, setBookingsModal] = useState<{
+    leadId: number;
+    leadName: string;
+  } | null>(null);
+  const [sessionDrawer, setSessionDrawer] = useState<{
+    bookingId: number;
+    leadId: number;
+    candidateName: string;
+    dateLabel?: string | null;
+    timeLabel?: string | null;
+  } | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingLead, setEditingLead] = useState<OfflineLeadItem | null>(null);
   const [form, setForm] = useState<OfflineLeadCreatePayload>(EMPTY_FORM);
@@ -384,6 +610,19 @@ export default function OfflineLeadsPage() {
   useEffect(() => {
     storeTablePageSize(OFFLINE_LEADS_PAGE_SIZE_KEY, pageSize);
   }, [pageSize]);
+
+  useEffect(() => {
+    storeOfflineLeadColumns(visibleColumns);
+  }, [visibleColumns]);
+
+  const visibleColumnDefs = useMemo(
+    () => OFFLINE_LEAD_COLUMN_DEFS.filter(column => visibleColumns.includes(column.key)),
+    [visibleColumns]
+  );
+
+  const handleVisibleColumnsChange = (values: string[]) => {
+    setVisibleColumns(normalizeOfflineLeadColumns(values));
+  };
 
   useEffect(() => {
     setPage(1);
@@ -648,7 +887,27 @@ export default function OfflineLeadsPage() {
   const totalPages = listQuery.data?.total_pages ?? 1;
   const currentPage = listQuery.data?.page ?? page;
 
+  useEffect(() => {
+    const editRaw = searchParams.get('edit');
+    if (!editRaw || consumedEditRef.current === editRaw || modalOpen) return;
+    const editId = Number(editRaw);
+    if (!Number.isFinite(editId) || editId < 1) return;
+    const lead = items.find(row => row.id === editId);
+    if (!lead) return;
+    consumedEditRef.current = editRaw;
+    openEditModal(lead);
+    setSearchParams(
+      prev => {
+        const next = new URLSearchParams(prev);
+        next.delete('edit');
+        return next;
+      },
+      { replace: true }
+    );
+  }, [items, modalOpen, openEditModal, searchParams, setSearchParams]);
+
   return (
+    <>
     <div className="offline-leads-page">
       <div className="offline-leads-toolbar">
         <div className="offline-leads-toolbar__title">
@@ -667,6 +926,20 @@ export default function OfflineLeadsPage() {
               value={search}
               onChange={e => setSearch(e.target.value)}
               aria-label="Search offline leads"
+            />
+          </div>
+
+          <div className="offline-leads-toolbar__field offline-leads-toolbar__columns">
+            <span>Columns</span>
+            <SearchableMultiSelect
+              id="offline-leads-columns"
+              values={visibleColumns}
+              options={OFFLINE_LEAD_COLUMN_OPTIONS}
+              onChange={handleVisibleColumnsChange}
+              placeholder="Choose columns…"
+              selectedDisplay={`${visibleColumns.length} columns`}
+              compact
+              className="offline-leads-columns-select"
             />
           </div>
 
@@ -700,52 +973,54 @@ export default function OfflineLeadsPage() {
           <table className="offline-leads-table">
             <thead>
               <tr>
-                <th className="sortable" onClick={() => toggleSort('full_name')}>
-                  Name <SortIcon field="full_name" sortBy={sortBy} sortDir={sortDir} />
-                </th>
-                <th className="sortable" onClick={() => toggleSort('email')}>
-                  Email <SortIcon field="email" sortBy={sortBy} sortDir={sortDir} />
-                </th>
-                <th className="sortable" onClick={() => toggleSort('phone_number')}>
-                  Phone <SortIcon field="phone_number" sortBy={sortBy} sortDir={sortDir} />
-                </th>
-                <th>Date of Birth</th>
-                <th>Program</th>
-                <th>Major</th>
-                <th>University</th>
-                <th>Graduation Year</th>
-                <th>GPA / CGPA</th>
-                <th>Destination / Interest</th>
-                <th>Current Location</th>
-                <th>Status</th>
-                <th className="sortable" onClick={() => toggleSort('created_at')}>
-                  Date Added <SortIcon field="created_at" sortBy={sortBy} sortDir={sortDir} />
-                </th>
+                {visibleColumnDefs.map(column => {
+                  const sortable =
+                    column.key === 'full_name' ||
+                    column.key === 'email' ||
+                    column.key === 'phone_number' ||
+                    column.key === 'created_at';
+                  if (sortable) {
+                    const sortField = column.key as OfflineLeadSortField;
+                    return (
+                      <th
+                        key={column.key}
+                        className={`sortable ${columnHeaderClass(column.key) || ''}`.trim()}
+                        onClick={() => toggleSort(sortField)}
+                      >
+                        {column.label}{' '}
+                        <SortIcon field={sortField} sortBy={sortBy} sortDir={sortDir} />
+                      </th>
+                    );
+                  }
+                  return (
+                    <th key={column.key} className={columnHeaderClass(column.key)}>
+                      {column.label}
+                    </th>
+                  );
+                })}
                 <th className="offline-leads-table__actions">Actions</th>
               </tr>
             </thead>
             <tbody>
               {items.map((lead: OfflineLeadItem) => (
                 <tr key={lead.id}>
-                  <td>{lead.full_name}</td>
-                  <td>{lead.email?.includes('@edutrust.nexus') ? '—' : lead.email || '—'}</td>
-                  <td>{lead.phone_number || '—'}</td>
-                  <td className="offline-leads-table__dob">
-                    {formatDateOfBirthCell(lead.date_of_birth, lead.created_at)}
-                  </td>
-                  <td>{lead.program || lead.degree || '—'}</td>
-                  <td>{lead.major || '—'}</td>
-                  <td>{lead.university || '—'}</td>
-                  <td>{lead.graduation_year ?? '—'}</td>
-                  <td>{lead.gpa_cgpa || '—'}</td>
-                  <td>{formatStudyInterestCell(lead)}</td>
-                  <td>
-                    {[lead.city, lead.state, lead.zip_code, lead.country].filter(Boolean).join(', ') || '—'}
-                  </td>
-                  <td>
-                    <span className={statusClass(lead.status_label)}>{lead.status_label}</span>
-                  </td>
-                  <td>{formatDateAdded(lead.created_at)}</td>
+                  {visibleColumnDefs.map(column => (
+                    <td key={column.key} className={columnHeaderClass(column.key)}>
+                      {renderOfflineLeadCell(lead, column.key, {
+                        onViewJourney: next =>
+                          setJourneyModal({
+                            studentId: next.id,
+                            studentName: next.full_name,
+                          }),
+                        onOpenBookings: next =>
+                          setBookingsModal({
+                            leadId: next.id,
+                            leadName: next.full_name,
+                          }),
+                        onEditLead: openEditModal,
+                      })}
+                    </td>
+                  ))}
                   <td className="offline-leads-table__actions">
                     <button
                       type="button"
@@ -1327,5 +1602,41 @@ export default function OfflineLeadsPage() {
         document.body
       )}
     </div>
+    <StudentJourneyPanel
+      open={journeyModal !== null}
+      studentId={journeyModal?.studentId ?? null}
+      studentName={journeyModal?.studentName}
+      onClose={() => setJourneyModal(null)}
+    />
+    <LeadBookingsModal
+      open={bookingsModal !== null}
+      leadId={bookingsModal?.leadId ?? null}
+      leadName={bookingsModal?.leadName}
+      onClose={() => setBookingsModal(null)}
+      onSelectBooking={(booking: LeadBookingSummary) => {
+        if (!bookingsModal) return;
+        setSessionDrawer({
+          bookingId: booking.id,
+          leadId: bookingsModal.leadId,
+          candidateName: booking.candidate_name || bookingsModal.leadName,
+          dateLabel: booking.date_label,
+          timeLabel: booking.time_label,
+        });
+        setBookingsModal(null);
+      }}
+    />
+    <CounsellingSessionDrawer
+      open={sessionDrawer !== null}
+      bookingId={sessionDrawer?.bookingId}
+      candidateId={sessionDrawer?.leadId}
+      candidateName={sessionDrawer?.candidateName}
+      dateLabel={sessionDrawer?.dateLabel}
+      timeLabel={sessionDrawer?.timeLabel}
+      onClose={() => setSessionDrawer(null)}
+      onStatusUpdated={() => {
+        void listQuery.refetch();
+      }}
+    />
+    </>
   );
 }

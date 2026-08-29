@@ -5,13 +5,14 @@ export interface QualificationProgramMajorRecord {
 }
 
 export interface QualificationProgramRecord {
-  id: string;
+  id: number;
   code: string;
   name: string;
   label: string;
   level_id: number;
   level_code?: string | null;
   level_name?: string | null;
+  program_url?: string | null;
   sort_order: number;
   majors?: QualificationProgramMajorRecord[];
 }

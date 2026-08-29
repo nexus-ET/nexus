@@ -4,8 +4,9 @@ import { Link } from 'react-router-dom';
 
 import { apiFetch } from '../../utils/api';
 import { institutionEditPath } from '../../config/academiaHubNav';
-import type { InstitutionalHierarchySummary } from '../../types/institutions';
+import type { CampusRecord, InstitutionalHierarchySummary } from '../../types/institutions';
 import type { IntakeEntityType } from '../../types/hierarchicalIntake';
+import { campusDescriptionPreview } from '../../utils/campusDescription';
 import CollegeDetailsInlinePanel from './colleges/CollegeDetailsInlinePanel';
 import InlineExpandPanel from './form/InlineExpandPanel';
 import IntakeConfigureContent from './intakes/IntakeConfigureContent';
@@ -19,6 +20,14 @@ type ExpandedPanel =
       mode: 'details';
       kind: 'institution';
       institutionId: number;
+      entityName: string;
+    }
+  | {
+      key: string;
+      mode: 'details';
+      kind: 'campus';
+      institutionId: number;
+      campusId: number;
       entityName: string;
     }
   | {
@@ -44,6 +53,7 @@ interface HierarchyRow {
   name: string;
   institutionId: number;
   campusName?: string;
+  descriptionPreview?: string;
   deanName?: string;
   entityId: number;
   collegeId?: number;
@@ -53,11 +63,24 @@ interface InstitutionDetailsRecord {
   id: number;
   name: string;
   code?: string | null;
-  institution_type?: string | null;
+  institution_type_id?: number | null;
+  institution_type_name?: string | null;
   country_name?: string | null;
   state_name?: string | null;
   city_name?: string | null;
   accreditation_details?: string | null;
+  year_established?: string | null;
+  global_ranking?: string | null;
+  national_ranking?: string | null;
+  brochure_url?: string | null;
+  tuition_fees?: string | null;
+  hostel_expenses?: string | null;
+  food_expense?: string | null;
+  books_expense?: string | null;
+  commutation_expense?: string | null;
+  insurance_expense?: string | null;
+  medical_expense?: string | null;
+  other_expense?: string | null;
 }
 
 const InstitutionsCollegesManagePage: React.FC = () => {
@@ -70,6 +93,9 @@ const InstitutionsCollegesManagePage: React.FC = () => {
   );
   const [institutionDetailsLoading, setInstitutionDetailsLoading] = useState(false);
   const [institutionDetailsError, setInstitutionDetailsError] = useState<string | null>(null);
+  const [campusDetails, setCampusDetails] = useState<CampusRecord | null>(null);
+  const [campusDetailsLoading, setCampusDetailsLoading] = useState(false);
+  const [campusDetailsError, setCampusDetailsError] = useState<string | null>(null);
 
   const loadHierarchy = useCallback(async () => {
     setLoading(true);
@@ -100,12 +126,14 @@ const InstitutionsCollegesManagePage: React.FC = () => {
         entityId: institution.id,
       });
       for (const campus of institution.campuses) {
+        const descriptionCell = campusDescriptionPreview(campus.description);
         next.push({
           key: `campus-${campus.id}`,
           kind: 'campus',
           name: campus.name,
           institutionId: institution.id,
           campusName: campus.location_label || undefined,
+          descriptionPreview: descriptionCell.preview,
           entityId: campus.id,
         });
         for (const college of campus.colleges) {
@@ -117,7 +145,9 @@ const InstitutionsCollegesManagePage: React.FC = () => {
             kind: 'college',
             name: college.name,
             institutionId: institution.id,
-            campusName: campus.name,
+            campusName: college.campus_names?.length
+              ? college.campus_names.join(', ')
+              : campus.name,
             deanName: college.dean_name || undefined,
             entityId: college.id,
             collegeId: college.id,
@@ -150,6 +180,22 @@ const InstitutionsCollegesManagePage: React.FC = () => {
     }
   }, []);
 
+  const loadCampusDetails = useCallback(async (campusId: number) => {
+    setCampusDetailsLoading(true);
+    setCampusDetailsError(null);
+    try {
+      const record = await apiFetch<CampusRecord>(`academia/campuses/${campusId}`);
+      setCampusDetails(record);
+    } catch (err) {
+      setCampusDetailsError(
+        err instanceof Error ? err.message : 'Failed to load campus details.'
+      );
+      setCampusDetails(null);
+    } finally {
+      setCampusDetailsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (expandedPanel?.mode !== 'details' || expandedPanel.kind !== 'institution') {
       setInstitutionDetails(null);
@@ -158,6 +204,15 @@ const InstitutionsCollegesManagePage: React.FC = () => {
     }
     void loadInstitutionDetails(expandedPanel.institutionId);
   }, [expandedPanel, loadInstitutionDetails]);
+
+  useEffect(() => {
+    if (expandedPanel?.mode !== 'details' || expandedPanel.kind !== 'campus') {
+      setCampusDetails(null);
+      setCampusDetailsError(null);
+      return;
+    }
+    void loadCampusDetails(expandedPanel.campusId);
+  }, [expandedPanel, loadCampusDetails]);
 
   const entityIcon = (kind: EntityKind) => {
     if (kind === 'institution') return Landmark;
@@ -198,9 +253,13 @@ const InstitutionsCollegesManagePage: React.FC = () => {
           {institutionDetails ? (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div>
+                <p className="text-xs font-semibold uppercase text-text-muted">ID</p>
+                <p className="mt-1 text-sm tabular-nums text-text-main">{institutionDetails.id}</p>
+              </div>
+              <div>
                 <p className="text-xs font-semibold uppercase text-text-muted">Institution type</p>
                 <p className="mt-1 text-sm text-text-main">
-                  {institutionDetails.institution_type || '—'}
+                  {institutionDetails.institution_type_name || '—'}
                 </p>
               </div>
               <div>
@@ -217,12 +276,88 @@ const InstitutionsCollegesManagePage: React.FC = () => {
                   {institutionDetails.accreditation_details?.replace(/<[^>]+>/g, '').trim() || '—'}
                 </p>
               </div>
+              {(
+                [
+                  ['Year established', institutionDetails.year_established],
+                  ['Global ranking', institutionDetails.global_ranking],
+                  ['National ranking', institutionDetails.national_ranking],
+                  ['Brochure URL', institutionDetails.brochure_url],
+                  ['Tuition fees', institutionDetails.tuition_fees],
+                  ['Hostel expenses', institutionDetails.hostel_expenses],
+                  ['Food expense', institutionDetails.food_expense],
+                  ['Books expense', institutionDetails.books_expense],
+                  ['Commutation expense', institutionDetails.commutation_expense],
+                  ['Insurance expense', institutionDetails.insurance_expense],
+                  ['Medical expense', institutionDetails.medical_expense],
+                  ['Other expense', institutionDetails.other_expense],
+                ] as const
+              ).map(([label, value]) => (
+                <div key={label}>
+                  <p className="text-xs font-semibold uppercase text-text-muted">{label}</p>
+                  <p className="mt-1 break-words text-sm text-text-main">{value?.trim() || '—'}</p>
+                </div>
+              ))}
               <div className="md:col-span-2">
                 <Link
                   to={institutionEditPath(panel.institutionId)}
                   className="inline-flex items-center gap-2 rounded-xl border border-border-subtle px-3 py-2 text-sm font-semibold text-text-main hover:bg-card"
                 >
                   Open full editor
+                </Link>
+              </div>
+            </div>
+          ) : null}
+        </InlineExpandPanel>
+      );
+    }
+
+    if (panel.mode === 'details' && panel.kind === 'campus') {
+      const descriptionCell = campusDescriptionPreview(campusDetails?.description);
+      return (
+        <InlineExpandPanel
+          title={panel.entityName}
+          subtitle="Campus details"
+          onClose={() => setExpandedPanel(null)}
+          loading={campusDetailsLoading}
+          loadingLabel="Loading campus details..."
+          error={campusDetailsError}
+        >
+          {campusDetails ? (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div>
+                <p className="text-xs font-semibold uppercase text-text-muted">Campus ID</p>
+                <p className="mt-1 text-sm tabular-nums text-text-main">{campusDetails.id}</p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase text-text-muted">Institution ID</p>
+                <p className="mt-1 text-sm tabular-nums text-text-main">
+                  {campusDetails.institution_id}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase text-text-muted">Location</p>
+                <p className="mt-1 text-sm text-text-main">
+                  {campusDetails.location_label || '—'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase text-text-muted">Campus type</p>
+                <p className="mt-1 text-sm text-text-main">
+                  {campusDetails.campus_type_name || '—'}
+                </p>
+              </div>
+              <div className="md:col-span-2">
+                <p className="text-xs font-semibold uppercase text-text-muted">Description</p>
+                <p className="mt-1 whitespace-pre-wrap break-words text-sm text-text-main">
+                  {descriptionCell.preview}
+                </p>
+              </div>
+              <div className="md:col-span-2">
+                <Link
+                  to={`${institutionEditPath(panel.institutionId)}?step=1`}
+                  className="inline-flex items-center gap-2 rounded-xl border border-border-subtle px-3 py-2 text-sm font-semibold text-text-main hover:bg-card"
+                >
+                  Edit campus in institution wizard
                 </Link>
               </div>
             </div>
@@ -268,9 +403,12 @@ const InstitutionsCollegesManagePage: React.FC = () => {
           <table className="min-w-full text-sm">
             <thead className="bg-surface-bg text-left text-xs uppercase tracking-wide text-text-muted">
               <tr>
+                <th className="px-6 py-3 font-semibold">ID</th>
                 <th className="px-6 py-3 font-semibold">Entity</th>
                 <th className="px-6 py-3 font-semibold">Type</th>
+                <th className="px-6 py-3 font-semibold">Institution ID</th>
                 <th className="px-6 py-3 font-semibold">Campus</th>
+                <th className="px-6 py-3 font-semibold">Description</th>
                 <th className="px-6 py-3 font-semibold">Dean</th>
                 <th className="px-6 py-3 font-semibold">Actions</th>
               </tr>
@@ -289,6 +427,7 @@ const InstitutionsCollegesManagePage: React.FC = () => {
                         isExpanded ? 'bg-accent/5' : ''
                       }`}
                     >
+                      <td className="px-6 py-3 tabular-nums text-text-muted">{row.entityId}</td>
                       <td className={`px-6 py-3 ${indentClass}`}>
                         <div className="flex items-center gap-2">
                           <Icon size={16} className="shrink-0 text-accent" />
@@ -296,11 +435,23 @@ const InstitutionsCollegesManagePage: React.FC = () => {
                         </div>
                       </td>
                       <td className="px-6 py-3 text-text-muted">{entityLabel(row.kind)}</td>
+                      <td className="px-6 py-3 tabular-nums text-text-muted">
+                        {row.kind === 'institution' ? '—' : row.institutionId}
+                      </td>
                       <td className="px-6 py-3 text-text-muted">{row.campusName || '—'}</td>
+                      <td className="max-w-xs px-6 py-3 text-text-muted">
+                        {row.kind === 'campus' ? (
+                          <span className="block truncate">{row.descriptionPreview || '—'}</span>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
                       <td className="px-6 py-3 text-text-muted">{row.deanName || '—'}</td>
                       <td className="px-6 py-3">
                         <div className="flex flex-wrap gap-2">
-                          {(row.kind === 'institution' || row.kind === 'college') && (
+                          {(row.kind === 'institution' ||
+                            row.kind === 'college' ||
+                            row.kind === 'campus') && (
                             <button
                               type="button"
                               onClick={() => {
@@ -310,6 +461,15 @@ const InstitutionsCollegesManagePage: React.FC = () => {
                                     mode: 'details',
                                     kind: 'institution',
                                     institutionId: row.institutionId,
+                                    entityName: row.name,
+                                  });
+                                } else if (row.kind === 'campus') {
+                                  togglePanel({
+                                    key: `${row.key}-details`,
+                                    mode: 'details',
+                                    kind: 'campus',
+                                    institutionId: row.institutionId,
+                                    campusId: row.entityId,
                                     entityName: row.name,
                                   });
                                 } else {
@@ -359,7 +519,7 @@ const InstitutionsCollegesManagePage: React.FC = () => {
                     </tr>
                     {expandedPanel && expandedPanel.key.startsWith(`${row.key}-`) ? (
                       <tr className="border-t border-border-subtle/70 bg-surface-bg/40">
-                        <td colSpan={5} className="px-6 py-4">
+                        <td colSpan={8} className="px-6 py-4">
                           {renderExpandedPanel(expandedPanel)}
                         </td>
                       </tr>

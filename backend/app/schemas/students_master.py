@@ -76,3 +76,33 @@ class StudentMasterSaveResponse(BaseModel):
     profile: dict
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class StudentMasterInvoiceHit(BaseModel):
+    id: int
+    lead_id: int | None = None
+    full_name: str | None = None
+    first_name: str | None = None
+    middle_name: str | None = None
+    last_name: str | None = None
+    email: str | None = None
+    phone_country_iso2: str | None = None
+    phone_local: str | None = None
+    phone_number: str | None = None
+    address_street: str | None = None
+    address1: str | None = None
+    address2: str | None = None
+    address3: str | None = None
+    city: str | None = None
+    state: str | None = None
+    country_iso2: str | None = None
+    zipcode: str | None = None
+    target_destination_iso2: str | None = None
+    assigned_advisor_id: int | None = None
+    assigned_advisor_name: str | None = None
+    updated_at: str | None = None
+
+
+class StudentMasterInvoiceSearchResponse(BaseModel):
+    items: list[StudentMasterInvoiceHit]
+    total: int

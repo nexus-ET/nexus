@@ -15,6 +15,18 @@ class CampusType(Base):
     campuses = relationship("Campus", back_populates="campus_type_ref")
 
 
+class InstitutionType(Base):
+    __tablename__ = "institution_types"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(50), nullable=False, unique=True, index=True)
+    name = Column(String(100), nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    sort_order = Column(Integer, default=0, nullable=False)
+
+    institutions = relationship("Institution", back_populates="institution_type_ref")
+
+
 class Institution(Base):
     __tablename__ = "institutions"
 
@@ -30,7 +42,7 @@ class Institution(Base):
     name = Column(String(255), nullable=False, index=True)
     code = Column(String(50), nullable=True, index=True)
     dean_name = Column(String(255), nullable=True)
-    institution_type = Column(String(80), nullable=True)
+    institution_type_id = Column(Integer, ForeignKey("institution_types.id"), nullable=True, index=True)
     company_affiliated = Column(Boolean, nullable=True)
     ranking_tier_global = Column(String(120), nullable=True)
     ad_promotion_flag = Column(Boolean, nullable=True)
@@ -38,6 +50,18 @@ class Institution(Base):
     web_links = Column(JSON, nullable=True)
     currency_type = Column(String(10), nullable=False, default="USD")
     students_count = Column(String(250), nullable=True)
+    year_established = Column(Text, nullable=True)
+    global_ranking = Column(Text, nullable=True)
+    national_ranking = Column(Text, nullable=True)
+    brochure_url = Column(Text, nullable=True)
+    tuition_fees = Column(Text, nullable=True)
+    hostel_expenses = Column(Text, nullable=True)
+    food_expense = Column(Text, nullable=True)
+    books_expense = Column(Text, nullable=True)
+    commutation_expense = Column(Text, nullable=True)
+    insurance_expense = Column(Text, nullable=True)
+    medical_expense = Column(Text, nullable=True)
+    other_expense = Column(Text, nullable=True)
     accreditation_details = Column(Text, nullable=True)
     short_description = Column(String(2500), nullable=True)
     long_description = Column(Text, nullable=True)
@@ -52,6 +76,7 @@ class Institution(Base):
     country = relationship("Country", backref="institutions")
     state = relationship("GeographyState", backref="institutions")
     city = relationship("GeographyCity", backref="institutions")
+    institution_type_ref = relationship("InstitutionType", back_populates="institutions")
     campuses = relationship("Campus", back_populates="institution", cascade="all, delete-orphan")
     colleges = relationship("College", back_populates="institution", cascade="all, delete-orphan")
 
@@ -84,6 +109,9 @@ class Campus(Base):
     state = relationship("GeographyState", backref="campuses")
     campus_type_ref = relationship("CampusType", back_populates="campuses")
     colleges = relationship("College", back_populates="campus", cascade="all, delete-orphan")
+    college_links = relationship(
+        "CollegeCampus", back_populates="campus", cascade="all, delete-orphan"
+    )
 
 
 class College(Base):
@@ -105,3 +133,21 @@ class College(Base):
 
     institution = relationship("Institution", back_populates="colleges")
     campus = relationship("Campus", back_populates="colleges")
+    campus_links = relationship(
+        "CollegeCampus", back_populates="college", cascade="all, delete-orphan"
+    )
+
+
+class CollegeCampus(Base):
+    """Source-backed many-to-many mapping between colleges and campuses."""
+
+    __tablename__ = "college_campuses"
+
+    college_id = Column(Integer, ForeignKey("colleges.id", ondelete="CASCADE"), primary_key=True)
+    campus_id = Column(Integer, ForeignKey("campuses.id", ondelete="CASCADE"), primary_key=True)
+    is_primary = Column(Boolean, default=False, nullable=False)
+    source_url = Column(String(500), nullable=True)
+    evidence = Column(Text, nullable=True)
+
+    college = relationship("College", back_populates="campus_links")
+    campus = relationship("Campus", back_populates="college_links")

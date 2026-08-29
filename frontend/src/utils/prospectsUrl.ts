@@ -1,6 +1,11 @@
 import type { ProspectsFilters } from '../types/prospect';
 import { DEFAULT_PROSPECTS_FILTERS } from '../types/prospect';
 import {
+  PIPELINE_SUBPROCESS_PARAM,
+  defaultSubprocessForBasePath,
+  isDefaultPipelineSubprocess,
+} from './studentPipelineProcess';
+import {
   isContactStatusFilter,
   type ContactStatusFilter,
 } from './leadQueueFilters';
@@ -79,7 +84,9 @@ export function readDetailTab(params: URLSearchParams): ProspectDetailTab {
 export function writeFilterParams(
   params: URLSearchParams,
   filters: ProspectsFilters,
-  tab?: ProspectDetailTab
+  tab?: ProspectDetailTab,
+  subprocess?: string | null,
+  extraDefaultSubprocess?: string | null
 ): URLSearchParams {
   const next = new URLSearchParams(params);
 
@@ -118,6 +125,13 @@ export function writeFilterParams(
   if (tab && tab !== 'overview') next.set('tab', tab);
   else next.delete('tab');
 
+  const defaultSubprocess = extraDefaultSubprocess;
+  if (subprocess && !isDefaultPipelineSubprocess(subprocess, defaultSubprocess)) {
+    next.set(PIPELINE_SUBPROCESS_PARAM, subprocess.trim());
+  } else {
+    next.delete(PIPELINE_SUBPROCESS_PARAM);
+  }
+
   return next;
 }
 
@@ -125,9 +139,16 @@ export function buildProspectsPath(
   leadId: number | null,
   filters: ProspectsFilters,
   tab?: ProspectDetailTab,
-  basePath = '/prospects'
+  basePath = '/prospects',
+  subprocess?: string | null
 ): string {
-  const params = writeFilterParams(new URLSearchParams(), filters, tab);
+  const params = writeFilterParams(
+    new URLSearchParams(),
+    filters,
+    tab,
+    subprocess,
+    defaultSubprocessForBasePath(basePath)
+  );
   const query = params.toString();
   const base = leadId ? `${basePath}/${leadId}` : basePath;
   return query ? `${base}?${query}` : base;

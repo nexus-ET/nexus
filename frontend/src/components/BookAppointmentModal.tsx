@@ -10,6 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import PhoneWithCountryCodeInput from './academia/form/PhoneWithCountryCodeInput';
 import { useCountries } from '../hooks/useCountries';
 import {
@@ -54,28 +55,23 @@ const DEFAULT_SESSION_PURPOSES: SessionPurpose[] = [
 function resolveSessionPurposes(fromApi: SessionPurpose[] | undefined): SessionPurpose[] {
   if (!fromApi?.length) return DEFAULT_SESSION_PURPOSES;
 
-  const byLabel = new Map(fromApi.map(item => [item.label.trim().toLowerCase(), item]));
-
-  // Prefer the original category set so the dropdown stays stable and readable.
-  return DEFAULT_SESSION_PURPOSES.map(defaults => {
-    const match = byLabel.get(defaults.label.toLowerCase());
-    return {
-      label: defaults.label,
-      description: (match?.description || defaults.description).trim(),
-    };
-  });
+  const seen = new Set<string>();
+  const purposes: SessionPurpose[] = [];
+  for (const item of fromApi) {
+    const label = item.label.trim();
+    if (!label) continue;
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    purposes.push({
+      label,
+      description: (item.description || '').trim() || 'Counselling session category',
+    });
+  }
+  return purposes.length ? purposes : DEFAULT_SESSION_PURPOSES;
 }
 
-export type BookAppointmentModalProps = {
-  open?: boolean;
-  embedded?: boolean;
-  onClose?: () => void;
-  onBooked?: (bookingId: number) => void;
-};
-
-type CandidateMode = 'existing' | 'new';
-
-type LeadHit = {
+export type BookAppointmentPrefillLead = {
   id: number;
   full_name?: string | null;
   name?: string | null;
@@ -83,6 +79,18 @@ type LeadHit = {
   phone?: string | null;
   phone_number?: string | null;
 };
+
+export type BookAppointmentModalProps = {
+  open?: boolean;
+  embedded?: boolean;
+  onClose?: () => void;
+  onBooked?: (bookingId: number) => void;
+  initialLead?: BookAppointmentPrefillLead | null;
+};
+
+type CandidateMode = 'existing' | 'new';
+
+type LeadHit = BookAppointmentPrefillLead;
 
 function startOfLocalDay(value: Date): Date {
   return new Date(value.getFullYear(), value.getMonth(), value.getDate());
@@ -138,8 +146,10 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
   embedded = false,
   onClose,
   onBooked,
+  initialLead = null,
 }) => {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { countries } = useCountries();
   const configQuery = useBookingSessionConfig(open);
   const counsellorsQuery = useCounsellors(open);
@@ -152,6 +162,7 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
   const [selectedSlotStart, setSelectedSlotStart] = useState<string | null>(null);
 
   const [candidateMode, setCandidateMode] = useState<CandidateMode>('existing');
+  const lockExistingCandidate = Boolean(initialLead?.id);
   const [leadId, setLeadId] = useState<number | null>(null);
   const [leadHits, setLeadHits] = useState<LeadHit[]>([]);
   const [leadSearching, setLeadSearching] = useState(false);
@@ -330,7 +341,16 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
     setLeadHits([]);
   };
 
+  const appliedInitialLeadId = useRef<number | null>(null);
+  useEffect(() => {
+    if (!open || !initialLead?.id) return;
+    if (appliedInitialLeadId.current === initialLead.id) return;
+    appliedInitialLeadId.current = initialLead.id;
+    applyLead(initialLead);
+  }, [open, initialLead]);
+
   const switchMode = (mode: CandidateMode) => {
+    if (lockExistingCandidate && mode === 'new') return;
     setCandidateMode(mode);
     setLeadId(null);
     setLeadHits([]);
@@ -340,11 +360,21 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
     setError(null);
   };
 
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+
   const clearExistingSelection = () => {
+    if (lockExistingCandidate && initialLead?.id) {
+      applyLead(initialLead);
+      setError(null);
+      return;
+    }
     setLeadId(null);
+    setLeadHits([]);
     setCandidateName('');
     setCandidateEmail('');
     setCandidatePhone('');
+    setError(null);
+    window.setTimeout(() => nameInputRef.current?.focus(), 0);
   };
 
   const resetForm = () => {
@@ -392,6 +422,8 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
       });
       setSuccessId(booking.id);
       setNotificationStatus(booking.notifications || null);
+      void queryClient.invalidateQueries({ queryKey: ['offline-leads'] });
+      void queryClient.invalidateQueries({ queryKey: ['lead-bookings'] });
       onBooked?.(booking.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not book appointment.');
@@ -504,9 +536,15 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
             <button
               type="button"
               onClick={() => switchMode('new')}
+              disabled={lockExistingCandidate}
+              title={
+                lockExistingCandidate
+                  ? 'This booking is locked to an existing Offline / Express lead'
+                  : undefined
+              }
               className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 ${
                 candidateMode === 'new' ? 'bg-primary text-white' : 'text-text-muted'
-              }`}
+              } ${lockExistingCandidate ? 'cursor-not-allowed opacity-50' : ''}`}
             >
               <UserPlus size={12} />
               New user
@@ -524,16 +562,23 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
               />
             ) : null}
             <input
+              ref={nameInputRef}
               value={candidateName}
               onChange={e => {
                 setCandidateName(e.target.value);
-                if (candidateMode === 'existing' && leadId != null) {
+                if (
+                  !lockExistingCandidate &&
+                  candidateMode === 'existing' &&
+                  leadId != null
+                ) {
                   setLeadId(null);
                   setCandidateEmail('');
                   setCandidatePhone('');
                 }
               }}
-              className={`${fieldClass} ${candidateMode === 'existing' ? 'pl-9' : ''}`}
+              className={`${fieldClass} ${candidateMode === 'existing' ? 'pl-9' : ''} ${
+                candidateMode === 'existing' && leadId != null ? 'pr-10' : ''
+              }`}
               required
               minLength={2}
               placeholder={
@@ -541,13 +586,34 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
                   ? 'Type a name to find an existing Nexus lead…'
                   : 'Enter new candidate full name'
               }
-              readOnly={candidateMode === 'existing' && leadId != null}
+              readOnly={
+                (candidateMode === 'existing' && leadId != null) || lockExistingCandidate
+              }
+              aria-describedby={
+                candidateMode === 'existing' && leadId != null
+                  ? 'existing-candidate-linked'
+                  : undefined
+              }
             />
             {leadSearching ? (
               <Loader2
                 size={14}
                 className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-text-muted"
               />
+            ) : null}
+            {candidateMode === 'existing' &&
+            leadId != null &&
+            !leadSearching &&
+            !lockExistingCandidate ? (
+              <button
+                type="button"
+                onClick={clearExistingSelection}
+                className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-text-muted hover:bg-surface-bg hover:text-text-main"
+                title="Clear selected candidate"
+                aria-label="Clear selected candidate"
+              >
+                <X size={14} />
+              </button>
             ) : null}
           </div>
           {candidateMode === 'existing' && leadHits.length > 0 && leadId == null ? (
@@ -602,16 +668,24 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
 
         {candidateMode === 'existing' ? (
           leadId != null ? (
-            <p className="text-xs text-text-muted">
-              Linked to existing lead #{leadId}. Name, phone, and email are filled from Nexus.{' '}
-              <button
-                type="button"
-                onClick={clearExistingSelection}
-                className="font-semibold text-primary"
-              >
-                Change
-              </button>
-            </p>
+            <div
+              id="existing-candidate-linked"
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-subtle bg-card px-3 py-2"
+            >
+              <p className="text-xs text-text-muted">
+                Linked to existing lead #{leadId}. Contact details are filled from Nexus.
+              </p>
+              {!lockExistingCandidate ? (
+                <button
+                  type="button"
+                  onClick={clearExistingSelection}
+                  className="inline-flex items-center gap-1 rounded-md border border-border-subtle bg-surface-bg px-2.5 py-1 text-xs font-semibold text-text-main hover:bg-card"
+                >
+                  <X size={12} />
+                  Clear &amp; search another
+                </button>
+              ) : null}
+            </div>
           ) : (
             <p className="text-xs text-text-muted">
               Select a matching lead from the name suggestions to autofill phone and email.
@@ -884,25 +958,38 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
               <li>Counsellor email: {notificationLabel(notificationStatus.email_admin)}</li>
             </ul>
           ) : null}
-          <div className="mt-2 flex flex-wrap gap-3">
+          <div className="mt-3 flex flex-wrap gap-2">
             <Link
               to={`/my-bookings/session/${successId}`}
-              className="font-semibold text-primary hover:underline"
+              className="inline-flex items-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:brightness-95"
             >
               Open session
             </Link>
-            <Link to="/counselling" className="font-semibold text-primary hover:underline">
+            <Link
+              to="/counselling"
+              className="inline-flex items-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:brightness-95"
+            >
               Open Manage Appointments
             </Link>
-            <Link to="/my-bookings" className="font-semibold text-primary hover:underline">
+            <Link
+              to="/my-bookings"
+              className="inline-flex items-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:brightness-95"
+            >
               Open My Appointments
             </Link>
             <button
               type="button"
               onClick={resetForm}
-              className="font-semibold text-text-muted hover:text-text-main"
+              className="inline-flex items-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:brightness-95"
             >
               Book another
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate(-1)}
+              className="inline-flex items-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:brightness-95"
+            >
+              Back to Page
             </button>
           </div>
         </div>

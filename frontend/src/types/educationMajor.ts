@@ -8,9 +8,12 @@ export interface EducationMajorRecord {
   id: number;
   code?: string | null;
   label: string;
-  description?: string | null;
-  program_id?: string | null;
+  major_description?: string | null;
+  sub_majors_key_fields?: string | null;
+  program_id?: number | null;
   program_name?: string | null;
+  super_major_id?: number | null;
+  super_major_name?: string | null;
   level_id?: number | null;
   level_name?: string | null;
   is_other: boolean;
@@ -20,6 +23,12 @@ export interface EducationMajorRecord {
   level_ids?: number[];
   level_names?: string[];
   level_program_counts?: MajorLevelProgramCount[];
+  sub_major_count?: number;
+}
+
+export function educationMajorOptionLabel(major: EducationMajorRecord): string {
+  const count = major.sub_major_count ?? 0;
+  return `${major.label} (${count})`;
 }
 
 export interface EducationMajorListResponse {
@@ -34,12 +43,12 @@ export interface EducationMajorBulkAssignResponse {
   assigned: number;
   overwritten: number;
   skipped: number;
-  program_ids: string[];
+  program_ids: number[];
 }
 
 export interface ProgramMajorMappingRecord {
   id: number;
-  program_id: string;
+  program_id: number;
   education_major_id: number;
   major_label: string;
   major_code?: string | null;

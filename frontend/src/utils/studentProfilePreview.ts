@@ -298,7 +298,7 @@ export function buildStudyFilterLabels(params: {
   qualificationPrograms: QualificationProgramRecord[];
   selectedLevelId: string;
   selectedMajorIds: string[];
-  selectedProgramIds: string[];
+  selectedProgramIds: Array<number | string>;
 }): {
   levelLabel: string;
   majorLabels: string[];
@@ -354,7 +354,7 @@ export function buildStudentProfilePreviewModel(params: {
   selectedInstitutions: ProfileInstitutionOption[];
   selectedLevelId: string;
   selectedMajorIds: string[];
-  selectedProgramIds: string[];
+  selectedProgramIds: Array<number | string>;
   scholarshipInterests?: string;
 }): StudentProfilePreviewModel {
   const aspirationQa = buildAspirationQa(params.aspirations, {

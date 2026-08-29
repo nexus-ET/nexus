@@ -119,6 +119,10 @@ const InstitutionIntakeManagePage: React.FC = () => {
             {INTAKE_TYPE_LABELS[intake.intake_type]}
           </p>
           <h4 className="mt-1 text-lg font-bold text-text-main">{intakeDisplayName(intake)}</h4>
+          <p className="text-xs tabular-nums text-text-muted">
+            Intake ID {intake.id}
+            {intake.institution_id ? ` · Institution ID ${intake.institution_id}` : ''}
+          </p>
           <p className="text-sm text-text-muted">
             Term: <span className="font-medium text-text-main">{intake.term_name || '—'}</span>
             {intake.year ? ` · Year ${intake.year}` : null}
@@ -164,6 +168,9 @@ const InstitutionIntakeManagePage: React.FC = () => {
             <h2 className="mt-1 text-2xl font-bold text-text-main">
               {institutionName || 'Institution'} Intakes
             </h2>
+            {numericId ? (
+              <p className="text-sm tabular-nums text-text-muted">Institution ID {numericId}</p>
+            ) : null}
             <p className="text-sm text-text-muted">
               Manage term/season labels, fixed vs rolling rules, and yearly calendar roll-over.
             </p>

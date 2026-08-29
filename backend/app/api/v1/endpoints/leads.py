@@ -38,12 +38,23 @@ from app.services.admissions_intake_flow import (
     _load_active_consultation_bookings_map,
 )
 from app.services.prospects_service import get_prospects_summary, list_prospects_keyset, resolve_platform_badge
+from app.schemas.express_lead import (
+    ExpressLeadCreate,
+    ExpressLeadCreated,
+    ExpressLeadDuplicateCheckResponse,
+)
 from app.schemas.offline_lead import (
     OfflineLeadCreate,
     OfflineLeadDuplicateCheckResponse,
+    OfflineLeadListResponse,
     OfflineLeadUpdate,
     SortDirection,
     SortField,
+)
+from app.services.express_leads_service import (
+    build_express_lead_response,
+    check_express_lead_duplicates,
+    create_express_lead,
 )
 from app.services.offline_leads_service import (
     build_offline_lead_list_item,
@@ -1071,8 +1082,8 @@ async def get_prospects_paginated(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.get("/offline")
-@router.get("/offline/")
+@router.get("/offline", response_model=OfflineLeadListResponse)
+@router.get("/offline/", response_model=OfflineLeadListResponse)
 def get_offline_leads(
     db: Session = Depends(get_db),
     page: int = 1,
@@ -1094,6 +1105,42 @@ def get_offline_leads(
             sort_dir=sort_dir,
         )
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/express/check-duplicates", response_model=ExpressLeadDuplicateCheckResponse)
+@router.get("/express/check-duplicates/", response_model=ExpressLeadDuplicateCheckResponse)
+def get_express_lead_duplicate_check(
+    db: Session = Depends(get_db),
+    email: str = "",
+    phone_country_iso2: str = "",
+    phone_local: str = "",
+):
+    """Check whether email or phone already belongs to a lead before Express save."""
+    try:
+        return check_express_lead_duplicates(
+            db,
+            email=email,
+            phone_country_iso2=phone_country_iso2,
+            phone_local=phone_local,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/express", status_code=status.HTTP_201_CREATED, response_model=ExpressLeadCreated)
+@router.post("/express/", status_code=status.HTTP_201_CREATED, response_model=ExpressLeadCreated)
+def post_express_lead(payload: ExpressLeadCreate, db: Session = Depends(get_db)):
+    """Create a lightweight lead (AI Active) from Express Leads capture."""
+    try:
+        lead = create_express_lead(db, payload)
+        return build_express_lead_response(lead)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
@@ -1246,6 +1293,20 @@ def get_lead_profile_booking(
     from app.services.counselling_service import get_lead_profile_booking_context
 
     return get_lead_profile_booking_context(db, current_user, lead_id)
+
+
+@router.get("/{lead_id}/bookings")
+@router.get("/{lead_id}/bookings/")
+def get_lead_bookings(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    """Counselling bookings for a lead (newest first) that the current user may view."""
+    from app.services.counselling_service import list_viewable_bookings_for_lead
+
+    items = list_viewable_bookings_for_lead(db, current_user, lead_id)
+    return {"lead_id": lead_id, "items": items, "total": len(items)}
 
 
 @router.get("/{lead_id}/digital-presence-links")

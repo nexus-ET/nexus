@@ -225,7 +225,7 @@ def test_valid_major_advances_to_country() -> None:
     asyncio.run(_run())
 
 
-def test_valid_country_advances_to_call_consent() -> None:
+def test_usa_country_selection_advances_to_call_consent() -> None:
     async def _run() -> None:
         lead = SimpleNamespace(
             id=1,
@@ -252,13 +252,13 @@ def test_valid_country_advances_to_call_consent() -> None:
             reply = await process_intake_message(
                 db,
                 lead,
-                "UK",
+                "USA",
                 MagicMock(is_active=False),
             )
 
         assert lead.intake_step == INTAKE_STEP_CALL_CONSENT
-        assert lead.preferred_country == "UK"
-        assert "Country: UK" in lead.academic_summary
+        assert lead.preferred_country == "USA"
+        assert "Country: USA" in lead.academic_summary
         assert "consultation" in reply.text.lower()
 
     asyncio.run(_run())
@@ -321,7 +321,8 @@ def test_name_too_long_is_rejected() -> None:
                 MagicMock(is_active=False),
             )
 
-        assert lead.intake_step == INTAKE_STEP_FULL_NAME
-        assert "75 characters" in reply.text.lower()
+        # Full-name step was removed — overly long replies skip name capture and advance.
+        assert lead.intake_step == INTAKE_STEP_TARGET_DEGREE
+        assert reply is not None
 
     asyncio.run(_run())

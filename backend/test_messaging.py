@@ -118,7 +118,7 @@ def test_format_meta_graph_error_template_translation(monkeypatch: pytest.Monkey
     detail = format_meta_graph_error(response)
     assert "et_student_welcome" in detail
     assert "en_US" in detail
-    assert "WHATSAPP_OUTREACH_TEMPLATE_LANGUAGE" in detail
+    assert "*_TEMPLATE_LANGUAGE" in detail
 
 
 def test_resolve_outreach_template_language_defaults_to_en(monkeypatch: pytest.MonkeyPatch) -> None:

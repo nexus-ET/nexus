@@ -151,7 +151,7 @@ function buildRecommendedInstitutionsQuery(filters: {
   countryIds: string[];
   levelId?: string;
   majorIds?: string[];
-  programIds?: string[];
+  programIds?: Array<number | string>;
 }): string {
   const params = new URLSearchParams();
   filters.countryIds.forEach(id => params.append('country_ids', id));

@@ -2,13 +2,10 @@ import React, { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   BookOpen,
-  Briefcase,
   Calculator,
-  ClipboardList,
+  ChevronDown,
   Compass,
-  FlaskConical,
-  GraduationCap,
-  Link2,
+  NotebookPen,
   School,
   Sparkles,
   User,
@@ -21,25 +18,72 @@ import type { ProfilePanelTab } from '../types/profilePanel';
 import type { BookingRowForProfile } from '../utils/candidateProfileLoader';
 import { apiFetch } from '../utils/api';
 
-type TabId = 'session' | 'future_insights' | 'roi_calculator' | ProfilePanelTab;
+type TabId =
+  | 'session'
+  | 'future_insights'
+  | 'roi_calculator'
+  | ProfilePanelTab;
 
-const TAB_DEFS: { id: TabId; label: string; icon: React.ReactNode }[] = [
-  { id: 'aspirations', label: 'Aspirations', icon: <Sparkles size={16} /> },
-  { id: 'session', label: 'Session', icon: <Sparkles size={16} /> },
-  { id: 'future_insights', label: 'Future Insights', icon: <Compass size={16} /> },
-  { id: 'roi_calculator', label: 'ROI Calculator', icon: <Calculator size={16} /> },
-  { id: 'university_shortlist', label: 'Shortlist', icon: <School size={16} /> },
-  { id: 'profile', label: 'Personal', icon: <User size={16} /> },
-  { id: 'academia', label: 'Academia', icon: <GraduationCap size={16} /> },
-  { id: 'non_academia', label: 'Non-Academia', icon: <BookOpen size={16} /> },
-  { id: 'digital_presence', label: 'Digital Presence', icon: <Link2 size={16} /> },
-  { id: 'test_scores', label: 'Test Scores', icon: <ClipboardList size={16} /> },
-  { id: 'work_projects', label: 'Professional', icon: <Briefcase size={16} /> },
-  { id: 'projects_research', label: 'Projects & Research', icon: <FlaskConical size={16} /> },
+type LeafTabDef = {
+  type: 'leaf';
+  id: TabId;
+  label: string;
+  icon: React.ReactNode;
+};
+
+type GroupTabDef = {
+  type: 'group';
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  children: Array<{ id: TabId; label: string; icon: React.ReactNode }>;
+};
+
+type TabNavItem = LeafTabDef | GroupTabDef;
+
+const TAB_NAV: TabNavItem[] = [
+  { type: 'leaf', id: 'session', label: 'SESSION', icon: <NotebookPen size={15} strokeWidth={2.25} /> },
+  {
+    type: 'group',
+    id: 'profile',
+    label: 'PROFILE',
+    icon: <User size={15} strokeWidth={2.25} />,
+    children: [
+      { id: 'aspirations', label: 'Aspirations', icon: <Sparkles size={13} strokeWidth={2.25} /> },
+      { id: 'profile', label: 'Personal', icon: <User size={13} strokeWidth={2.25} /> },
+    ],
+  },
+  {
+    type: 'group',
+    id: 'discovery',
+    label: 'DISCOVERY',
+    icon: <Compass size={15} strokeWidth={2.25} />,
+    children: [
+      { id: 'university_shortlist', label: 'Shortlist', icon: <School size={13} strokeWidth={2.25} /> },
+      { id: 'future_insights', label: 'Future Insights', icon: <Compass size={13} strokeWidth={2.25} /> },
+    ],
+  },
+  {
+    type: 'leaf',
+    id: 'roi_calculator',
+    label: 'ROI CALCULATOR',
+    icon: <Calculator size={15} strokeWidth={2.25} />,
+  },
 ];
 
-function isProfileTab(tab: TabId): tab is ProfilePanelTab {
-  return tab !== 'session' && tab !== 'future_insights' && tab !== 'roi_calculator';
+function findGroupForTab(tab: TabId): GroupTabDef | undefined {
+  return TAB_NAV.find(
+    (item): item is GroupTabDef =>
+      item.type === 'group' && item.children.some(child => child.id === tab)
+  );
+}
+
+function isProfileTab(tab: TabId): tab is Exclude<ProfilePanelTab, 'billing'> {
+  return (
+    tab !== 'session' &&
+    tab !== 'future_insights' &&
+    tab !== 'roi_calculator'
+  );
 }
 
 type Props = {
@@ -53,7 +97,8 @@ const IntakeSessionWorkspace: React.FC<Props> = ({
   candidateName,
   onStatusUpdated,
 }) => {
-  const [tab, setTab] = useState<TabId>('aspirations');
+  const [tab, setTab] = useState<TabId>('session');
+  const activeGroup = findGroupForTab(tab);
 
   const bookingQuery = useQuery({
     queryKey: ['bookings', 'mine', bookingId, 'activity-for-profile'],
@@ -96,45 +141,131 @@ const IntakeSessionWorkspace: React.FC<Props> = ({
     [bookingQuery.data, bookingId, candidateName]
   );
 
+  const selectTopTab = (item: TabNavItem) => {
+    if (item.type === 'group') {
+      const stillInGroup = item.children.some(child => child.id === tab);
+      setTab(stillInGroup ? tab : item.children[0].id);
+      return;
+    }
+    setTab(item.id);
+  };
+
   return (
-    <section className="rounded-xl border border-border-subtle bg-card overflow-hidden">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border-subtle bg-surface-bg/60 px-4 py-3">
+    <section className="overflow-hidden rounded-xl border border-border-subtle bg-card shadow-[0_1px_0_rgba(50,47,134,0.04)]">
+      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border-subtle bg-gradient-to-r from-accent/[0.06] via-surface-bg to-surface-bg px-4 py-3">
         <div className="min-w-0">
-          <p className="text-[10px] font-bold uppercase tracking-wide text-violet-700">
+          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-accent/70">
             Sub-Process 1.1
           </p>
           <h3 className="mt-0.5 flex items-center gap-2 text-sm font-semibold text-text-main">
-            <BookOpen size={16} className="text-violet-700" />
+            <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-accent/10 text-accent">
+              <BookOpen size={14} />
+            </span>
             Initial Profile &amp; Background Assessment
           </h3>
-          <p className="mt-0.5 text-xs text-text-muted">
-            Session notes and student profile workspace.
-          </p>
         </div>
       </div>
 
-      <div className="flex gap-1 overflow-x-auto border-b border-border-subtle px-2 pt-2 custom-scrollbar">
-        {TAB_DEFS.map(item => {
-          const active = tab === item.id;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => setTab(item.id)}
-              className={`inline-flex shrink-0 items-center gap-2 rounded-t-lg border-b-2 px-3.5 py-2.5 text-base font-semibold transition-colors ${
-                active
-                  ? 'border-violet-600 bg-violet-50/80 text-violet-900'
-                  : 'border-transparent text-text-muted hover:bg-surface-bg hover:text-text-main'
-              }`}
+      <div className="border-b border-border-subtle bg-card">
+        <nav
+          className="flex gap-0.5 overflow-x-auto overflow-y-hidden px-2 pt-2 custom-scrollbar"
+          aria-label="Student workspace"
+          role="tablist"
+        >
+          {TAB_NAV.map(item => {
+            const active =
+              item.type === 'group'
+                ? item.children.some(child => child.id === tab)
+                : tab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                aria-haspopup={item.type === 'group' ? 'true' : undefined}
+                onClick={() => selectTopTab(item)}
+                className={`group relative inline-flex shrink-0 items-center gap-2 rounded-t-lg px-3.5 py-2.5 text-base font-semibold transition-colors ${
+                  active
+                    ? 'bg-surface-bg text-accent'
+                    : 'text-text-muted hover:bg-surface-bg/70 hover:text-text-main'
+                }`}
+              >
+                <span
+                  className={`inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+                    active
+                      ? 'bg-accent text-text-dark-bg'
+                      : 'bg-surface-bg text-text-muted group-hover:bg-card group-hover:text-accent'
+                  }`}
+                >
+                  {item.icon}
+                </span>
+                <span
+                  className={`whitespace-nowrap ${
+                    item.type === 'group' ||
+                    item.id === 'roi_calculator' ||
+                    item.id === 'session'
+                      ? 'tracking-wide'
+                      : ''
+                  }`}
+                >
+                  {item.label}
+                </span>
+                {item.type === 'group' ? (
+                  <ChevronDown
+                    size={14}
+                    className={`opacity-70 transition-transform ${active ? 'rotate-180' : ''}`}
+                  />
+                ) : null}
+                <span
+                  className={`pointer-events-none absolute inset-x-2 -bottom-px h-0.5 rounded-full transition-opacity ${
+                    active ? 'bg-accent opacity-100' : 'opacity-0'
+                  }`}
+                />
+              </button>
+            );
+          })}
+        </nav>
+
+        {activeGroup ? (
+          <div className="flex flex-wrap items-center gap-3 border-t border-border-subtle/70 bg-surface-bg px-3 py-2.5">
+            <div className="hidden items-center gap-2 sm:flex">
+              <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-text-muted">
+                {activeGroup.label}
+              </span>
+              <span className="h-3 w-px bg-border-subtle" aria-hidden />
+            </div>
+            <div
+              className="inline-flex max-w-full flex-wrap gap-1 rounded-lg border border-border-subtle bg-card p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)]"
+              role="tablist"
+              aria-label={`${activeGroup.label} sections`}
             >
-              {item.icon}
-              {item.label}
-            </button>
-          );
-        })}
+              {activeGroup.children.map(child => {
+                const active = tab === child.id;
+                return (
+                  <button
+                    key={child.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setTab(child.id)}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold transition-all ${
+                      active
+                        ? 'bg-accent text-text-dark-bg shadow-sm'
+                        : 'text-text-muted hover:bg-surface-bg hover:text-text-main'
+                    }`}
+                  >
+                    {child.icon}
+                    {child.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
       </div>
 
-      <div className={isProfileTab(tab) ? 'min-h-[28rem]' : 'p-4 space-y-4'}>
+      <div className={isProfileTab(tab) ? 'min-h-[28rem]' : 'space-y-4 p-4'}>
         {tab === 'session' && (
           <CounsellingSessionPanel
             bookingId={bookingId}

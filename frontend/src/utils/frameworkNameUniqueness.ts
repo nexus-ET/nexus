@@ -16,25 +16,22 @@ export function isDuplicateLevelName(
 }
 
 export function isDuplicateProgramName(
-  name: string,
-  levelId: number,
-  programs: Array<{ id: string; name: string; level_id: number }>,
-  excludeId?: string | null
+  _name?: string,
+  _levelId?: number,
+  _programs?: unknown,
+  _excludeId?: number | string | null,
+  _institutionId?: number | null,
+  _countryId?: number | null
 ): boolean {
-  const normalized = normalizeFrameworkName(name);
-  if (!normalized || !levelId) return false;
-  return programs.some(
-    program =>
-      program.level_id === levelId &&
-      program.id !== excludeId &&
-      normalizeFrameworkName(program.name) === normalized
-  );
+  // Uniqueness is server-side (country + institution + level + name).
+  // Dual degrees exist at multiple unis; never block Edit from a client list.
+  return false;
 }
 
 export function isDuplicateMajorName(
   label: string,
-  programId: string,
-  majors: Array<{ id: number; label: string; program_id?: string | null }>,
+  programId: number | string,
+  majors: Array<{ id: number; label: string; program_id?: number | string | null }>,
   excludeId?: number | null
 ): boolean {
   const normalized = normalizeFrameworkName(label);

@@ -17,6 +17,7 @@ from app.services.whatsapp_config import (
     resolve_whatsapp_phone_number_id,
     resolve_whatsapp_waba_id,
 )
+from app.utils.safe_console import safe_print
 
 logger = logging.getLogger(__name__)
 
@@ -303,7 +304,7 @@ def audit_whatsapp_webhook_routing(*, check_reachability: bool = True) -> None:
             "Student replies will not reach this backend until you run dev.ps1 or "
             "python scripts/sync_whatsapp_webhook.py"
         )
-        print(
+        safe_print(
             "[WhatsApp] ERROR: Meta webhook callback is not configured. "
             "Inbound student messages will be ignored."
         )
@@ -380,7 +381,7 @@ def audit_whatsapp_webhook_routing(*, check_reachability: bool = True) -> None:
         meta_url,
         last_error,
     )
-    print(
+    safe_print(
         "[WhatsApp] ERROR: Inbound webhook is unreachable — student WhatsApp replies will not advance intake.\n"
         f"[WhatsApp]   Meta callback: {meta_url}\n"
         f"[WhatsApp]   Expected local: {expected or '(PUBLIC_TUNNEL_BASE not set)'}\n"

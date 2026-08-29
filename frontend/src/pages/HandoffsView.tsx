@@ -1,12 +1,17 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Bot, Archive, Map } from 'lucide-react';
-import { apiFetch } from '../utils/api';
+import { apiFetch, formatApiUiError } from '../utils/api';
 import { useBusinessTimezone } from '../context/BusinessTimezoneContext';
 import LeadStudyInterestPanel from '../components/LeadStudyInterestPanel';
+import InlineErrorBanner from '../components/InlineErrorBanner';
 import StudentJourneyPanel from '../components/StudentJourneyPanel';
 import LeadQueueSidebarFilters from '../components/LeadQueueSidebarFilters';
 import QueuePaginationControls from '../components/QueuePaginationControls';
 import AiActivePulseBoard from '../components/AiActivePulseBoard';
+import WhatsAppConversationHeader from '../components/WhatsAppConversationHeader';
+import WhatsAppIntakeOptionTray, {
+  type WhatsAppIntakeOption,
+} from '../components/WhatsAppIntakeOptionTray';
 import HeadlessScrollArea, {
   type HeadlessScrollAreaHandle,
 } from '../components/HeadlessScrollArea';
@@ -56,6 +61,7 @@ interface Lead {
   intake_step?: string;
   intake_step_label?: string;
   intake_complete?: boolean;
+  intake_options?: WhatsAppIntakeOption[];
   wants_consultation_call?: boolean | null;
   consultation_scheduled_at?: string | null;
   consultation_session_date?: string | null;
@@ -142,6 +148,7 @@ const mapLeadFromApi = (lead: Record<string, unknown>): Lead => {
     intake_step: lead.intake_step as string | undefined,
     intake_step_label: lead.intake_step_label as string | undefined,
     intake_complete: Boolean(lead.intake_complete),
+    intake_options: (lead.intake_options as WhatsAppIntakeOption[] | undefined) ?? [],
     wants_consultation_call: (lead.wants_consultation_call as boolean | null | undefined) ?? null,
     consultation_scheduled_at: (lead.consultation_scheduled_at as string | null | undefined) ?? null,
     consultation_session_date: (lead.consultation_session_date as string | null | undefined) ?? null,
@@ -245,6 +252,7 @@ export default function HandoffsView() {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [updatingRowId, setUpdatingRowId] = useState<number | null>(null);
   const [journeyModal, setJourneyModal] = useState<{
     studentId: number;
@@ -362,7 +370,9 @@ export default function HandoffsView() {
     } catch (error: unknown) {
       if (error instanceof Error && error.name !== 'AbortError') {
         console.error('Failed to fetch handoff queue:', error);
-        setLoadError(error.message || 'Failed to load handoff queue.');
+        setLoadError(
+          formatApiUiError(error, 'Failed to load handoff queue.', { retrying: true })
+        );
       }
     } finally {
       if (!signal?.aborted) {
@@ -547,9 +557,11 @@ export default function HandoffsView() {
 
   const currentPhone = selectedLead.phone || selectedLead.phone_number || '';
   if (!currentPhone) {
-    alert("Cannot send text: Missing phone assignment on profile.");
+    setActionError('Cannot send text: missing phone assignment on profile.');
     return;
   }
+
+  setActionError(null);
 
   // 1. Generate an optimistic local message object instantly
   const optimisticMessage: MessagePayload = {
@@ -592,14 +604,19 @@ export default function HandoffsView() {
         setSelectedLead(mapped);
       }
       await fetchHandoffQueue();
+      setActionError(null);
     })
     .catch((error) => {
       // If a true network disconnect / "Failed to fetch" happens, catch and retry
       if (retriesLeft > 0) {
         console.warn(`Upstream connection dropped. Automatically re-attempting upstream connections... (${retriesLeft} retries left)`);
+        setActionError(
+          formatApiUiError(error, 'Could not send the WhatsApp message.', { retrying: true })
+        );
         setTimeout(() => sendWithRetry(textToSend, phoneToSend, retriesLeft - 1, currentDelay * 1.5), currentDelay);
       } else {
         console.error("Background transmission breakdown permanently exhausted:", error);
+        setActionError(formatApiUiError(error, 'Could not send the WhatsApp message.'));
       }
     });
   };
@@ -614,10 +631,11 @@ export default function HandoffsView() {
 
     const currentPhone = selectedLead.phone || selectedLead.phone_number || '';
     if (!currentPhone) {
-      alert("Cannot send document: Missing phone assignment on profile.");
+      setActionError('Cannot send document: missing phone assignment on profile.');
       return;
     }
 
+    setActionError(null);
     if (fileInputRef.current) fileInputRef.current.value = ''; 
 
     const reader = new FileReader();
@@ -644,12 +662,15 @@ export default function HandoffsView() {
             setSelectedLead(mapped);
           }
           await fetchHandoffQueue();
+          setActionError(null);
           setTimeout(forceScrollToAbsoluteBottom, 50);
           chatInputRef.current?.focus();
         })
         .catch((err) => {
           console.error('File pipeline execution error:', err);
-          alert('Failed to deliver document package to server.');
+          setActionError(
+            formatApiUiError(err, 'Failed to deliver document package to the server.')
+          );
         });
     };
   };
@@ -784,6 +805,11 @@ export default function HandoffsView() {
   return (
     <>
     <div style={styles.workspaceContainer}>
+      {actionError ? (
+        <div style={styles.errorBannerOverlay}>
+          <InlineErrorBanner message={actionError} onDismiss={() => setActionError(null)} />
+        </div>
+      ) : null}
       
       <style>{`
         html, body, #root { overflow: hidden !important; }
@@ -806,7 +832,7 @@ export default function HandoffsView() {
         }
 
         .large-chat-input::placeholder {
-          font-size: 22px;
+          font-size: 14px;
           color: #94a3b8;
         }
 
@@ -998,13 +1024,12 @@ export default function HandoffsView() {
         {selectedLead ? (
           <div style={styles.activeChatInterface}>
             
-            <div style={styles.chatHeaderBar}>
-              <div style={{ flex: 1 }}>
-                <h3 style={styles.headerProfileName}>{selectedLead.name || selectedLead.full_name}</h3>
-                <p style={styles.headerProfileMeta}>📱 {selectedLead.phone || selectedLead.phone_number} | 📧 {selectedLead.email}</p>
-              </div>
-              
-              <div style={styles.headerActionGroup}>
+            <WhatsAppConversationHeader
+              name={selectedLead.name || selectedLead.full_name || `Lead #${selectedLead.id}`}
+              meta={`${selectedLead.phone || selectedLead.phone_number || 'No phone'} • ${selectedLead.email || 'No email'}`}
+              mode="handoff"
+              actions={
+                <div style={styles.headerActionGroup}>
               {!hasNoMessages && (
                 <button type="button" onClick={handleJumpToNewest} style={styles.jumpToNewestButton}>
                   Jump to newest <span style={styles.arrowIconString}>▼▼</span>
@@ -1033,7 +1058,8 @@ export default function HandoffsView() {
                 Journey
               </button>
               </div>
-            </div>
+              }
+            />
 
             <LeadStudyInterestPanel lead={selectedLead} compact />
 
@@ -1082,15 +1108,21 @@ export default function HandoffsView() {
                         >
                           <div style={{
                             ...styles.messageBubbleCell,
-                            backgroundColor: isAdvisorOutbound ? '#dcfce7' : '#ffffff',
-                            borderRadius: isAdvisorOutbound ? '8px 8px 0px 8px' : '8px 8px 8px 0px',
-                            boxShadow: '0 1px 1px rgba(0,0,0,0.12)'
+                            backgroundColor: isAdvisorOutbound ? '#d9fdd3' : '#ffffff',
+                            borderRadius: isAdvisorOutbound ? '14px 14px 3px 14px' : '14px 14px 14px 3px',
+                            boxShadow: '0 1px 2px rgba(25, 39, 52, 0.12)'
                           }}>
+                            <span style={styles.senderLabel}>
+                              {isAdvisorOutbound
+                                ? 'Nexus Counsellor'
+                                : selectedLead.name || selectedLead.full_name || 'Candidate'}
+                            </span>
                             {renderMessageContent(msg)}
                             
                             {msg.created_at && (
                               <span style={styles.bubbleTimestampLabel}>
                                 {formatTime(msg.created_at)}
+                                {isAdvisorOutbound ? <span style={styles.deliveryTicks}>✓✓</span> : null}
                               </span>
                             )}
                           </div>
@@ -1103,6 +1135,12 @@ export default function HandoffsView() {
               )}
               <div ref={chatEndRef} style={{ height: '1px', width: '100%' }} />
             </HeadlessScrollArea>
+
+            <WhatsAppIntakeOptionTray
+              step={selectedLead.intake_step}
+              stepLabel={selectedLead.intake_step_label}
+              options={selectedLead.intake_options}
+            />
 
             <form onSubmit={handleSendMessage} style={styles.footerInputFormBar}>
               
@@ -1169,7 +1207,7 @@ export default function HandoffsView() {
                 disabled={!messageText.trim()}
                 style={{
                   ...styles.actionSendButton,
-                  backgroundColor: !messageText.trim() ? '#cbd5e1' : '#322f86'
+                  backgroundColor: !messageText.trim() ? '#cbd5e1' : '#246b60'
                 }}
               >
                 Send
@@ -1236,6 +1274,7 @@ export default function HandoffsView() {
 
 const styles = {
   workspaceContainer: { display: 'flex', width: '100%', height: '100%', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#f8fafc', overflow: 'hidden', boxSizing: 'border-box', fontFamily: 'system-ui, -apple-system, sans-serif' } as React.CSSProperties,
+  errorBannerOverlay: { position: 'absolute', top: 0, left: '20%', right: 0, zIndex: 30, pointerEvents: 'auto' } as React.CSSProperties,
   leftSidebarPanel: { width: '20%', minWidth: '280px', maxWidth: '20%', height: '100%', borderRight: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', backgroundColor: '#ffffff', overflow: 'hidden', boxSizing: 'border-box' } as React.CSSProperties,
   sidebarHeader: { padding: '16px 20px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexShrink: 0, gap: '10px' } as React.CSSProperties,
   sidebarHeaderText: { display: 'flex', flexDirection: 'column', gap: '4px', minWidth: 0, flex: 1 } as React.CSSProperties,
@@ -1317,12 +1356,12 @@ const styles = {
     cursor: 'pointer',
     lineHeight: 1.2,
   } as React.CSSProperties,
-  rightChatPanel: { flex: '1 1 80%', width: '80%', maxWidth: '80%', height: '100%', display: 'flex', flexDirection: 'column', backgroundColor: '#efeae2', overflow: 'hidden', boxSizing: 'border-box' } as React.CSSProperties,
+  rightChatPanel: { flex: '1 1 80%', width: '80%', maxWidth: '80%', height: '100%', display: 'flex', flexDirection: 'column', backgroundColor: '#ece7df', overflow: 'hidden', boxSizing: 'border-box' } as React.CSSProperties,
   activeChatInterface: { display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden' } as React.CSSProperties,
   chatHeaderBar: { padding: '14px 24px', backgroundColor: '#f0f2f5', borderBottom: '1px solid #e3e6e9', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', flexShrink: 0 } as React.CSSProperties,
   headerProfileName: { margin: 0, fontSize: '16px', fontWeight: '600', color: '#111b21' } as React.CSSProperties,
   headerProfileMeta: { margin: '2px 0 0 0', fontSize: '14px', color: '#667781' } as React.CSSProperties,
-  jumpToNewestButton: { background: 'none', border: 'none', color: '#0284c7', fontSize: '13px', fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', padding: '6px 12px', borderRadius: '6px', transition: 'background-color 0.15s ease' } as React.CSSProperties,
+  jumpToNewestButton: { background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.28)', color: '#ffffff', fontSize: '11px', fontWeight: '700', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', padding: '7px 10px', borderRadius: '999px', transition: 'background-color 0.15s ease' } as React.CSSProperties,
   headerActionGroup: {
     display: 'flex',
     alignItems: 'center',
@@ -1330,52 +1369,55 @@ const styles = {
     flexShrink: 0,
   } as React.CSSProperties,
   headerJourneyButton: {
-    backgroundColor: '#ffffff',
-    border: '1px solid #cbd5e1',
-    color: '#334155',
-    fontSize: '14px',
-    fontWeight: '600',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    border: '1px solid rgba(255,255,255,0.28)',
+    color: '#ffffff',
+    fontSize: '11px',
+    fontWeight: '700',
     cursor: 'pointer',
     display: 'inline-flex',
     alignItems: 'center',
     gap: '6px',
-    padding: '6px 12px',
-    borderRadius: '6px',
+    padding: '7px 10px',
+    borderRadius: '999px',
     flexShrink: 0,
   } as React.CSSProperties,
-  arrowIconString: { fontSize: '10px', color: '#0284c7' } as React.CSSProperties,
+  arrowIconString: { fontSize: '9px', color: '#d1fae5' } as React.CSSProperties,
   whatsappChatFeedShell: { flex: 1, minHeight: 0 } as React.CSSProperties,
   whatsappChatFeedSurface: {
-    padding: '20px 4%',
+    padding: '20px 6%',
     display: 'flex',
     flexDirection: 'column',
     gap: '8px',
     backgroundImage:
-      'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")',
-    backgroundColor: '#efeae2',
+      'radial-gradient(circle at 1px 1px, rgba(83, 92, 91, 0.2) 1px, transparent 1.25px)',
+    backgroundSize: '18px 18px',
+    backgroundColor: '#ece7df',
     backgroundRepeat: 'repeat',
   } as React.CSSProperties,
-  timelineDividerCenter: { display: 'flex', justifyContent: 'center', width: '100%', margin: '14px 0' } as React.CSSProperties,
-  timelineBadgeBubble: { backgroundColor: '#ffffff', color: '#54656f', fontSize: '12px', padding: '5px 12px', borderRadius: '7px', boxShadow: '0 1px 1px rgba(0,0,0,0.08)', textTransform: 'capitalize' } as React.CSSProperties,
+  timelineDividerCenter: { display: 'flex', justifyContent: 'center', width: '100%', margin: '12px 0' } as React.CSSProperties,
+  timelineBadgeBubble: { backgroundColor: 'rgba(255,255,255,0.94)', color: '#667085', fontSize: '12px', fontWeight: 700, padding: '5px 13px', borderRadius: '999px', boxShadow: '0 1px 4px rgba(0,0,0,0.1)', textTransform: 'capitalize' } as React.CSSProperties,
   systemLogCentralRow: { display: 'flex', justifyContent: 'center', width: '100%', margin: '6px 0', fontSize: '12px', color: '#54656f', fontStyle: 'italic' } as React.CSSProperties,
   messageStreamRow: { display: 'flex', width: '100%', margin: '2px 0' } as React.CSSProperties,
-  messageBubbleCell: { maxWidth: '65%', padding: '8px 12px 10px 12px', position: 'relative', display: 'flex', flexDirection: 'column', gap: '2px' } as React.CSSProperties,
-  bubbleTextString: { margin: 0, color: '#111b21', whiteSpace: 'pre-wrap', paddingRight: '45px' } as React.CSSProperties,
-  bubbleTimestampLabel: { fontSize: '10.5px', color: '#667781', position: 'absolute', bottom: '3px', right: '8px' } as React.CSSProperties,
+  messageBubbleCell: { maxWidth: '68%', padding: '9px 12px 18px', position: 'relative', display: 'flex', flexDirection: 'column', gap: '3px', minWidth: '130px' } as React.CSSProperties,
+  senderLabel: { color: '#216a5d', fontSize: '11px', fontWeight: 800, lineHeight: 1.2 } as React.CSSProperties,
+  bubbleTextString: { margin: 0, color: '#182230', whiteSpace: 'pre-wrap', paddingRight: '22px', fontSize: '14px', lineHeight: 1.45 } as React.CSSProperties,
+  bubbleTimestampLabel: { display: 'inline-flex', alignItems: 'center', gap: '3px', fontSize: '10.5px', color: '#75808c', position: 'absolute', bottom: '4px', right: '9px' } as React.CSSProperties,
+  deliveryTicks: { color: '#3aa0d8', fontWeight: 800, letterSpacing: '-2px', marginLeft: '1px' } as React.CSSProperties,
   emptyConversationPrompt: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', margin: 'auto', padding: '32px', backgroundColor: 'rgba(255, 255, 255, 0.9)', borderRadius: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.05)', textAlign: 'center', maxWidth: '420px' } as React.CSSProperties,
-  footerInputFormBar: { padding: '12px 18px', backgroundColor: '#f0f2f5', display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0, position: 'relative' } as React.CSSProperties,
-  footerTextInputField: { flex: 1, padding: '14px 18px', borderRadius: '8px', border: 'none', outline: 'none', backgroundColor: '#ffffff', fontSize: '24px', color: '#111b21', lineHeight: '1.4' } as React.CSSProperties,
-  actionSendButton: { border: 'none', color: '#ffffff', padding: '12px 24px', borderRadius: '8px', fontSize: '15px', fontWeight: '600', cursor: 'pointer', transition: 'background-color 0.2s' } as React.CSSProperties,
-  mediaEmbedIconButton: { background: 'none', border: 'none', fontSize: '28px', cursor: 'pointer', padding: '6px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.15s' } as React.CSSProperties,
+  footerInputFormBar: { padding: '10px 16px', backgroundColor: '#eef1f4', borderTop: '1px solid #d9dee3', display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0, position: 'relative' } as React.CSSProperties,
+  footerTextInputField: { flex: 1, padding: '12px 16px', borderRadius: '999px', border: '1px solid #d5dbe1', outline: 'none', backgroundColor: '#ffffff', fontSize: '15px', color: '#182230', lineHeight: '1.4' } as React.CSSProperties,
+  actionSendButton: { border: 'none', color: '#ffffff', padding: '11px 22px', borderRadius: '999px', fontSize: '13px', fontWeight: '750', cursor: 'pointer', transition: 'background-color 0.2s' } as React.CSSProperties,
+  mediaEmbedIconButton: { background: 'none', border: 'none', color: '#5f6b78', fontSize: '22px', cursor: 'pointer', padding: '6px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.15s' } as React.CSSProperties,
   emojiFloatingTray: { position: 'absolute', bottom: '70px', left: '15px', backgroundColor: '#ffffff', boxShadow: '0 6px 28px rgba(0,0,0,0.18)', borderRadius: '16px', padding: '16px', width: '620px', height: '280px', zIndex: 999, overflow: 'hidden' } as React.CSSProperties,
   emojiGridWrapper: { display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: '12px', width: '100%', height: '100%', overflow: 'hidden' } as React.CSSProperties,
   headerOverviewButton: {
-    border: '1px solid #cbd5e1',
-    backgroundColor: '#ffffff',
-    color: '#322f86',
-    padding: '8px 12px',
-    borderRadius: '8px',
-    fontSize: '12px',
+    border: '1px solid rgba(255,255,255,0.28)',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    color: '#ffffff',
+    padding: '7px 10px',
+    borderRadius: '999px',
+    fontSize: '11px',
     fontWeight: '700',
     cursor: 'pointer',
     flexShrink: 0,

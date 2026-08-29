@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Loader2, Pencil, Trash2, X } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { apiFetch } from '../../utils/api';
 import { LEVELS_PATH, FRAMEWORK_SECTION_PATH } from '../../types/academicFramework';
 import type { LevelRecord } from '../../types/level';
 import AcademiaBreadcrumbs from './AcademiaBreadcrumbs';
+import { FrameworkIdCell, FrameworkIdHeader } from './FrameworkIdDisplay';
 import LevelFormPanel from './LevelFormPanel';
 import { useConfirmation } from '../../context/ConfirmationContext';
 
@@ -100,40 +101,38 @@ const FrameworkLevelsPage: React.FC<{ embedded?: boolean }> = ({ embedded = fals
       )}
 
       <div className={embedded ? '' : 'rounded-2xl border border-border-subtle bg-card shadow-sm'}>
-        <div
-          className={`flex flex-wrap items-center justify-between gap-3 border-b border-border-subtle px-6 py-4 ${
-            embedded ? 'justify-end' : ''
-          }`}
-        >
-          {embedded ? null : (
-            <div>
-              <h2 className="text-xl font-bold text-text-main">Levels</h2>
-              <p className="text-sm text-text-muted">
-                Master academic levels that sit above programs (e.g. Undergraduate, Graduate).
-              </p>
-            </div>
-          )}
-          <button
-            type="button"
-            onClick={openCreate}
-            className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-text-dark-bg"
-          >
-            <Plus size={16} />
-            Create Level
-          </button>
-        </div>
+        {embedded ? null : (
+          <div className="border-b border-border-subtle px-6 py-4">
+            <h2 className="text-xl font-bold text-text-main">Levels</h2>
+            <p className="text-sm text-text-muted">
+              Master academic levels that sit above programs (e.g. Undergraduate, Graduate).
+            </p>
+          </div>
+        )}
 
         <div className="grid gap-6 p-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.9fr)]">
           <div className="space-y-4">
             <label className="block space-y-1 text-sm">
               <span className="font-medium text-text-main">Search</span>
-              <input
-                type="text"
-                value={search}
-                onChange={event => setSearch(event.target.value)}
-                placeholder="Search levels..."
-                className="w-full rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent"
-              />
+              <div className="relative">
+                <input
+                  type="text"
+                  value={search}
+                  onChange={event => setSearch(event.target.value)}
+                  placeholder="Search levels..."
+                  className="w-full rounded-xl border border-border-subtle bg-surface-bg py-2 pl-3 pr-9 text-sm outline-none focus:border-accent"
+                />
+                {search ? (
+                  <button
+                    type="button"
+                    onClick={() => setSearch('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-text-muted hover:bg-black/5 hover:text-text-main"
+                    aria-label="Clear search"
+                  >
+                    <X size={14} />
+                  </button>
+                ) : null}
+              </div>
             </label>
 
             {loading ? (
@@ -150,6 +149,7 @@ const FrameworkLevelsPage: React.FC<{ embedded?: boolean }> = ({ embedded = fals
                 <table className="min-w-full text-sm">
                   <thead className="bg-surface-bg text-left text-xs uppercase tracking-wide text-text-muted">
                     <tr>
+                      <FrameworkIdHeader />
                       <th className="px-4 py-3 font-semibold">Name</th>
                       <th className="px-4 py-3 font-semibold">Code</th>
                       <th className="px-4 py-3 font-semibold">Description</th>
@@ -164,6 +164,7 @@ const FrameworkLevelsPage: React.FC<{ embedded?: boolean }> = ({ embedded = fals
                           editingLevel?.id === level.id ? 'bg-accent/5' : ''
                         }`}
                       >
+                        <FrameworkIdCell value={level.id} />
                         <td className="px-4 py-3 font-semibold text-text-main">{level.name}</td>
                         <td className="px-4 py-3 font-mono text-text-muted">{level.code}</td>
                         <td className="max-w-md px-4 py-3 text-text-muted">

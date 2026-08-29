@@ -8,7 +8,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.types import JSON
 
@@ -37,7 +37,9 @@ class ProgramIntakeAssignment(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    program_id = Column(UUID(as_uuid=True), ForeignKey("programs.id", ondelete="CASCADE"), nullable=False, index=True)
+    program_id = Column(
+        Integer, ForeignKey("programs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     institution_intake_id = Column(
         Integer, ForeignKey("institution_intakes.id", ondelete="CASCADE"), nullable=False, index=True
     )

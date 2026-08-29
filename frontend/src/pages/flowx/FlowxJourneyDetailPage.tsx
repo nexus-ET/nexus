@@ -271,10 +271,15 @@ const FlowxJourneyDetailPage: React.FC = () => {
         <div>
           <div className="mb-1 flex flex-wrap items-center gap-3">
             <Link
-              to="/flowx/journeys"
+              to={
+                enrollment?.lead_id
+                  ? `/flowx/journeys/student/${enrollment.lead_id}`
+                  : '/flowx/ops'
+              }
               className="inline-flex items-center gap-1 text-sm font-semibold text-text-muted hover:text-text-main"
             >
-              <ArrowLeft size={14} /> All journeys
+              <ArrowLeft size={14} />{' '}
+              {enrollment?.lead_id ? 'Student applications' : 'FlowX ops'}
             </Link>
             {hubBackIso ? (
               <Link

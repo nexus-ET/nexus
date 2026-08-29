@@ -6,12 +6,15 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.academia_hub import InstitutionProfileTextFields
 from app.schemas.contact_entry import (
     CollegeWebLinkListFields,
     ContactListFields,
     EmailContactListMixin,
     FaxContactListFields,
     InstitutionWebLinkListFields,
+    OptionalEmailContactListMixin,
+    OptionalPhoneContactListMixin,
     PhoneContactListMixin,
     WebLinkListFields,
 )
@@ -28,10 +31,11 @@ WIZARD_STEPS = [
 
 
 class WizardInstitutionStep(
-    PhoneContactListMixin,
-    EmailContactListMixin,
+    OptionalPhoneContactListMixin,
+    OptionalEmailContactListMixin,
     FaxContactListFields,
     InstitutionWebLinkListFields,
+    InstitutionProfileTextFields,
     BaseModel,
 ):
     name: str = Field(min_length=1, max_length=200)
@@ -42,7 +46,7 @@ class WizardInstitutionStep(
     city_id: int | None = None
     zipcode: str | None = Field(default=None, max_length=10)
     address: str | None = Field(default=None, max_length=200)
-    institution_type: str | None = Field(default=None, max_length=80)
+    institution_type_id: int | None = None
     company_affiliated: bool | None = None
     ranking_tier_global: str | None = Field(default=None, max_length=120)
     ad_promotion_flag: bool | None = None
@@ -54,12 +58,13 @@ class WizardInstitutionStep(
 
 
 class WizardCampusStep(
-    PhoneContactListMixin,
-    EmailContactListMixin,
+    OptionalPhoneContactListMixin,
+    OptionalEmailContactListMixin,
     FaxContactListFields,
     WebLinkListFields,
     BaseModel,
 ):
+    id: int | None = None
     name: str = Field(min_length=1, max_length=250)
     location_id: int
     institution_id: int | None = None
@@ -75,6 +80,7 @@ class WizardCampusStep(
 class WizardCampusSyncStep(ContactListFields, FaxContactListFields, WebLinkListFields, BaseModel):
     """Lenient campus payload used while syncing in-progress wizard drafts."""
 
+    id: int | None = None
     name: str = Field(min_length=1, max_length=250)
     location_id: int
     institution_id: int | None = None
@@ -118,6 +124,14 @@ class WizardPayload(BaseModel):
         return []
 
 
+class WizardCollegeCampusLink(BaseModel):
+    campus_local_id: str | None = Field(default=None, max_length=64)
+    campus_id: int | None = None
+    name: str = Field(default="", max_length=255)
+    address: str | None = Field(default=None, max_length=200)
+    location_label: str | None = Field(default=None, max_length=255)
+
+
 class WizardCollegeItem(
     PhoneContactListMixin,
     EmailContactListMixin,
@@ -125,12 +139,14 @@ class WizardCollegeItem(
     CollegeWebLinkListFields,
     BaseModel,
 ):
+    id: int | None = None
     local_id: str | None = Field(default=None, max_length=64)
     code: str | None = Field(default=None, max_length=50)
     name: str = Field(min_length=1, max_length=255)
     category: str | None = Field(default="College", max_length=64)
     dean_name: str | None = Field(default=None, max_length=255)
     campus_id: int | None = None
+    linked_campuses: list[WizardCollegeCampusLink] = Field(default_factory=list)
     long_description: str | None = Field(default=None, max_length=5000)
     accreditation: str | None = Field(default=None, max_length=500)
 
@@ -138,12 +154,14 @@ class WizardCollegeItem(
 class WizardCollegeSyncItem(ContactListFields, FaxContactListFields, CollegeWebLinkListFields, BaseModel):
     """Lenient college payload used while syncing in-progress wizard drafts."""
 
+    id: int | None = None
     local_id: str | None = Field(default=None, max_length=64)
     code: str | None = Field(default=None, max_length=50)
     name: str = Field(min_length=1, max_length=255)
     category: str | None = Field(default="College", max_length=64)
     dean_name: str | None = Field(default=None, max_length=255)
     campus_id: int | None = None
+    linked_campuses: list[WizardCollegeCampusLink] = Field(default_factory=list)
     long_description: str | None = Field(default=None, max_length=5000)
     accreditation: str | None = Field(default=None, max_length=500)
 
@@ -154,13 +172,14 @@ class WizardCourseOfferingItem(BaseModel):
     college_id: int | None = None
     college_local_id: str | None = Field(default=None, max_length=64)
     level_id: int | None = Field(default=None, ge=1)
-    program_id: uuid.UUID | None = None
+    program_id: int | None = None
     major_id: int | None = Field(default=None, ge=1)
     course_code: str | None = Field(default=None, max_length=50)
     credits: float | None = Field(default=None, ge=0, le=30)
     level: str | None = Field(default=None, max_length=40)
     syllabus_outline: str | None = Field(default=None, max_length=5000)
     display_label: str | None = Field(default=None, max_length=500)
+    program_url: str | None = Field(default=None, max_length=2048)
 
 
 class WizardIntakeItem(BaseModel):
@@ -174,6 +193,7 @@ class WizardIntakeItem(BaseModel):
 
 
 class WizardPictureItem(BaseModel):
+    id: int | None = None
     url: str = Field(min_length=1)
     caption: str | None = Field(default=None, max_length=255)
     campus_id: int | None = None

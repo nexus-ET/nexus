@@ -13,9 +13,12 @@ import {
   type MajorFormValues,
 } from '../../schemas/majorSchema';
 import type { EducationMajorRecord } from '../../types/educationMajor';
+import type { EducationSuperMajorRecord } from '../../types/educationSuperMajor';
 import ActiveStatusField from './ActiveStatusField';
+import { FrameworkIdField } from './FrameworkIdDisplay';
 import MajorColorSwatch from './MajorColorSwatch';
 import RichTextEditor from '../ui/rich-text-editor';
+import SelectField from './form/SelectField';
 
 interface EducationMajorFormModalProps {
   open: boolean;
@@ -47,6 +50,7 @@ const EducationMajorFormModal: React.FC<EducationMajorFormModalProps> = ({
 
   const isActive = watch('is_active');
   const labelValue = watch('label');
+  const superMajorId = watch('super_major_id');
 
   const majorsForDuplicateCheckQuery = useQuery({
     queryKey: ['academia-majors-for-duplicate-check'],
@@ -54,6 +58,15 @@ const EducationMajorFormModal: React.FC<EducationMajorFormModalProps> = ({
       fetchAcademiaListItems<EducationMajorRecord>('academia/education-majors', {
         active_only: 'false',
         catalog_only: 'true',
+      }),
+    enabled: open,
+  });
+
+  const superMajorsQuery = useQuery({
+    queryKey: ['academia-super-majors-for-major-form'],
+    queryFn: () =>
+      fetchAcademiaListItems<EducationSuperMajorRecord>('academia/education-super-majors', {
+        active_only: 'false',
       }),
     enabled: open,
   });
@@ -75,7 +88,9 @@ const EducationMajorFormModal: React.FC<EducationMajorFormModalProps> = ({
         reset({
           label: record.label,
           code: record.code || '',
-          description: record.description || null,
+          major_description: record.major_description || null,
+          sub_majors_key_fields: record.sub_majors_key_fields || null,
+          super_major_id: record.super_major_id ?? null,
           sort_order: record.sort_order ?? 0,
           is_other: record.is_other ?? false,
           is_active: record.is_active ?? true,
@@ -117,7 +132,9 @@ const EducationMajorFormModal: React.FC<EducationMajorFormModalProps> = ({
       const payload = {
         label: values.label.trim(),
         code: values.code?.trim() ? values.code.trim().toUpperCase() : null,
-        description: values.description?.trim() || null,
+        major_description: values.major_description?.trim() || null,
+        sub_majors_key_fields: values.sub_majors_key_fields?.trim() || null,
+        super_major_id: values.super_major_id ?? null,
         sort_order: values.sort_order ?? 0,
         is_other: values.is_other ?? false,
         is_active: values.is_active ?? true,
@@ -159,6 +176,7 @@ const EducationMajorFormModal: React.FC<EducationMajorFormModalProps> = ({
           </button>
         </div>
         <form onSubmit={onSubmit} noValidate className="space-y-4 p-5">
+          <FrameworkIdField value={major?.id} />
           <div className="flex items-center gap-3 rounded-xl border border-border-subtle bg-surface-bg/60 px-3 py-2">
             <MajorColorSwatch color={previewColor} label={labelValue || 'Major'} size="md" />
             <div className="min-w-0">
@@ -174,6 +192,25 @@ const EducationMajorFormModal: React.FC<EducationMajorFormModalProps> = ({
             <span className="ml-auto font-mono text-xs text-text-muted">{previewColor}</span>
           </div>
 
+          <SelectField
+            label="Super-Major"
+            value={superMajorId ? String(superMajorId) : ''}
+            onChange={value =>
+              setValue('super_major_id', value ? Number(value) : null, { shouldValidate: true })
+            }
+            options={(superMajorsQuery.data ?? []).map(item => ({
+              value: String(item.id),
+              label: item.name,
+            }))}
+            placeholder={
+              superMajorsQuery.isLoading ? 'Loading super-majors...' : 'No super-major'
+            }
+            hint="Optional marketing cluster for this major."
+          />
+          {errors.super_major_id ? (
+            <p className="text-xs text-alert">{errors.super_major_id.message}</p>
+          ) : null}
+
           <label className="block space-y-1 text-sm">
             <span className="font-medium text-text-main">Major name *</span>
             <input
@@ -187,10 +224,10 @@ const EducationMajorFormModal: React.FC<EducationMajorFormModalProps> = ({
 
           <Controller
             control={control}
-            name="description"
+            name="major_description"
             render={({ field, fieldState }) => (
               <RichTextEditor
-                label="Description"
+                label="Major description"
                 content={field.value || ''}
                 onChange={field.onChange}
                 maxLength={5000}
@@ -198,6 +235,19 @@ const EducationMajorFormModal: React.FC<EducationMajorFormModalProps> = ({
               />
             )}
           />
+
+          <label className="block space-y-1 text-sm">
+            <span className="font-medium text-text-main">Sub-majors key fields</span>
+            <textarea
+              rows={3}
+              {...register('sub_majors_key_fields')}
+              placeholder="e.g. Computer Science, Cybersecurity, Artificial Intelligence"
+              className="w-full rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent"
+            />
+            {errors.sub_majors_key_fields ? (
+              <p className="text-xs text-alert">{errors.sub_majors_key_fields.message}</p>
+            ) : null}
+          </label>
 
           <label className="block space-y-1 text-sm">
             <span className="font-medium text-text-main">Major code</span>

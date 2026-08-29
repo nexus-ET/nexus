@@ -1,8 +1,14 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Lock, Mail, Loader2, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import NexusLogo from '../components/NexusLogo';
-import { isValidTokenFormat, resolveBaseUrl, setSessionToken } from '../utils/api';
+import {
+  consumePostLoginRedirect,
+  isSafeInternalPath,
+  isValidTokenFormat,
+  resolveBaseUrl,
+  setSessionToken,
+} from '../utils/api';
 
 const Login: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -11,6 +17,7 @@ const Login: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const location = useLocation();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,7 +52,15 @@ const Login: React.FC = () => {
       }
 
       setSessionToken(accessToken);
-      navigate('/');
+      const fromState =
+        location.state &&
+        typeof location.state === 'object' &&
+        'from' in location.state &&
+        typeof (location.state as { from?: unknown }).from === 'string'
+          ? (location.state as { from: string }).from
+          : '';
+      const returnTo = consumePostLoginRedirect() || fromState;
+      navigate(isSafeInternalPath(returnTo) ? returnTo : '/', { replace: true });
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : 'An error occurred during login authentication.';

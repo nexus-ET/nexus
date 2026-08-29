@@ -252,8 +252,9 @@ const SyncLogs: React.FC = () => {
             <h1 className="text-2xl font-bold tracking-tight">Meta Lead Sync Logs</h1>
           </div>
           <p className="mt-1 text-sm text-text-muted max-w-3xl">
-            Read-only audit trail of Meta lead sync attempts. Sync is controlled on the Dashboard (manual or
-            automated) — this page never runs ingestion.
+            Read-only audit trail of Meta lead sync attempts. Sync is controlled in Admin →
+            Workspace → Meta.
+            Meta (manual or automated) — this page never runs ingestion.
           </p>
           {schedule?.help_text ? (
             <p className="mt-2 text-xs text-text-muted max-w-3xl rounded-lg border border-border-subtle bg-surface-bg/80 px-3 py-2">

@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { gotoAppPath } from '../src/helpers/auth';
 import { loadUatEnv } from '../src/helpers/env';
+import { workspaceTab } from '../src/helpers/workspaceTabs';
 
 /**
  * UAT — New modules / pages added after the baseline 32-case suite:
@@ -39,11 +40,14 @@ test.describe('New modules: FlowX', () => {
     ).toBeVisible({ timeout: 45_000 });
   });
 
-  test('FlowX Student Journeys page loads', async ({ page }) => {
+  test('FlowX /journeys redirects to ops (list moved to session Applications tab)', async ({
+    page,
+  }) => {
     await gotoAppPath(page, '/flowx/journeys');
-    await expect(
-      page.getByText(/Student Journeys|Journeys|FlowX|Enrollment|Application|Add/i).first()
-    ).toBeVisible({ timeout: 45_000 });
+    await expect(page).toHaveURL(/\/flowx\/ops\/?$/, { timeout: 45_000 });
+    await expect(page.getByText(/FlowX|Ops Dashboard|Operate/i).first()).toBeVisible({
+      timeout: 45_000,
+    });
   });
 
   test('FlowX Country Workflows page loads', async ({ page }) => {
@@ -123,19 +127,24 @@ test.describe('New modules: Intake Session workspace', () => {
 
     await expect(page.getByText(/^Loading…$/)).toHaveCount(0, { timeout: 60_000 });
     await expect(
-      page.getByRole('button', { name: /ASPIRATIONS|Session|Future Insights|ROI Calculator/i }).first()
+      workspaceTab(page, /SESSION|PROFILE|DISCOVERY|ROI CALCULATOR/i).first()
     ).toBeVisible({ timeout: 45_000 });
     return true;
   }
 
-  test('Session workspace exposes Session / Aspirations / Future Insights / ROI tabs', async ({
+  test('Session workspace exposes Session / Profile / Discovery / ROI tabs', async ({
     page,
   }) => {
     const opened = await openUatLeadSession(page);
     if (!opened) return;
 
-    for (const label of [/ASPIRATIONS/i, /^Session$/i, /Future Insights/i, /ROI Calculator/i]) {
-      await expect(page.getByRole('button', { name: label }).first()).toBeVisible({
+    for (const label of [
+      /^SESSION$/i,
+      /^PROFILE$/i,
+      /^DISCOVERY$/i,
+      /ROI CALCULATOR/i,
+    ]) {
+      await expect(workspaceTab(page, label).first()).toBeVisible({
         timeout: 30_000,
       });
     }
@@ -145,7 +154,8 @@ test.describe('New modules: Intake Session workspace', () => {
     const opened = await openUatLeadSession(page);
     if (!opened) return;
 
-    await page.getByRole('button', { name: /ASPIRATIONS/i }).click({ force: true });
+    await workspaceTab(page, /^PROFILE$/i).click({ force: true });
+    await workspaceTab(page, /^Aspirations$/i).click({ force: true });
     await expect(
       page
         .getByText(
@@ -159,7 +169,7 @@ test.describe('New modules: Intake Session workspace', () => {
     const opened = await openUatLeadSession(page);
     if (!opened) return;
 
-    await page.getByRole('button', { name: /^Session$/i }).click({ force: true });
+    await workspaceTab(page, /^SESSION$/i).click({ force: true });
     await expect(
       page.getByText(/Session|Outcome|Notes|Status|Counsellor|Appointment|Purpose/i).first()
     ).toBeVisible({ timeout: 45_000 });
@@ -171,7 +181,8 @@ test.describe('New modules: Intake Session workspace', () => {
     const opened = await openUatLeadSession(page);
     if (!opened) return;
 
-    await page.getByRole('button', { name: /Future Insights/i }).click({ force: true });
+    await workspaceTab(page, /^DISCOVERY$/i).click({ force: true });
+    await workspaceTab(page, /Future Insights/i).click({ force: true });
     await expect(
       page
         .getByText(
@@ -187,7 +198,7 @@ test.describe('New modules: Intake Session workspace', () => {
     const opened = await openUatLeadSession(page);
     if (!opened) return;
 
-    await page.getByRole('button', { name: /ROI Calculator/i }).click({ force: true });
+    await workspaceTab(page, /ROI Calculator/i).click({ force: true });
     await expect(
       page
         .getByText(

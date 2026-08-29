@@ -45,13 +45,13 @@ _FRONTEND_ROUTE_LABELS: dict[str, str] = {
 # Longest-prefix wins (paths must be sorted by length descending when matching).
 _API_AUDIT_RULES: list[tuple[str, dict[str, str]]] = [
     ("/api/v1/settings/lead-sync/run", {
-        "page": "Dashboard",
-        "menu": "Dashboard > Meta Lead Sync",
+        "page": "Application Settings",
+        "menu": "Settings > Workspace > Meta",
         "action": "Run Meta lead sync now",
     }),
     ("/api/v1/settings/lead-sync", {
-        "page": "Dashboard",
-        "menu": "Dashboard > Meta Lead Sync",
+        "page": "Application Settings",
+        "menu": "Settings > Workspace > Meta",
         "action": "Save Meta lead sync schedule",
     }),
     ("/api/v1/settings/business-profile", {

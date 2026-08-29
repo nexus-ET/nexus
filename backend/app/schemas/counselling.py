@@ -81,6 +81,7 @@ class CounsellorOut(BaseModel):
     id: int
     name: str
     email: str
+    phone: str | None = None
 
 
 class CounsellorsResponse(BaseModel):

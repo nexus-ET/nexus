@@ -132,6 +132,12 @@ def read_business_branding(
     """Read-only tenant chrome for PDF/report headers (name, address, logo flag)."""
     business_id = resolve_business_id_for_user(current_user)
     profile = get_business_profile(db, business_id)
+    email_contacts = profile.get("office_email_contacts") or []
+    primary_email = None
+    if isinstance(email_contacts, list) and email_contacts:
+        first = email_contacts[0]
+        if isinstance(first, dict):
+            primary_email = (first.get("value") or "").strip() or None
     return {
         "business_id": profile["business_id"],
         "business_name": profile["business_name"],
@@ -142,6 +148,9 @@ def read_business_branding(
         "state": profile["state"],
         "country": profile["country"],
         "zip_code": profile["zip_code"],
+        "office_phone_number": profile.get("office_phone_number"),
+        "office_email": primary_email,
+        "email_domain": profile.get("email_domain"),
         "has_logo": profile["has_logo"],
         "logo_url": profile["logo_url"],
     }
@@ -172,6 +181,10 @@ def save_business_profile(
         zip_code=payload.zip_code,
         office_phone_number=payload.office_phone_number,
         office_mobile_number=payload.office_mobile_number,
+        office_phone_active=payload.office_phone_active,
+        office_mobile_active=payload.office_mobile_active,
+        office_phone_contacts=[entry.model_dump() for entry in payload.office_phone_contacts],
+        office_email_contacts=[entry.model_dump() for entry in payload.office_email_contacts],
         web_url=payload.web_url,
         email_domain=payload.email_domain,
     )

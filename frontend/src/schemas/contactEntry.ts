@@ -1,15 +1,16 @@
 import { z } from 'zod';
 
 import {
-  EMAIL_CONTACT_TYPES,
   EMAIL_TYPE_GENERAL,
-  FAX_CONTACT_TYPES,
   FAX_TYPE_MAIN,
-  PHONE_CONTACT_TYPES,
   PHONE_TYPE_MAIN,
   WEB_LINK_TYPE_WEBSITE,
   WEB_LINK_TYPES,
 } from '../constants/contactTypes';
+import {
+  getConfiguredEmailContactTypes,
+  getConfiguredPhoneContactTypes,
+} from '../stores/adminSettingsStore';
 
 export interface ContactEntry {
   type: string;
@@ -27,13 +28,27 @@ export const contactEntrySchema = z.object({
   value: z.string().max(250),
 });
 
+function allowedEmailTypes(): Set<string> {
+  return new Set(getConfiguredEmailContactTypes());
+}
+
+function allowedPhoneTypes(): Set<string> {
+  return new Set(getConfiguredPhoneContactTypes());
+}
+
+function isAllowedOrLegacy(type: string, allowed: Set<string>): boolean {
+  if (allowed.has(type)) return true;
+  // Legacy / in-use values remain valid so older institution records still save.
+  return Boolean(type.trim());
+}
+
 /** Validates email format for any non-empty values; empty rows are allowed. */
 export const optionalEmailContactListSchema = z
   .array(contactEntrySchema)
   .superRefine((entries, ctx) => {
-    const allowed = new Set(EMAIL_CONTACT_TYPES.map(option => option.value));
+    const allowed = allowedEmailTypes();
     entries.forEach((entry, index) => {
-      if (!allowed.has(entry.type)) {
+      if (!isAllowedOrLegacy(entry.type, allowed)) {
         ctx.addIssue({
           code: 'custom',
           message: 'Invalid email type',
@@ -66,7 +81,7 @@ function normalizeContactItems(
       const value = item.trim();
       if (!value) return;
       normalized.push({
-        type: index === 0 ? defaultType : allowedTypes[allowedTypes.length - 1],
+        type: index === 0 ? defaultType : allowedTypes[allowedTypes.length - 1] || defaultType,
         value,
       });
       return;
@@ -75,12 +90,10 @@ function normalizeContactItems(
     if (item && typeof item === 'object') {
       const record = item as Partial<ContactEntry>;
       const value = String(record.value || '').trim();
-      const fallbackType = index === 0 ? defaultType : allowedTypes[allowedTypes.length - 1];
+      const fallbackType =
+        index === 0 ? defaultType : allowedTypes[allowedTypes.length - 1] || defaultType;
       const type = String(record.type || '').trim() || fallbackType;
-      normalized.push({
-        type: allowedTypes.includes(type) ? type : fallbackType,
-        value,
-      });
+      normalized.push({ type, value });
     }
   });
 
@@ -88,49 +101,44 @@ function normalizeContactItems(
 }
 
 export function normalizePhoneContacts(raw: unknown): ContactEntry[] {
-  return normalizeContactItems(
-    raw,
-    PHONE_CONTACT_TYPES.map(option => option.value),
-    PHONE_TYPE_MAIN
-  );
+  const types = getConfiguredPhoneContactTypes();
+  return normalizeContactItems(raw, types, types[0] || PHONE_TYPE_MAIN);
 }
 
 export function normalizeFaxContacts(
   raw: unknown,
   legacyFaxNumber?: string | null
 ): ContactEntry[] {
+  const types = getConfiguredPhoneContactTypes();
+  const defaultType = types[0] || FAX_TYPE_MAIN;
   if (Array.isArray(raw) && raw.length > 0) {
-    return normalizeContactItems(
-      raw,
-      FAX_CONTACT_TYPES.map(option => option.value),
-      FAX_TYPE_MAIN
-    );
+    return normalizeContactItems(raw, types, defaultType);
   }
   const legacy = (legacyFaxNumber || '').trim();
   if (legacy) {
-    return [{ type: FAX_TYPE_MAIN, value: legacy }];
+    return [{ type: defaultType, value: legacy }];
   }
   return createDefaultFaxContacts();
 }
 
 export function normalizeEmailContacts(raw: unknown): ContactEntry[] {
-  return normalizeContactItems(
-    raw,
-    EMAIL_CONTACT_TYPES.map(option => option.value),
-    EMAIL_TYPE_GENERAL
-  );
+  const types = getConfiguredEmailContactTypes();
+  return normalizeContactItems(raw, types, types[0] || EMAIL_TYPE_GENERAL);
 }
 
 export function createDefaultPhoneContacts(): ContactEntry[] {
-  return [{ type: PHONE_TYPE_MAIN, value: '' }];
+  const types = getConfiguredPhoneContactTypes();
+  return [{ type: types[0] || PHONE_TYPE_MAIN, value: '' }];
 }
 
 export function createDefaultFaxContacts(): ContactEntry[] {
-  return [{ type: FAX_TYPE_MAIN, value: '' }];
+  const types = getConfiguredPhoneContactTypes();
+  return [{ type: types[0] || FAX_TYPE_MAIN, value: '' }];
 }
 
 export function createDefaultEmailContacts(): ContactEntry[] {
-  return [{ type: EMAIL_TYPE_GENERAL, value: '' }];
+  const types = getConfiguredEmailContactTypes();
+  return [{ type: types[0] || EMAIL_TYPE_GENERAL, value: '' }];
 }
 
 export function createDefaultWebLinks(): ContactEntry[] {
@@ -169,6 +177,12 @@ export function primaryWebUrl(entries: ContactEntry[]): string | null {
   return (website || serialized[0]).value;
 }
 
+export function externalWebHref(url: string): string {
+  const trimmed = url.trim();
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
 export function serializeContacts(entries: ContactEntry[]): ContactEntry[] {
   return entries
     .map(entry => ({ type: entry.type, value: entry.value.trim() }))
@@ -184,11 +198,11 @@ export function formatContactList(entries: ContactEntry[]): string {
 export const phoneContactListSchema = z
   .array(contactEntrySchema)
   .superRefine((entries, ctx) => {
-    const allowed = new Set(PHONE_CONTACT_TYPES.map(option => option.value));
+    const allowed = allowedPhoneTypes();
     let hasPhone = false;
 
     entries.forEach((entry, index) => {
-      if (!allowed.has(entry.type)) {
+      if (!isAllowedOrLegacy(entry.type, allowed)) {
         ctx.addIssue({
           code: 'custom',
           message: 'Invalid phone type',
@@ -209,11 +223,27 @@ export const phoneContactListSchema = z
     }
   });
 
+/** Optional phone list — validates types only; empty values are allowed. */
+export const optionalPhoneContactListSchema = z
+  .array(contactEntrySchema)
+  .superRefine((entries, ctx) => {
+    const allowed = allowedPhoneTypes();
+    entries.forEach((entry, index) => {
+      if (!isAllowedOrLegacy(entry.type, allowed)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Invalid phone type',
+          path: [index, 'type'],
+        });
+      }
+    });
+  });
+
 /** Optional fax list — same types as phone; empty values are allowed. */
 export const faxContactListSchema = z.array(contactEntrySchema).superRefine((entries, ctx) => {
-  const allowed = new Set(FAX_CONTACT_TYPES.map(option => option.value));
+  const allowed = allowedPhoneTypes();
   entries.forEach((entry, index) => {
-    if (!allowed.has(entry.type)) {
+    if (!isAllowedOrLegacy(entry.type, allowed)) {
       ctx.addIssue({
         code: 'custom',
         message: 'Invalid fax type',
@@ -226,11 +256,11 @@ export const faxContactListSchema = z.array(contactEntrySchema).superRefine((ent
 export const emailContactListSchema = z
   .array(contactEntrySchema)
   .superRefine((entries, ctx) => {
-    const allowed = new Set(EMAIL_CONTACT_TYPES.map(option => option.value));
+    const allowed = allowedEmailTypes();
     let hasEmail = false;
 
     entries.forEach((entry, index) => {
-      if (!allowed.has(entry.type)) {
+      if (!isAllowedOrLegacy(entry.type, allowed)) {
         ctx.addIssue({
           code: 'custom',
           message: 'Invalid email type',

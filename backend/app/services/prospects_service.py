@@ -105,10 +105,15 @@ def _apply_prospect_filters(
 
     normalized_category = (category or "").strip()
     if normalized_category and normalized_category.upper() != "ALL":
+        categories = [part.strip() for part in normalized_category.split(",") if part.strip()]
         query = query.join(
             StatusDefinition,
             Lead.status_definition_id == StatusDefinition.id,
-        ).filter(StatusDefinition.category == normalized_category)
+        )
+        if len(categories) == 1:
+            query = query.filter(StatusDefinition.category == categories[0])
+        elif categories:
+            query = query.filter(StatusDefinition.category.in_(categories))
 
     status = _normalize_contact_status(contact_status)
     if status != "all":

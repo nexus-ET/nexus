@@ -3,41 +3,41 @@ import {
   Archive,
   BookOpen,
   Bot,
-  Brain,
   Building2,
   Calendar,
   CalendarPlus,
-  ClipboardCheck,
   ClipboardList,
   FileText,
   Gauge,
-  GitCompare,
   Globe2,
   GraduationCap,
   Inbox,
   KeyRound,
+  Landmark,
   Layers,
   LayoutGrid,
+  ListOrdered,
   MapPin,
+  Percent,
   Plane,
   Radio,
-  Settings,
-  Settings2,
+  Receipt,
+  School,
   ShieldAlert,
   ShieldCheck,
-  Sparkles,
   UserCog,
   Users,
   UserSearch,
+  Zap,
 } from 'lucide-react';
 import {
   ACADEMIA_HUB_SECTIONS,
   FRAMEWORK_TABS,
   GEOGRAPHY_TABS,
 } from './academiaHubNav';
-import { FLOWX_NAV, FLOWX_NAV_GROUPS } from './flowxNav';
+import { FLOWX_NAV_GROUPS } from './flowxNav';
 import { NEXUS_INTEL_NAV } from './nexusIntelNav';
-import { STUDENT_PIPELINE_NAV } from './studentPipelineNav';
+import { STUDENT_PIPELINE_NAV, STUDENT_PIPELINE_NAV_GROUPS } from './studentPipelineNav';
 import { isAllowedRoute } from '../utils/routeAccess';
 import { canAccessAcademiaHub } from '../utils/academiaAccess';
 
@@ -47,6 +47,8 @@ export interface NavMegaLink {
   label: string;
   description?: string;
   icon?: LucideIcon;
+  /** Indent under the previous sibling (e.g. Sub-Majors under Majors). */
+  nested?: boolean;
 }
 
 export interface NavMegaGroup {
@@ -92,6 +94,93 @@ function filterGroups(groups: NavMegaGroup[], ctx: NavAccessContext): NavMegaGro
     .filter(group => group.links.length > 0);
 }
 
+function studentPipelineIcon(slug: string): LucideIcon {
+  switch (slug) {
+    case 'counselling':
+      return GraduationCap;
+    case 'college-finding':
+      return School;
+    case 'visa-processing':
+      return ShieldCheck;
+    case 'pre-departure-travel':
+      return Plane;
+    case 'landing':
+      return MapPin;
+    default:
+      return ClipboardList;
+  }
+}
+
+function studentPipelineLink(item: (typeof STUDENT_PIPELINE_NAV)[number]): NavMegaLink {
+  return {
+    path: item.path,
+    label: item.label,
+    description: `${item.category} stage`,
+    icon: studentPipelineIcon(item.slug),
+  };
+}
+
+const OFFLINE_LEADS_MEGA_GROUP: NavMegaGroup = {
+  title: 'Offline Leads',
+  links: [
+    {
+      path: '/express-leads',
+      label: 'Express Leads',
+      description: 'Quick capture for walk-in and phone leads',
+      icon: Zap,
+    },
+    {
+      path: '/offline-leads',
+      label: 'Offline Leads',
+      description: 'Imported offline leads',
+      icon: Inbox,
+    },
+  ],
+};
+
+const LEADS_NAV_GROUPS: NavMegaGroup[] = [
+  {
+    title: 'Online Leads',
+    links: [
+      {
+        path: '/ai-active',
+        label: 'AI Active',
+        description: 'Leads currently in AI conversation',
+        icon: Bot,
+      },
+      {
+        path: '/handoffs',
+        label: 'Handoffs',
+        description: 'Ready for advisor follow-up',
+        icon: Users,
+      },
+      {
+        path: '/prospects',
+        label: 'All Prospects',
+        description: 'Full prospect list',
+        icon: UserSearch,
+      },
+      {
+        path: '/archive',
+        label: 'Archive',
+        description: 'Closed and archived leads',
+        icon: Archive,
+      },
+    ],
+  },
+  {
+    title: 'Leads Management',
+    links: [
+      {
+        path: '/quarantine',
+        label: 'Lead Quarantine',
+        description: 'Review unverified lead data',
+        icon: ShieldAlert,
+      },
+    ],
+  },
+];
+
 /** Build all header mega-menu modules, then filter by RBAC. */
 export function getAppNavModules(ctx: NavAccessContext): NavMegaModule[] {
   if (ctx.allowedRoutes === null) return [];
@@ -106,285 +195,34 @@ export function getAppNavModules(ctx: NavAccessContext): NavMegaModule[] {
     {
       id: 'leads',
       label: 'Leads',
-      activePrefixes: [
-        '/ai-active',
-        '/handoffs',
-        '/prospects',
-        '/offline-leads',
-        '/archive',
-        '/quarantine',
-      ],
-      featured: [
-        {
-          path: '/ai-active',
-          label: 'AI Active',
-          description: 'Leads currently in AI conversation',
-          icon: Bot,
-        },
-        {
-          path: '/handoffs',
-          label: 'Handoffs',
-          description: 'Ready for advisor follow-up',
-          icon: Users,
-        },
-        {
-          path: '/prospects',
-          label: 'All Prospects',
-          description: 'Full prospect list',
-          icon: UserSearch,
-        },
-        {
-          path: '/archive',
-          label: 'Archive',
-          description: 'Closed and archived leads',
-          icon: Archive,
-        },
-      ],
-      groups: [
-        {
-          title: 'Directories',
-          links: [
-            {
-              path: '/offline-leads',
-              label: 'Offline Leads',
-              description: 'Imported offline leads',
-              icon: Inbox,
-            },
-            {
-              path: '/quarantine',
-              label: 'Lead Quarantine',
-              description: 'Held for review',
-              icon: ShieldAlert,
-            },
-          ],
-        },
-      ],
+      activePrefixes: ['/ai-active', '/handoffs', '/prospects', '/archive', '/quarantine'],
+      featured: [],
+      groups: LEADS_NAV_GROUPS,
+      sidebarSections: LEADS_NAV_GROUPS,
     },
     {
       id: 'students',
       label: 'Students',
-      activePrefixes: STUDENT_PIPELINE_NAV.map(item => item.path),
-      featured: STUDENT_PIPELINE_NAV.slice(0, 3).map(item => ({
-        path: item.path,
-        label: item.label,
-        description: `${item.category} pipeline`,
-        icon: GraduationCap,
-      })),
-      groups: [
-        {
-          title: 'Pipeline stages',
-          links: STUDENT_PIPELINE_NAV.slice(3).map(item => ({
-            path: item.path,
-            label: item.label,
-            description: `${item.category} stage`,
-            icon:
-              item.slug === 'visa-services'
-                ? ShieldCheck
-                : item.slug === 'pre-departure'
-                  ? Plane
-                  : item.slug === 'arrivals'
-                    ? MapPin
-                    : item.slug === 'prospects'
-                      ? UserSearch
-                      : ClipboardList,
-          })),
-        },
+      activePrefixes: [
+        ...STUDENT_PIPELINE_NAV.map(item => item.path),
+        '/express-leads',
+        '/offline-leads',
       ],
-      // Left nav: one continuous pipeline list under Students
-      sidebarSections: [
-        {
-          title: 'Pipeline',
-          links: STUDENT_PIPELINE_NAV.map(item => ({
-            path: item.path,
-            label: item.label,
-            icon:
-              item.slug === 'counselling'
-                ? GraduationCap
-                : item.slug === 'visa-services'
-                  ? ShieldCheck
-                  : item.slug === 'pre-departure'
-                    ? Plane
-                    : item.slug === 'arrivals'
-                      ? MapPin
-                      : item.slug === 'prospects'
-                        ? UserSearch
-                        : ClipboardList,
-          })),
-        },
-      ],
-    },
-    {
-      id: 'academia',
-      label: 'Academia',
-      activePrefixes: ['/academia'],
-      featured: ACADEMIA_HUB_SECTIONS.map(section => ({
-        path: section.path,
-        label: section.label,
-        description:
-          section.key === 'institutions'
-            ? 'Institution directory and wizard'
-            : section.key === 'framework'
-              ? 'Majors, levels, programs, courses'
-              : 'Countries, states, and cities',
-        icon:
-          section.key === 'institutions'
-            ? Building2
-            : section.key === 'framework'
-              ? Layers
-              : Globe2,
-      })),
+      featured: [],
       groups: [
-        {
-          title: 'Geography',
-          links: GEOGRAPHY_TABS.map(tab => ({
-            path: tab.path,
-            label: tab.label,
-            icon: tab.key === 'countries' ? Globe2 : tab.key === 'states' ? Layers : MapPin,
-          })),
-        },
-        {
-          title: 'Academic framework',
-          links: FRAMEWORK_TABS.map(tab => ({
-            path: tab.path,
-            label: tab.label,
-            icon:
-              tab.key === 'summary'
-                ? Gauge
-                : tab.key === 'majors'
-                  ? BookOpen
-                  : tab.key === 'levels'
-                    ? Layers
-                    : tab.key === 'programs'
-                      ? GraduationCap
-                      : ClipboardList,
-          })),
-        },
-      ],
-      // Left nav: each hub section heading sits directly above its own links
-      sidebarSections: ACADEMIA_HUB_SECTIONS.map(section => {
-        if (section.items.length > 1) {
-          return {
-            title: section.label,
-            links: section.items.map(item => ({
-              path: item.path,
-              label: item.label,
-              icon:
-                item.key === 'summary'
-                  ? Gauge
-                  : item.key === 'majors' || item.key === 'courses'
-                    ? BookOpen
-                    : item.key === 'levels' || item.key === 'states'
-                      ? Layers
-                      : item.key === 'programs'
-                        ? GraduationCap
-                        : item.key === 'cities'
-                          ? MapPin
-                          : item.key === 'countries'
-                            ? Globe2
-                            : item.key === 'institutions'
-                              ? Building2
-                              : ClipboardList,
-            })),
-          };
-        }
-        return {
-          title: null,
-          links: [
-            {
-              path: section.path,
-              label: section.label,
-              icon:
-                section.key === 'institutions'
-                  ? Building2
-                  : section.key === 'framework'
-                    ? Layers
-                    : Globe2,
-            },
-          ],
-        };
-      }),
-    },
-    {
-      id: 'nexus-intel',
-      label: 'IntelX',
-      activePrefixes: ['/nexus-intel'],
-      featured: NEXUS_INTEL_NAV.map(item => ({
-        path: item.path,
-        label: item.label,
-        description: item.description,
-        icon:
-          item.key === 'knowledge'
-            ? BookOpen
-            : item.key === 'ai-assistant'
-              ? Bot
-              : item.key === 'workflows'
-                ? GitCompare
-                : item.key === 'academy'
-                  ? ClipboardCheck
-                  : item.key === 'controls'
-                    ? Sparkles
-                    : item.key === 'admin'
-                      ? Settings2
-                      : Brain,
-      })),
-      groups: [
-        {
-          title: 'Workspace',
-          links: NEXUS_INTEL_NAV.slice(0, 3).map(item => ({
-            path: item.path,
-            label: item.label,
-            description: item.description,
-            icon: item.icon,
-          })),
-        },
-        {
-          title: 'Controls',
-          links: NEXUS_INTEL_NAV.slice(3).map(item => ({
-            path: item.path,
-            label: item.label,
-            description: item.description,
-            icon: item.icon,
-          })),
-        },
+        OFFLINE_LEADS_MEGA_GROUP,
+        ...STUDENT_PIPELINE_NAV_GROUPS.map(group => ({
+          title: group.label,
+          links: group.items.map(studentPipelineLink),
+        })),
       ],
       sidebarSections: [
-        {
-          title: null,
-          links: NEXUS_INTEL_NAV.map(item => ({
-            path: item.path,
-            label: item.label,
-            icon: item.icon,
-          })),
-        },
+        OFFLINE_LEADS_MEGA_GROUP,
+        ...STUDENT_PIPELINE_NAV_GROUPS.map(group => ({
+          title: group.label,
+          links: group.items.map(studentPipelineLink),
+        })),
       ],
-    },
-    {
-      id: 'flowx',
-      label: 'FlowX',
-      activePrefixes: ['/flowx'],
-      featured: FLOWX_NAV.map(item => ({
-        path: item.path,
-        label: item.label,
-        description: item.description,
-        icon: item.icon,
-      })),
-      groups: FLOWX_NAV_GROUPS.map(group => ({
-        title: group.label,
-        links: group.items.map(item => ({
-          path: item.path,
-          label: item.label,
-          description: item.description,
-          icon: item.icon,
-        })),
-      })),
-      sidebarSections: FLOWX_NAV_GROUPS.map(group => ({
-        title: group.label,
-        links: group.items.map(item => ({
-          path: item.path,
-          label: item.label,
-          icon: item.icon,
-        })),
-      })),
     },
     {
       id: 'appointments',
@@ -425,6 +263,231 @@ export function getAppNavModules(ctx: NavAccessContext): NavMegaModule[] {
       groups: [],
     },
     {
+      id: 'admin',
+      label: 'Admin',
+      activePrefixes: [
+        '/users',
+        '/access-control',
+        '/command-center',
+        '/agents',
+        '/security-audit',
+        '/settings',
+        '/invoices',
+      ],
+      featured: [
+        {
+          path: '/users',
+          label: 'Manage Users',
+          description: 'Team accounts and profiles',
+          icon: UserCog,
+        },
+      ],
+      groups: [
+        {
+          title: '',
+          links: [
+            {
+              path: '/settings',
+              label: 'Organization',
+              description: 'Business profile, logo, and contacts',
+              icon: Building2,
+            },
+            {
+              path: '/settings?tab=workspace',
+              label: 'Workspace',
+              description: 'Bookings, Meta sync, holidays, and alerts',
+              icon: Calendar,
+            },
+            {
+              path: '/settings?tab=monitoring',
+              label: 'Monitoring',
+              description: 'Uptime checks and alert recipients',
+              icon: Gauge,
+            },
+          ],
+        },
+        {
+          title: 'Accounts',
+          links: [
+            {
+              path: '/invoices',
+              label: 'Invoice Workspace',
+              description: 'Draft and issue student invoices',
+              icon: Receipt,
+            },
+            {
+              path: '/settings?tab=billing&section=base-price-catalog',
+              label: 'Base Price Catalog',
+              description: 'INR list prices and packages',
+              icon: ListOrdered,
+            },
+            {
+              path: '/settings?tab=billing&section=invoice-format',
+              label: 'Invoice Format',
+              description: 'Number pattern and FY strategy',
+              icon: FileText,
+            },
+            {
+              path: '/settings?tab=billing&section=organization-gstin',
+              label: 'GST & Tax',
+              description: 'GSTIN, GST rate, and active tax regimes',
+              icon: Building2,
+            },
+            {
+              path: '/settings?tab=billing&section=discount-policy',
+              label: 'Discount Policy',
+              description: 'Default discount and approval rules',
+              icon: Percent,
+            },
+            {
+              path: '/settings?tab=billing&section=bank-details',
+              label: 'Bank Details',
+              description: 'Accounts shown on student invoices',
+              icon: Landmark,
+            },
+          ],
+        },
+        {
+          title: 'Access & control',
+          links: [
+            {
+              path: '/access-control',
+              label: 'Access Control',
+              description: 'Roles and permissions',
+              icon: KeyRound,
+            },
+            ...(canCounselling
+              ? [
+                  {
+                    path: '/command-center',
+                    label: 'Mission Control',
+                    description: 'Live operations cockpit',
+                    icon: Radio,
+                  },
+                ]
+              : []),
+            {
+              path: '/agents',
+              label: 'AI Agent Brain',
+              description: 'Agent configuration',
+              icon: Bot,
+            },
+            {
+              path: '/security-audit',
+              label: 'Security Audit',
+              description: 'Security posture checks',
+              icon: ShieldAlert,
+            },
+          ],
+        },
+      ],
+      sidebarSections: [
+        {
+          title: '',
+          links: [
+            {
+              path: '/settings',
+              label: 'Organization',
+              description: 'Business profile, logo, and contacts',
+              icon: Building2,
+            },
+            {
+              path: '/settings?tab=workspace',
+              label: 'Workspace',
+              description: 'Bookings, Meta sync, holidays, and alerts',
+              icon: Calendar,
+            },
+            {
+              path: '/settings?tab=monitoring',
+              label: 'Monitoring',
+              description: 'Uptime checks and alert recipients',
+              icon: Gauge,
+            },
+          ],
+        },
+        {
+          title: 'Accounts',
+          links: [
+            {
+              path: '/invoices',
+              label: 'Invoice Workspace',
+              description: 'Draft and issue student invoices',
+              icon: Receipt,
+            },
+            {
+              path: '/settings?tab=billing&section=base-price-catalog',
+              label: 'Base Price Catalog',
+              description: 'INR list prices and packages',
+              icon: ListOrdered,
+            },
+            {
+              path: '/settings?tab=billing&section=invoice-format',
+              label: 'Invoice Format',
+              description: 'Number pattern and FY strategy',
+              icon: FileText,
+            },
+            {
+              path: '/settings?tab=billing&section=organization-gstin',
+              label: 'GST & Tax',
+              description: 'GSTIN, GST rate, and active tax regimes',
+              icon: Building2,
+            },
+            {
+              path: '/settings?tab=billing&section=discount-policy',
+              label: 'Discount Policy',
+              description: 'Default discount and approval rules',
+              icon: Percent,
+            },
+            {
+              path: '/settings?tab=billing&section=bank-details',
+              label: 'Bank Details',
+              description: 'Accounts shown on student invoices',
+              icon: Landmark,
+            },
+          ],
+        },
+        {
+          title: 'Access & control',
+          links: [
+            {
+              path: '/users',
+              label: 'Manage Users',
+              description: 'Team accounts and profiles',
+              icon: UserCog,
+            },
+            {
+              path: '/access-control',
+              label: 'Access Control',
+              description: 'Roles and permissions',
+              icon: KeyRound,
+            },
+            ...(canCounselling
+              ? [
+                  {
+                    path: '/command-center',
+                    label: 'Mission Control',
+                    description: 'Live operations cockpit',
+                    icon: Radio,
+                  },
+                ]
+              : []),
+            {
+              path: '/agents',
+              label: 'AI Agent Brain',
+              description: 'Agent configuration',
+              icon: Bot,
+            },
+            {
+              path: '/security-audit',
+              label: 'Security Audit',
+              description: 'Security posture checks',
+              icon: ShieldAlert,
+            },
+          ],
+        },
+      ],
+    },
+    {
       id: 'insights',
       label: 'Insights',
       activePrefixes: ['/reports', '/analytics'],
@@ -463,65 +526,164 @@ export function getAppNavModules(ctx: NavAccessContext): NavMegaModule[] {
       ],
     },
     {
-      id: 'admin',
-      label: 'Admin',
-      activePrefixes: [
-        '/users',
-        '/access-control',
-        '/command-center',
-        '/agents',
-        '/security-audit',
-        '/settings',
-      ],
-      featured: [
-        {
-          path: '/users',
-          label: 'Manage Users',
-          description: 'Team accounts and profiles',
-          icon: UserCog,
-        },
-        {
-          path: '/settings',
-          label: 'Settings',
-          description: 'Application and monitoring settings',
-          icon: Settings,
-        },
-      ],
+      id: 'academia',
+      label: 'Academia',
+      activePrefixes: ['/academia'],
+      featured: ACADEMIA_HUB_SECTIONS.map(section => ({
+        path: section.path,
+        label: section.label,
+        description:
+          section.key === 'institutions'
+            ? 'Institution directory and wizard'
+            : section.key === 'framework'
+              ? 'Super-majors, majors, sub-majors, levels, programs, courses'
+              : 'Countries, states, and cities',
+        icon:
+          section.key === 'institutions'
+            ? Building2
+            : section.key === 'framework'
+              ? Layers
+              : Globe2,
+      })),
       groups: [
         {
-          title: 'Access & control',
-          links: [
-            {
-              path: '/access-control',
-              label: 'Access Control',
-              description: 'Roles and permissions',
-              icon: KeyRound,
-            },
-            ...(canCounselling
-              ? [
-                  {
-                    path: '/command-center',
-                    label: 'Mission Control',
-                    description: 'Live operations cockpit',
-                    icon: Radio,
-                  },
-                ]
-              : []),
-            {
-              path: '/agents',
-              label: 'AI Agent Brain',
-              description: 'Agent configuration',
-              icon: Bot,
-            },
-            {
-              path: '/security-audit',
-              label: 'Security Audit',
-              description: 'Security posture checks',
-              icon: ShieldAlert,
-            },
-          ],
+          title: 'Geography',
+          links: GEOGRAPHY_TABS.map(tab => ({
+            path: tab.path,
+            label: tab.label,
+            icon: tab.key === 'countries' ? Globe2 : tab.key === 'states' ? Layers : MapPin,
+          })),
+        },
+        {
+          title: 'Academic framework',
+          links: FRAMEWORK_TABS.map(tab => ({
+            path: tab.path,
+            label: tab.label,
+            nested: tab.nested,
+            icon:
+              tab.key === 'summary'
+                ? Gauge
+                : tab.key === 'super-majors' || tab.key === 'majors' || tab.key === 'sub-majors'
+                  ? BookOpen
+                  : tab.key === 'levels'
+                    ? Layers
+                    : tab.key === 'programs'
+                      ? GraduationCap
+                      : ClipboardList,
+          })),
         },
       ],
+      // Left nav: each hub section heading sits directly above its own links
+      sidebarSections: ACADEMIA_HUB_SECTIONS.map(section => {
+        if (section.items.length > 1) {
+          return {
+            title: section.label,
+            links: section.items.map(item => ({
+              path: item.path,
+              label: item.label,
+              nested: item.key === 'majors' || item.key === 'sub-majors',
+              icon:
+                item.key === 'summary'
+                  ? Gauge
+                  : item.key === 'super-majors' ||
+                      item.key === 'majors' ||
+                      item.key === 'sub-majors' ||
+                      item.key === 'courses'
+                    ? BookOpen
+                    : item.key === 'levels' || item.key === 'states'
+                      ? Layers
+                      : item.key === 'programs'
+                        ? GraduationCap
+                        : item.key === 'cities'
+                          ? MapPin
+                          : item.key === 'countries'
+                            ? Globe2
+                            : item.key === 'institutions'
+                              ? Building2
+                              : ClipboardList,
+            })),
+          };
+        }
+        return {
+          title: null,
+          links: [
+            {
+              path: section.path,
+              label: section.label,
+              icon:
+                section.key === 'institutions'
+                  ? Building2
+                  : section.key === 'framework'
+                    ? Layers
+                    : Globe2,
+            },
+          ],
+        };
+      }),
+    },
+    {
+      id: 'nexus-intel',
+      label: 'IntelX',
+      activePrefixes: ['/nexus-intel'],
+      featured: NEXUS_INTEL_NAV.map(item => ({
+        path: item.path,
+        label: item.label,
+        description: item.description,
+        icon: item.icon,
+      })),
+      groups: [
+        {
+          title: 'Workspace',
+          links: NEXUS_INTEL_NAV.slice(0, 4).map(item => ({
+            path: item.path,
+            label: item.label,
+            description: item.description,
+            icon: item.icon,
+          })),
+        },
+        {
+          title: 'Controls',
+          links: NEXUS_INTEL_NAV.slice(4).map(item => ({
+            path: item.path,
+            label: item.label,
+            description: item.description,
+            icon: item.icon,
+          })),
+        },
+      ],
+      sidebarSections: [
+        {
+          title: null,
+          links: NEXUS_INTEL_NAV.map(item => ({
+            path: item.path,
+            label: item.label,
+            icon: item.icon,
+          })),
+        },
+      ],
+    },
+    {
+      id: 'flowx',
+      label: 'FlowX',
+      activePrefixes: ['/flowx'],
+      featured: [],
+      groups: FLOWX_NAV_GROUPS.map(group => ({
+        title: group.label,
+        links: group.items.map(item => ({
+          path: item.path,
+          label: item.label,
+          description: item.description,
+          icon: item.icon,
+        })),
+      })),
+      sidebarSections: FLOWX_NAV_GROUPS.map(group => ({
+        title: group.label,
+        links: group.items.map(item => ({
+          path: item.path,
+          label: item.label,
+          icon: item.icon,
+        })),
+      })),
     },
   ];
 

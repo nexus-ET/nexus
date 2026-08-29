@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import uuid
 from datetime import date, datetime
 
 from fastapi import HTTPException
@@ -71,16 +70,18 @@ def _college_option_value(college_id: int) -> str:
     return f"college:{college_id}"
 
 
-def _parse_uuid_list(values: list[str] | None) -> list[uuid.UUID]:
-    parsed: list[uuid.UUID] = []
+def _parse_program_id_list(values: list[str] | None) -> list[int]:
+    parsed: list[int] = []
     for raw in values or []:
-        token = str(raw or "").strip()
+        token = (raw or "").strip()
         if not token:
             continue
         try:
-            parsed.append(uuid.UUID(token))
+            value = int(token)
         except ValueError:
             continue
+        if value > 0:
+            parsed.append(value)
     return parsed
 
 
@@ -89,7 +90,7 @@ def _matching_institution_ids_for_study_interest(
     *,
     level_id: int | None = None,
     major_ids: list[int] | None = None,
-    program_ids: list[uuid.UUID] | None = None,
+    program_ids: list[int] | None = None,
 ) -> set[int] | None:
     """Return matching institution IDs, or None when no academic filter is applied."""
     cleaned_majors = [int(item) for item in (major_ids or []) if int(item) > 0]
@@ -144,7 +145,7 @@ def list_recommended_institution_options(
         db,
         level_id=level_id,
         major_ids=major_ids,
-        program_ids=_parse_uuid_list(program_ids),
+        program_ids=_parse_program_id_list(program_ids),
     )
     if academic_ids is not None:
         if not academic_ids:

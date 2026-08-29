@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { AlertTriangle, CheckCircle2, Clock3, Loader2, Wrench } from 'lucide-react';
 import { apiFetch } from '../../../utils/api';
+import { campusDescriptionPreview } from '../../../utils/campusDescription';
 import {
   INSTITUTIONS_SECTION_PATH,
   getAcademiaSectionLabel,
@@ -9,14 +10,32 @@ import {
 import type {
   AcademiaAuditEntry,
   InstitutionPublishReport,
+  PublishReportCheck,
   PublishReportStep,
 } from '../../../schemas/wizard';
-import { normalizePublishReportSteps, WIZARD_UI_STEP_COUNT } from '../../../schemas/wizard';
+import {
+  formatAuditFieldLabel,
+  normalizePublishReportSteps,
+  WIZARD_STEP_LABELS,
+  WIZARD_UI_STEP_COUNT,
+} from '../../../schemas/wizard';
 import type { CampusRecord, CollegeRecord, InstitutionRecord } from '../../../types/institutions';
 import AcademiaBreadcrumbs from '../AcademiaBreadcrumbs';
+import AcademiaAuditDiffModal from './AcademiaAuditDiffModal';
 
-const formatResultLabel = (key: string) =>
-  key.replace(/_/g, ' ').replace(/\b\w/g, character => character.toUpperCase());
+const AUDIT_ACTION_LABELS: Record<string, string> = {
+  wizard_save_institution: 'Saved institution',
+  wizard_save_campuses: 'Saved campuses',
+  wizard_save_colleges: 'Saved schools & colleges',
+  wizard_save_courses: 'Saved academics',
+  wizard_save_intakes: 'Saved intakes',
+  wizard_save_pictures: 'Saved gallery',
+  publish: 'Published',
+  update: 'Updated',
+};
+
+const formatActionLabel = (action: string) =>
+  AUDIT_ACTION_LABELS[action] || formatAuditFieldLabel(action);
 
 const getPublishReport = (entry: AcademiaAuditEntry): InstitutionPublishReport | null => {
   const report = entry.new_data?.publish_report;
@@ -36,6 +55,16 @@ const getPublishReport = (entry: AcademiaAuditEntry): InstitutionPublishReport |
   };
 };
 
+const CheckStatusIcon: React.FC<{ status: PublishReportCheck['status'] }> = ({ status }) => {
+  if (status === 'failed') {
+    return <AlertTriangle size={15} className="mt-0.5 shrink-0 text-alert" />;
+  }
+  if (status === 'warning') {
+    return <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-600" />;
+  }
+  return <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-emerald-600" />;
+};
+
 const InstitutionHistoryPage: React.FC = () => {
   const { institutionId = '' } = useParams();
   const location = useLocation();
@@ -43,6 +72,7 @@ const InstitutionHistoryPage: React.FC = () => {
   const [campuses, setCampuses] = useState<CampusRecord[]>([]);
   const [colleges, setColleges] = useState<CollegeRecord[]>([]);
   const [entries, setEntries] = useState<AcademiaAuditEntry[]>([]);
+  const [diffEntry, setDiffEntry] = useState<AcademiaAuditEntry | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const publishReports = useMemo(
@@ -56,6 +86,8 @@ const InstitutionHistoryPage: React.FC = () => {
     [entries]
   );
   const latestPublishReport = publishReports[0] ?? null;
+  const institutionComplete = Boolean(institution?.name);
+  const collegesComplete = colleges.length > 0;
 
   const loadHistory = useCallback(async () => {
     if (!institutionId) {
@@ -110,7 +142,8 @@ const InstitutionHistoryPage: React.FC = () => {
         <div className="border-b border-border-subtle px-6 py-4">
           <h2 className="text-xl font-bold text-text-main">Institution History</h2>
           <p className="text-sm text-text-muted">
-            Current campuses and schools/colleges, plus the latest publish activity report.
+            Current structure (campuses are optional), change history, and the latest publish activity
+            report.
           </p>
         </div>
 
@@ -129,23 +162,78 @@ const InstitutionHistoryPage: React.FC = () => {
               <p className="mt-1 text-lg font-semibold text-text-main">
                 {institution?.name || `Institution #${institutionId}`}
               </p>
+              <p className="mt-1 text-sm tabular-nums text-text-muted">
+                Institution ID {institution?.id ?? institutionId}
+              </p>
+              <div className="mt-4 rounded-xl border border-border-subtle bg-surface-bg/40 p-4">
+                <p className="text-xs font-semibold uppercase text-text-muted">
+                  {WIZARD_STEP_LABELS[0]}
+                </p>
+                <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                  {institutionComplete ? (
+                    <>
+                      <span className="inline-flex items-center gap-1 font-semibold text-emerald-700">
+                        <CheckCircle2 size={15} /> Complete
+                      </span>
+                      <span className="text-text-muted">
+                        Institution is saved. Campuses are optional
+                        {campuses.length === 0
+                          ? ' — none added.'
+                          : ` — ${campuses.length} saved.`}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-text-muted">Institution profile has not been saved yet.</span>
+                  )}
+                </p>
+              </div>
               <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <div className="rounded-xl border border-border-subtle bg-surface-bg/40 p-4">
-                  <p className="text-xs font-semibold uppercase text-text-muted">Campuses</p>
+                  <p className="text-xs font-semibold uppercase text-text-muted">
+                    Campuses <span className="font-medium normal-case tracking-normal">(optional)</span>
+                  </p>
                   <p className="mt-1 text-2xl font-bold text-text-main">{campuses.length}</p>
                   {campuses.length === 0 ? (
-                    <p className="mt-2 text-sm text-text-muted">No campuses saved yet.</p>
+                    <p className="mt-2 text-sm text-text-muted">
+                      None added — campuses are optional for this institution.
+                    </p>
                   ) : (
-                    <ul className="mt-3 space-y-1 text-sm text-text-main">
-                      {campuses.map(campus => (
-                        <li key={campus.id}>
-                          {campus.name}
-                          {campus.location_label ? (
-                            <span className="text-text-muted"> — {campus.location_label}</span>
-                          ) : null}
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead className="text-left text-xs uppercase tracking-wide text-text-muted">
+                          <tr>
+                            <th className="py-1 pr-3 font-semibold">ID</th>
+                            <th className="py-1 pr-3 font-semibold">Campus</th>
+                            <th className="py-1 pr-3 font-semibold">Description</th>
+                            <th className="py-1 font-semibold">Institution ID</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {campuses.map(campus => {
+                            const descriptionCell = campusDescriptionPreview(campus.description);
+                            return (
+                            <tr key={campus.id}>
+                              <td className="py-1 pr-3 tabular-nums text-text-muted">{campus.id}</td>
+                              <td className="py-1 pr-3 text-text-main">
+                                {campus.name}
+                                {campus.location_label ? (
+                                  <span className="text-text-muted"> — {campus.location_label}</span>
+                                ) : null}
+                              </td>
+                              <td className="max-w-md py-1 pr-3 text-text-muted">
+                                <span className="block truncate" title={descriptionCell.title}>
+                                  {descriptionCell.preview}
+                                </span>
+                              </td>
+                              <td className="py-1 tabular-nums text-text-muted">
+                                {campus.institution_id}
+                              </td>
+                            </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </div>
                 <div className="rounded-xl border border-border-subtle bg-surface-bg/40 p-4">
@@ -154,17 +242,39 @@ const InstitutionHistoryPage: React.FC = () => {
                   {colleges.length === 0 ? (
                     <p className="mt-2 text-sm text-text-muted">No schools or colleges saved yet.</p>
                   ) : (
-                    <ul className="mt-3 space-y-1 text-sm text-text-main">
-                      {colleges.map(college => (
-                        <li key={college.id}>
-                          {college.name}
-                          {college.campus_name ? (
-                            <span className="text-text-muted"> — {college.campus_name}</span>
-                          ) : null}
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead className="text-left text-xs uppercase tracking-wide text-text-muted">
+                          <tr>
+                            <th className="py-1 pr-3 font-semibold">ID</th>
+                            <th className="py-1 pr-3 font-semibold">College</th>
+                            <th className="py-1 font-semibold">Institution ID</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {colleges.map(college => (
+                            <tr key={college.id}>
+                              <td className="py-1 pr-3 tabular-nums text-text-muted">{college.id}</td>
+                              <td className="py-1 pr-3 text-text-main">
+                                {college.name}
+                                {college.campus_name ? (
+                                  <span className="text-text-muted"> — {college.campus_name}</span>
+                                ) : null}
+                              </td>
+                              <td className="py-1 tabular-nums text-text-muted">
+                                {college.institution_id}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
+                  {collegesComplete ? (
+                    <p className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
+                      <CheckCircle2 size={13} /> {WIZARD_STEP_LABELS[1]} complete
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </section>
@@ -221,7 +331,7 @@ const InstitutionHistoryPage: React.FC = () => {
                       ].map(([label, value]) => (
                         <div key={String(label)} className="rounded-lg border border-border-subtle bg-card px-3 py-2">
                           <p className="text-xs text-text-muted">{label}</p>
-                          <p className="mt-1 text-lg font-bold text-text-main">{value}</p>
+                          <p className="mt-1 text-lg font-bold text-text-main">{String(value)}</p>
                         </div>
                       ))}
                     </div>
@@ -257,7 +367,7 @@ const InstitutionHistoryPage: React.FC = () => {
                               key={`${step.step}-${check.name}`}
                               className="flex items-start gap-2 text-sm"
                             >
-                              <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-emerald-600" />
+                              <CheckStatusIcon status={check.status} />
                               <p>
                                 <span className="font-semibold text-text-main">{check.name}:</span>{' '}
                                 <span className="text-text-muted">{check.details}</span>
@@ -298,7 +408,8 @@ const InstitutionHistoryPage: React.FC = () => {
                                 key={key}
                                 className="rounded-full bg-surface-bg px-2.5 py-1 text-xs text-text-muted"
                               >
-                                {formatResultLabel(key)}: <strong className="text-text-main">{String(value)}</strong>
+                                {formatAuditFieldLabel(key)}:{' '}
+                                <strong className="text-text-main">{String(value)}</strong>
                               </span>
                             ))}
                           </div>
@@ -307,6 +418,61 @@ const InstitutionHistoryPage: React.FC = () => {
                     ))}
                   </div>
                 </div>
+              )}
+            </section>
+
+            <section className="px-6 py-5">
+              <h3 className="text-sm font-bold uppercase tracking-wide text-text-muted">
+                Change history
+              </h3>
+              <p className="mt-1 text-sm text-text-muted">
+                Read-only snapshots of wizard saves and publishes. Empty campus lists are valid.
+              </p>
+              {entries.length === 0 ? (
+                <p className="mt-4 rounded-xl border border-border-subtle bg-surface-bg/40 p-4 text-sm text-text-muted">
+                  No audit entries recorded yet.
+                </p>
+              ) : (
+                <ul className="mt-4 divide-y divide-border-subtle overflow-hidden rounded-xl border border-border-subtle">
+                  {entries.map(entry => {
+                    const summary =
+                      (entry.new_data?.summary as Record<string, unknown> | undefined) ||
+                      entry.new_data;
+                    const campusCount =
+                      summary && typeof summary.campus_count === 'number'
+                        ? summary.campus_count
+                        : null;
+                    return (
+                      <li
+                        key={entry.id}
+                        className="flex flex-wrap items-center justify-between gap-3 bg-card px-4 py-3"
+                      >
+                        <div>
+                          <p className="text-sm font-semibold text-text-main">
+                            {formatActionLabel(entry.action)}
+                          </p>
+                          <p className="mt-1 text-xs text-text-muted">
+                            {new Date(entry.created_at).toLocaleString()}
+                            {campusCount !== null ? (
+                              <>
+                                {' '}
+                                · {campusCount} campus{campusCount === 1 ? '' : 'es'}
+                                {campusCount === 0 ? ' (optional)' : ''}
+                              </>
+                            ) : null}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setDiffEntry(entry)}
+                          className="rounded-lg border border-border-subtle px-3 py-1.5 text-xs font-semibold text-text-main hover:border-accent hover:text-accent"
+                        >
+                          View diff
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
             </section>
           </>
@@ -321,6 +487,8 @@ const InstitutionHistoryPage: React.FC = () => {
           </Link>
         </div>
       </div>
+
+      <AcademiaAuditDiffModal open={Boolean(diffEntry)} entry={diffEntry} onClose={() => setDiffEntry(null)} />
     </div>
   );
 };

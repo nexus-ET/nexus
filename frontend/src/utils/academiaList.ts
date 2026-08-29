@@ -36,7 +36,7 @@ export function normalizePaginatedList<T>(data: unknown): PaginatedListResponse<
 /** Fetch all items from a paginated academia list endpoint (for dropdowns). */
 export async function fetchAcademiaListItems<T>(
   endpoint: string,
-  extraParams?: Record<string, string | undefined>
+  extraParams?: Record<string, string | string[] | undefined>
 ): Promise<T[]> {
   const pageSize = 100;
   let page = 1;
@@ -46,7 +46,14 @@ export async function fetchAcademiaListItems<T>(
   while (page <= totalPages) {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(extraParams ?? {})) {
-      if (value != null && value !== '') params.set(key, value);
+      if (value == null || value === '') continue;
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          if (item) params.append(key, item);
+        }
+        continue;
+      }
+      params.set(key, value);
     }
     params.set('page', String(page));
     params.set('page_size', String(pageSize));

@@ -201,7 +201,7 @@ const FlowxAddApplicationPage: React.FC = () => {
       <div className="flex shrink-0 flex-wrap items-end justify-between gap-2">
         <div>
           <Link
-            to={presetLead ? `/flowx/journeys/student/${presetLead}` : '/flowx/journeys'}
+            to={presetLead ? `/flowx/journeys/student/${presetLead}` : '/flowx/ops'}
             className="mb-0.5 inline-flex items-center gap-1 text-xs font-semibold text-text-muted hover:text-text-main"
           >
             <ArrowLeft size={12} /> Back
@@ -210,7 +210,7 @@ const FlowxAddApplicationPage: React.FC = () => {
         </div>
         <div className="flex items-center gap-2">
           <Link
-            to={presetLead ? `/flowx/journeys/student/${presetLead}` : '/flowx/journeys'}
+            to={presetLead ? `/flowx/journeys/student/${presetLead}` : '/flowx/ops'}
             className="text-xs font-semibold text-text-muted hover:text-text-main"
           >
             Cancel

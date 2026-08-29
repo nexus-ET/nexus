@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -10,7 +9,10 @@ from app.schemas.contact_entry import (
     ContactListFields,
     EmailContactListMixin,
     FaxContactListFields,
+    OptionalEmailContactListMixin,
+    OptionalPhoneContactListMixin,
     PhoneContactListMixin,
+    assert_optional_email_formats,
     normalize_email_contacts,
     normalize_fax_contacts,
     normalize_phone_contacts,
@@ -26,6 +28,15 @@ class CampusTypeRead(BaseModel):
     code: str
     name: str
     description: str
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InstitutionTypeRead(BaseModel):
+    id: int
+    code: str
+    name: str
+    is_active: bool = True
+    sort_order: int = 0
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -163,7 +174,38 @@ class GeographyCityListResponse(BaseModel):
     total_pages: int
 
 
-class InstitutionBase(BaseModel):
+INSTITUTION_PROFILE_TEXT_FIELD_NAMES: tuple[str, ...] = (
+    "year_established",
+    "global_ranking",
+    "national_ranking",
+    "brochure_url",
+    "tuition_fees",
+    "hostel_expenses",
+    "food_expense",
+    "books_expense",
+    "commutation_expense",
+    "insurance_expense",
+    "medical_expense",
+    "other_expense",
+)
+
+
+class InstitutionProfileTextFields(BaseModel):
+    year_established: str | None = None
+    global_ranking: str | None = None
+    national_ranking: str | None = None
+    brochure_url: str | None = None
+    tuition_fees: str | None = None
+    hostel_expenses: str | None = None
+    food_expense: str | None = None
+    books_expense: str | None = None
+    commutation_expense: str | None = None
+    insurance_expense: str | None = None
+    medical_expense: str | None = None
+    other_expense: str | None = None
+
+
+class InstitutionBase(InstitutionProfileTextFields, BaseModel):
     country_id: int | None = None
     state_id: int | None = None
     city_id: int | None = None
@@ -175,7 +217,7 @@ class InstitutionBase(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     code: str | None = Field(default=None, max_length=50)
     dean_name: str | None = Field(default=None, max_length=255)
-    institution_type: str | None = Field(default=None, max_length=80)
+    institution_type_id: int | None = None
     company_affiliated: bool | None = None
     ranking_tier_global: str | None = Field(default=None, max_length=120)
     ad_promotion_flag: bool | None = None
@@ -219,12 +261,17 @@ class InstitutionBase(BaseModel):
         self.institution_web_url = primary_web_url(links)
         return self
 
+    @model_validator(mode="after")
+    def validate_optional_emails(self) -> InstitutionBase:
+        assert_optional_email_formats(self.email_addresses)
+        return self
+
 
 class InstitutionCreate(InstitutionBase):
     pass
 
 
-class InstitutionUpdate(BaseModel):
+class InstitutionUpdate(InstitutionProfileTextFields, BaseModel):
     country_id: int | None = None
     state_id: int | None = None
     city_id: int | None = None
@@ -236,7 +283,7 @@ class InstitutionUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     code: str | None = Field(default=None, max_length=50)
     dean_name: str | None = Field(default=None, max_length=255)
-    institution_type: str | None = Field(default=None, max_length=80)
+    institution_type_id: int | None = None
     company_affiliated: bool | None = None
     ranking_tier_global: str | None = Field(default=None, max_length=120)
     ad_promotion_flag: bool | None = None
@@ -282,18 +329,41 @@ class InstitutionUpdate(BaseModel):
         self.institution_web_url = primary_web_url(links)
         return self
 
+    @model_validator(mode="after")
+    def validate_optional_emails(self) -> InstitutionUpdate:
+        assert_optional_email_formats(self.email_addresses)
+        return self
+
 
 class InstitutionRead(InstitutionBase):
     id: int
     country_name: str | None = None
+    institution_type_code: str | None = None
+    institution_type_name: str | None = None
     campus_count: int = 0
     college_count: int = 0
     model_config = ConfigDict(from_attributes=True)
 
 
-class InstitutionSummaryRead(InstitutionRead):
+class InstitutionSummaryRead(BaseModel):
+    """Slim list DTO — no profile text, contacts, or description blobs."""
+
+    id: int
+    country_id: int | None = None
+    state_id: int | None = None
+    city_id: int | None = None
+    name: str
+    code: str | None = None
+    institution_type_id: int | None = None
+    institution_type_code: str | None = None
+    institution_type_name: str | None = None
+    is_active: bool = True
+    sort_order: int = 0
+    country_name: str | None = None
     state_name: str | None = None
     city_name: str | None = None
+    campus_count: int = 0
+    college_count: int = 0
     publish_status: str = "pending"
     last_publish_attempt_at: datetime | None = None
     created_at: datetime | None = None
@@ -301,9 +371,11 @@ class InstitutionSummaryRead(InstitutionRead):
     level_count: int = 0
     program_count: int = 0
     major_count: int = 0
+    sub_major_count: int = 0
     course_count: int = 0
     intake_count: int = 0
     picture_count: int = 0
+    model_config = ConfigDict(from_attributes=True)
 
 
 class InstitutionAdminListResponse(BaseModel):
@@ -316,7 +388,7 @@ class InstitutionAdminListResponse(BaseModel):
     inactive_count: int = 0
 
 
-class CampusBase(PhoneContactListMixin, EmailContactListMixin, FaxContactListFields, BaseModel):
+class CampusBase(OptionalPhoneContactListMixin, OptionalEmailContactListMixin, FaxContactListFields, BaseModel):
     institution_id: int
     location_id: int
     name: str = Field(min_length=1, max_length=250)
@@ -403,6 +475,11 @@ class CampusUpdate(BaseModel):
         self.web_links = serialize_contacts(normalize_web_links(self.web_links)) or None
         return self
 
+    @model_validator(mode="after")
+    def validate_optional_emails(self) -> CampusUpdate:
+        assert_optional_email_formats(self.email_addresses)
+        return self
+
 
 class CampusRead(ContactListFields, FaxContactListFields, BaseModel):
     id: int
@@ -430,9 +507,20 @@ class CampusRead(ContactListFields, FaxContactListFields, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class CollegeCampusLinkRead(BaseModel):
+    campus_id: int
+    name: str
+    address: str | None = None
+    location_label: str | None = None
+    is_primary: bool = False
+    source_url: str | None = None
+    evidence: str | None = None
+
+
 class CollegeBase(PhoneContactListMixin, EmailContactListMixin, BaseModel):
     institution_id: int
     campus_id: int | None = None
+    campus_ids: list[int] | None = None
     name: str = Field(min_length=1, max_length=255)
     code: str | None = Field(default=None, max_length=50)
     category: str | None = Field(default=None, max_length=64)
@@ -465,6 +553,7 @@ class CollegeCreate(CollegeBase):
 class CollegeUpdate(BaseModel):
     institution_id: int | None = None
     campus_id: int | None = None
+    campus_ids: list[int] | None = None
     name: str | None = Field(default=None, min_length=1, max_length=255)
     code: str | None = Field(default=None, max_length=50)
     category: str | None = Field(default=None, max_length=64)
@@ -512,6 +601,8 @@ class CollegeRead(ContactListFields, BaseModel):
     id: int
     institution_id: int
     campus_id: int | None = None
+    campus_ids: list[int] = Field(default_factory=list)
+    linked_campuses: list[CollegeCampusLinkRead] = Field(default_factory=list)
     name: str
     code: str | None = None
     category: str | None = None
@@ -532,12 +623,14 @@ class InstitutionHierarchyCollegeNode(BaseModel):
     id: int
     name: str
     dean_name: str | None = None
+    campus_names: list[str] = Field(default_factory=list)
 
 
 class InstitutionHierarchyCampusNode(BaseModel):
     id: int
     name: str
     location_label: str | None = None
+    description: str | None = None
     colleges: list[InstitutionHierarchyCollegeNode]
 
 
@@ -562,8 +655,8 @@ class ProgramAdminBase(BaseModel):
 
 
 class ProgramAdminCreate(BaseModel):
-    program_id: UUID | None = None
-    degree_id: UUID | None = None
+    program_id: int | None = None
+    degree_id: int | None = None
     name: str = Field(min_length=1, max_length=255)
     description: OptionalRichText5000 = None
     code: str | None = Field(default=None, min_length=1, max_length=50)
@@ -580,8 +673,8 @@ class ProgramAdminCreate(BaseModel):
 
 
 class ProgramAdminUpdate(BaseModel):
-    program_id: UUID | None = None
-    degree_id: UUID | None = None
+    program_id: int | None = None
+    degree_id: int | None = None
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: OptionalRichText5000 = None
     code: str | None = Field(default=None, min_length=1, max_length=50)
@@ -597,8 +690,8 @@ class ProgramAdminUpdate(BaseModel):
 
 class ProgramAdminRead(BaseModel):
     id: int
-    program_id: UUID
-    degree_id: UUID
+    program_id: int
+    degree_id: int
     code: str
     label: str
     name: str
@@ -623,41 +716,63 @@ class DegreeAdminCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     level_id: int = Field(ge=1)
     description: OptionalRichText5000 = None
+    program_url: str | None = Field(default=None, max_length=2048)
     code: str | None = Field(default=None, min_length=1, max_length=50)
     is_active: bool = True
     sort_order: int = 0
-    institution_id: int | None = Field(default=None, ge=1)
+    institution_id: int = Field(ge=1, description="Required offering institution")
+    country_id: int | None = Field(default=None, ge=1)
+    college_id: int | None = Field(default=None, ge=1)
     intake_ids: list[int] = Field(default_factory=list)
     major_ids: list[int] = Field(default_factory=list, description="Catalog majors to map to this program")
+    sub_major_ids: list[int] = Field(
+        default_factory=list,
+        description="Catalog sub-majors to map (multiple per selected major allowed)",
+    )
 
 
 class DegreeAdminUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     level_id: int | None = Field(default=None, ge=1)
     description: OptionalRichText5000 = None
+    program_url: str | None = Field(default=None, max_length=2048)
     code: str | None = Field(default=None, min_length=1, max_length=50)
     is_active: bool | None = None
     sort_order: int | None = None
     institution_id: int | None = Field(default=None, ge=1)
+    country_id: int | None = Field(default=None, ge=1)
+    college_id: int | None = Field(default=None, ge=1)
     intake_ids: list[int] | None = None
     major_ids: list[int] | None = Field(
         default=None, description="Replace mapped catalog majors when provided"
     )
+    sub_major_ids: list[int] | None = Field(
+        default=None,
+        description="Replace mapped catalog sub-majors when provided (multiple per major allowed)",
+    )
 
 
 class DegreeAdminRead(BaseModel):
-    id: UUID
+    id: int
     code: str
     name: str
     level_id: int
     level_code: str | None = None
     level_name: str | None = None
     description: str | None = None
+    program_url: str | None = None
     is_active: bool = True
     sort_order: int = 0
     major_count: int = 0
     major_ids: list[int] = Field(default_factory=list)
+    major_names: list[str] = Field(default_factory=list)
+    sub_major_ids: list[int] = Field(default_factory=list)
+    sub_major_names: list[str] = Field(default_factory=list)
     institution_id: int | None = None
+    institution_ids: list[int] = Field(default_factory=list)
+    institution_names: list[str] = Field(default_factory=list)
+    country_id: int | None = None
+    college_id: int | None = None
     intake_ids: list[int] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
@@ -684,19 +799,103 @@ class HierarchyMajorNode(BaseModel):
 
 
 class HierarchyProgramNode(BaseModel):
-    id: str
+    id: int
     name: str
     majors: list[HierarchyMajorNode]
+    sub_major_count: int = 0
+    sub_major_ids: list[int] = Field(default_factory=list)
 
 
 class HierarchyLevelNode(BaseModel):
     id: int
     name: str
     programs: list[HierarchyProgramNode]
+    major_count: int = 0
+    sub_major_count: int = 0
+
+
+class FrameworkCoveragePair(BaseModel):
+    mapped: int = 0
+    unmapped: int = 0
+    total: int = 0
+    mapped_pct: float = 0
+    unmapped_pct: float = 0
+
+
+class FrameworkInstitutionCoverage(BaseModel):
+    institution_id: int
+    institution_name: str
+    country_id: int | None = None
+    country_name: str | None = None
+    program_count: int = 0
+    without_major: int = 0
+    without_sub_major: int = 0
+    without_course: int = 0
+    without_level: int = 0
+    without_url: int = 0
+    without_major_pct: float = 0
+    without_sub_major_pct: float = 0
+    without_course_pct: float = 0
+    without_level_pct: float = 0
+    without_url_pct: float = 0
+
+
+class FrameworkCountryCoverage(BaseModel):
+    country_id: int | None = None
+    country_name: str | None = None
+    institution_count: int = 0
+    campus_count: int = 0
+    college_count: int = 0
+    program_count: int = 0
+    major_count: int = 0
+    sub_major_count: int = 0
+    level_count: int = 0
+    programs_with_no_major: int = 0
+    programs_with_no_sub_major: int = 0
+    major_mapping: FrameworkCoveragePair = Field(default_factory=FrameworkCoveragePair)
+    sub_major_mapping: FrameworkCoveragePair = Field(default_factory=FrameworkCoveragePair)
+    course_link: FrameworkCoveragePair = Field(default_factory=FrameworkCoveragePair)
+    level_assignment: FrameworkCoveragePair = Field(default_factory=FrameworkCoveragePair)
+    program_url: FrameworkCoveragePair = Field(default_factory=FrameworkCoveragePair)
+    by_institution: list[FrameworkInstitutionCoverage] = Field(default_factory=list)
+    program_ids: list[int] = Field(
+        default_factory=list,
+        description="Distinct offered program ids in this country (for LPMC tree filter)",
+    )
+
+
+class FrameworkCoverageMetrics(BaseModel):
+    """Offered-program coverage (not every ``programs`` row).
+
+    Denominator = distinct ``programs.id`` with an active
+    ``institution_course_offerings`` → ``target_courses`` link.
+    Major / sub-major numerators intersect ``program_education_major_mappings``
+    (same table NZ Mapping Review bulk-apply writes).
+    """
+
+    institution_count: int = 0
+    campus_count: int = 0
+    college_count: int = 0
+    program_count: int = 0
+    major_count: int = 0
+    sub_major_count: int = 0
+    level_count: int = 0
+    course_count: int = 0
+    programs_with_no_major: int = 0
+    programs_with_no_sub_major: int = 0
+    major_mapping: FrameworkCoveragePair = Field(default_factory=FrameworkCoveragePair)
+    sub_major_mapping: FrameworkCoveragePair = Field(default_factory=FrameworkCoveragePair)
+    course_link: FrameworkCoveragePair = Field(default_factory=FrameworkCoveragePair)
+    level_assignment: FrameworkCoveragePair = Field(default_factory=FrameworkCoveragePair)
+    program_url: FrameworkCoveragePair = Field(default_factory=FrameworkCoveragePair)
+    by_institution: list[FrameworkInstitutionCoverage] = Field(default_factory=list)
+    by_institution_truncated: bool = False
+    by_country: list[FrameworkCountryCoverage] = Field(default_factory=list)
 
 
 class AcademicHierarchySummary(BaseModel):
     levels: list[HierarchyLevelNode]
+    coverage: FrameworkCoverageMetrics = Field(default_factory=FrameworkCoverageMetrics)
 
 
 class CourseAdminBase(BaseModel):
@@ -792,7 +991,8 @@ class CourseAdminRead(BaseModel):
     program_id: int
     major_id: int | None = None
     major_ids: list[int] = Field(default_factory=list)
-    degree_id: UUID | None = None
+    degree_id: int | None = None
+    level_id: int | None = None
     code: str | None = None
     description: str | None = None
     label: str

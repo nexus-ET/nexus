@@ -53,8 +53,11 @@ const TreeNode: React.FC<{
           <Icon size={16} className="shrink-0 text-accent" />
           <div className="min-w-0">
             <p className="truncate font-semibold text-text-main">{node.name}</p>
-            <p className="text-xs text-text-muted">
-              {entityLabel} · {node.intake_count} intake{node.intake_count === 1 ? '' : 's'}
+            <p className="text-xs tabular-nums text-text-muted">
+              {entityLabel} ID {node.entity_id}
+              {node.intake_count != null
+                ? ` · ${node.intake_count} intake${node.intake_count === 1 ? '' : 's'}`
+                : ''}
             </p>
           </div>
           {node.is_overridden ? (

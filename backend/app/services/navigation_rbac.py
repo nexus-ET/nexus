@@ -14,22 +14,24 @@ DEFAULT_NAVIGATION_PAGES: list[dict[str, str | int | bool]] = [
     {"name": "My Appointments", "route": "/my-bookings", "icon": "CalendarCheck", "sort_order": 4},
     {"name": "Manage Appointments", "route": "/counselling", "icon": "Calendar", "sort_order": 5},
     {"name": "Manage Users", "route": "/users", "icon": "UserCog", "sort_order": 5},
-    {"name": "Counselling Students", "route": "/students/counselling", "icon": "GraduationCap", "sort_order": 6},
-    {"name": "Documentation Students", "route": "/students/documentation", "icon": "GraduationCap", "sort_order": 7},
-    {"name": "Admissions Students", "route": "/students/admissions", "icon": "GraduationCap", "sort_order": 8},
-    {"name": "Visa Services Students", "route": "/students/visa-services", "icon": "GraduationCap", "sort_order": 9},
-    {"name": "Pre-Departure Students", "route": "/students/pre-departure", "icon": "GraduationCap", "sort_order": 10},
-    {"name": "Arrivals Students", "route": "/students/arrivals", "icon": "GraduationCap", "sort_order": 11},
-    {"name": "Pipeline Prospects", "route": "/students/prospects", "icon": "GraduationCap", "sort_order": 12},
+    {"name": "1 Counselling", "route": "/students/counselling", "icon": "GraduationCap", "sort_order": 6},
+    {"name": "2 College Finding", "route": "/students/college-finding", "icon": "GraduationCap", "sort_order": 7},
+    {"name": "3 Document Readiness", "route": "/students/document-readiness", "icon": "GraduationCap", "sort_order": 8},
+    {"name": "4 Admission Processing", "route": "/students/admission-processing", "icon": "GraduationCap", "sort_order": 9},
+    {"name": "5 Visa Processing", "route": "/students/visa-processing", "icon": "GraduationCap", "sort_order": 10},
+    {"name": "6 Pre-Departure & Travel", "route": "/students/pre-departure-travel", "icon": "GraduationCap", "sort_order": 11},
+    {"name": "7 Landing", "route": "/students/landing", "icon": "GraduationCap", "sort_order": 12},
     {"name": "AI Active", "route": "/ai-active", "icon": "Bot", "sort_order": 13},
     {"name": "Handoffs", "route": "/handoffs", "icon": "Users", "sort_order": 14},
     {"name": "All Prospects", "route": "/prospects", "icon": "Users", "sort_order": 15},
-    {"name": "Offline Leads", "route": "/offline-leads", "icon": "UserPlus", "sort_order": 16},
-    {"name": "Archive", "route": "/archive", "icon": "Archive", "sort_order": 17},
+    {"name": "Express Leads", "route": "/express-leads", "icon": "Zap", "sort_order": 16},
+    {"name": "Offline Leads", "route": "/offline-leads", "icon": "UserPlus", "sort_order": 17},
+    {"name": "Archive", "route": "/archive", "icon": "Archive", "sort_order": 18},
     {"name": "AI Agent Brain", "route": "/agents", "icon": "Bot", "sort_order": 18},
     {"name": "Mission Control", "route": "/command-center", "icon": "Radio", "sort_order": 19},
     {"name": "My Profile", "route": "/my-profile", "icon": "UserCircle", "sort_order": 20},
     {"name": "Settings", "route": "/settings", "icon": "Settings", "sort_order": 21},
+    {"name": "Invoice Workspace", "route": "/invoices", "icon": "Receipt", "sort_order": 21},
     {"name": "Access Control", "route": "/access-control", "icon": "ShieldCheck", "sort_order": 22},
     {"name": "Security Audit", "route": "/security-audit", "icon": "ShieldAlert", "sort_order": 23},
     {"name": "Meta Leads", "route": "/reports/meta-leads", "icon": "FileText", "sort_order": 24},
@@ -44,14 +46,22 @@ DEFAULT_NAVIGATION_PAGES: list[dict[str, str | int | bool]] = [
 
 STUDENT_PIPELINE_PAGE_ROUTES: list[str] = [
     "/students/counselling",
+    "/students/college-finding",
+    "/students/document-readiness",
+    "/students/admission-processing",
+    "/students/visa-processing",
+    "/students/pre-departure-travel",
+    "/students/landing",
+]
+
+_LEGACY_STUDENT_PIPELINE_ROUTES: tuple[str, ...] = (
     "/students/documentation",
     "/students/admissions",
     "/students/visa-services",
     "/students/pre-departure",
     "/students/arrivals",
     "/students/prospects",
-]
-
+)
 DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
     "Super Admin": [page["route"] for page in DEFAULT_NAVIGATION_PAGES],
     "Web Admin": [
@@ -61,6 +71,7 @@ DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
         "/handoffs",
         "/prospects",
         *STUDENT_PIPELINE_PAGE_ROUTES,
+        "/express-leads",
         "/offline-leads",
         "/archive",
         "/agents",
@@ -74,6 +85,7 @@ DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
         "/academia",
         "/nexus-intel",
         "/flowx",
+        "/invoices",
     ],
     "Student Manager": [
         "/",
@@ -81,6 +93,7 @@ DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
         "/handoffs",
         "/prospects",
         *STUDENT_PIPELINE_PAGE_ROUTES,
+        "/express-leads",
         "/offline-leads",
         "/archive",
         "/analytics",
@@ -96,6 +109,7 @@ DEFAULT_ROLE_PAGE_ACCESS: dict[str, list[str]] = {
         "/handoffs",
         "/prospects",
         *STUDENT_PIPELINE_PAGE_ROUTES,
+        "/express-leads",
         "/offline-leads",
         "/archive",
         "/messaging-hub",
@@ -131,6 +145,7 @@ API_ROUTE_TO_PAGE: list[tuple[str, str]] = [
     ("/api/v1/leads/queue", "/handoffs"),
     ("/api/v1/leads/all", "/prospects"),
     ("/api/v1/leads/prospects", "/prospects"),
+    ("/api/v1/leads/express", "/express-leads"),
     ("/api/v1/leads/offline", "/offline-leads"),
     ("/api/v1/leads/archive", "/archive"),
     ("/api/v1/leads/pipeline", "/"),
@@ -141,6 +156,8 @@ API_ROUTE_TO_PAGE: list[tuple[str, str]] = [
     ("/api/v1/settings", "/settings"),
     ("/api/v1/settings/business-timezone", "/"),
     ("/api/v1/settings/business-email-domain", "/users"),
+    ("/api/v1/students-master", "/invoices"),
+    ("/api/v1/invoices", "/invoices"),
     ("/api/v1/security-audit", "/security-audit"),
     ("/api/v1/reports/export/exception-logs", "/reports/exceptions"),
     ("/api/v1/reports/exception-logs", "/reports/exceptions"),
@@ -160,6 +177,7 @@ LEAD_MUTATION_PAGE_ROUTES = [
     "/handoffs",
     "/prospects",
     *STUDENT_PIPELINE_PAGE_ROUTES,
+    "/express-leads",
     "/offline-leads",
     "/archive",
 ]
@@ -171,6 +189,7 @@ RBAC_EXEMPT_PREFIXES = (
     "/api/v1/leads/webhook",
     "/api/v1/ws",
     "/api/v1/academia/media",
+    "/api/v1/invoices/download",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -183,6 +202,7 @@ RBAC_PUBLIC_AUTH_PREFIXES = (
     "/api/v1/settings/whatsapp-outreach",
     "/api/v1/countries",
     "/api/v1/education-degrees",
+    "/api/v1/education-majors",
     "/api/v1/levels",
     "/api/v1/programs",
     "/api/v1/gpa-cgpa-scores",
@@ -228,7 +248,11 @@ def seed_navigation_pages(db: Session) -> None:
     )
     if old_roster_page:
         old_roster_page.is_active = False
-    for legacy_route in ("/reports", "/audit-logs"):
+    for legacy_route in (
+        "/reports",
+        "/audit-logs",
+        *_LEGACY_STUDENT_PIPELINE_ROUTES,
+    ):
         legacy_page = (
             db.query(NavigationPage)
             .filter(NavigationPage.route == legacy_route)
@@ -334,6 +358,9 @@ def resolve_page_route_for_api_path(path: str) -> str | None:
 
 
 def resolve_page_routes_for_api_path(path: str) -> list[str]:
+    if path.startswith("/api/v1/leads/express"):
+        return ["/express-leads", "/offline-leads"]
+
     if re.search(r"^/api/v1/leads/offline/\d+", path):
         return ["/offline-leads"]
 
@@ -394,6 +421,9 @@ def resolve_page_routes_for_api_path(path: str) -> list[str]:
     if path.startswith("/api/v1/bookings/mine"):
         return ["/my-bookings", "/students/counselling", "/prospects"]
 
+    if path.startswith("/api/v1/students-master"):
+        return ["/invoices", "/settings"]
+
     if path.startswith("/api/v1/bookings/matching"):
         return ["/my-bookings", "/students/counselling", "/prospects"]
 
@@ -416,7 +446,7 @@ def resolve_page_routes_for_api_path(path: str) -> list[str]:
         return ["/book-appointment", "/counselling"]
 
     if path.startswith("/api/v1/bookings/counsellors"):
-        return ["/book-appointment", "/counselling"]
+        return ["/book-appointment", "/counselling", "/invoices", "/settings"]
 
     if path.startswith("/api/v1/bookings/session-config"):
         return ["/book-appointment", "/counselling", "/my-bookings"]

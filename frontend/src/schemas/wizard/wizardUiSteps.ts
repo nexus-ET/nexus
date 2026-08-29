@@ -45,6 +45,12 @@ const LEGACY_PUBLISH_STEP_LABELS: Record<number, string> = {
   5: 'Gallery',
 };
 
+type PublishCheckLike = {
+  name: string;
+  status: string;
+  details: string;
+};
+
 type PublishStepLike = {
   step: number;
   label: string;
@@ -55,6 +61,107 @@ type PublishStepLike = {
   discrepancies: unknown[];
   result: Record<string, unknown>;
 };
+
+const AUDIT_FIELD_LABELS: Record<string, string> = {
+  campus_count: 'Campuses (optional)',
+  campus_id: 'Campus',
+  campuses: 'Campuses (optional)',
+  campus: 'Campus',
+  campuses_created_or_updated: 'Campuses saved',
+  campuses_removed: 'Campuses removed',
+};
+
+const CAMPUS_MISSING_RE =
+  /at least one campus|campus(?:es)?(?:\s+\w+){0,3}\s+required|required\s+campus|no campus|0 campus|missing campus|incomplete(?:\s+\w+){0,2}\s+campus/i;
+
+function isPublishCheckLike(value: unknown): value is PublishCheckLike {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      typeof (value as PublishCheckLike).name === 'string' &&
+      typeof (value as PublishCheckLike).status === 'string' &&
+      typeof (value as PublishCheckLike).details === 'string'
+  );
+}
+
+function campusCountFromResult(result: Record<string, unknown> | undefined): number | undefined {
+  const value = result?.campus_count;
+  return typeof value === 'number' ? value : undefined;
+}
+
+/** Display labels for history/audit snapshots. Campus count is optional, not a required field. */
+export function formatAuditFieldLabel(key: string): string {
+  if (AUDIT_FIELD_LABELS[key]) return AUDIT_FIELD_LABELS[key];
+  return key.replace(/_/g, ' ').replace(/\b\w/g, character => character.toUpperCase());
+}
+
+export function rewriteOptionalCampusCheck<T extends PublishCheckLike>(
+  check: T,
+  campusCount?: number | null
+): T {
+  const blob = `${check.name} ${check.details}`;
+  if (!/campus/i.test(blob)) return check;
+
+  const countIsZero = campusCount === 0 || /\b0 campus/i.test(blob);
+  const looksMissing = CAMPUS_MISSING_RE.test(blob);
+  const looksFailedMissing = check.status !== 'passed' && looksMissing;
+
+  if (countIsZero || looksFailedMissing) {
+    if (/assignment/i.test(check.name)) {
+      return {
+        ...check,
+        status: 'passed',
+        details: 'No campus assigned — pictures stay on the institution (campuses are optional).',
+      };
+    }
+    return {
+      ...check,
+      name: 'Campuses',
+      status: 'passed',
+      details: 'None added — campuses are optional.',
+    };
+  }
+
+  if (/required/i.test(blob)) {
+    const stripped = check.name.replace(/\s*required\s*/gi, ' ').replace(/\s+/g, ' ').trim();
+    const name =
+      !stripped || /^fields$/i.test(stripped)
+        ? 'Campus fields'
+        : /campus/i.test(stripped)
+          ? stripped
+          : `Campus ${stripped}`;
+    return {
+      ...check,
+      name,
+      details: /every campus/i.test(check.details)
+        ? 'Each added campus has a name, campus type, and city.'
+        : check.details.replace(/required/gi, 'present'),
+    };
+  }
+
+  return check;
+}
+
+function rewriteOptionalCampusPublishStep<T extends PublishStepLike>(step: T): T {
+  const campusCount = campusCountFromResult(step.result);
+  const originalChecks = step.checks || [];
+  const checks = originalChecks.map(check =>
+    isPublishCheckLike(check) ? rewriteOptionalCampusCheck(check, campusCount) : check
+  );
+  const typed = checks.filter(isPublishCheckLike);
+  const allPassed = typed.length === 0 || typed.every(item => item.status === 'passed');
+  const hadCampusBlocker = originalChecks.some(
+    check =>
+      isPublishCheckLike(check) &&
+      check.status !== 'passed' &&
+      /campus/i.test(`${check.name} ${check.details}`)
+  );
+  return {
+    ...step,
+    checks,
+    status: hadCampusBlocker && allPassed ? 'success' : step.status,
+  };
+}
 
 /**
  * Map stored publish-report steps onto the 5-step UI wizard.
@@ -98,5 +205,5 @@ export function normalizePublishReportSteps<T extends PublishStepLike>(steps: T[
     }));
   }
 
-  return uiSteps.slice(0, WIZARD_UI_STEP_COUNT);
+  return uiSteps.slice(0, WIZARD_UI_STEP_COUNT).map(rewriteOptionalCampusPublishStep);
 }

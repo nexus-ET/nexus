@@ -47,8 +47,9 @@ SETTING_DEFINITIONS: dict[str, dict[str, str]] = {
         "label": "Counselling session purposes",
         "value_type": "text",
         "description": (
-            "One purpose per line for Book Appointment. Optional description after a pipe: "
-            "Label | Short description for counsellors."
+            "Options shown in Book Appointment for why the session is booked. "
+            "One purpose per line. Optional helper text after a pipe for counsellors. "
+            "Example: Scholarship Guidance | Funding options, eligibility, and application tips"
         ),
     },
     "OFFICE_HOURS_START": {
@@ -60,6 +61,14 @@ SETTING_DEFINITIONS: dict[str, dict[str, str]] = {
         "label": "Office hours end",
         "value_type": "time",
         "description": "Daily end time for bookable counselling slots (24h HH:MM).",
+    },
+    "SAME_DAY_BOOKING_LEAD_MINUTES": {
+        "label": "Same-day booking lead time (minutes)",
+        "value_type": "number",
+        "description": (
+            "Minimum time that must remain before the configured office closing time "
+            "for today to be offered as a counselling booking date."
+        ),
     },
     "WORKING_DAYS": {
         "label": "Working days",
@@ -89,7 +98,14 @@ SETTING_DEFINITIONS: dict[str, dict[str, str]] = {
     "CALENDAR_INTAKE_ADVANCE_DAYS": {
         "label": "Calendar intake advance notification (days)",
         "value_type": "number",
-        "description": "How many days before the next term class start date admins are alerted to configure intakes.",
+        "description": (
+            "Lead time before the next term’s class start date when missing intake schedules "
+            "trigger alerts. Alerts appear on the home Dashboard under Calendar Alerts "
+            "(Academia Hub users only), with a link to configure intakes. Benefits: gives "
+            "admins enough notice to finish campus/college intake dates before applications "
+            "open, and avoids last-minute gaps in the academic calendar. Default is 60 days; "
+            "raise it to alert earlier, or lower it to wait until closer to class start."
+        ),
     },
     "ADMIN_SESSION_DIGEST_ENABLED": {
         "label": "Counsellor morning digest (WhatsApp)",
@@ -139,6 +155,34 @@ SETTING_DEFINITIONS: dict[str, dict[str, str]] = {
             "with commas."
         ),
     },
+    "META_LEAD_SYNC_MODE": {
+        "label": "Meta lead sync mode",
+        "value_type": "select",
+        "description": (
+            "Automated runs on the saved interval. Manual only syncs when you click Sync Now "
+            "on Settings → Workspace → Meta."
+        ),
+    },
+    "META_LEAD_SYNC_INTERVAL_VALUE": {
+        "label": "Meta lead sync interval value",
+        "value_type": "number",
+        "description": "How often automated Meta Lead Ads sync runs (paired with interval unit).",
+    },
+    "META_LEAD_SYNC_INTERVAL_UNIT": {
+        "label": "Meta lead sync interval unit",
+        "value_type": "select",
+        "description": "Unit for the automated Meta lead sync interval (minutes, hours, days, or weeks).",
+    },
+    "META_LEAD_SYNC_LAST_RUN_AT": {
+        "label": "Meta lead sync last run",
+        "value_type": "text",
+        "description": "Timestamp of the most recent Meta lead sync (updated automatically).",
+    },
+    "META_LEAD_SYNC_LAST_RUN_SUMMARY": {
+        "label": "Meta lead sync last run summary",
+        "value_type": "text",
+        "description": "JSON summary of the most recent Meta lead sync (updated automatically).",
+    },
 }
 
 DEFAULT_SETTING_VALUES: dict[str, str] = {
@@ -154,6 +198,7 @@ DEFAULT_SETTING_VALUES: dict[str, str] = {
     ),
     "OFFICE_HOURS_START": "09:00",
     "OFFICE_HOURS_END": "19:00",
+    "SAME_DAY_BOOKING_LEAD_MINUTES": "120",
     "WORKING_DAYS": DEFAULT_WORKING_DAYS,
     "MAX_BOOKINGS_PER_SLOT": "5",
     "BUSINESS_TIMEZONE": "UTC",
@@ -168,6 +213,11 @@ DEFAULT_SETTING_VALUES: dict[str, str] = {
     "MONITORING_STATUS": "Inactive",
     "UPTIME_TARGET_URL": "",
     "ALERT_EMAIL": "",
+    "META_LEAD_SYNC_MODE": "automated",
+    "META_LEAD_SYNC_INTERVAL_VALUE": "1",
+    "META_LEAD_SYNC_INTERVAL_UNIT": "hours",
+    "META_LEAD_SYNC_LAST_RUN_AT": "",
+    "META_LEAD_SYNC_LAST_RUN_SUMMARY": "",
 }
 
 MONITORING_STATUS_OPTIONS: list[dict[str, str]] = [
@@ -175,8 +225,22 @@ MONITORING_STATUS_OPTIONS: list[dict[str, str]] = [
     {"value": "Active", "label": "Active"},
 ]
 
+META_LEAD_SYNC_MODE_OPTIONS: list[dict[str, str]] = [
+    {"value": "automated", "label": "Automated"},
+    {"value": "manual", "label": "Manual"},
+]
+
+META_LEAD_SYNC_INTERVAL_UNIT_OPTIONS: list[dict[str, str]] = [
+    {"value": "minutes", "label": "Minutes"},
+    {"value": "hours", "label": "Hours"},
+    {"value": "days", "label": "Days"},
+    {"value": "weeks", "label": "Weeks"},
+]
+
 SETTING_SELECT_OPTIONS: dict[str, list[dict[str, str]]] = {
     "MONITORING_STATUS": MONITORING_STATUS_OPTIONS,
+    "META_LEAD_SYNC_MODE": META_LEAD_SYNC_MODE_OPTIONS,
+    "META_LEAD_SYNC_INTERVAL_UNIT": META_LEAD_SYNC_INTERVAL_UNIT_OPTIONS,
 }
 
 _cache: dict[str, str] = {}
@@ -362,6 +426,17 @@ def list_settings(db: Session) -> list[dict]:
     ]
 
 
+_META_LEAD_SYNC_CONFIG_KEYS = {
+    "META_LEAD_SYNC_MODE",
+    "META_LEAD_SYNC_INTERVAL_VALUE",
+    "META_LEAD_SYNC_INTERVAL_UNIT",
+}
+_META_LEAD_SYNC_READONLY_KEYS = {
+    "META_LEAD_SYNC_LAST_RUN_AT",
+    "META_LEAD_SYNC_LAST_RUN_SUMMARY",
+}
+
+
 def update_setting(db: Session, key: str, value: str, updated_by_user_id: int | None = None) -> dict:
     cleaned_key = key.strip()
     cleaned_value = value.strip()
@@ -369,10 +444,43 @@ def update_setting(db: Session, key: str, value: str, updated_by_user_id: int | 
         raise HTTPException(status_code=400, detail="Setting key is required.")
     if cleaned_key not in DEFAULT_SETTING_VALUES and cleaned_key not in SETTING_DEFINITIONS:
         raise HTTPException(status_code=400, detail=f"Unknown setting key '{cleaned_key}'.")
+    if cleaned_key in _META_LEAD_SYNC_READONLY_KEYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Setting '{cleaned_key}' is updated automatically by Meta lead sync.",
+        )
 
     validation_error = _validate_setting_value(cleaned_key, cleaned_value)
     if validation_error:
         raise HTTPException(status_code=400, detail=validation_error)
+
+    if cleaned_key in _META_LEAD_SYNC_CONFIG_KEYS:
+        from app.services.lead_sync_settings import (
+            get_lead_sync_config,
+            validate_lead_sync_config,
+        )
+
+        current = get_lead_sync_config(db)
+        mode = cleaned_value if cleaned_key == "META_LEAD_SYNC_MODE" else current["mode"]
+        interval_value = (
+            int(cleaned_value)
+            if cleaned_key == "META_LEAD_SYNC_INTERVAL_VALUE"
+            else int(current["interval_value"])
+        )
+        interval_unit = (
+            cleaned_value if cleaned_key == "META_LEAD_SYNC_INTERVAL_UNIT" else current["interval_unit"]
+        )
+        validate_lead_sync_config(
+            mode=mode,
+            interval_value=interval_value,
+            interval_unit=interval_unit,
+        )
+        if cleaned_key == "META_LEAD_SYNC_MODE":
+            cleaned_value = mode
+        elif cleaned_key == "META_LEAD_SYNC_INTERVAL_VALUE":
+            cleaned_value = str(max(1, interval_value))
+        else:
+            cleaned_value = interval_unit
 
     if SETTING_DEFINITIONS.get(cleaned_key, {}).get("value_type") == "working_days":
         cleaned_value = serialize_working_day_codes(parse_working_day_codes(cleaned_value))
@@ -396,6 +504,11 @@ def update_setting(db: Session, key: str, value: str, updated_by_user_id: int | 
     db.commit()
     db.refresh(row)
     clear_settings_cache()
+
+    if cleaned_key in _META_LEAD_SYNC_CONFIG_KEYS:
+        from app.services.scheduler import reschedule_lead_sync_job
+
+        reschedule_lead_sync_job(run_immediately=False)
 
     user_map = _build_user_name_map(db, {updated_by_user_id} if updated_by_user_id else set())
     return _serialize_setting_payload(db, key=row.key, row=row, user_map=user_map)

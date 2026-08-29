@@ -2408,7 +2408,7 @@ def enroll_lead(
     college_id: int | None = None,
     campus_id: int | None = None,
     level_id: int | None = None,
-    qualification_program_id: uuid.UUID | None = None,
+    qualification_program_id: int | None = None,
     intake_id: int | None = None,
     pathway_type: str | None = None,
     pathway_name: str | None = None,

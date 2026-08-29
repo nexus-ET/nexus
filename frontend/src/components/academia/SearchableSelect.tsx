@@ -11,7 +11,7 @@ export interface SearchableSelectOption {
 
 interface SearchableSelectProps {
   id?: string;
-  label: string;
+  label?: string;
   value: string;
   options: SearchableSelectOption[];
   onChange: (value: string) => void;
@@ -20,6 +20,7 @@ interface SearchableSelectProps {
   disabled?: boolean;
   emptyMessage?: string;
   hint?: string;
+  onOpen?: () => void;
 }
 
 const SearchableSelect: React.FC<SearchableSelectProps> = ({
@@ -33,6 +34,7 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
   disabled = false,
   emptyMessage = 'No matches found.',
   hint,
+  onOpen,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -71,18 +73,23 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
   }, [open]);
 
   return (
-    <label className="block space-y-1 text-sm">
-      <span className="text-sm font-bold text-text-main">
-        {label}
-        {required ? <span className="text-alert"> *</span> : null}
-      </span>
-      <div ref={containerRef} className="relative">
+    <label className={`block min-w-0 max-w-full space-y-1 text-sm ${open ? 'relative z-50' : 'relative z-0'}`}>
+      {label ? (
+        <span className="block truncate text-sm font-bold text-text-main">
+          {label}
+          {required ? <span className="text-alert"> *</span> : null}
+        </span>
+      ) : null}
+      <div ref={containerRef} className={`relative min-w-0 ${open ? 'z-50' : 'z-0'}`}>
         <button
           id={id}
           type="button"
           disabled={disabled}
-          onClick={() => !disabled && setOpen(previous => !previous)}
-          className="flex w-full items-center justify-between rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-left text-sm text-text-main outline-none transition-colors hover:border-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+          onClick={() => {
+            onOpen?.();
+            if (!disabled) setOpen(previous => !previous);
+          }}
+          className="flex w-full min-w-0 items-center justify-between gap-1 overflow-hidden rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-left text-sm text-text-main outline-none transition-colors hover:border-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <span className={`flex min-w-0 items-center gap-2 ${selectedLabel ? '' : 'text-text-muted'}`}>
             {selectedOption?.color ? (
@@ -90,20 +97,20 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
             ) : null}
             <span className="truncate">{selectedLabel || placeholder}</span>
           </span>
-          <ChevronDown size={16} className="text-text-muted" />
+          <ChevronDown size={16} className="shrink-0 text-text-muted" />
         </button>
         {value && !disabled ? (
           <button
             type="button"
             onClick={() => onChange('')}
             className="absolute right-8 top-1/2 -translate-y-1/2 rounded p-0.5 text-text-muted hover:text-text-main"
-            aria-label={`Clear ${label}`}
+            aria-label={label ? `Clear ${label}` : 'Clear selection'}
           >
             <X size={14} />
           </button>
         ) : null}
         {open ? (
-          <div className="absolute z-30 mt-1 w-full overflow-hidden rounded-xl border border-border-subtle bg-card shadow-lg">
+          <div className="absolute left-0 z-50 mt-1 w-max min-w-full max-w-[min(16rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border-subtle bg-card shadow-lg">
             <div className="border-b border-border-subtle p-2">
               <input
                 type="text"
@@ -114,7 +121,7 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
                 className="w-full rounded-lg border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent"
               />
             </div>
-            <ul className="max-h-52 overflow-y-auto py-1">
+            <ul className="max-h-80 overflow-y-auto py-1">
               {filteredOptions.length === 0 ? (
                 <li className="px-3 py-2 text-xs text-text-muted">{emptyMessage}</li>
               ) : (

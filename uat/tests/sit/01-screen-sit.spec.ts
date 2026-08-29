@@ -5,6 +5,7 @@ import {
   generateUniversityShortlist,
   openUniversityShortlistTab,
 } from '../../src/helpers/shortlist';
+import { workspaceTab } from '../../src/helpers/workspaceTabs';
 
 /**
  * Phase 1 SIT — Screen-by-screen integration checks.
@@ -20,8 +21,9 @@ test.describe('SIT: Student Profile Input Screen', () => {
       return;
     }
 
-    // Tab label shortened from "PERSONAL PROFILE" → "Personal" in intake session workspace.
-    await page.getByRole('button', { name: /^(Personal|PERSONAL PROFILE)$/i }).click({ force: true });
+    // PROFILE parent tab → Personal sub-tab in intake session workspace.
+    await workspaceTab(page, /^PROFILE$/i).click({ force: true });
+    await workspaceTab(page, /^Personal$/i).click({ force: true });
     await expect(page.locator('input, textarea, select').first()).toBeVisible({ timeout: 30_000 });
 
     // Client-side required affordances: Save / validation language present on form.
@@ -38,7 +40,8 @@ test.describe('SIT: Student Profile Input Screen', () => {
       test.skip(true, 'No booking for UAT lead');
       return;
     }
-    await page.getByRole('button', { name: /ASPIRATIONS/i }).click({ force: true });
+    await workspaceTab(page, /^PROFILE$/i).click({ force: true });
+    await workspaceTab(page, /^Aspirations$/i).click({ force: true });
     await expect(
       page.getByText(/Country|Degree|Program|Budget|Ranking|Aspiration|Destination/i).first()
     ).toBeVisible({ timeout: 30_000 });

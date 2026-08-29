@@ -12,6 +12,8 @@ interface CharCountFieldBaseProps {
   hint?: string;
   required?: boolean;
   id?: string;
+  /** When false, omit "(max N)" from the label (counter below still shown). Default true. */
+  showMaxInLabel?: boolean;
 }
 
 interface CharCountInputProps extends CharCountFieldBaseProps {
@@ -41,11 +43,14 @@ const FieldLabel: React.FC<{
   label: string;
   maxLength: number;
   required?: boolean;
-}> = ({ htmlFor, label, maxLength, required }) => (
+  showMaxInLabel?: boolean;
+}> = ({ htmlFor, label, maxLength, required, showMaxInLabel = true }) => (
   <label htmlFor={htmlFor} className="block text-sm font-bold text-text-main">
     {label}
     {required ? ' *' : ''}
-    <span className="ml-1 font-normal text-text-muted">(max {maxLength})</span>
+    {showMaxInLabel ? (
+      <span className="ml-1 font-normal text-text-muted">(max {maxLength})</span>
+    ) : null}
   </label>
 );
 
@@ -59,6 +64,7 @@ export const CharCountInput: React.FC<CharCountInputProps> = ({
   required,
   type = 'text',
   id,
+  showMaxInLabel = true,
 }) => {
   const autoId = useId();
   const fieldId = id || autoId;
@@ -66,7 +72,13 @@ export const CharCountInput: React.FC<CharCountInputProps> = ({
 
   return (
     <div className="space-y-1.5 text-sm">
-      <FieldLabel htmlFor={fieldId} label={label} maxLength={maxLength} required={required} />
+      <FieldLabel
+        htmlFor={fieldId}
+        label={label}
+        maxLength={maxLength}
+        required={required}
+        showMaxInLabel={showMaxInLabel}
+      />
       <input
         id={fieldId}
         type={type}
@@ -92,6 +104,7 @@ export const CharCountTextarea: React.FC<CharCountTextareaProps> = ({
   rows = 3,
   mono = false,
   id,
+  showMaxInLabel = true,
 }) => {
   const autoId = useId();
   const fieldId = id || autoId;
@@ -99,7 +112,13 @@ export const CharCountTextarea: React.FC<CharCountTextareaProps> = ({
 
   return (
     <div className="space-y-1.5 text-sm">
-      <FieldLabel htmlFor={fieldId} label={label} maxLength={maxLength} required={required} />
+      <FieldLabel
+        htmlFor={fieldId}
+        label={label}
+        maxLength={maxLength}
+        required={required}
+        showMaxInLabel={showMaxInLabel}
+      />
       <textarea
         id={fieldId}
         maxLength={maxLength}

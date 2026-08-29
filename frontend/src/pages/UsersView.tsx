@@ -536,6 +536,7 @@ const UsersView: React.FC = () => {
                   <th className="px-6 py-4">First Name</th>
                   <th className="px-6 py-4">Last Name</th>
                   <th className="px-6 py-4">Email</th>
+                  <th className="px-6 py-4">Phone</th>
                   <th className="px-6 py-4">Role</th>
                   <th className="px-6 py-4">Status</th>
                   <th className="px-6 py-4 text-right">Actions</th>
@@ -554,6 +555,9 @@ const UsersView: React.FC = () => {
                       {user.last_name?.trim() || '—'}
                     </td>
                     <td className="px-6 py-4 text-sm text-text-muted">{user.email}</td>
+                    <td className="px-6 py-4 text-sm text-text-muted whitespace-nowrap">
+                      {user.phone_number?.trim() || '—'}
+                    </td>
                     <td className="px-6 py-4">
                       <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold bg-accent/10 text-accent">
                         {user.admin_role?.name || user.role || '—'}

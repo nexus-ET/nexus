@@ -70,6 +70,7 @@ export interface OfflineLeadItem {
   date_of_birth?: string | null;
   age?: number | null;
   created_at?: string | null;
+  booking_count?: number;
 }
 
 export interface OfflineLeadListResponse {

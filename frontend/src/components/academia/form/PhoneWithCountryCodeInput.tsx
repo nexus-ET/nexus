@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 
 import type { CountryRecord } from '../../../types/country';
 import { FALLBACK_COUNTRIES } from '../../../types/country';
@@ -25,10 +25,16 @@ interface PhoneWithCountryCodeInputProps {
   placeholder?: string;
   hint?: string;
   className?: string;
+  /** Optional control rendered opposite the label (e.g. Active/Inactive). */
+  headerRight?: ReactNode;
+  id?: string;
+  /** When true, omit the built-in label (caller renders label for row alignment). */
+  hideLabel?: boolean;
+  disabled?: boolean;
 }
 
-const fieldClass = (hasError: boolean) =>
-  `w-full rounded-xl border bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent ${
+const controlClass = (hasError: boolean) =>
+  `box-border h-10 w-full border bg-surface-bg text-sm leading-none outline-none focus:border-accent ${
     hasError ? 'border-alert ring-1 ring-alert/20' : 'border-border-subtle'
   }`;
 
@@ -43,6 +49,10 @@ const PhoneWithCountryCodeInput: React.FC<PhoneWithCountryCodeInputProps> = ({
   placeholder = PHONE_LOCAL_PLACEHOLDER,
   hint = PHONE_LOCAL_REQUIREMENTS,
   className = 'space-y-1 text-sm md:col-span-2',
+  headerRight,
+  id,
+  hideLabel = false,
+  disabled = false,
 }) => {
   const parsed = useMemo(() => parseStoredPhone(value, countries), [countries, value]);
   const countryIso2 = parsed.countryIso2 || defaultCountryIso2;
@@ -65,22 +75,35 @@ const PhoneWithCountryCodeInput: React.FC<PhoneWithCountryCodeInputProps> = ({
     onChange(formatFullPhone(iso2, normalizedLocal, countries));
   };
 
+  const showLabel = !hideLabel && Boolean(label);
+
   return (
     <div className={className}>
-      <span className={wizardLabelClass}>
-        {label}
-        {required ? ' *' : ''}
-      </span>
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <select
+      {showLabel || headerRight ? (
+        <div className="flex min-h-7 flex-wrap items-center justify-between gap-2">
+          {showLabel ? (
+            <label htmlFor={id || 'phone-local'} className={wizardLabelClass}>
+              {label}
+              {required ? ' *' : ''}
+            </label>
+          ) : (
+            <span />
+          )}
+          {headerRight ? <div className="shrink-0">{headerRight}</div> : null}
+        </div>
+      ) : null}
+      <div
+        className={`${showLabel || headerRight ? 'mt-1.5' : ''} flex flex-col gap-2 sm:flex-row sm:items-stretch`}
+      >        <select
+          id={id ? `${id}-country` : undefined}
+          name={id ? `${id}-country` : 'phone-country'}
           value={countryIso2}
+          disabled={disabled}
           onChange={event => {
             const localValue = isFocused ? draftLocal : parsed.localNumber;
             commitPhone(event.target.value, localValue);
           }}
-          className={`w-full shrink-0 rounded-xl border bg-surface-bg px-1.5 py-2 text-sm outline-none focus:border-accent sm:w-[5.25rem] ${
-            error ? 'border-alert ring-1 ring-alert/20' : 'border-border-subtle'
-          }`}
+          className={`${controlClass(Boolean(error))} shrink-0 rounded-xl px-1.5 sm:w-[5.25rem] disabled:cursor-not-allowed disabled:opacity-70`}
           aria-label={`${label} country code`}
         >
           <option value="">Code</option>
@@ -91,17 +114,22 @@ const PhoneWithCountryCodeInput: React.FC<PhoneWithCountryCodeInputProps> = ({
           ))}
         </select>
         <input
+          id={id || 'phone-local'}
+          name={id || 'phone-local'}
           type="tel"
           inputMode="text"
           autoComplete="tel-national"
           autoCapitalize="characters"
           spellCheck={false}
+          disabled={disabled}
           value={displayLocalNumber}
           onFocus={() => {
+            if (disabled) return;
             setIsFocused(true);
             setDraftLocal(parsed.localNumber);
           }}
           onBlur={() => {
+            if (disabled) return;
             commitPhone(countryIso2, draftLocal);
             setIsFocused(false);
           }}
@@ -109,10 +137,10 @@ const PhoneWithCountryCodeInput: React.FC<PhoneWithCountryCodeInputProps> = ({
             setDraftLocal(sanitizePhoneLocalDraft(event.target.value));
           }}
           placeholder={placeholder}
-          className={`${fieldClass(Boolean(error))} min-w-0 flex-1`}
+          className={`${controlClass(Boolean(error))} min-w-0 flex-1 rounded-xl px-3 disabled:cursor-not-allowed disabled:opacity-70`}
         />
       </div>
-      {hint ? <p className="text-xs text-text-muted">{hint}</p> : null}
+      {hint ? <p className="mt-1 text-xs text-text-muted">{hint}</p> : null}
       <WizardFieldError message={error} />
     </div>
   );

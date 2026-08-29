@@ -32,6 +32,69 @@ class IntelGlossaryRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class IntelInquiryTaxonomyNode(BaseModel):
+    code: str
+    name: str
+    children: list["IntelInquiryTaxonomyNode"] = Field(default_factory=list)
+
+
+class IntelInquiryFaqRead(BaseModel):
+    id: UUID
+    process_code: str
+    process_name: str
+    subprocess_code: str | None = None
+    subprocess_name: str | None = None
+    nested_process_code: str | None = None
+    nested_process_name: str | None = None
+    question: str
+    answer: str
+    sort_order: int = 0
+    is_active: bool = True
+    created_by: int | None = None
+    updated_by: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class IntelInquiryFaqListResponse(BaseModel):
+    items: list[IntelInquiryFaqRead]
+    total: int
+
+
+class IntelInquiryFaqCreate(BaseModel):
+    path: str = Field(min_length=1, max_length=16)
+    question: str = Field(min_length=5, max_length=5000)
+    answer: str = Field(min_length=1, max_length=30000)
+    sort_order: int = Field(default=0, ge=0, le=100000)
+
+    @field_validator("path", "question", "answer")
+    @classmethod
+    def _strip_required(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be blank")
+        return value
+
+
+class IntelInquiryFaqUpdate(BaseModel):
+    path: str | None = Field(default=None, min_length=1, max_length=16)
+    question: str | None = Field(default=None, min_length=5, max_length=5000)
+    answer: str | None = Field(default=None, min_length=1, max_length=30000)
+    sort_order: int | None = Field(default=None, ge=0, le=100000)
+
+    @field_validator("path", "question", "answer")
+    @classmethod
+    def _strip_optional(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be blank")
+        return value
+
+
 IntelCategory = Literal["Admissions", "Visa", "Financial", "Work_Rights", "Legal"]
 IntelLifecycleStage = Literal[
     "1_Discovery",

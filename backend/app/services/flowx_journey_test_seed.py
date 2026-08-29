@@ -9,12 +9,17 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
 from app.models.academia_geography import GeographyCity, GeographyState
 from app.models.academia_institution import Campus, CampusType, College, Institution
-from app.models.academia_wizard import InstitutionIntake
+from app.models.academia_wizard import (
+    InstitutionCourseOffering,
+    InstitutionIntake,
+    InstitutionPicture,
+    InstitutionWizardDraft,
+)
 from app.models.country import Country
 from app.models.flowx import FlowxEnrollment
 from app.models.lead import Lead
@@ -115,13 +120,50 @@ def _delete_tagged_academia(db: Session, lead_id: int) -> dict[str, int]:
     inst_ids = [i.id for i in institutions]
     counts = {
         "institutions": len(inst_ids),
+        "wizard_drafts": 0,
+        "pictures": 0,
+        "course_offerings": 0,
         "intakes": 0,
         "colleges": 0,
         "campuses": 0,
         "states": 0,
         "cities": 0,
+        "matching_scores": 0,
+        "calendar_alerts": 0,
     }
     if inst_ids:
+        counts["wizard_drafts"] = (
+            db.query(InstitutionWizardDraft)
+            .filter(InstitutionWizardDraft.institution_id.in_(inst_ids))
+            .delete(synchronize_session=False)
+        )
+        counts["pictures"] = (
+            db.query(InstitutionPicture)
+            .filter(InstitutionPicture.institution_id.in_(inst_ids))
+            .delete(synchronize_session=False)
+        )
+        counts["course_offerings"] = (
+            db.query(InstitutionCourseOffering)
+            .filter(InstitutionCourseOffering.institution_id.in_(inst_ids))
+            .delete(synchronize_session=False)
+        )
+        # Best-effort cleanup of optional dependents (ignore missing relations).
+        for sql, key in (
+            (
+                "DELETE FROM university_matching_scores WHERE institution_id = ANY(:ids)",
+                "matching_scores",
+            ),
+            (
+                "DELETE FROM calendar_intake_alerts WHERE institution_id = ANY(:ids)",
+                "calendar_alerts",
+            ),
+        ):
+            try:
+                with db.begin_nested():
+                    counts[key] = db.execute(text(sql), {"ids": inst_ids}).rowcount or 0
+            except Exception:
+                counts[key] = 0
+
         counts["intakes"] = (
             db.query(InstitutionIntake)
             .filter(InstitutionIntake.institution_id.in_(inst_ids))
@@ -167,11 +209,20 @@ def _delete_tagged_academia(db: Session, lead_id: int) -> dict[str, int]:
 
 
 def _delete_lead_enrollments(db: Session, lead_id: int) -> int:
-    rows = db.query(FlowxEnrollment).filter(FlowxEnrollment.lead_id == lead_id).all()
-    n = len(rows)
-    for enrollment in rows:
-        db.delete(enrollment)
-    return n
+    """Hard-delete enrollments (and cascaded tracks/tasks) before academia teardown.
+
+    FXTEST colleges use ON DELETE SET NULL on flowx_enrollments.college_id. If
+    enrollments still exist when colleges are removed, Postgres nulls college_id
+    and can violate uq_flowx_enrollment_application when multiple apps collapse
+    to the same (lead, workflow, 0, 0) key.
+    """
+    n = (
+        db.query(FlowxEnrollment)
+        .filter(FlowxEnrollment.lead_id == lead_id)
+        .delete(synchronize_session=False)
+    )
+    db.flush()
+    return int(n or 0)
 
 
 def reset_journey_test_data(db: Session, lead_id: int) -> dict[str, Any]:
@@ -179,12 +230,49 @@ def reset_journey_test_data(db: Session, lead_id: int) -> dict[str, Any]:
     if not lead:
         raise ValueError(f"Lead {lead_id} not found")
     n_enroll = _delete_lead_enrollments(db, lead_id)
+    # Also clear any leftover enrollments still pointing at FXTEST colleges/intakes
+    # (e.g. another lead briefly linked during testing).
+    code_prefix, desc_tag, _geo = _markers(lead_id)
+    tagged_inst_ids = [
+        row.id
+        for row in db.query(Institution.id)
+        .filter(
+            or_(
+                Institution.code.ilike(f"{code_prefix}%"),
+                Institution.short_description.ilike(f"%{desc_tag}%"),
+            )
+        )
+        .all()
+    ]
+    extra = 0
+    if tagged_inst_ids:
+        college_ids = [
+            row.id
+            for row in db.query(College.id).filter(College.institution_id.in_(tagged_inst_ids)).all()
+        ]
+        intake_ids = [
+            row.id
+            for row in db.query(InstitutionIntake.id)
+            .filter(InstitutionIntake.institution_id.in_(tagged_inst_ids))
+            .all()
+        ]
+        filters = [FlowxEnrollment.institution_id.in_(tagged_inst_ids)]
+        if college_ids:
+            filters.append(FlowxEnrollment.college_id.in_(college_ids))
+        if intake_ids:
+            filters.append(FlowxEnrollment.intake_id.in_(intake_ids))
+        extra = (
+            db.query(FlowxEnrollment)
+            .filter(or_(*filters))
+            .delete(synchronize_session=False)
+        )
+        db.flush()
     academia = _delete_tagged_academia(db, lead_id)
     db.commit()
     return {
         "lead_id": lead_id,
         "lead_name": lead.full_name,
-        "enrollments_deleted": n_enroll,
+        "enrollments_deleted": n_enroll + int(extra or 0),
         "academia": academia,
     }
 

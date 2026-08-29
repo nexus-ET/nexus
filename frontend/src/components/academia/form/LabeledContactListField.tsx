@@ -1,9 +1,9 @@
 import { Plus, Trash2 } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import type { CountryRecord } from '../../../types/country';
 import { FALLBACK_COUNTRIES } from '../../../types/country';
-import type { ContactEntry } from '../../../schemas/contactEntry';
+import { externalWebHref, type ContactEntry } from '../../../schemas/contactEntry';
 import {
   formatFullPhone,
   formatPhoneCountryLabel,
@@ -39,6 +39,8 @@ interface LabeledContactListFieldProps {
   /** Override type select width (default fits short phone/email labels). */
   typeSelectWidthClass?: string;
   maxLength?: number;
+  /** Always show "View Website" beside each URL input; the link is active when the value is non-empty. */
+  showViewWebsiteLink?: boolean;
 }
 
 const fieldClass = (hasError: boolean, disabled = false) =>
@@ -68,6 +70,7 @@ const LabeledContactListField: React.FC<LabeledContactListFieldProps> = ({
   fullWidth = true,
   typeSelectWidthClass = 'w-full sm:w-[6.75rem]',
   maxLength,
+  showViewWebsiteLink = false,
 }) => {
   const countries = phoneCountries?.length ? phoneCountries : FALLBACK_COUNTRIES;
   const usePhoneCountryPicker = valueInputType === 'tel' && Boolean(phoneCountries?.length);
@@ -78,6 +81,19 @@ const LabeledContactListField: React.FC<LabeledContactListFieldProps> = ({
     Array.isArray(items) && items.length > 0
       ? items
       : [{ type: typeOptions[0]?.value || 'Other', value: '' }];
+
+  /** Keep legacy / in-use types visible even if removed from admin config. */
+  const resolvedTypeOptions = useMemo(() => {
+    const seen = new Set(typeOptions.map(option => option.value.toLowerCase()));
+    const extras = rows
+      .map(row => row.type.trim())
+      .filter(type => type && !seen.has(type.toLowerCase()))
+      .map(type => {
+        seen.add(type.toLowerCase());
+        return { value: type, label: type };
+      });
+    return extras.length ? [...typeOptions, ...extras] : typeOptions;
+  }, [rows, typeOptions]);
 
   const updateItem = (index: number, patch: Partial<ContactEntry>) => {
     onChange(rows.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)));
@@ -133,7 +149,7 @@ const LabeledContactListField: React.FC<LabeledContactListFieldProps> = ({
                   onChange={event => updateItem(index, { type: event.target.value })}
                   className={compactSelectClass(Boolean(errors[index]), disabled, typeSelectWidthClass)}
                 >
-                  {typeOptions.map(option => (
+                  {resolvedTypeOptions.map(option => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -192,21 +208,44 @@ const LabeledContactListField: React.FC<LabeledContactListFieldProps> = ({
                       onChange={event => {
                         const nextLocal = sanitizePhoneLocalDraft(event.target.value);
                         setDraftLocalByIndex(prev => ({ ...prev, [index]: nextLocal }));
+                        // Keep parent draft in sync while typing so Save works without blur.
+                        commitPhoneItem(index, phoneCountryIso2, nextLocal);
                       }}
                       placeholder={phonePlaceholder}
                       className={`${fieldClass(Boolean(errors[index]), disabled)} min-w-0 flex-1`}
                     />
                   </>
                 ) : (
-                  <input
-                    type={valueInputType}
-                    value={item.value}
-                    disabled={disabled}
-                    maxLength={maxLength}
-                    onChange={event => updateItem(index, { value: event.target.value })}
-                    placeholder={valuePlaceholder}
-                    className={`${fieldClass(Boolean(errors[index]), disabled)} min-w-0 flex-1`}
-                  />
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                    <input
+                      type={valueInputType}
+                      value={item.value}
+                      disabled={disabled}
+                      maxLength={maxLength}
+                      onChange={event => updateItem(index, { value: event.target.value })}
+                      placeholder={valuePlaceholder}
+                      className={`${fieldClass(Boolean(errors[index]), disabled)} min-w-0 flex-1`}
+                    />
+                    {showViewWebsiteLink && valueInputType === 'url' ? (
+                      item.value.trim() ? (
+                        <a
+                          href={externalWebHref(item.value)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="shrink-0 whitespace-nowrap text-sm font-semibold text-accent hover:underline"
+                        >
+                          View Website
+                        </a>
+                      ) : (
+                        <span
+                          className="shrink-0 whitespace-nowrap text-sm font-semibold text-text-muted/50"
+                          title="Enter a URL to open the website"
+                        >
+                          View Website
+                        </span>
+                      )
+                    ) : null}
+                  </div>
                 )}
 
                 <button

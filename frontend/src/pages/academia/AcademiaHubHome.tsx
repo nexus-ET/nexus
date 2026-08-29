@@ -1,7 +1,6 @@
 import { Link } from 'react-router-dom';
 import { ArrowRight, Building2, Globe2, GraduationCap } from 'lucide-react';
 import { ACADEMIA_HUB_SECTIONS } from '../../config/academiaHubNav';
-import AcademiaBreadcrumbs from '../../components/academia/AcademiaBreadcrumbs';
 
 const sectionIcons = {
   geography: Globe2,
@@ -11,7 +10,6 @@ const sectionIcons = {
 
 const AcademiaHubHome: React.FC = () => (
   <div className="space-y-6">
-    <AcademiaBreadcrumbs items={[{ label: 'Academia Hub' }]} />
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
       {ACADEMIA_HUB_SECTIONS.map(section => {
         const Icon = sectionIcons[section.key];

@@ -12,6 +12,7 @@ import {
   type LevelFormValues,
 } from '../../schemas/levelSchema';
 import type { LevelRecord } from '../../types/level';
+import { FrameworkIdField } from './FrameworkIdDisplay';
 
 interface LevelFormPanelProps {
   level: LevelRecord | null;
@@ -112,6 +113,7 @@ const LevelFormPanel: React.FC<LevelFormPanelProps> = ({
       </div>
 
       <form onSubmit={onSubmit} className="space-y-4 p-5">
+        <FrameworkIdField value={mode === 'edit' ? level?.id : undefined} />
         <label className="block space-y-1 text-sm">
           <span className="font-medium text-text-main">Name *</span>
           <input
@@ -176,3 +178,4 @@ const LevelFormPanel: React.FC<LevelFormPanelProps> = ({
 };
 
 export default LevelFormPanel;
+

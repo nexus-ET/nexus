@@ -27,7 +27,7 @@ interface CreateProfileModalProps {
   selectedInstitutions: ProfileInstitutionOption[];
   selectedLevelId: string;
   selectedMajorIds: string[];
-  selectedProgramIds: string[];
+  selectedProgramIds: Array<number | string>;
   scholarshipInterests?: string;
 }
 

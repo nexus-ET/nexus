@@ -167,6 +167,10 @@ function useUnsavedChangesContext(): UnsavedChangesContextValue {
   return context;
 }
 
+export function useAllowNextNavigation() {
+  return useUnsavedChangesContext().allowNextNavigation;
+}
+
 /**
  * Register a dirty flag for the current screen/form.
  * Returns `release()` to allow the next navigation without a second prompt.

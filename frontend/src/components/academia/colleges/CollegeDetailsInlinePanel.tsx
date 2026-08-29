@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { Loader2, Save } from 'lucide-react';
 
 import { apiFetch } from '../../../utils/api';
-import { EMAIL_CONTACT_TYPES, PHONE_CONTACT_TYPES } from '../../../constants/contactTypes';
 import {
   createDefaultEmailContacts,
   createDefaultPhoneContacts,
@@ -15,8 +14,13 @@ import {
 } from '../../../schemas/contactEntry';
 import type { CollegeRecord } from '../../../types/institutions';
 import { useCountries } from '../../../hooks/useCountries';
+import {
+  useEmailContactTypeOptions,
+  usePhoneContactTypeOptions,
+} from '../../../hooks/useContactTypeOptions';
 import LabeledContactListField from '../form/LabeledContactListField';
 import InlineExpandPanel from '../form/InlineExpandPanel';
+import ReadOnlyIdField from '../ReadOnlyIdField';
 
 interface CollegeDetailsInlinePanelProps {
   collegeId: number;
@@ -45,6 +49,8 @@ const CollegeDetailsInlinePanel: React.FC<CollegeDetailsInlinePanelProps> = ({
   const [emailErrors, setEmailErrors] = useState<string[]>([]);
   const [defaultPhoneCountryIso2, setDefaultPhoneCountryIso2] = useState('');
   const { countries: phoneCountries } = useCountries();
+  const phoneContactTypes = usePhoneContactTypeOptions();
+  const emailContactTypes = useEmailContactTypeOptions();
 
   const loadCollege = useCallback(async () => {
     setLoading(true);
@@ -169,24 +175,45 @@ const CollegeDetailsInlinePanel: React.FC<CollegeDetailsInlinePanelProps> = ({
     >
       {college ? (
         <>
+          <section className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <ReadOnlyIdField label="College ID" value={college.id} />
+            <ReadOnlyIdField label="Institution ID" value={college.institution_id} />
+          </section>
           <section className="rounded-xl border border-border-subtle bg-card p-4 space-y-3">
-            <h5 className="text-sm font-semibold text-text-main">Linked campus</h5>
+            <h5 className="text-sm font-semibold text-text-main">Linked campuses</h5>
             <p className="text-xs text-text-muted">
               Read-only — sourced from the parent campus record.
             </p>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-xs font-semibold uppercase text-text-muted">
-                  Campus name
-                </label>
-                <div className={readOnlyFieldClass}>{college.campus_name || '—'}</div>
-              </div>
-              <div className="md:col-span-2">
-                <label className="mb-1 block text-xs font-semibold uppercase text-text-muted">
-                  Campus address
-                </label>
-                <div className={readOnlyFieldClass}>{campusAddressDisplay}</div>
-              </div>
+            <div className="space-y-2">
+              {(college.linked_campuses?.length
+                ? college.linked_campuses
+                : college.campus_id
+                  ? [{
+                      campus_id: college.campus_id,
+                      name: college.campus_name || 'Campus',
+                      address: campusAddressDisplay,
+                      is_primary: true,
+                    }]
+                  : []
+              ).map(link => (
+                <div key={link.campus_id} className={readOnlyFieldClass}>
+                  <div className="font-medium text-text-main">
+                    {link.name}{link.is_primary ? ' (primary)' : ''}
+                  </div>
+                  <div className="mt-1 text-xs tabular-nums text-text-muted">
+                    Campus ID {link.campus_id}
+                  </div>
+                  <div className="mt-1 text-xs text-text-muted">
+                    {link.address || link.location_label || 'Address unavailable'}
+                  </div>
+                  {link.evidence ? (
+                    <div className="mt-1 text-xs text-text-muted">{link.evidence}</div>
+                  ) : null}
+                </div>
+              ))}
+              {!college.linked_campuses?.length && !college.campus_id ? (
+                <div className={readOnlyFieldClass}>—</div>
+              ) : null}
             </div>
           </section>
 
@@ -216,7 +243,7 @@ const CollegeDetailsInlinePanel: React.FC<CollegeDetailsInlinePanelProps> = ({
           <LabeledContactListField
             label="Phone numbers"
             items={phoneNumbers}
-            typeOptions={PHONE_CONTACT_TYPES}
+            typeOptions={phoneContactTypes}
             onChange={setPhoneNumbers}
             valuePlaceholder="Phone number"
             valueInputType="tel"
@@ -230,7 +257,7 @@ const CollegeDetailsInlinePanel: React.FC<CollegeDetailsInlinePanelProps> = ({
           <LabeledContactListField
             label="Email addresses"
             items={emailAddresses}
-            typeOptions={EMAIL_CONTACT_TYPES}
+            typeOptions={emailContactTypes}
             onChange={setEmailAddresses}
             valuePlaceholder="Email address"
             valueInputType="email"

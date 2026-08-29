@@ -4,11 +4,12 @@ import re
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import String, and_, cast, func, or_
+from sqlalchemy.orm import Session, aliased
 
 from app.models.lead import Lead
 from app.models.students_master import StudentsMaster
+from app.models.user import User
 from app.schemas.offline_lead import OfflineLeadEducation
 from app.schemas.students_master import StudentMasterSaveRequest
 from app.services.countries import get_country_by_iso2
@@ -375,3 +376,108 @@ def upsert_students_master(
     db.commit()
     db.refresh(record)
     return record
+
+
+def _student_display_name(record: StudentsMaster) -> str:
+    parts = [
+        (record.first_name or "").strip(),
+        (record.middle_name or "").strip(),
+        (record.last_name or "").strip(),
+    ]
+    return " ".join(part for part in parts if part)
+
+
+def _advisor_display_name(user: User | None) -> str | None:
+    if not user:
+        return None
+    parts = [(user.first_name or "").strip(), (user.last_name or "").strip()]
+    name = " ".join(part for part in parts if part)
+    return name or (user.email or None)
+
+
+def search_students_master_for_invoice(
+    db: Session,
+    *,
+    q: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Search students_master for Invoice Workspace bill-to picker."""
+    limit = max(1, min(int(limit or 20), 50))
+    advisor = aliased(User)
+
+    query = (
+        db.query(StudentsMaster, Lead, advisor)
+        .outerjoin(Lead, StudentsMaster.lead_id == Lead.id)
+        .outerjoin(advisor, Lead.assigned_advisor_id == advisor.id)
+    )
+
+    token = (q or "").strip()
+    if token:
+        full_name_expr = func.concat_ws(
+            " ",
+            StudentsMaster.first_name,
+            StudentsMaster.middle_name,
+            StudentsMaster.last_name,
+        )
+        tokens = [part for part in re.split(r"\s+", token) if part]
+        token_clauses = []
+        for part in tokens:
+            pattern = f"%{part}%"
+            part_filters = [
+                full_name_expr.ilike(pattern),
+                StudentsMaster.first_name.ilike(pattern),
+                StudentsMaster.middle_name.ilike(pattern),
+                StudentsMaster.last_name.ilike(pattern),
+                StudentsMaster.email.ilike(pattern),
+                StudentsMaster.phone_number.ilike(pattern),
+                StudentsMaster.phone_local.ilike(pattern),
+                StudentsMaster.city.ilike(pattern),
+                StudentsMaster.state.ilike(pattern),
+                cast(StudentsMaster.id, String).ilike(pattern),
+            ]
+            if part.isdigit():
+                part_filters.append(StudentsMaster.id == int(part))
+                part_filters.append(StudentsMaster.lead_id == int(part))
+            token_clauses.append(or_(*part_filters))
+        query = query.filter(and_(*token_clauses) if len(token_clauses) > 1 else token_clauses[0])
+
+    rows = (
+        query.order_by(StudentsMaster.updated_at.desc(), StudentsMaster.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    items: list[dict[str, Any]] = []
+    for record, lead, advisor_user in rows:
+        street_parts = [
+            (record.address1 or "").strip(),
+            (record.address2 or "").strip(),
+            (record.address3 or "").strip(),
+        ]
+        items.append(
+            {
+                "id": record.id,
+                "lead_id": record.lead_id,
+                "full_name": _student_display_name(record) or None,
+                "first_name": record.first_name,
+                "middle_name": record.middle_name,
+                "last_name": record.last_name,
+                "email": record.email,
+                "phone_country_iso2": record.phone_country_iso2,
+                "phone_local": record.phone_local,
+                "phone_number": record.phone_number,
+                "address_street": ", ".join(part for part in street_parts if part) or None,
+                "address1": record.address1,
+                "address2": record.address2,
+                "address3": record.address3,
+                "city": record.city,
+                "state": record.state,
+                "country_iso2": record.country_iso2,
+                "zipcode": record.zipcode,
+                "target_destination_iso2": record.target_destination_iso2,
+                "assigned_advisor_id": getattr(lead, "assigned_advisor_id", None) if lead else None,
+                "assigned_advisor_name": _advisor_display_name(advisor_user),
+                "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+            }
+        )
+    return items

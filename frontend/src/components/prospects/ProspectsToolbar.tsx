@@ -25,6 +25,7 @@ type ProspectsToolbarProps = {
   totalPages?: number;
   hasMorePages?: boolean;
   isLoading?: boolean;
+  showTitleRow?: boolean;
 };
 
 export default function ProspectsToolbar({
@@ -39,6 +40,7 @@ export default function ProspectsToolbar({
   totalPages = 1,
   hasMorePages = false,
   isLoading = false,
+  showTitleRow = true,
 }: ProspectsToolbarProps) {
   const dateFromValue = filters.dateFrom ? new Date(filters.dateFrom) : null;
   const dateToValue = filters.dateTo ? new Date(filters.dateTo) : null;
@@ -48,39 +50,41 @@ export default function ProspectsToolbar({
 
   return (
     <div className="prospects-toolbar">
-      <div className="prospects-toolbar__title-row">
-        <div className="prospects-toolbar__title">
-          <h2>{title}</h2>
-          <p className="prospects-toolbar__viewing" title={viewingLabel}>
-            {viewingLabel}
-          </p>
-          {typeof filteredTotal === 'number' ? (
-            <span
-              className="prospects-toolbar__count"
-              title={
-                rangeLabel
-                  ? `Showing ${rangeLabel} of ${filteredTotal} matching prospects`
-                  : `${filteredTotal} matching prospects`
-              }
-            >
-              {rangeLabel ? `${rangeLabel}/${filteredTotal}` : `${filteredTotal} matches`}
-            </span>
+      {showTitleRow ? (
+        <div className="prospects-toolbar__title-row">
+          <div className="prospects-toolbar__title">
+            <h2>{title}</h2>
+            <p className="prospects-toolbar__viewing" title={viewingLabel}>
+              {viewingLabel}
+            </p>
+            {typeof filteredTotal === 'number' ? (
+              <span
+                className="prospects-toolbar__count"
+                title={
+                  rangeLabel
+                    ? `Showing ${rangeLabel} of ${filteredTotal} matching prospects`
+                    : `${filteredTotal} matching prospects`
+                }
+              >
+                {rangeLabel ? `${rangeLabel}/${filteredTotal}` : `${filteredTotal} matches`}
+              </span>
+            ) : null}
+          </div>
+
+          {showPagination ? (
+            <QueuePaginationControls
+              page={page}
+              totalPages={totalPages}
+              hasMorePages={hasMorePages}
+              disabled={isLoading}
+              onPageChange={nextPage => onChange({ page: nextPage })}
+              className="prospects-toolbar__pagination"
+              buttonClassName="prospects-list-panel__page-btn"
+              metaClassName="prospects-list-panel__page-meta"
+            />
           ) : null}
         </div>
-
-        {showPagination ? (
-          <QueuePaginationControls
-            page={page}
-            totalPages={totalPages}
-            hasMorePages={hasMorePages}
-            disabled={isLoading}
-            onPageChange={nextPage => onChange({ page: nextPage })}
-            className="prospects-toolbar__pagination"
-            buttonClassName="prospects-list-panel__page-btn"
-            metaClassName="prospects-list-panel__page-meta"
-          />
-        ) : null}
-      </div>
+      ) : null}
 
       <div className="prospects-toolbar__controls">
         <label className="prospects-toolbar__search">

@@ -389,6 +389,7 @@ def test_session_profile_shows_pending_date_during_pick_time() -> None:
     context = {
         "selected_date": "2026-07-10",
         "pending_session_date_label": "Thu, Jul 10, 2026",
+        "reschedule_in_progress": True,
     }
     fields = _build_consultation_session_profile_fields(
         None,
@@ -398,6 +399,84 @@ def test_session_profile_shows_pending_date_during_pick_time() -> None:
     )
     assert fields["consultation_session_date"] == "Thu, Jul 10, 2026"
     assert fields["consultation_session_time"] == "Pending selection"
+
+
+def test_session_profile_shows_pending_time_for_same_day_reschedule_before_time_pick() -> None:
+    from app.services.admissions_intake_flow import _build_consultation_session_profile_fields
+
+    original_scheduled = datetime(2026, 7, 10, 10, 0)
+    lead = SimpleNamespace(consultation_scheduled_at=original_scheduled)
+    booking = SimpleNamespace(id=41, scheduled_time=original_scheduled, admin_id=None)
+    fields = _build_consultation_session_profile_fields(
+        None,
+        lead,
+        step=INTAKE_STEP_PICK_TIME,
+        context={
+            "selected_date": "2026-07-10",
+            "pending_session_date_label": "Fri, Jul 10, 2026",
+            "reschedule_in_progress": True,
+            "reschedule_original_booking_id": 41,
+            "reschedule_original_scheduled_at": original_scheduled.isoformat(),
+        },
+        booking=booking,
+    )
+    assert fields["consultation_session_date"] == "Fri, Jul 10, 2026"
+    assert fields["consultation_session_time"] == "Pending selection"
+    assert fields["appointment_status"] == "Pending"
+
+
+def test_session_profile_shows_new_time_after_reschedule_time_is_confirmed() -> None:
+    from app.services.admissions_intake_flow import _build_consultation_session_profile_fields
+
+    original_scheduled = datetime(2026, 7, 10, 10, 0)
+    replacement_scheduled = datetime(2026, 7, 10, 14, 0)
+    lead = SimpleNamespace(consultation_scheduled_at=replacement_scheduled)
+    replacement_booking = SimpleNamespace(
+        id=42,
+        scheduled_time=replacement_scheduled,
+        admin_id=None,
+    )
+    fields = _build_consultation_session_profile_fields(
+        None,
+        lead,
+        step=INTAKE_STEP_PICK_TIME,
+        context={
+            "selected_date": "2026-07-10",
+            "pending_session_date_label": "Fri, Jul 10, 2026",
+            "reschedule_in_progress": True,
+            "reschedule_original_booking_id": 41,
+            "reschedule_original_scheduled_at": original_scheduled.isoformat(),
+        },
+        booking=replacement_booking,
+    )
+    assert fields["consultation_session_date"] == "Fri, Jul 10, 2026"
+    assert fields["consultation_session_time"] == "2:00 PM"
+    assert fields["appointment_status"] == "Booked"
+
+
+def test_session_profile_prefers_confirmed_booking_over_stale_pick_time_step() -> None:
+    from app.services.admissions_intake_flow import _build_consultation_session_profile_fields
+
+    lead = SimpleNamespace(
+        consultation_scheduled_at=datetime(2026, 7, 10, 14, 0),
+    )
+    booking = SimpleNamespace(
+        scheduled_time=datetime(2026, 7, 10, 14, 0),
+        admin_id=None,
+    )
+    fields = _build_consultation_session_profile_fields(
+        None,
+        lead,
+        step=INTAKE_STEP_PICK_TIME,
+        context={
+            "selected_date": "2026-07-10",
+            "pending_session_date_label": "Thu, Jul 10, 2026",
+        },
+        booking=booking,
+    )
+    assert fields["consultation_session_date"] == "Fri, Jul 10, 2026"
+    assert fields["consultation_session_time"] == "2:00 PM"
+    assert fields["appointment_status"] == "Booked"
 
 
 def test_begin_reschedule_keeps_reschedule_in_progress_flag() -> None:

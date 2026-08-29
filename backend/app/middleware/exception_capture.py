@@ -35,6 +35,20 @@ def _should_skip_path(path: str) -> bool:
     )
 
 
+def _is_expected_missing_lookup(path: str, status_code: int) -> bool:
+    """Catalog GET 404s (stale wizard program_id) must not flood Exception Report."""
+    if status_code != 404:
+        return False
+    normalized = (path or "").rstrip("/")
+    prefixes = (
+        "/api/v1/academia/degrees/",
+        "/api/v1/academia/courses/",
+        "/api/v1/academia/education-majors/",
+        "/api/v1/academia/programs/",
+    )
+    return any(normalized.startswith(prefix) for prefix in prefixes)
+
+
 def _severity_for_status(status_code: int) -> str:
     if status_code >= 500:
         return SEVERITY_EXCEPTION
@@ -70,6 +84,10 @@ def _record_backend_exception(
     status_code: int | None = None,
 ) -> None:
     if _should_skip_path(request.url.path):
+        return
+    if status_code == 429:
+        return
+    if status_code is not None and _is_expected_missing_lookup(request.url.path, status_code):
         return
 
     triggered_by, user_id = _user_label_from_request(request)
