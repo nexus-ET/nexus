@@ -4,6 +4,9 @@ import type jsPDF from 'jspdf';
 export interface PdfBusinessBranding {
   businessName?: string | null;
   addressLines?: string[] | null;
+  phone?: string | null;
+  email?: string | null;
+  website?: string | null;
   /** PNG/JPEG/GIF data URL or ArrayBuffer for jsPDF addImage. */
   logoDataUrl?: string | null;
 }

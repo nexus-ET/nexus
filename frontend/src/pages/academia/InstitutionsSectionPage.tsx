@@ -6,7 +6,6 @@ import {
 } from '../../config/academiaHubNav';
 import { isRouteActive } from '../../utils/routeAccess';
 import AcademiaBreadcrumbs from '../../components/academia/AcademiaBreadcrumbs';
-import AcademiaSectionTabs from '../../components/academia/AcademiaSectionTabs';
 import type { AcademiaSectionTab } from '../../config/academiaHubNav';
 
 const isInstitutionsTabActive = (pathname: string, tab: AcademiaSectionTab): boolean => {
@@ -20,24 +19,25 @@ const InstitutionsSectionPage: React.FC = () => {
   const outletContext = useOutletContext();
   const { pathname } = useLocation();
   const onInstitutionCalendar = /\/academia\/institutions\/\d+\/intakes$/.test(pathname);
+  const onDirectory =
+    pathname === INSTITUTIONS_SECTION_PATH || pathname === `${INSTITUTIONS_SECTION_PATH}/`;
 
   return (
     <div className="space-y-4">
-      <AcademiaBreadcrumbs
-        items={[
-          { label: 'Academia Hub', path: '/academia' },
-          { label: getAcademiaSectionLabel('institutions'), path: INSTITUTIONS_SECTION_PATH },
-          ...(onInstitutionCalendar ? [{ label: 'Academic Calendar' }] : []),
-        ]}
-      />
+      {!onDirectory ? (
+        <AcademiaBreadcrumbs
+          items={[
+            { label: getAcademiaSectionLabel('institutions'), path: INSTITUTIONS_SECTION_PATH },
+            ...(onInstitutionCalendar ? [{ label: 'Academic Calendar' }] : []),
+          ]}
+        />
+      ) : null}
       <div className="rounded-2xl border border-border-subtle bg-card shadow-sm">
-        <div className="border-b border-border-subtle px-6 py-4">
-          <h2 className="text-xl font-bold text-text-main">Institutions</h2>
-          <p className="text-sm text-text-muted">
-            Search, filter, and manage institutions at scale. Use the guided 6-step editor when
-            adding or updating a school.
-          </p>
-        </div>
+        {onDirectory ? null : (
+          <div className="border-b border-border-subtle px-6 py-4">
+            <h2 className="text-xl font-bold text-text-main">Institutions</h2>
+          </div>
+        )}
         {INSTITUTIONS_TABS.length > 1 ? (
           <div className="border-b border-border-subtle px-6 pt-4">
             <nav className="-mb-px flex flex-wrap gap-1" aria-label="Institutions section tabs">

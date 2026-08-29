@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
-import { apiFetch } from '../../utils/api';
 import { fetchAcademiaListItems } from '../../utils/academiaList';
 import type { InstitutionRecord } from '../../types/institutions';
+import { fetchInstitutionTypes, institutionTypeSelectOptions } from '../../types/institutionTypes';
 import SearchableSelect from './SearchableSelect';
+import ReadOnlyIdField from './ReadOnlyIdField';
 
 interface CountryOption {
   id: number;
@@ -24,9 +25,10 @@ const InstitutionFormModal: React.FC<InstitutionFormModalProps> = ({
   onSaved,
 }) => {
   const [countries, setCountries] = useState<CountryOption[]>([]);
+  const [institutionTypes, setInstitutionTypes] = useState<InstitutionTypeRecord[]>([]);
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
-  const [institutionType, setInstitutionType] = useState('');
+  const [institutionTypeId, setInstitutionTypeId] = useState('');
   const [countryId, setCountryId] = useState('');
   const [accreditationDetails, setAccreditationDetails] = useState('');
   const [saving, setSaving] = useState(false);
@@ -35,13 +37,18 @@ const InstitutionFormModal: React.FC<InstitutionFormModalProps> = ({
   useEffect(() => {
     if (!open) return;
     void fetchAcademiaListItems<CountryOption>('academia/countries').then(setCountries);
+    void fetchInstitutionTypes()
+      .then(setInstitutionTypes)
+      .catch(() => setInstitutionTypes([]));
   }, [open]);
 
   useEffect(() => {
     if (!open) return;
     setName(institution?.name || '');
     setCode(institution?.code || '');
-    setInstitutionType(institution?.institution_type || '');
+    setInstitutionTypeId(
+      institution?.institution_type_id ? String(institution.institution_type_id) : ''
+    );
     setCountryId(institution?.country_id ? String(institution.country_id) : '');
     setAccreditationDetails(institution?.accreditation_details || '');
     setError(null);
@@ -66,7 +73,7 @@ const InstitutionFormModal: React.FC<InstitutionFormModalProps> = ({
       const payload = {
         name: name.trim(),
         code: code.trim() || null,
-        institution_type: institutionType.trim() || null,
+        institution_type_id: institutionTypeId ? Number(institutionTypeId) : null,
         country_id: countryId ? Number(countryId) : null,
         accreditation_details: accreditationDetails.trim() || null,
       };
@@ -102,6 +109,7 @@ const InstitutionFormModal: React.FC<InstitutionFormModalProps> = ({
           </button>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4 p-5">
+          {institution ? <ReadOnlyIdField label="Institution ID" value={institution.id} /> : null}
           <label className="block space-y-1 text-sm">
             <span className="font-medium text-text-main">Name *</span>
             <input
@@ -133,16 +141,13 @@ const InstitutionFormModal: React.FC<InstitutionFormModalProps> = ({
                 className="w-full rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent"
               />
             </label>
-            <label className="block space-y-1 text-sm">
-              <span className="font-medium text-text-main">Type</span>
-              <input
-                type="text"
-                value={institutionType}
-                onChange={event => setInstitutionType(event.target.value)}
-                placeholder="Public / Private"
-                className="w-full rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent"
-              />
-            </label>
+            <SearchableSelect
+              label="Type"
+              value={institutionTypeId}
+              options={institutionTypeSelectOptions(institutionTypes)}
+              onChange={setInstitutionTypeId}
+              placeholder="Select institution type..."
+            />
           </div>
           <SearchableSelect
             label="Country"

@@ -428,6 +428,8 @@ const NexusDashboard: React.FC = () => {
             <div className="relative group">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted group-focus-within:text-accent transition-colors" size={18} />
               <input 
+                id="global-header-search"
+                name="globalHeaderSearch"
                 type="text"
                 placeholder={
                   canUseAcademiaCommandSearch
@@ -436,6 +438,7 @@ const NexusDashboard: React.FC = () => {
                 }
                 value={searchQuery}
                 readOnly={canUseAcademiaCommandSearch}
+                autoComplete="off"
                 onClick={() => {
                   if (canUseAcademiaCommandSearch) {
                     setAcademiaCommandPaletteOpen(true);

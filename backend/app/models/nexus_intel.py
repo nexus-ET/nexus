@@ -149,3 +149,27 @@ class IntelAiChatLog(Base):
     response_text = Column(Text, nullable=False)
     retrieved_sources = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+
+class IntelInquiryFaq(Base):
+    """Editable process-aligned guidance stored in the Inquiry Hub."""
+
+    __tablename__ = "intel_inquiry_faqs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    process_code = Column(String(16), nullable=False, index=True)
+    process_name = Column(String(120), nullable=False)
+    subprocess_code = Column(String(16), nullable=True, index=True)
+    subprocess_name = Column(String(160), nullable=True)
+    nested_process_code = Column(String(16), nullable=True, index=True)
+    nested_process_name = Column(String(160), nullable=True)
+    question = Column(Text, nullable=False)
+    answer = Column(Text, nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

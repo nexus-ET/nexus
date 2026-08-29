@@ -78,6 +78,9 @@ npm run build
 
 echo "==> Restart services..."
 if command -v systemctl >/dev/null 2>&1; then
+  chmod +x "$BACKEND/deploy/run-nexus-backend.sh" 2>/dev/null || true
+  cp "$BACKEND/deploy/nexus-backend.service" /etc/systemd/system/nexus-backend.service
+  systemctl daemon-reload
   systemctl restart nexus-backend
   nginx -t
   systemctl reload nginx

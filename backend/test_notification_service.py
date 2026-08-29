@@ -215,6 +215,7 @@ def test_send_whatsapp_admin_assignment_sends_to_admin_phone() -> None:
         candidate_email=None,
         status="SCHEDULED",
         notes=None,
+        outcome_key=None,
         lead_id=None,
     )
     admin = SimpleNamespace(id=7, phone_number="+918888888888")
@@ -226,6 +227,10 @@ def test_send_whatsapp_admin_assignment_sends_to_admin_phone() -> None:
         ),
         patch(
             "app.services.settings_service.get_bool_setting",
+            return_value=True,
+        ),
+        patch(
+            "app.services.notification_service._phone_has_open_whatsapp_window",
             return_value=True,
         ),
         patch(

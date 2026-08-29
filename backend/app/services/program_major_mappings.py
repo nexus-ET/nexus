@@ -12,7 +12,7 @@ from app.schemas.program_major_mapping import ProgramMajorMappingRead
 from app.services.education_majors import get_education_major
 
 
-def _get_program(db: Session, program_id: uuid.UUID) -> Program:
+def _get_program(db: Session, program_id: int) -> Program:
     program = (
         db.query(Program)
         .options(joinedload(Program.level))
@@ -55,7 +55,7 @@ def list_program_major_mappings_read(db: Session) -> list[ProgramMajorMappingRea
 
 
 def get_program_major_mappings(
-    db: Session, program_id: uuid.UUID
+    db: Session, program_id: int
 ) -> list[ProgramEducationMajorMapping]:
     return (
         db.query(ProgramEducationMajorMapping)
@@ -67,7 +67,7 @@ def get_program_major_mappings(
 
 
 def get_program_major_mapping(
-    db: Session, program_id: uuid.UUID, major_id: int
+    db: Session, program_id: int, major_id: int
 ) -> ProgramEducationMajorMapping | None:
     return (
         db.query(ProgramEducationMajorMapping)
@@ -84,7 +84,7 @@ def bulk_assign_major_to_programs(
     db: Session,
     *,
     major_id: int,
-    program_ids: list[uuid.UUID],
+    program_ids: list[int],
 ) -> dict[str, int | list[uuid.UUID]]:
     catalog_major = get_education_major(db, major_id)
     if not catalog_major:
@@ -100,7 +100,7 @@ def bulk_assign_major_to_programs(
     assigned = 0
     skipped = 0
     touched: list[uuid.UUID] = []
-    seen_programs: set[uuid.UUID] = set()
+    seen_programs: set[int] = set()
 
     for program_id in program_ids:
         if program_id in seen_programs:

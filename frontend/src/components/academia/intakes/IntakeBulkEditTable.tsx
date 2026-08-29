@@ -103,6 +103,7 @@ const IntakeBulkEditTable: React.FC<IntakeBulkEditTableProps> = ({
         <table className="min-w-full text-sm">
           <thead className="bg-surface-bg text-left text-xs uppercase tracking-wide text-text-muted">
             <tr>
+              <th className="px-6 py-3 font-semibold">ID</th>
               <th className="px-6 py-3 font-semibold">Term / Season</th>
               <th className="px-6 py-3 font-semibold">Type</th>
               <th className="px-6 py-3 font-semibold">Start</th>
@@ -114,6 +115,7 @@ const IntakeBulkEditTable: React.FC<IntakeBulkEditTableProps> = ({
           <tbody>
             {rows.map(row => (
               <tr key={row.id} className="border-t border-border-subtle/70">
+                <td className="px-6 py-3 tabular-nums text-text-muted">{row.id}</td>
                 <td className="px-6 py-3 font-semibold text-text-main">{row.display_name}</td>
                 <td className="px-6 py-3 text-text-muted">{row.intake_type}</td>
                 <td className="px-6 py-3">

@@ -18,6 +18,7 @@ export type CounsellorOption = {
   id: number;
   name: string;
   email: string;
+  phone?: string | null;
 };
 
 export type CounsellorAvailabilitySlot = {
@@ -115,7 +116,8 @@ export function useBookingSessionConfig(enabled = true) {
       } satisfies BookingSessionConfig;
     },
     enabled,
-    staleTime: 60_000,
+    staleTime: 10_000,
+    refetchOnMount: 'always',
   });
 }
 

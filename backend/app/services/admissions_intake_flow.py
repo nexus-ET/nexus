@@ -19,6 +19,7 @@ from app.services.whatsapp_flow_config import (
     get_whatsapp_flow_id,
     is_whatsapp_flow_enabled,
 )
+from app.utils.timezone import office_today
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,6 @@ REMOVED_INTAKE_STEPS = frozenset(
     }
 )
 
-DEFAULT_SLOT_TIMES = ("10:00", "14:00", "16:00")
 BRAND_NAME = "Edutrust"
 NAME_MIN_LENGTH = 2
 NAME_MAX_LENGTH = 75
@@ -82,6 +82,29 @@ DEGREE_OPTIONS: tuple[dict[str, str], ...] = (
         "short": "Doctorate",
         "description": "3-7 years",
     },
+)
+
+MAJOR_OPTIONS: tuple[dict[str, str], ...] = (
+    {"id": "Computer Science", "label": "Computer Science", "description": "Software, systems and computing"},
+    {"id": "Data Science & AI", "label": "Data Science & AI", "description": "Data, analytics and artificial intelligence"},
+    {"id": "Business & Management", "label": "Business & Management", "description": "Business, leadership and management"},
+    {"id": "Engineering", "label": "Engineering", "description": "Core and applied engineering"},
+    {"id": "Finance & Accounting", "label": "Finance & Accounting", "description": "Finance, banking and accounting"},
+    {"id": "Health Sciences", "label": "Health Sciences", "description": "Health, medicine and life sciences"},
+    {"id": "Law", "label": "Law", "description": "Legal studies and practice"},
+    {"id": "Arts & Humanities", "label": "Arts & Humanities", "description": "Arts, media and humanities"},
+)
+
+COUNTRY_OPTIONS: tuple[dict[str, str], ...] = (
+    {"id": "UK", "label": "🇬🇧 UK", "description": "United Kingdom"},
+    {"id": "USA", "label": "🇺🇸 USA", "description": "United States"},
+    {"id": "Canada", "label": "🇨🇦 Canada", "description": "Canada"},
+    {"id": "Australia", "label": "🇦🇺 Australia", "description": "Australia"},
+    {"id": "Germany", "label": "🇩🇪 Germany", "description": "Germany"},
+    {"id": "Ireland", "label": "🇮🇪 Ireland", "description": "Ireland"},
+    {"id": "New Zealand", "label": "🇳🇿 New Zealand", "description": "New Zealand"},
+    {"id": "UAE", "label": "🇦🇪 UAE", "description": "United Arab Emirates"},
+    {"id": "Japan", "label": "🇯🇵 Japan", "description": "Japan"},
 )
 
 _COUNTRY_ALIASES: dict[str, str] = {
@@ -182,6 +205,54 @@ BOOKING_BOOK_SESSION_BUTTON_ID = "booking:book_session"
 BOOKING_NOT_INTERESTED_BUTTON_ID = "booking:not_interested"
 MARKETING_OPT_IN_BUTTON_ID = "marketing:yes"
 MARKETING_OPT_OUT_BUTTON_ID = "marketing:no"
+CALL_CONSENT_YES_BUTTON_ID = "yes"
+CALL_CONSENT_NO_BUTTON_ID = "no"
+CALL_CONSENT_YES_TITLE = "Yes, please"
+CALL_CONSENT_NO_TITLE = "No thanks"
+
+# Accepts the consent button id, the button title, and the common typed variants.
+# Values are compared after `_normalize_yes_no_reply` flattening, so aliases here
+# stay valid even if the quick-reply ids are renamed later.
+CALL_CONSENT_YES_REPLIES = frozenset(
+    {
+        "yes",
+        "y",
+        "yeah",
+        "yep",
+        "yup",
+        "sure",
+        "ok",
+        "okay",
+        "please",
+        "confirm",
+        "yes please",
+        "yes, please",
+        "yes sure",
+        "sounds good",
+        "consent yes",
+        "consent_yes",
+        "call yes",
+        "yes call",
+    }
+)
+CALL_CONSENT_NO_REPLIES = frozenset(
+    {
+        "no",
+        "n",
+        "nope",
+        "nah",
+        "not now",
+        "later",
+        "maybe later",
+        "skip",
+        "no thanks",
+        "no thank you",
+        "consent no",
+        "consent_no",
+        "call no",
+        "no call",
+    }
+)
 
 
 def _normalize_booking_button_reply(text: str) -> str:
@@ -331,7 +402,7 @@ async def _skip_removed_intake_step(
                 ),
             )
         if next_step == INTAKE_STEP_TARGET_MAJOR:
-            return await _agent_intake_reply(
+            return await _major_step_reply(
                 db,
                 lead,
                 runtime_config,
@@ -342,7 +413,7 @@ async def _skip_removed_intake_step(
                 incoming_text=incoming_text,
             )
         if next_step == INTAKE_STEP_TARGET_COUNTRY:
-            return await _agent_intake_reply(
+            return await _country_step_reply(
                 db,
                 lead,
                 runtime_config,
@@ -623,11 +694,7 @@ def ensure_consultation_slots(db: Session, days_ahead: int = 21) -> None:
 
     for slot_day in bookable_dates:
         slot_starts = get_bookable_slot_starts(db, slot_day)
-        slot_times = (
-            [_normalize_slot_time(start.strftime("%H:%M")) for start in slot_starts]
-            if slot_starts
-            else [_normalize_slot_time(slot_time) for slot_time in DEFAULT_SLOT_TIMES]
-        )
+        slot_times = [_normalize_slot_time(start.strftime("%H:%M")) for start in slot_starts]
         for normalized_time in slot_times:
             exists = (
                 db.query(ConsultationSlot.id)
@@ -650,11 +717,7 @@ def _ensure_slots_for_day(db: Session, slot_day: date) -> None:
         return
 
     slot_starts = get_bookable_slot_starts(db, slot_day)
-    slot_times = (
-        [_normalize_slot_time(start.strftime("%H:%M")) for start in slot_starts]
-        if slot_starts
-        else [_normalize_slot_time(slot_time) for slot_time in DEFAULT_SLOT_TIMES]
-    )
+    slot_times = [_normalize_slot_time(start.strftime("%H:%M")) for start in slot_starts]
     added = False
     for normalized_time in slot_times:
         exists = (
@@ -715,6 +778,17 @@ def dedupe_consultation_slots(db: Session) -> None:
 
 def _format_slot_date(slot_day: date) -> str:
     return slot_day.strftime("%a, %b %d, %Y")
+
+
+def _format_available_slot_date(db: Session, slot_day: date) -> str:
+    """Label for an offered booking day. Caller only passes available/bookable dates."""
+    label = _format_slot_date(slot_day)
+    today = office_today(db)
+    if slot_day == today:
+        return f"Today ({label})"
+    if slot_day == today + timedelta(days=1):
+        return f"Tomorrow ({label})"
+    return label
 
 
 def _format_slot_time(slot_time: str) -> str:
@@ -802,9 +876,37 @@ def _build_consultation_session_profile_fields(
     if resolved_booking is None and db is not None:
         resolved_booking = _get_active_consultation_booking(db, lead)
 
+    original_booking_id = context.get("reschedule_original_booking_id")
+    original_scheduled_at = str(context.get("reschedule_original_scheduled_at") or "").strip()
+    resolved_scheduled = (
+        getattr(resolved_booking, "scheduled_time", None) if resolved_booking is not None else None
+    )
+    replacement_booking_confirmed = bool(
+        reschedule_in_progress
+        and resolved_booking is not None
+        and resolved_scheduled is not None
+        and (
+            (
+                original_booking_id is not None
+                and getattr(resolved_booking, "id", None) != original_booking_id
+            )
+            or (
+                original_scheduled_at
+                and resolved_scheduled.isoformat() != original_scheduled_at
+            )
+        )
+    )
+
     # Mid time-pick: date already chosen — show the pending date even when an
-    # older booking/timestamp still exists (normal during WhatsApp reschedule).
-    if in_time_step and selected_raw:
+    # older booking/timestamp still exists during a WhatsApp reschedule. For an
+    # initial booking or a confirmed replacement booking, the booking is
+    # authoritative even if a stale PICK_TIME snapshot is serialized.
+    if (
+        in_time_step
+        and selected_raw
+        and not replacement_booking_confirmed
+        and (reschedule_in_progress or resolved_booking is None)
+    ):
         try:
             session_date = pending_date or _format_slot_date(date.fromisoformat(str(selected_raw)))
         except ValueError:
@@ -847,17 +949,6 @@ def _available_dates(db: Session, limit: int = 8) -> list[date]:
     from app.services.counselling_service import list_whatsapp_bookable_dates
 
     dates = list_whatsapp_bookable_dates(db, limit=limit)
-    if not dates:
-        rows = (
-            db.query(ConsultationSlot.slot_date)
-            .filter(ConsultationSlot.lead_id.is_(None), ConsultationSlot.slot_date >= date.today())
-            .distinct()
-            .order_by(ConsultationSlot.slot_date.asc())
-            .limit(limit)
-            .all()
-        )
-        dates = [row[0] for row in rows if is_bookable_day(db, row[0])]
-
     if dates:
         _ensure_slots_for_dates(db, dates[:limit])
     return dates[:limit]
@@ -870,6 +961,9 @@ def _available_times_for_date(db: Session, slot_day: date) -> list[ConsultationS
         return []
     _ensure_slots_for_day(db, slot_day)
     bookable_starts = get_bookable_slot_starts(db, slot_day)
+    if not bookable_starts:
+        # No open counselling slot left (past times today, closed day, full day).
+        return []
     allowed_times = {_normalize_slot_time(start.strftime("%H:%M")) for start in bookable_starts}
 
     rows = (
@@ -887,22 +981,30 @@ def _available_times_for_date(db: Session, slot_day: date) -> list[ConsultationS
         normalized = _normalize_slot_time(row.slot_time)
         if normalized in seen_times:
             continue
-        if allowed_times and normalized not in allowed_times:
+        if normalized not in allowed_times:
             continue
         seen_times.add(normalized)
         unique.append(row)
     return unique
 
 
+def _normalize_yes_no_reply(text: str) -> str:
+    """Flatten button ids, titles and typed replies to a comparable form."""
+    cleaned = _strip_booking_markdown(_strip_selected_prefix(text or ""))
+    cleaned = re.sub(r"[^\w\s]+", " ", cleaned.lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _parse_yes_no(text: str) -> bool | None:
-    lower = text.lower().strip()
-    if lower in {"yes", "y", "yeah", "yep", "sure", "ok", "okay", "please", "confirm", "yes, please"}:
+    lower = (text or "").lower().strip()
+    normalized = _normalize_yes_no_reply(text)
+    if normalized in CALL_CONSENT_YES_REPLIES or lower in CALL_CONSENT_YES_REPLIES:
         return True
-    if lower in {"no", "n", "nope", "not now", "later", "skip", "no thanks"}:
+    if normalized in CALL_CONSENT_NO_REPLIES or lower in CALL_CONSENT_NO_REPLIES:
         return False
-    if lower == "yes" or lower.startswith("yes,"):
+    if normalized.startswith("yes ") or lower.startswith("yes,"):
         return True
-    if lower == "no" or lower.startswith("no,"):
+    if normalized.startswith("no ") or lower.startswith("no,"):
         return False
     if "yes" in lower and "no" not in lower:
         return True
@@ -981,6 +1083,11 @@ def _normalize_intake_text_reply(
     if not re.search(r"[a-zA-Z]", cleaned):
         return None
     return cleaned
+
+
+def _strip_leading_option_icon(text: str) -> str:
+    """Remove a decorative Meta row emoji while retaining the option text."""
+    return re.sub(r"^[^\w]+", "", (text or "").strip(), count=1).strip()
 
 
 _COUNTRY_RESOLUTION_PROMPT = """You normalize study destination country names for a CRM.
@@ -1063,7 +1170,7 @@ def _degree_option_by_id(option_id: str) -> dict[str, str] | None:
 
 def _parse_degree_selection(text: str) -> str | None:
     """Resolve a degree choice from list/button id, label, or numbered fallback."""
-    cleaned = (text or "").strip()
+    cleaned = _strip_leading_option_icon(text)
     if not cleaned:
         return None
 
@@ -1098,14 +1205,22 @@ def _parse_degree_selection(text: str) -> str | None:
 
 
 def _normalize_major_reply(text: str) -> str | None:
-    return _normalize_intake_text_reply(text)
+    cleaned = _strip_leading_option_icon(text)
+    normalized = _normalize_intake_text_reply(cleaned)
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+    for option in MAJOR_OPTIONS:
+        if lowered in {option["id"].lower(), option["label"].lower()}:
+            return option["label"]
+    return normalized
 
 
 def _build_degree_list_picker(body: str) -> ListPickerPayload:
     return ListPickerPayload(
-        kind="consent",
+        kind="degree",
         body=body,
-        button="Choose program",
+        button="Explore programs",
         items=[
             {
                 "id": option["id"],
@@ -1114,6 +1229,82 @@ def _build_degree_list_picker(body: str) -> ListPickerPayload:
             }
             for option in DEGREE_OPTIONS
         ],
+    )
+
+
+def _build_major_list_picker(body: str) -> ListPickerPayload:
+    return ListPickerPayload(
+        kind="major",
+        body=body,
+        button="Explore fields",
+        items=[
+            {
+                "id": option["id"],
+                "item": option["label"],
+                "description": option["description"],
+            }
+            for option in MAJOR_OPTIONS
+        ],
+    )
+
+
+def _build_country_list_picker(body: str) -> ListPickerPayload:
+    return ListPickerPayload(
+        kind="country",
+        body=body,
+        button="Explore countries",
+        items=[
+            {
+                "id": option["id"],
+                "item": option["label"],
+                "description": option["description"],
+            }
+            for option in COUNTRY_OPTIONS
+        ],
+    )
+
+
+async def _major_step_reply(
+    db: Session,
+    lead: Lead,
+    runtime_config,
+    *,
+    task: str,
+    incoming_text: str = "",
+) -> IntakeReply:
+    rendered = await _agent_intake_reply(
+        db,
+        lead,
+        runtime_config,
+        task=task,
+        incoming_text=incoming_text,
+    )
+    return IntakeReply(
+        text=rendered.text,
+        confidence=rendered.confidence,
+        list_picker=_build_major_list_picker(rendered.text),
+    )
+
+
+async def _country_step_reply(
+    db: Session,
+    lead: Lead,
+    runtime_config,
+    *,
+    task: str,
+    incoming_text: str = "",
+) -> IntakeReply:
+    rendered = await _agent_intake_reply(
+        db,
+        lead,
+        runtime_config,
+        task=task,
+        incoming_text=incoming_text,
+    )
+    return IntakeReply(
+        text=rendered.text,
+        confidence=rendered.confidence,
+        list_picker=_build_country_list_picker(rendered.text),
     )
 
 
@@ -1237,7 +1428,7 @@ async def process_intake_message(
         lead.intake_context = json.dumps(context)
         lead.intake_step = INTAKE_STEP_TARGET_MAJOR
         db.commit()
-        return await _agent_intake_reply(
+        return await _major_step_reply(
             db,
             lead,
             runtime_config,
@@ -1261,7 +1452,7 @@ async def process_intake_message(
                     "INTAKE_STEP=MAJOR; Major answer was invalid. "
                     "Ask again for their intended major with examples like Computer Science or Business Administration."
                 )
-            return await _agent_intake_reply(
+            return await _major_step_reply(
                 db,
                 lead,
                 runtime_config,
@@ -1276,7 +1467,7 @@ async def process_intake_message(
         lead.intake_context = json.dumps(context)
         lead.intake_step = INTAKE_STEP_TARGET_COUNTRY
         db.commit()
-        return await _agent_intake_reply(
+        return await _country_step_reply(
             db,
             lead,
             runtime_config,
@@ -1302,7 +1493,7 @@ async def process_intake_message(
                         "INTAKE_STEP=COUNTRY; Country answer was invalid. "
                         "Ask again which country they are targeting with examples US, UK, JP, AU, NZ."
                     )
-                return await _agent_intake_reply(
+                return await _country_step_reply(
                     db,
                     lead,
                     runtime_config,
@@ -1572,7 +1763,7 @@ async def get_current_step_reply(db: Session, lead: Lead, runtime_config) -> Int
     if step == INTAKE_STEP_TARGET_COUNTRY:
         context = _load_context(lead)
         if _uses_degree_major_country_flow(context):
-            return await _agent_intake_reply(
+            return await _country_step_reply(
                 db,
                 lead,
                 runtime_config,
@@ -1607,7 +1798,7 @@ async def get_current_step_reply(db: Session, lead: Lead, runtime_config) -> Int
             ),
         )
     if step == INTAKE_STEP_TARGET_MAJOR:
-        return await _agent_intake_reply(
+        return await _major_step_reply(
             db,
             lead,
             runtime_config,
@@ -1944,6 +2135,17 @@ def _begin_reschedule_booking(db: Session, lead: Lead) -> None:
     # the old booking still exists, and the time-slot menu never sends.
     _clear_booking_selection_context(context, clear_reschedule_flag=False)
     context["reschedule_in_progress"] = True
+    active_booking = (
+        _get_active_consultation_booking(db, lead)
+        if getattr(lead, "id", None) is not None
+        else None
+    )
+    if active_booking is not None:
+        context["reschedule_original_booking_id"] = active_booking.id
+        if active_booking.scheduled_time is not None:
+            context["reschedule_original_scheduled_at"] = active_booking.scheduled_time.isoformat()
+    elif getattr(lead, "consultation_scheduled_at", None) is not None:
+        context["reschedule_original_scheduled_at"] = lead.consultation_scheduled_at.isoformat()
     _save_context(db, lead, context)
 
 
@@ -1959,6 +2161,8 @@ def _clear_booking_selection_context(
     context.pop("pending_session_time_label", None)
     if clear_reschedule_flag:
         context.pop("reschedule_in_progress", None)
+        context.pop("reschedule_original_booking_id", None)
+        context.pop("reschedule_original_scheduled_at", None)
 
 
 def release_lead_consultation_slot(
@@ -2229,6 +2433,26 @@ def _normalize_date_label(label: str) -> str:
     return re.sub(r"[^a-z0-9]", "", label.strip().lower())
 
 
+def _date_selection_labels(slot_day: date) -> tuple[str, ...]:
+    """Accepted Meta date-row text, including current and legacy display forms."""
+    full_label = _format_slot_date(slot_day)
+    short_date = slot_day.strftime("%d %b")
+    labels = (
+        full_label,
+        f"Today ({full_label})",
+        f"Tomorrow ({full_label})",
+        f"Today · {short_date}",
+        f"Tomorrow · {short_date}",
+        f"Today {slot_day.strftime('%d %b, %Y')}",
+        f"Tomorrow {slot_day.strftime('%d %b, %Y')}",
+        slot_day.strftime("%a %d %b, %Y"),
+        slot_day.strftime("%a, %d %b"),
+    )
+    # Meta previously sliced the long title at 24 characters. Keep accepting
+    # those old list-row titles while list_reply ids remain the preferred path.
+    return labels + tuple(label[:24] for label in labels if len(label) > 24)
+
+
 def _parse_date_selection(text: str, dates: list[date]) -> int | None:
     cleaned = _strip_selected_prefix(text)
     lowered = cleaned.lower()
@@ -2243,9 +2467,15 @@ def _parse_date_selection(text: str, dates: list[date]) -> int | None:
             pass
         return None
 
-    choice = _parse_choice_number(cleaned, len(dates))
-    if choice is not None:
-        return choice
+    # Match Meta row titles/descriptions and staff-facing labels before the
+    # numbered fallback: "Mon, Sep 07, 2026" must not be read as option 7.
+    for index, slot_day in enumerate(dates, start=1):
+        normalized = _normalize_date_label(cleaned)
+        for label in _date_selection_labels(slot_day):
+            if cleaned == label or lowered == label.lower():
+                return index
+            if normalized == _normalize_date_label(label):
+                return index
 
     iso_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", cleaned)
     if iso_match:
@@ -2257,13 +2487,36 @@ def _parse_date_selection(text: str, dates: list[date]) -> int | None:
         except ValueError:
             pass
 
-    for index, slot_day in enumerate(dates, start=1):
-        label = _format_slot_date(slot_day)
-        if cleaned == label or lowered == label.lower():
-            return index
-        if _normalize_date_label(cleaned) == _normalize_date_label(label):
-            return index
-    return None
+    return _parse_choice_number(cleaned, len(dates))
+
+
+_TIME_EXPRESSION_RE = re.compile(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$")
+
+
+def _parse_time_expression(text: str) -> str | None:
+    """Normalize '2pm', '2 PM', '2:00 pm' or '14:00' to 24h 'HH:MM'.
+
+    Returns None for a bare number so it stays available as a list choice.
+    """
+    cleaned = re.sub(r"\s+", " ", (text or "").strip().lower()).replace(".", "")
+    match = _TIME_EXPRESSION_RE.match(cleaned)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    meridiem = match.group(3)
+    if not meridiem and match.group(2) is None:
+        return None
+    if meridiem:
+        if not 1 <= hour <= 12:
+            return None
+        if meridiem == "am":
+            hour = 0 if hour == 12 else hour
+        elif hour != 12:
+            hour += 12
+    if hour > 23 or minute > 59:
+        return None
+    return f"{hour:02d}:{minute:02d}"
 
 
 def _parse_time_selection(text: str, slots: list[ConsultationSlot], context: dict[str, Any] | None = None) -> int | None:
@@ -2280,7 +2533,25 @@ def _parse_time_selection(text: str, slots: list[ConsultationSlot], context: dic
             pass
         return None
 
-    choice = _parse_choice_number(text, len(slots))
+    # Clock times are resolved before the numbered fallback so "5:00 PM" books
+    # 17:00 instead of list option 5.
+    for index, slot in enumerate(slots, start=1):
+        label = _format_slot_time(slot.slot_time)
+        if cleaned == label or lowered == label.lower():
+            return index
+        if _normalize_time_label(cleaned) == _normalize_time_label(label):
+            return index
+
+    requested_time = _parse_time_expression(cleaned)
+    if requested_time:
+        for index, slot in enumerate(slots, start=1):
+            if _normalize_slot_time(slot.slot_time) == requested_time:
+                return index
+        # An explicit time we do not offer must re-prompt, never fall through
+        # to a positional guess.
+        return None
+
+    choice = _parse_choice_number(cleaned, len(slots))
     if choice is not None:
         return choice
 
@@ -2295,13 +2566,6 @@ def _parse_time_selection(text: str, slots: list[ConsultationSlot], context: dic
         if index <= len(slots) and slots[index - 1].id == slot_id:
             if cleaned == str(slot_id) or lowered == f"time:{slot_id}":
                 return index
-
-    for index, slot in enumerate(slots, start=1):
-        label = _format_slot_time(slot.slot_time)
-        if cleaned == label or lowered == label.lower():
-            return index
-        if _normalize_time_label(cleaned) == _normalize_time_label(label):
-            return index
     return None
 
 
@@ -2420,7 +2684,6 @@ def _build_time_list_picker_payload(db: Session, lead: Lead, slot_day: date) -> 
         {
             "id": f"time:{slot.id}",
             "item": _format_slot_time(slot.slot_time),
-            "description": "Consultation slot",
         }
         for slot in slots[:10]
     ]
@@ -2441,18 +2704,11 @@ async def _booking_step_reply(
     rendered = await _agent_intake_reply(db, lead, runtime_config, task=task)
     picker = _build_date_picker_payload(db, lead)
     flow = _build_booking_flow_payload(lead)
-    from app.services.messaging import PROVIDER_WHATSAPP, get_active_provider
-
-    if flow and get_active_provider() != PROVIDER_WHATSAPP:
-        return IntakeReply(
-            text=rendered.text,
-            confidence=rendered.confidence,
-            whatsapp_flow=flow,
-        )
     return IntakeReply(
         text=rendered.text,
         confidence=rendered.confidence,
         list_picker=picker,
+        whatsapp_flow=flow,
     )
 
 
@@ -2500,8 +2756,8 @@ def _build_call_consent_quick_reply(body: str) -> QuickReplyPayload:
         kind="consent",
         body=body,
         actions=[
-            {"id": "yes", "title": "Yes, please"},
-            {"id": "no", "title": "No thanks"},
+            {"id": CALL_CONSENT_YES_BUTTON_ID, "title": CALL_CONSENT_YES_TITLE},
+            {"id": CALL_CONSENT_NO_BUTTON_ID, "title": CALL_CONSENT_NO_TITLE},
         ],
     )
 
@@ -2511,7 +2767,10 @@ def _build_booking_flow_payload(lead: Lead) -> FlowPayload | None:
     if not is_whatsapp_flow_enabled() or not flow_id:
         return None
     return FlowPayload(
-        body="*Tap below* to open the calendar and book your consultation.",
+        body=(
+            "📅 *Choose your consultation in one step.*\n"
+            "Open the secure booking form to pick an available date and time."
+        ),
         flow_token=build_flow_token(lead.id),
         flow_id=flow_id,
         button="Book consultation",
@@ -2521,11 +2780,7 @@ def _build_booking_flow_payload(lead: Lead) -> FlowPayload | None:
 def _booking_step_reply_sync(db: Session, lead: Lead, text: str) -> IntakeReply:
     picker = _build_date_picker_payload(db, lead)
     flow = _build_booking_flow_payload(lead)
-    from app.services.messaging import PROVIDER_WHATSAPP, get_active_provider
-
-    if flow and get_active_provider() != PROVIDER_WHATSAPP:
-        return IntakeReply(text=text, whatsapp_flow=flow)
-    return IntakeReply(text=text, list_picker=picker)
+    return IntakeReply(text=text, list_picker=picker, whatsapp_flow=flow)
 
 
 def _build_date_picker_payload(db: Session, lead: Lead) -> ListPickerPayload:
@@ -2536,15 +2791,15 @@ def _build_date_picker_payload(db: Session, lead: Lead) -> ListPickerPayload:
     items = [
         {
             "id": f"date:{slot_day.isoformat()}",
-            "item": _format_slot_date(slot_day),
-            "description": "Tap to select this date",
+            "item": _format_available_slot_date(db, slot_day),
+            "description": "Available consultation day",
         }
         for slot_day in dates
     ]
     return ListPickerPayload(
         kind="date",
-        body="*Tap the button below* to open the date menu and pick your *consultation day*.",
-        button="Choose date",
+        body="📅 *Choose a consultation day that works for you.*",
+        button="View available dates",
         items=items,
     )
 
@@ -2655,6 +2910,61 @@ def build_intake_profile_summary(
         step = INTAKE_STEP_CALL_CONSENT
     context = _load_context(lead)
     study_fields = study_interest_profile_fields(lead)
+    selected_degree = _load_target_degree(context)
+    selected_major = _load_target_major(context)
+    selected_country = study_fields.get("preferred_country") or lead.preferred_country
+
+    def option_rows(
+        options: tuple[dict[str, str], ...],
+        selected_value: str | None = None,
+    ) -> list[dict[str, Any]]:
+        selected_normalized = (selected_value or "").strip().lower()
+        return [
+            {
+                "id": option["id"],
+                "label": option["label"],
+                "description": option.get("description") or "",
+                "selected": bool(
+                    selected_normalized
+                    and selected_normalized
+                    in {
+                        option["id"].strip().lower(),
+                        option["label"].strip().lower(),
+                        option.get("short", "").strip().lower(),
+                    }
+                ),
+            }
+            for option in options
+        ]
+
+    intake_options: list[dict[str, Any]] = []
+    if step == INTAKE_STEP_TARGET_DEGREE:
+        intake_options = option_rows(DEGREE_OPTIONS, selected_degree)
+    elif step == INTAKE_STEP_TARGET_MAJOR:
+        intake_options = option_rows(MAJOR_OPTIONS, selected_major)
+    elif step == INTAKE_STEP_TARGET_COUNTRY:
+        intake_options = option_rows(COUNTRY_OPTIONS, selected_country)
+    elif step == INTAKE_STEP_CALL_CONSENT:
+        intake_options = [
+            {
+                "id": "yes",
+                "label": "Yes, book a call",
+                "description": "Continue to date selection",
+                "selected": getattr(lead, "wants_consultation_call", None) is True,
+            },
+            {
+                "id": "no",
+                "label": "No, thanks",
+                "description": "Continue without booking",
+                "selected": getattr(lead, "wants_consultation_call", None) is False,
+            },
+        ]
+    elif step == INTAKE_STEP_MARKETING_CONSENT:
+        intake_options = [
+            {"id": MARKETING_OPT_IN_BUTTON_ID, "label": "Yes please", "description": "", "selected": False},
+            {"id": MARKETING_OPT_OUT_BUTTON_ID, "label": "Do not send", "description": "", "selected": False},
+        ]
+
     summary: dict[str, Any] = {
         "intake_step": step,
         "intake_step_label": INTAKE_STEP_LABELS.get(step, step.replace("_", " ").title()),
@@ -2682,6 +2992,7 @@ def build_intake_profile_summary(
         "available_consultation_dates": [],
         "available_consultation_times": [],
         "selected_consultation_date": context.get("selected_date"),
+        "intake_options": intake_options,
     }
 
     if include_session_fields:
@@ -2722,7 +3033,17 @@ def build_intake_profile_summary(
     if step == INTAKE_STEP_PICK_DATE:
         dates = _available_dates(db)
         summary["available_consultation_dates"] = [
-            {"date": slot_day.isoformat(), "label": _format_slot_date(slot_day)} for slot_day in dates
+            {"date": slot_day.isoformat(), "label": _format_available_slot_date(db, slot_day)}
+            for slot_day in dates
+        ]
+        summary["intake_options"] = [
+            {
+                "id": slot["date"],
+                "label": slot["label"],
+                "description": "Consultation date",
+                "selected": slot["date"] == context.get("selected_date"),
+            }
+            for slot in summary["available_consultation_dates"]
         ]
 
     if step == INTAKE_STEP_PICK_TIME:
@@ -2734,6 +3055,15 @@ def build_intake_profile_summary(
             summary["selected_consultation_date"] = selected_raw
             summary["available_consultation_times"] = [
                 {"time": slot.slot_time, "label": _format_slot_time(slot.slot_time)} for slot in slots
+            ]
+            summary["intake_options"] = [
+                {
+                    "id": slot["time"],
+                    "label": slot["label"],
+                    "description": "Consultation time",
+                    "selected": slot["label"] == context.get("pending_session_time_label"),
+                }
+                for slot in summary["available_consultation_times"]
             ]
 
     return summary

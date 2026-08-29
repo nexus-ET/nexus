@@ -27,6 +27,7 @@ export function useProfilePulse(
       const [
         profileResponse,
         aspirations,
+        registration,
         educations,
         activities,
         digitalLinks,
@@ -36,6 +37,7 @@ export function useProfilePulse(
       ] = await Promise.all([
         apiFetch(`bookings/mine/${id}/profile`).catch(() => null),
         apiFetch(`bookings/mine/${id}/aspirations`).catch(() => null),
+        apiFetch(`bookings/mine/${id}/registration`).catch(() => null),
         apiFetch(`bookings/mine/${id}/educations`).catch(() => null),
         apiFetch(`bookings/mine/${id}/non-academic-activities`).catch(() => null),
         apiFetch(`bookings/mine/${id}/digital-presence-links`).catch(() => null),
@@ -47,6 +49,7 @@ export function useProfilePulse(
       return buildProfilePulseSnapshot({
         profile: (profileResponse as BookingProfileResponse | null)?.profile,
         aspirations,
+        registration,
         educations: (educations as CandidateEducationsResponse | null)?.educations,
         activities: (activities as NonAcademicActivitiesResponse | null)?.activities,
         digitalLinks: (digitalLinks as DigitalPresenceLinksResponse | null)?.links,

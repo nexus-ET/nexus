@@ -471,7 +471,7 @@ def list_open_intakes_for_institution(
     return [intake_to_read(row) for row in rows]
 
 
-def get_program_intake_ids(db: Session, program_id: uuid.UUID) -> list[int]:
+def get_program_intake_ids(db: Session, program_id: int) -> list[int]:
     rows = (
         db.query(ProgramIntakeAssignment.institution_intake_id)
         .filter(ProgramIntakeAssignment.program_id == program_id)
@@ -483,18 +483,15 @@ def get_program_intake_ids(db: Session, program_id: uuid.UUID) -> list[int]:
 def validate_program_intake_assignments(
     db: Session,
     *,
-    program_id: uuid.UUID | None,
+    program_id: int | None,
     institution_id: int | None,
     intake_ids: list[int] | None,
     is_active: bool,
 ) -> None:
-    if not is_active or not institution_id:
-        return
     if not intake_ids:
-        raise HTTPException(
-            status_code=400,
-            detail="Active programs must be assigned at least one Open intake term.",
-        )
+        return
+    if not institution_id:
+        raise HTTPException(status_code=400, detail="Institution is required to assign intakes.")
 
     sync_institution_intake_statuses(db, institution_id)
     rows = (
@@ -518,7 +515,7 @@ def validate_program_intake_assignments(
 
 def replace_program_intake_assignments(
     db: Session,
-    program_id: uuid.UUID,
+    program_id: int,
     institution_id: int | None,
     intake_ids: list[int] | None,
 ) -> None:

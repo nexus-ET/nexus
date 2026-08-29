@@ -1360,7 +1360,17 @@ const IntakeConfigureContent = forwardRef<
 
       <section className="rounded-2xl border border-border-subtle bg-card p-4 space-y-3">
         <div className="flex items-center justify-between gap-3">
-          <h4 className="font-semibold text-text-main">Template setup</h4>
+          <div>
+            <h4 className="font-semibold text-text-main">Template setup</h4>
+            <p className="mt-0.5 text-xs tabular-nums text-text-muted">
+              {entityType === 'institution'
+                ? 'Institution'
+                : entityType === 'college'
+                  ? 'College'
+                  : 'Campus'}{' '}
+              ID {entityId} · Institution ID {institutionId}
+            </p>
+          </div>
           <div className="flex items-center gap-2">
             <button
               type="button"

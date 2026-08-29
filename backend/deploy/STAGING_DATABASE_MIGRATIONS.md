@@ -2,10 +2,10 @@
 
 Auto-maintained by `backend/scripts/promote_to_staging.py`.
 
-Hostinger `deploy.sh` runs `alembic upgrade head` on every deploy.
+Hostinger `deploy.sh` runs `bootstrap_alembic.py` (then `alembic upgrade head` fallback).
 
-**Current head:** `kk1l2mbiztseq`
-**Doc generated:** 2026-08-08 08:29 UTC
+**Current head:** `yy5z6asupermaj`
+**Doc generated:** 2026-08-08 08:29 UTC (head updated 2026-08-28 — see `python -m alembic heads`)
 
 ## Full migration chain (at head)
 
@@ -154,5 +154,8 @@ alembic upgrade head
 
 ```bash
 alembic current
-# Expected: kk1l2mbiztseq (head)
+# Expected: yy5z6asupermaj (head)
+
+python scripts/verify_staging_database.py
+# Expected: Public tables: 110 (match develop at same head)
 ```

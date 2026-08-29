@@ -5,11 +5,12 @@ from app.utils.timezone import utc_now
 from datetime import datetime, time
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.api import deps
+from app.core.rate_limit import limiter
 from app.db.database import get_db
 from app.models.user import User
 from app.schemas.lead_quarantine import IngestionQualityReport
@@ -275,8 +276,10 @@ def read_ingestion_quality(
     )
 
 
+# Listing must stay readable during a client-ingest burst (do not share the 60/min global bucket).
 @router.get("/reports/exception-logs", response_model=ExceptionLogsResponse)
 @router.get("/reports/exception-logs/", response_model=ExceptionLogsResponse)
+@limiter.exempt
 def read_exception_logs(
     page: int = Query(default=1, ge=1, description="1-based page number"),
     limit: int = Query(default=25, description="Rows per page (25, 50, or 100)"),
@@ -391,7 +394,9 @@ def export_exception_logs_pdf(
 
 @router.post("/reports/exception-logs", response_model=ExceptionLogOut)
 @router.post("/reports/exception-logs/", response_model=ExceptionLogOut)
+@limiter.limit("180/minute")
 def create_exception_log(
+    request: Request,
     payload: ExceptionLogCreateRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_user),

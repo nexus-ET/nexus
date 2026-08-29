@@ -6,7 +6,7 @@ from datetime import date, datetime
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import String, asc, cast, desc, or_
+from sqlalchemy import String, asc, cast, desc, or_, text
 from sqlalchemy.orm import Session
 
 from app.models.lead import Lead, LeadChannel, LeadStage
@@ -16,6 +16,7 @@ from app.services.education_degrees import resolve_education_payload
 from app.services.target_programs import resolve_study_interest_fields
 
 OFFLINE_SOURCE = "OFFLINE"
+EXPRESS_SOURCE = "EXPRESS"
 
 SORT_COLUMNS: dict[SortField, Any] = {
     "full_name": Lead.full_name,
@@ -210,6 +211,7 @@ def build_offline_lead_list_item(lead: Lead, db: Session | None = None) -> dict[
         "date_of_birth": dob,
         "age": _compute_age(dob if isinstance(dob, str) else None),
         "created_at": lead.created_at.isoformat() if lead.created_at else None,
+        "booking_count": 0,
     }
 
 
@@ -217,6 +219,7 @@ def _base_offline_query(db: Session):
     return db.query(Lead).filter(
         or_(
             Lead.source == OFFLINE_SOURCE,
+            Lead.source == EXPRESS_SOURCE,
             Lead.channel == LeadChannel.OFFLINE,
         )
     )
@@ -241,6 +244,25 @@ def _apply_status_filter(query, status: str | None):
     if normalized == "ARCHIVE":
         return query.filter(cast(Lead.stage, String).ilike("%ARCHIVE%"))
     return query
+
+
+def _count_bookings_for_lead_ids(db: Session, lead_ids: list[int]) -> dict[int, int]:
+    """Count counselling bookings per lead without loading ORM relationship graphs."""
+    if not lead_ids:
+        return {}
+    rows = db.execute(
+        text(
+            """
+            SELECT lead_id, COUNT(*)::int AS booking_count
+            FROM counselling_bookings
+            WHERE lead_id = ANY(:lead_ids)
+              AND admin_id IS NOT NULL
+            GROUP BY lead_id
+            """
+        ),
+        {"lead_ids": lead_ids},
+    ).all()
+    return {int(lead_id): int(count) for lead_id, count in rows if lead_id is not None}
 
 
 def list_offline_leads(
@@ -284,8 +306,15 @@ def list_offline_leads(
     offset = (safe_page - 1) * safe_page_size
     rows = query.offset(offset).limit(safe_page_size).all()
 
+    booking_counts = _count_bookings_for_lead_ids(db, [row.id for row in rows])
+    items = []
+    for row in rows:
+        item = build_offline_lead_list_item(row, db)
+        item["booking_count"] = booking_counts.get(row.id, 0)
+        items.append(item)
+
     return {
-        "items": [build_offline_lead_list_item(row, db) for row in rows],
+        "items": items,
         "page": safe_page,
         "page_size": safe_page_size,
         "total": total,

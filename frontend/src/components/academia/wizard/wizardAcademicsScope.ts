@@ -3,7 +3,13 @@ import type { WizardCourseOfferingItem } from '../../../schemas/wizard/step4-cou
 
 export type WizardAcademicsEntityScope =
   | { type: 'institution' }
-  | { type: 'college'; collegeLocalId: string; collegeName: string };
+  | {
+      type: 'college';
+      collegeLocalId: string;
+      collegeName: string;
+      /** Live DB colleges.id when known — matches offering.college_id from offerings table. */
+      collegeId?: number | null;
+    };
 
 export function institutionScopeKey(): string {
   return 'institution';
@@ -11,6 +17,10 @@ export function institutionScopeKey(): string {
 
 export function collegeScopeKey(collegeLocalId: string): string {
   return `college:${collegeLocalId}`;
+}
+
+export function collegeIdScopeKey(collegeId: number): string {
+  return `college-id:${collegeId}`;
 }
 
 export function scopeKey(scope: WizardAcademicsEntityScope): string {
@@ -22,13 +32,40 @@ export function scopeKey(scope: WizardAcademicsEntityScope): string {
 export function offeringScopeKey(
   offering: Pick<WizardCourseOfferingItem, 'college_id' | 'college_local_id'>
 ): string {
+  // Prefer live DB college_id so tabs filter correctly even when college_local_id is unset.
+  if (offering.college_id != null && Number(offering.college_id) > 0) {
+    return collegeIdScopeKey(Number(offering.college_id));
+  }
   if (offering.college_local_id?.trim()) {
     return collegeScopeKey(offering.college_local_id.trim());
   }
-  if (offering.college_id) {
-    return `college-id:${offering.college_id}`;
-  }
   return institutionScopeKey();
+}
+
+/** True when an offering belongs to the given college tab (local_id and/or live id). */
+export function offeringMatchesCollege(
+  offering: Pick<WizardCourseOfferingItem, 'college_id' | 'college_local_id'>,
+  scope: Extract<WizardAcademicsEntityScope, { type: 'college' }>
+): boolean {
+  const offeringCollegeId =
+    offering.college_id != null && Number(offering.college_id) > 0
+      ? Number(offering.college_id)
+      : null;
+  const scopeCollegeId =
+    scope.collegeId != null && Number(scope.collegeId) > 0 ? Number(scope.collegeId) : null;
+
+  // Prefer live DB college_id — draft college_local_id can be stale or missing.
+  if (offeringCollegeId != null && scopeCollegeId != null) {
+    return offeringCollegeId === scopeCollegeId;
+  }
+  if (offeringCollegeId != null && scope.collegeLocalId === String(offeringCollegeId)) {
+    return true;
+  }
+  const localId = offering.college_local_id?.trim();
+  if (localId && localId === scope.collegeLocalId) {
+    return true;
+  }
+  return false;
 }
 
 export function filterOfferingsForScope(
@@ -46,21 +83,26 @@ export function filterOfferingsForScope(
     return offerings.filter(item => offeringScopeKey(item) === institutionScopeKey());
   }
 
-  const collegeKey = collegeScopeKey(scope.collegeLocalId);
   const hasOverride = overrides.has(scope.collegeLocalId);
 
   if (hasOverride) {
-    return offerings.filter(item => offeringScopeKey(item) === collegeKey);
+    return offerings.filter(item => offeringMatchesCollege(item, scope));
   }
 
   if (includeInherited) {
     return offerings.filter(item => {
-      const key = offeringScopeKey(item);
-      return key === institutionScopeKey() || key === collegeKey;
+      if (offeringMatchesCollege(item, scope)) return true;
+      // Inherit only true university rows (no college_id / college_local_id).
+      // Rows owned by another college must never appear on this tab.
+      const ownedElsewhere =
+        (item.college_id != null && Number(item.college_id) > 0) ||
+        Boolean(item.college_local_id?.trim());
+      if (ownedElsewhere) return false;
+      return offeringScopeKey(item) === institutionScopeKey();
     });
   }
 
-  return offerings.filter(item => offeringScopeKey(item) === collegeKey);
+  return offerings.filter(item => offeringMatchesCollege(item, scope));
 }
 
 export function stampOfferingScope(
@@ -76,7 +118,7 @@ export function stampOfferingScope(
   }
   return {
     ...offering,
-    college_id: null,
+    college_id: scope.collegeId ?? null,
     college_local_id: scope.collegeLocalId,
   };
 }
@@ -88,9 +130,24 @@ export function cloneOfferingForCollege(
   return {
     ...offering,
     local_id: crypto.randomUUID(),
-    college_id: null,
+    college_id: college.id ?? null,
     college_local_id: college.local_id || null,
   };
+}
+
+export const NO_MAJOR_GROUP_LABEL = 'No major';
+
+export function majorGroupHeading(majorName: string | null | undefined): string {
+  const trimmed = (majorName || '').trim();
+  if (
+    !trimmed ||
+    trimmed === '—' ||
+    trimmed.toLowerCase() === 'no major' ||
+    trimmed.toLowerCase() === 'uncategorized'
+  ) {
+    return NO_MAJOR_GROUP_LABEL;
+  }
+  return trimmed;
 }
 
 export interface GroupedProgramLink {
@@ -98,47 +155,78 @@ export interface GroupedProgramLink {
   levelName: string;
   programName: string;
   majorName: string;
+  programUrl?: string | null;
   courseNames: string[];
   indices: number[];
 }
 
+export type ResolvedOfferingRow = {
+  levelName: string;
+  programName: string;
+  majorName: string;
+  courseName: string;
+  programUrl?: string | null;
+  /** When set, the program is listed under each mapped major (college panel grouping). */
+  majorGroups?: Array<{ id: number; name: string }>;
+};
+
+export function programUrlHref(url: string): string {
+  const trimmed = url.trim();
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
 export function groupProgramsForOfferings(
   entries: Array<{ offering: WizardCourseOfferingItem; index: number }>,
-  resolveRow: (offering: WizardCourseOfferingItem) => {
-    levelName: string;
-    programName: string;
-    majorName: string;
-    courseName: string;
-  }
+  resolveRow: (offering: WizardCourseOfferingItem) => ResolvedOfferingRow
 ): GroupedProgramLink[] {
   const groups = new Map<string, GroupedProgramLink>();
 
   entries.forEach(({ offering, index }) => {
     const row = resolveRow(offering);
     const hasCourse = Number(offering.course_id) > 0;
-    const groupKey = hasCourse
-      ? `course-group:${offering.level_id}|${offering.program_id}|${offering.major_id || 0}`
-      : `scope-group:${offering.level_id}|${offering.program_id}|${offering.major_id || 0}`;
+    const majorGroups =
+      row.majorGroups && row.majorGroups.length > 0
+        ? row.majorGroups
+        : [
+            {
+              id: Number(offering.major_id) || 0,
+              name: row.majorName,
+            },
+          ];
 
-    const existing = groups.get(groupKey);
-    if (!existing) {
-      groups.set(groupKey, {
-        key: groupKey,
-        levelName: row.levelName,
-        programName: row.programName,
-        majorName: row.majorName,
-        courseNames: hasCourse ? [row.courseName] : [],
-        indices: [index],
-      });
-      return;
-    }
+    for (const major of majorGroups) {
+      const majorId = Number(major.id) || Number(offering.major_id) || 0;
+      const majorName = majorGroupHeading(major.name || row.majorName);
+      const groupKey = hasCourse
+        ? `course-group:${offering.level_id}|${offering.program_id}|${majorId}|${majorName.toLowerCase()}`
+        : `scope-group:${offering.level_id}|${offering.program_id}|${majorId}|${majorName.toLowerCase()}`;
 
-    existing.indices.push(index);
-    if (hasCourse && row.courseName && !existing.courseNames.includes(row.courseName)) {
-      existing.courseNames.push(row.courseName);
-    }
-    if (row.majorName && row.majorName !== '—' && existing.majorName === '—') {
-      existing.majorName = row.majorName;
+      const existing = groups.get(groupKey);
+      const programUrl =
+        (typeof offering.program_url === 'string' ? offering.program_url.trim() : '') ||
+        row.programUrl?.trim() ||
+        null;
+      if (!existing) {
+        groups.set(groupKey, {
+          key: groupKey,
+          levelName: row.levelName,
+          programName: row.programName,
+          majorName,
+          programUrl,
+          courseNames: hasCourse ? [row.courseName] : [],
+          indices: [index],
+        });
+        continue;
+      }
+
+      existing.indices.push(index);
+      if (!existing.programUrl && programUrl) {
+        existing.programUrl = programUrl;
+      }
+      if (hasCourse && row.courseName && !existing.courseNames.includes(row.courseName)) {
+        existing.courseNames.push(row.courseName);
+      }
     }
   });
 
@@ -184,9 +272,15 @@ export function getUnlinkableIndicesForDisplayedScope(
 export function getCollegeOwnedUnlinkIndices(
   courses: WizardCourseOfferingItem[],
   collegeLocalId: string,
-  candidateIndices?: number[]
+  candidateIndices?: number[],
+  collegeId?: number | null
 ): number[] {
-  const collegeKey = collegeScopeKey(collegeLocalId);
+  const scope: Extract<WizardAcademicsEntityScope, { type: 'college' }> = {
+    type: 'college',
+    collegeLocalId,
+    collegeName: '',
+    collegeId: collegeId ?? null,
+  };
   let indices: number[] = [];
 
   courses.forEach((offering, index) => {
@@ -195,7 +289,7 @@ export function getCollegeOwnedUnlinkIndices(
       Boolean(offering.program_id?.trim()) ||
       Number(offering.major_id) > 0;
     if (!isLinked) return;
-    if (offeringScopeKey(offering) !== collegeKey) return;
+    if (!offeringMatchesCollege(offering, scope)) return;
     indices.push(index);
   });
 

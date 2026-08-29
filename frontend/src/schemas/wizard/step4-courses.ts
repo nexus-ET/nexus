@@ -9,11 +9,15 @@ export const wizardCourseOfferingItemSchema = z
   .object({
     local_id: z.string().optional(),
     level_id: z.number().int().nonnegative(),
-    program_id: z.string(),
+    program_id: z.coerce.number().int().nonnegative(),
     major_id: z.number().int().nonnegative(),
     course_id: z.number().int().nonnegative(),
     college_id: z.number().int().positive().optional().nullable(),
     college_local_id: z.string().optional().nullable(),
+    program_url: z.preprocess(
+      emptyToNull,
+      z.string().max(2048).nullable().optional()
+    ),
     course_code: z.preprocess(
       emptyToNull,
       z
@@ -118,6 +122,7 @@ export const emptyWizardCourseDraft: WizardCourseOfferingItem = {
   major_id: 0,
   course_id: 0,
   college_id: null,
+  program_url: null,
   course_code: null,
   credits: null,
   syllabus_outline: null,
@@ -156,6 +161,8 @@ export function hydrateWizardCourseOffering(
     course_id: Number(raw.course_id) || 0,
     college_id: raw.college_id ? Number(raw.college_id) : null,
     college_local_id: raw.college_local_id?.trim() || null,
+    program_url:
+      typeof raw.program_url === 'string' ? raw.program_url.trim() || null : raw.program_url ?? null,
     course_code: raw.course_code || null,
     credits: Number.isFinite(credits) ? credits : null,
     syllabus_outline: raw.syllabus_outline || null,
@@ -182,6 +189,7 @@ export function courseOfferingToApiPayload(offering: WizardCourseOfferingDraft) 
     level_id: offering.level_id > 0 ? offering.level_id : null,
     program_id: offering.program_id?.trim() ? offering.program_id : null,
     major_id: offering.major_id > 0 ? offering.major_id : null,
+    program_url: offering.program_url?.trim() || null,
     course_code: course_code || null,
     credits: credits ?? null,
     syllabus_outline: syllabus_outline || null,

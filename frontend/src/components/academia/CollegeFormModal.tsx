@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { apiFetch } from '../../utils/api';
-import { EMAIL_CONTACT_TYPES, PHONE_CONTACT_TYPES } from '../../constants/contactTypes';
 import { PHONE_LOCAL_PLACEHOLDER } from '../../utils/phoneCountry';
 import {
   createDefaultEmailContacts,
@@ -15,8 +14,13 @@ import {
 } from '../../schemas/contactEntry';
 import type { CampusRecord, CollegeRecord, InstitutionRecord } from '../../types/institutions';
 import { useCountries } from '../../hooks/useCountries';
+import {
+  useEmailContactTypeOptions,
+  usePhoneContactTypeOptions,
+} from '../../hooks/useContactTypeOptions';
 import LabeledContactListField from './form/LabeledContactListField';
 import SearchableSelect from './SearchableSelect';
+import ReadOnlyIdField from './ReadOnlyIdField';
 
 interface CollegeFormModalProps {
   open: boolean;
@@ -35,6 +39,8 @@ const CollegeFormModal: React.FC<CollegeFormModalProps> = ({
   onClose,
   onSaved,
 }) => {
+  const phoneContactTypes = usePhoneContactTypeOptions();
+  const emailContactTypes = useEmailContactTypeOptions();
   const [institutions, setInstitutions] = useState<InstitutionRecord[]>([]);
   const [campuses, setCampuses] = useState<CampusRecord[]>([]);
   const [loadingCampuses, setLoadingCampuses] = useState(false);
@@ -219,6 +225,12 @@ const CollegeFormModal: React.FC<CollegeFormModalProps> = ({
           </button>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4 p-5">
+          {college ? (
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <ReadOnlyIdField label="College ID" value={college.id} />
+              <ReadOnlyIdField label="Institution ID" value={college.institution_id} />
+            </div>
+          ) : null}
           <SearchableSelect
             label="Step 1 — Institution"
             value={institutionId}
@@ -271,7 +283,7 @@ const CollegeFormModal: React.FC<CollegeFormModalProps> = ({
             required
             items={phoneNumbers}
             onChange={setPhoneNumbers}
-            typeOptions={PHONE_CONTACT_TYPES}
+            typeOptions={phoneContactTypes}
             valuePlaceholder={PHONE_LOCAL_PLACEHOLDER}
             valueInputType="tel"
             addLabel="Add phone number"
@@ -285,7 +297,7 @@ const CollegeFormModal: React.FC<CollegeFormModalProps> = ({
             required
             items={emailAddresses}
             onChange={setEmailAddresses}
-            typeOptions={EMAIL_CONTACT_TYPES}
+            typeOptions={emailContactTypes}
             valuePlaceholder="college@university.edu"
             valueInputType="email"
             addLabel="Add email address"

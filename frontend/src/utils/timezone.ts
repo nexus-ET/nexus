@@ -4,7 +4,9 @@ export const fetchBusinessTimezone = async (): Promise<string> => {
   if (cachedBusinessTimezone) return cachedBusinessTimezone;
   try {
     const { apiFetch } = await import('./api');
-    const data = (await apiFetch('settings/business-timezone')) as { timezone?: string };
+    const data = (await apiFetch('settings/business-timezone', {
+      authRedirect: false,
+    })) as { timezone?: string };
     cachedBusinessTimezone = data.timezone || 'UTC';
     return cachedBusinessTimezone;
   } catch {
@@ -14,6 +16,27 @@ export const fetchBusinessTimezone = async (): Promise<string> => {
 
 export const clearBusinessTimezoneCache = () => {
   cachedBusinessTimezone = null;
+};
+
+/** Last fetched Nexus business timezone (falls back to UTC until loaded). */
+export const getCachedBusinessTimezone = (): string => cachedBusinessTimezone || 'UTC';
+
+/** Calendar YYYY-MM-DD for "today" in the given IANA timezone. */
+export const businessTodayIsoDate = (timezone = 'UTC'): string => {
+  try {
+    const parts = getBusinessCalendarParts(new Date(), timezone || 'UTC');
+    if (parts) {
+      return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+    }
+  } catch {
+    // Invalid IANA zone — fall through
+  }
+  // Last resort: UTC calendar day (not browser-local) so Nexus stays consistent.
+  const parts = getBusinessCalendarParts(new Date(), 'UTC');
+  if (parts) {
+    return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+  }
+  return new Date().toISOString().slice(0, 10);
 };
 
 /** API datetimes are stored in UTC; naive ISO strings must not be parsed as browser-local time. */
@@ -121,6 +144,9 @@ export const formatBusinessLocalTimestamp = (
   });
 };
 
+/** Explicit locale so `timeZone` is honored (browser `undefined` locale can keep machine time). */
+const BUSINESS_DISPLAY_LOCALE = 'en-GB';
+
 export const formatInBusinessTimezone = (
   value: string | Date,
   timezone: string,
@@ -128,14 +154,25 @@ export const formatInBusinessTimezone = (
 ): string => {
   const date = value instanceof Date ? value : parseApiDateTime(value);
   if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString(undefined, {
-    timeZone: timezone,
+  const zone = (timezone || '').trim() || 'UTC';
+  const formatOptions: Intl.DateTimeFormatOptions = {
     day: 'numeric',
     month: 'short',
-    hour: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
     minute: '2-digit',
+    hour12: false,
     ...options,
-  });
+    timeZone: zone,
+  };
+  try {
+    return new Intl.DateTimeFormat(BUSINESS_DISPLAY_LOCALE, formatOptions).format(date);
+  } catch {
+    return new Intl.DateTimeFormat(BUSINESS_DISPLAY_LOCALE, {
+      ...formatOptions,
+      timeZone: 'UTC',
+    }).format(date);
+  }
 };
 
 const readParts = (
@@ -154,14 +191,19 @@ export const getBusinessCalendarParts = (
 ): { year: number; month: number; day: number; hour: number; minute: number } | null => {
   const date = value instanceof Date ? value : parseApiDateTime(value);
   if (Number.isNaN(date.getTime())) return null;
-  const parts = readParts(date, timezone, {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
+  let parts: Record<string, string>;
+  try {
+    parts = readParts(date, timezone, {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  } catch {
+    return null;
+  }
   const year = Number(parts.year);
   const month = Number(parts.month);
   const day = Number(parts.day);

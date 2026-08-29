@@ -1,5 +1,4 @@
 from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.db.database import Base
@@ -11,7 +10,7 @@ class TargetProgram(Base):
     __tablename__ = "target_programs"
 
     id = Column(Integer, primary_key=True, index=True)
-    program_id = Column(UUID(as_uuid=True), ForeignKey("programs.id"), nullable=False, index=True)
+    program_id = Column(Integer, ForeignKey("programs.id"), nullable=False, index=True)
     code = Column(String(50), unique=True, nullable=False, index=True)
     label = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)

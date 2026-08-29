@@ -75,6 +75,14 @@
   min-width: 140px;
 }
 
+.offline-leads-toolbar__columns {
+  min-width: 220px;
+}
+
+.offline-leads-columns-select .offline-leads-multiselect__hint {
+  max-width: 220px;
+}
+
 .offline-leads-btn {
   display: inline-flex;
   align-items: center;
@@ -119,7 +127,7 @@
 
 .offline-leads-table {
   width: 100%;
-  min-width: 1340px;
+  min-width: 720px;
   border-collapse: collapse;
   background: #fff;
   border: 1px solid #e2e8f0;
@@ -162,10 +170,37 @@
 }
 
 .offline-leads-table__dob {
-  min-width: 12rem;
-  max-width: 16rem;
+  min-width: 10rem;
+  max-width: 14rem;
   line-height: 1.35;
   color: #334155;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.offline-leads-table__age {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.offline-leads-journey-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #322f86;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.offline-leads-journey-link:hover {
+  text-decoration: underline;
 }
 
 .offline-leads-status {

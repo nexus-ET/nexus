@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Integer, JSON, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
@@ -25,6 +25,12 @@ class Business(Base):
     zip_code: Mapped[str | None] = mapped_column(String(30), nullable=True)
     office_phone_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     office_mobile_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Independent flags — both office numbers may be active contacts at once.
+    office_phone_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    office_mobile_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Typed contact lists: [{ "type": "Main Line", "value": "+91..." }, ...]
+    office_phone_contacts: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    office_email_contacts: Mapped[list | None] = mapped_column(JSON, nullable=True)
     web_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     logo_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     email_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)

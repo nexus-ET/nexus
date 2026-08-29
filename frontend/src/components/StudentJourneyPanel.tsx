@@ -43,7 +43,7 @@ export default function StudentJourneyPanel({
     <>
       <div className="fixed inset-0 bg-black/30 z-[60]" onClick={onClose} role="presentation" />
       <aside
-        className="fixed top-0 right-0 h-full w-full max-w-2xl bg-card border-l border-border-subtle shadow-2xl z-[70] flex flex-col min-h-0 overflow-hidden"
+        className="fixed top-0 right-0 h-full w-full max-w-[65.625rem] bg-card border-l border-border-subtle shadow-2xl z-[70] flex flex-col min-h-0 overflow-hidden"
         role="dialog"
         aria-modal="true"
         aria-labelledby="student-journey-title"

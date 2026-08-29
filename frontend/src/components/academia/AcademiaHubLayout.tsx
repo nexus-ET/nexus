@@ -1,7 +1,6 @@
 import { useEffect } from 'react';
-import { Outlet, useLocation, useOutletContext } from 'react-router-dom';
+import { Outlet, useOutletContext } from 'react-router-dom';
 import { Search } from 'lucide-react';
-import AcademiaBreadcrumbs from './AcademiaBreadcrumbs';
 
 interface AcademiaHubLayoutProps {
   onOpenCommandPalette?: () => void;
@@ -9,7 +8,6 @@ interface AcademiaHubLayoutProps {
 
 const AcademiaHubLayout: React.FC<AcademiaHubLayoutProps> = ({ onOpenCommandPalette }) => {
   const outletContext = useOutletContext();
-  const location = useLocation();
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -25,18 +23,11 @@ const AcademiaHubLayout: React.FC<AcademiaHubLayoutProps> = ({ onOpenCommandPale
   return (
     <div className="relative z-10 mx-auto flex h-full min-h-0 w-full max-w-none flex-col gap-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="space-y-2">
-          <AcademiaBreadcrumbs
-            items={[
-              { label: 'Academia Hub', path: '/academia' },
-            ]}
-          />
-          <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-text-main">Academia Hub</h1>
-            <p className="text-sm text-text-muted">
-              Manage geography, institutions, and academic framework catalogs.
-            </p>
-          </div>
+        <div>
+          <h1 className="text-2xl font-extrabold tracking-tight text-text-main">Academia Hub</h1>
+          <p className="text-sm text-text-muted">
+            Manage geography, institutions, and academic framework catalogs.
+          </p>
         </div>
         <button
           type="button"
@@ -50,7 +41,7 @@ const AcademiaHubLayout: React.FC<AcademiaHubLayoutProps> = ({ onOpenCommandPale
           </kbd>
         </button>
       </div>
-      <Outlet key={location.pathname} context={outletContext} />
+      <Outlet context={outletContext} />
     </div>
   );
 };

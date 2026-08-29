@@ -181,7 +181,7 @@ export function useEnrollFlowxStudent() {
       college_id?: number | null;
       campus_id?: number | null;
       level_id?: number | null;
-      qualification_program_id?: string | null;
+      qualification_program_id?: number | null;
       intake_id?: number | null;
       pathway_type?: string | null;
       pathway_name?: string | null;
@@ -301,6 +301,7 @@ export function useFlowxEnrollments(query: {
   status?: string;
   q?: string;
   lead_id?: number;
+  enabled?: boolean;
 } = {}) {
   return useQuery({
     queryKey: ['flowx-enrollments', query],
@@ -313,6 +314,7 @@ export function useFlowxEnrollments(query: {
           lead_id: query.lead_id,
         })}`
       ),
+    enabled: query.enabled !== false,
     staleTime: 15_000,
   });
 }

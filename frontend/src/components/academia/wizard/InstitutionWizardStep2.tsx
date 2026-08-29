@@ -3,11 +3,14 @@ import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Loader2, Pencil, Save, Trash2 } from 'lucide-react';
 
-import { apiFetch } from '../../../utils/api';
 import { fetchAcademiaListItems } from '../../../utils/academiaList';
-import { EMAIL_CONTACT_TYPES, FAX_CONTACT_TYPES, PHONE_CONTACT_TYPES, WEB_LINK_TYPES } from '../../../constants/contactTypes';
+import { WEB_LINK_TYPES } from '../../../constants/contactTypes';
 import { formatContactList, normalizeEmailContacts, normalizeFaxContacts, normalizePhoneContacts, normalizeWebLinks, serializeContacts } from '../../../schemas/contactEntry';
 import { PHONE_LOCAL_PLACEHOLDER } from '../../../utils/phoneCountry';
+import {
+  useEmailContactTypeOptions,
+  usePhoneContactTypeOptions,
+} from '../../../hooks/useContactTypeOptions';
 import LabeledContactListField from '../form/LabeledContactListField';
 import RichTextEditor from '../../ui/rich-text-editor';
 import {
@@ -15,17 +18,25 @@ import {
   createEmptyWizardCampusDraft,
   emptyWizardCampusDraft,
   hydrateWizardCampus,
+  resolveWizardCampusId,
   wizardCampusDraftSchema,
   wizardCampusesStepSchema,
   type WizardCampusItem,
 } from '../../../schemas/wizard/step2-campus';
+import { campusDescriptionPreview } from '../../../utils/campusDescription';
 import type { WizardInstitutionFormValues } from '../../../schemas/wizard/step1-institution';
-import type { CampusTypeRecord } from '../../../types/campusTypes';
+import {
+  campusTypeDisplayName,
+  campusTypeSelectOptions,
+  fetchCampusTypes,
+  type CampusTypeRecord,
+} from '../../../types/campusTypes';
 import { CharCountInput } from '../form/CharCountField';
 import SelectField from '../form/SelectField';
 import SearchableSelect from '../SearchableSelect';
 import WizardFieldError from './form/WizardFieldError';
 import type { WizardStepHandle } from './form/wizardStepRef';
+import ReadOnlyIdField, { formatEntityId } from '../ReadOnlyIdField';
 import {
   flushFocusedFormControl,
   getWizardListStepSnapshot,
@@ -39,7 +50,7 @@ import {
   resolveGeographyCountryIso2,
   type GeographyCountry,
 } from '../../../types/geography';
-import { wizardContactRowClass, wizardDenseGridClass, wizardGeoRowClass, wizardLabelClass, wizardSectionClass, wizardSectionTitleClass, wizardStackClass } from './form/wizardFormStyles';
+import { wizardAddressRowClass, wizardCampusIdentityRowClass, wizardCampusIdentityRowClassNoId, wizardContactRowClass, wizardDenseGridClass, wizardSectionClass, wizardSectionTitleClass, wizardStackClass } from './form/wizardFormStyles';
 
 interface GeographyOption {
   id: number;
@@ -71,8 +82,11 @@ const InstitutionWizardStep2 = forwardRef<
   InstitutionWizardStep2Props
 >(({ defaultCampuses, countries, getInstitutionValues, onSaveStep, saving, embedded = false, locked = false, lockedMessage }, ref) => {
   const openConfirm = useConfirmation();
+  const firstSavedIndex = defaultCampuses.findIndex(item => resolveWizardCampusId(item) != null);
   const [campuses, setCampuses] = useState<WizardCampusItem[]>(defaultCampuses);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editingIndex, setEditingIndex] = useState<number | null>(
+    firstSavedIndex >= 0 ? firstSavedIndex : null
+  );
   const [campusTypes, setCampusTypes] = useState<CampusTypeRecord[]>([]);
   const [loadingTypes, setLoadingTypes] = useState(true);
   const [typesError, setTypesError] = useState<string | null>(null);
@@ -85,18 +99,26 @@ const InstitutionWizardStep2 = forwardRef<
 
   const form = useForm({
     resolver: zodResolver(wizardCampusDraftSchema),
-    defaultValues: createEmptyWizardCampusDraft(),
+    defaultValues:
+      firstSavedIndex >= 0
+        ? hydrateWizardCampus(defaultCampuses[firstSavedIndex])
+        : createEmptyWizardCampusDraft(),
     mode: 'onSubmit',
     shouldUnregister: false,
   });
 
-  const { control, reset, getValues, trigger, watch, setValue, formState: { errors } } = form;
+  const { control, register, reset, getValues, trigger, watch, setValue, formState: { errors } } = form;
+  const watchedCampusId = watch('id');
+  const listedCampusId =
+    editingIndex !== null ? resolveWizardCampusId(campuses[editingIndex]) : undefined;
+  const campusId =
+    resolveWizardCampusId({ id: watchedCampusId }) ?? listedCampusId;
 
   useEffect(() => {
     let cancelled = false;
-    void apiFetch<CampusTypeRecord[]>('academia/campus-types')
+    void fetchCampusTypes()
       .then(data => {
-        if (!cancelled) setCampusTypes(Array.isArray(data) ? data : []);
+        if (!cancelled) setCampusTypes(data);
       })
       .catch(err => {
         if (!cancelled) {
@@ -167,6 +189,8 @@ const InstitutionWizardStep2 = forwardRef<
   }, [countryId, stateId, loadCities]);
 
   const phoneCountries = useMemo(() => geographyCountriesToPhoneCountries(countries), [countries]);
+  const phoneContactTypes = usePhoneContactTypeOptions();
+  const emailContactTypes = useEmailContactTypeOptions();
   const defaultPhoneCountryIso2 = useMemo(
     () => resolveGeographyCountryIso2(countries, countryId),
     [countries, countryId]
@@ -187,8 +211,20 @@ const InstitutionWizardStep2 = forwardRef<
     defaultCampuses,
     () => {
       setCampuses(defaultCampuses);
-      reset(createEmptyWizardCampusDraft());
-      setEditingIndex(null);
+      const keepCurrent =
+        editingIndex !== null &&
+        editingIndex < defaultCampuses.length &&
+        resolveWizardCampusId(defaultCampuses[editingIndex]) != null;
+      const savedIndex = keepCurrent
+        ? editingIndex
+        : defaultCampuses.findIndex(item => resolveWizardCampusId(item) != null);
+      if (savedIndex != null && savedIndex >= 0) {
+        reset(hydrateWizardCampus(defaultCampuses[savedIndex]));
+        setEditingIndex(savedIndex);
+      } else {
+        reset(createEmptyWizardCampusDraft());
+        setEditingIndex(null);
+      }
       setListError(null);
       setInheritInstitutionDetails(false);
     },
@@ -199,7 +235,7 @@ const InstitutionWizardStep2 = forwardRef<
     validate: async () => {
       const parsed = wizardCampusesStepSchema.safeParse(campuses);
       if (!parsed.success) {
-        setListError(parsed.error.issues[0]?.message || 'Add at least one campus.');
+        setListError(parsed.error.issues[0]?.message || 'Please fix the highlighted campus fields.');
         return false;
       }
       setListError(null);
@@ -261,7 +297,7 @@ const InstitutionWizardStep2 = forwardRef<
   };
 
   const campusTypeOptions = useMemo(
-    () => campusTypes.map(type => ({ value: String(type.id), label: `${type.name} (${type.code})` })),
+    () => campusTypeSelectOptions(campusTypes),
     [campusTypes]
   );
   const countryOptions = useMemo(
@@ -303,8 +339,10 @@ const InstitutionWizardStep2 = forwardRef<
     resetDraftForm();
   };
 
-  const campusTypeName = (campusTypeId: number) =>
-    campusTypes.find(type => type.id === campusTypeId)?.name || '—';
+  const campusTypeName = (campusTypeId: number) => {
+    const match = campusTypes.find(type => type.id === campusTypeId);
+    return match ? campusTypeDisplayName(match) : '—';
+  };
 
   const campusStateName = (campus: WizardCampusItem) =>
     lookupStates.find(state => state.id === campus.state_id)?.name ||
@@ -352,7 +390,7 @@ const InstitutionWizardStep2 = forwardRef<
             <p className="text-sm font-semibold text-text-main">Campuses unlock after institution save</p>
             <p className="mt-1 text-sm text-text-muted">
               {lockedMessage ||
-                'Save the institution profile above first. Then you can add one or more campuses here.'}
+                'Save the institution profile above first. Then you can add campuses here if you want them.'}
             </p>
           </div>
         </div>
@@ -365,7 +403,7 @@ const InstitutionWizardStep2 = forwardRef<
             <p className="-mt-2 text-sm text-text-muted">
               {locked
                 ? 'This section stays disabled until the institution is saved.'
-                : 'Saved campuses for this institution. Add at least one before continuing.'}
+                : 'Saved campuses for this institution. Adding campuses is optional.'}
             </p>
           </div>
           <span className="rounded-full bg-surface-bg px-3 py-1 text-xs font-semibold text-text-muted">
@@ -381,7 +419,9 @@ const InstitutionWizardStep2 = forwardRef<
             <table className="min-w-full text-sm">
               <thead className="bg-surface-bg text-left text-sm font-bold text-text-main">
                 <tr>
+                  <th className="px-3 py-2">ID</th>
                   <th className="px-3 py-2">Campus Name</th>
+                  <th className="px-3 py-2">Description</th>
                   <th className="px-3 py-2">Type</th>
                   <th className="px-3 py-2">State</th>
                   <th className="px-3 py-2">City</th>
@@ -394,16 +434,26 @@ const InstitutionWizardStep2 = forwardRef<
               <tbody>
                 {campuses.map((campus, index) => {
                   const isEditing = editingIndex === index;
+                  const descriptionCell = campusDescriptionPreview(campus.description);
                   return (
                   <tr
                     key={campus.local_id || index}
                     aria-selected={isEditing}
-                    className={`border-t border-border-subtle/70 transition-colors ${
+                    onClick={() => {
+                      if (isEditing) return;
+                      reset(hydrateWizardCampus(campus));
+                      setEditingIndex(index);
+                      setInheritInstitutionDetails(false);
+                    }}
+                    className={`cursor-pointer border-t border-border-subtle/70 transition-colors ${
                       isEditing
                         ? 'bg-accent/10 ring-2 ring-inset ring-accent/40'
                         : 'hover:bg-surface-bg/60'
                     }`}
                   >
+                    <td className="px-3 py-2 tabular-nums text-text-muted">
+                      {formatEntityId(resolveWizardCampusId(campus))}
+                    </td>
                     <td className="px-3 py-2 font-semibold text-text-main">
                       <span className="inline-flex flex-wrap items-center gap-2">
                         {campus.name}
@@ -414,13 +464,18 @@ const InstitutionWizardStep2 = forwardRef<
                         ) : null}
                       </span>
                     </td>
+                    <td className="max-w-[16rem] px-3 py-2 text-text-muted">
+                      <span className="block truncate" title={descriptionCell.title}>
+                        {descriptionCell.preview}
+                      </span>
+                    </td>
                     <td className="px-3 py-2 text-text-muted">{campusTypeName(campus.campus_type_id)}</td>
                     <td className="px-3 py-2 text-text-muted">{campusStateName(campus)}</td>
                     <td className="px-3 py-2 text-text-muted">{campusCityName(campus)}</td>
                     <td className="px-3 py-2 text-text-muted">{campus.zipcode || '—'}</td>
                     <td className="px-3 py-2 text-text-muted">{formatListValues(campus.phone_numbers)}</td>
                     <td className="px-3 py-2 text-text-muted">{formatListValues(campus.email_addresses)}</td>
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-2" onClick={event => event.stopPropagation()}>
                       <div className="flex flex-wrap gap-2">
                         {isEditing ? (
                           <button
@@ -474,47 +529,66 @@ const InstitutionWizardStep2 = forwardRef<
 
       <section className={`${wizardSectionClass} ${locked ? 'pointer-events-none opacity-55' : ''}`}>
         <h3 className={wizardSectionTitleClass}>Campus details</h3>
+        <input
+          type="hidden"
+          {...register('id', {
+            setValueAs: value => {
+              const parsed = Number(value);
+              return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+            },
+          })}
+        />
         <div className={wizardDenseGridClass}>
-          <div className="md:col-span-2 xl:col-span-2">
-            <CharCountInput
-              label="Campus name"
-              required
-              maxLength={250}
-              value={watch('name') || ''}
-              onChange={value => setValue('name', value, { shouldValidate: true })}
-              placeholder="e.g. Main Campus — Boston"
-              hint="Example: North Campus or Downtown Medical Center"
-            />
-            <WizardFieldError message={errors.name?.message} />
-          </div>
-
-          {loadingTypes ? (
-            <div className="flex items-center gap-2 text-sm text-text-muted">
-              <Loader2 size={16} className="animate-spin" />
-              Loading campus types...
+          <div className={campusId ? wizardCampusIdentityRowClass : wizardCampusIdentityRowClassNoId}>
+            {campusId ? (
+              <ReadOnlyIdField
+                aligned
+                className="md:min-w-[8.25rem]"
+                label="Campus ID"
+                value={campusId}
+              />
+            ) : null}
+            <div className="min-w-0">
+              <CharCountInput
+                label="Campus name"
+                required
+                maxLength={250}
+                value={watch('name') || ''}
+                onChange={value => setValue('name', value, { shouldValidate: true })}
+                placeholder="e.g. Main Campus — Boston"
+                hint="Example: North Campus or Downtown Medical Center"
+              />
+              <WizardFieldError message={errors.name?.message} />
             </div>
-          ) : typesError ? (
-            <div className="text-sm text-alert">{typesError}</div>
-          ) : (
-            <Controller
-              control={control}
-              name="campus_type_id"
-              render={({ field, fieldState }) => (
-                <div>
-                  <SelectField
-                    label="Campus type"
-                    required
-                    value={field.value ? String(field.value) : ''}
-                    onChange={value => field.onChange(value ? Number(value) : undefined)}
-                    placeholder="Select campus type..."
-                    hint="Loaded from the campus_types lookup table"
-                    options={campusTypeOptions}
-                  />
-                  <WizardFieldError message={fieldState.error?.message} />
-                </div>
-              )}
-            />
-          )}
+
+            {loadingTypes ? (
+              <div className="flex min-w-0 items-center gap-2 text-sm text-text-muted">
+                <Loader2 size={16} className="animate-spin" />
+                Loading campus types...
+              </div>
+            ) : typesError ? (
+              <div className="min-w-0 text-sm text-alert">{typesError}</div>
+            ) : (
+              <Controller
+                control={control}
+                name="campus_type_id"
+                render={({ field, fieldState }) => (
+                  <div className="min-w-0">
+                    <SelectField
+                      label="Campus type"
+                      required
+                      value={field.value ? String(field.value) : ''}
+                      onChange={value => field.onChange(value ? Number(value) : undefined)}
+                      placeholder="Select campus type..."
+                      hint="Loaded from the campus_types lookup table"
+                      options={campusTypeOptions}
+                    />
+                    <WizardFieldError message={fieldState.error?.message} />
+                  </div>
+                )}
+              />
+            )}
+          </div>
 
           <div className="md:col-span-2 xl:col-span-3">
             <Controller
@@ -557,23 +631,23 @@ const InstitutionWizardStep2 = forwardRef<
             </label>
           </div>
 
-          <div className="md:col-span-2 xl:col-span-3">
-            <CharCountInput
-              label="Campus address"
-              maxLength={200}
-              value={watch('address') || ''}
-              onChange={value => setValue('address', value || null)}
-              placeholder="Street address, building, or campus location"
-            />
-            <WizardFieldError message={errors.address?.message} />
-          </div>
+          <div className={wizardAddressRowClass}>
+            <div className="md:min-w-0 md:flex-[1.75]">
+              <CharCountInput
+                label="Campus address"
+                maxLength={200}
+                value={watch('address') || ''}
+                onChange={value => setValue('address', value || null)}
+                placeholder="Street address, building, or campus location"
+              />
+              <WizardFieldError message={errors.address?.message} />
+            </div>
 
-          <div className={wizardGeoRowClass}>
             <Controller
               control={control}
               name="country_id"
               render={({ field, fieldState }) => (
-                <div>
+                <div className="md:min-w-0 md:flex-1">
                   <SearchableSelect
                     label="Country"
                     required
@@ -596,7 +670,7 @@ const InstitutionWizardStep2 = forwardRef<
               control={control}
               name="state_id"
               render={({ field, fieldState }) => (
-                <div>
+                <div className="md:min-w-0 md:flex-1">
                   <SearchableSelect
                     label="State"
                     required
@@ -619,7 +693,7 @@ const InstitutionWizardStep2 = forwardRef<
               control={control}
               name="location_id"
               render={({ field, fieldState }) => (
-                <div>
+                <div className="md:min-w-0 md:flex-1">
                   <SearchableSelect
                     label="City"
                     required
@@ -634,13 +708,15 @@ const InstitutionWizardStep2 = forwardRef<
               )}
             />
 
-            <CharCountInput
-              label="Zipcode"
-              maxLength={10}
-              value={watch('zipcode') || ''}
-              onChange={value => setValue('zipcode', value || null)}
-              placeholder="e.g. 02139"
-            />
+            <div className="md:min-w-0 md:flex-1">
+              <CharCountInput
+                label="Zipcode"
+                maxLength={10}
+                value={watch('zipcode') || ''}
+                onChange={value => setValue('zipcode', value || null)}
+                placeholder="e.g. 02139"
+              />
+            </div>
           </div>
 
           <div className={wizardContactRowClass}>
@@ -650,10 +726,9 @@ const InstitutionWizardStep2 = forwardRef<
               render={({ field }) => (
                 <LabeledContactListField
                   label="Phone numbers"
-                  required
                   items={field.value}
                   onChange={field.onChange}
-                  typeOptions={PHONE_CONTACT_TYPES}
+                  typeOptions={phoneContactTypes}
                   valuePlaceholder={PHONE_LOCAL_PLACEHOLDER}
                   valueInputType="tel"
                   addLabel="Add phone number"
@@ -673,7 +748,7 @@ const InstitutionWizardStep2 = forwardRef<
                   label="Fax numbers"
                   items={field.value}
                   onChange={field.onChange}
-                  typeOptions={FAX_CONTACT_TYPES}
+                  typeOptions={phoneContactTypes}
                   valuePlaceholder={PHONE_LOCAL_PLACEHOLDER}
                   valueInputType="tel"
                   addLabel="Add fax number"
@@ -691,10 +766,9 @@ const InstitutionWizardStep2 = forwardRef<
               render={({ field }) => (
                 <LabeledContactListField
                   label="Email addresses"
-                  required
                   items={field.value}
                   onChange={field.onChange}
-                  typeOptions={EMAIL_CONTACT_TYPES}
+                  typeOptions={emailContactTypes}
                   valuePlaceholder="campus@university.edu"
                   valueInputType="email"
                   addLabel="Add email address"
@@ -723,6 +797,7 @@ const InstitutionWizardStep2 = forwardRef<
                   typeSelectWidthClass="w-full sm:w-[8.75rem]"
                   maxLength={250}
                   fullWidth
+                  showViewWebsiteLink
                 />
               )}
             />

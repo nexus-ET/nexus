@@ -1,25 +1,34 @@
-export const PHONE_CONTACT_TYPES = [
-  { value: 'Main', label: 'Main' },
-  { value: 'Admissions', label: 'Admissions' },
-  { value: 'Inquiries', label: 'Inquiries' },
-  { value: 'Registrar', label: 'Registrar' },
-  { value: 'Campus', label: 'Campus' },
-  { value: 'Other', label: 'Other' },
+/** Fallback defaults when admin has not configured custom contact types. */
+export const DEFAULT_EMAIL_CONTACT_TYPES = [
+  'General',
+  'Admissions',
+  'Billing',
+  'Support',
+  'Legal',
 ] as const;
+
+export const DEFAULT_PHONE_CONTACT_TYPES = [
+  'Main Line',
+  'Sales',
+  'WhatsApp',
+  'Support',
+  'Billing',
+] as const;
+
+/** @deprecated Prefer useAdminSettingsStore / getEmailContactTypeOptions */
+export const EMAIL_CONTACT_TYPES = DEFAULT_EMAIL_CONTACT_TYPES.map(value => ({
+  value,
+  label: value,
+}));
+
+/** @deprecated Prefer useAdminSettingsStore / getPhoneContactTypeOptions */
+export const PHONE_CONTACT_TYPES = DEFAULT_PHONE_CONTACT_TYPES.map(value => ({
+  value,
+  label: value,
+}));
 
 /** Fax types mirror phone types. */
 export const FAX_CONTACT_TYPES = PHONE_CONTACT_TYPES;
-
-export const EMAIL_CONTACT_TYPES = [
-  { value: 'General', label: 'General' },
-  { value: 'Admissions', label: 'Admissions' },
-  { value: 'Support', label: 'Support' },
-  { value: 'Registrar', label: 'Registrar' },
-  { value: 'Inquiries', label: 'Inquiries' },
-  { value: 'Applications help', label: 'Applications help' },
-  { value: 'Financial aid', label: 'Financial aid' },
-  { value: 'Other', label: 'Other' },
-] as const;
 
 export const WEB_LINK_TYPES = [
   { value: 'Website', label: 'Website' },
@@ -30,12 +39,25 @@ export const WEB_LINK_TYPES = [
   { value: 'College', label: 'College' },
 ] as const;
 
-export const PHONE_TYPE_MAIN = 'Main';
+export const PHONE_TYPE_MAIN = DEFAULT_PHONE_CONTACT_TYPES[0];
 export const FAX_TYPE_MAIN = PHONE_TYPE_MAIN;
-export const EMAIL_TYPE_GENERAL = 'General';
+export const EMAIL_TYPE_GENERAL = DEFAULT_EMAIL_CONTACT_TYPES[0];
 export const WEB_LINK_TYPE_WEBSITE = 'Website';
 
-export type PhoneContactType = (typeof PHONE_CONTACT_TYPES)[number]['value'];
-export type FaxContactType = PhoneContactType;
-export type EmailContactType = (typeof EMAIL_CONTACT_TYPES)[number]['value'];
+export type PhoneContactType = string;
+export type FaxContactType = string;
+export type EmailContactType = string;
 export type WebLinkType = (typeof WEB_LINK_TYPES)[number]['value'];
+
+export type ContactTypeOption = { value: string; label: string };
+
+export function toContactTypeOptions(types: readonly string[]): ContactTypeOption[] {
+  return types
+    .map(type => type.trim())
+    .filter(Boolean)
+    .map(type => ({ value: type, label: type }));
+}
+
+export function normalizeContactTypeLabel(raw: string): string {
+  return raw.trim().replace(/\s+/g, ' ');
+}

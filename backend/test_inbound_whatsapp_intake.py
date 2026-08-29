@@ -401,7 +401,7 @@ def test_no_thanks_on_call_consent_returns_management_buttons() -> None:
     asyncio.run(_run())
 
 
-def test_not_interested_starts_marketing_consent_flow() -> None:
+def test_not_interested_starts_marketing_consent_flow(monkeypatch) -> None:
     async def _run() -> None:
         from app.services.admissions_intake_flow import (
             INTAKE_STEP_COMPLETE,
@@ -409,6 +409,11 @@ def test_not_interested_starts_marketing_consent_flow() -> None:
             MARKETING_OPT_IN_BUTTON_ID,
             MARKETING_OPT_OUT_BUTTON_ID,
             handle_post_intake_booking_message,
+        )
+
+        monkeypatch.setattr(
+            "app.services.admissions_intake_flow._lead_has_active_consultation_booking",
+            lambda _db, _lead: False,
         )
 
         lead = SimpleNamespace(

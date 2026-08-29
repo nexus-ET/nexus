@@ -1,6 +1,6 @@
 # Staging deployment instructions — 2026-07-26 release
 
-Target: **Nexus Staging** (`nexus-dev.edutrust.in` / Hostinger Nexus-Dev-1).  
+Target: **Nexus Staging** (`nexus-dev.edutrust.in` / Hostinger KVM 1 Postgres `nexus_edutrust`).  
 Branch intent: merge this develop package → `staging` (or deploy from a release PR).
 
 Follow `STAGING_DEPLOYMENT_AGENT_PROMPT.md` for Hostinger SMTP, seeds, R2, and default data. This file is the **release-specific** checklist for the current uncommitted package.

@@ -31,63 +31,70 @@ test.describe('Post-deploy regression gates', () => {
     const token = (await login.json()).access_token as string;
     const headers = { Authorization: `Bearer ${token}` };
 
+    const bookingFromEnv = Number((process.env.UAT_BOOKING_ID || '').trim());
+    let bookingId: number | null =
+      Number.isFinite(bookingFromEnv) && bookingFromEnv > 0 ? bookingFromEnv : null;
+
     const mine = await request.get(`${baseUrl}/api/v1/bookings/mine`, { headers });
     expect(mine.ok(), await mine.text()).toBeTruthy();
     const payload = await mine.json();
-    let bookingId: number | null = null;
-    for (const section of ['today', 'upcoming', 'past'] as const) {
-      for (const row of payload[section] || []) {
-        if (row?.id) {
-          bookingId = Number(row.id);
-          break;
+    if (!bookingId) {
+      for (const section of ['today', 'upcoming', 'past'] as const) {
+        for (const row of payload[section] || []) {
+          if (row?.id) {
+            bookingId = Number(row.id);
+            break;
+          }
         }
+        if (bookingId) break;
       }
-      if (bookingId) break;
     }
 
-    // Prefer creating a disposable far-future booking so the gate is deterministic.
-    const day = new Date();
-    day.setUTCDate(day.getUTCDate() + 21);
-    const dateKey = day.toISOString().slice(0, 10);
-    const avail = await request.get(`${baseUrl}/api/v1/bookings/availability`, {
-      headers,
-      params: { admin_id: 1, date: dateKey },
-    });
-    if (avail.ok()) {
-      const slot = ((await avail.json()).slots || []).find(
-        (item: { available?: boolean }) => item.available
-      );
-      if (slot?.start) {
-        const create = await request.post(`${baseUrl}/api/v1/bookings/staff`, {
-          headers,
-          data: {
-            scheduled_time: slot.start,
-            admin_id: 1,
-            candidate_name: 'UAT Gate Student',
-            candidate_email: email,
-            lead_id: Number(leadId) || null,
-            session_purpose: 'UAT gate',
-            notes: 'Purpose: UAT gate',
-          },
-        });
-        expect(create.ok(), await create.text()).toBeTruthy();
-        const body = await create.json();
-        bookingId = Number(body.id);
-        const notifications = body.notifications || {};
-        // Email path must not silently 500; WhatsApp may warn in unit smoke but fail here if failed.
-        for (const channel of ['email', 'email_admin'] as const) {
-          const status = notifications[channel];
-          expect(
-            ['sent', 'skipped', 'disabled', undefined].includes(status),
-            `${channel}=${status}`
-          ).toBeTruthy();
-        }
-        for (const channel of ['whatsapp', 'whatsapp_admin'] as const) {
-          const status = notifications[channel];
-          expect(
-            status !== 'failed',
-            `${channel} failed — Meta booking template/WABA/language gate`
-          ).toBeTruthy();
+    // Create a disposable far-future booking only when no fixture exists (avoid slow Meta notifications).
+    if (!bookingId) {
+      const day = new Date();
+      day.setUTCDate(day.getUTCDate() + 21);
+      const dateKey = day.toISOString().slice(0, 10);
+      const avail = await request.get(`${baseUrl}/api/v1/bookings/availability`, {
+        headers,
+        params: { admin_id: 1, date: dateKey },
+      });
+      if (avail.ok()) {
+        const slot = ((await avail.json()).slots || []).find(
+          (item: { available?: boolean }) => item.available
+        );
+        if (slot?.start) {
+          const create = await request.post(`${baseUrl}/api/v1/bookings/staff`, {
+            headers,
+            timeout: 120_000,
+            data: {
+              scheduled_time: slot.start,
+              admin_id: 1,
+              candidate_name: 'UAT Gate Student',
+              candidate_email: email,
+              lead_id: Number(leadId) || null,
+              session_purpose: 'General Counselling',
+              notes: 'Purpose: General Counselling',
+            },
+          });
+          expect(create.ok(), await create.text()).toBeTruthy();
+          const body = await create.json();
+          bookingId = Number(body.id);
+          const notifications = body.notifications || {};
+          for (const channel of ['email', 'email_admin'] as const) {
+            const status = notifications[channel];
+            expect(
+              ['sent', 'skipped', 'disabled', undefined].includes(status),
+              `${channel}=${status}`
+            ).toBeTruthy();
+          }
+          for (const channel of ['whatsapp', 'whatsapp_admin'] as const) {
+            const status = notifications[channel];
+            expect(
+              status !== 'failed',
+              `${channel} failed — Meta booking template/WABA/language gate`
+            ).toBeTruthy();
+          }
         }
       }
     }

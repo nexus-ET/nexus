@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { apiFetch } from '../../utils/api';
 import { fetchAcademiaListItems } from '../../utils/academiaList';
 import { levelSelectOptions } from '../../constants/levels';
@@ -16,6 +16,7 @@ import type { EducationMajorRecord } from '../../types/educationMajor';
 import AcademiaBreadcrumbs from './AcademiaBreadcrumbs';
 import CourseFormModal from './CourseFormModal';
 import EntityStatusBadge from './EntityStatusBadge';
+import { FrameworkIdCell, FrameworkIdHeader } from './FrameworkIdDisplay';
 import FrameworkSortableHeader from './FrameworkSortableHeader';
 import FrameworkTablePagination from './FrameworkTablePagination';
 import SearchableSelect from './SearchableSelect';
@@ -282,70 +283,82 @@ const FrameworkCoursesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
       )}
 
       <div className={embedded ? '' : 'rounded-2xl border border-border-subtle bg-card shadow-sm'}>
-        <div
-          className={`flex flex-wrap items-center justify-between gap-3 border-b border-border-subtle px-6 py-4 ${
-            embedded ? 'justify-end' : ''
-          }`}
-        >
-          {embedded ? null : (
-            <div>
-              <h2 className="text-xl font-bold text-text-main">Courses</h2>
-              <p className="text-sm text-text-muted">
-                All courses are listed by default. Filter by Level → Program → Major, or add courses optionally.
-              </p>
+        {embedded ? null : (
+          <div className="border-b border-border-subtle px-6 py-4">
+            <h2 className="text-xl font-bold text-text-main">Courses</h2>
+            <p className="text-sm text-text-muted">
+              All courses are listed by default. Filter by Level → Program → Major, or add courses optionally.
+            </p>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-end gap-3 border-b border-border-subtle px-6 py-4">
+          <div className="min-w-[160px] flex-1">
+            <SearchableSelect
+              label="Level"
+              value={filterLevelId}
+              options={[{ value: '', label: 'All levels' }, ...levelSelectOptions(levels)]}
+              onChange={value => {
+                setFilterLevelId(value);
+                setFilterProgramId('');
+                setFilterMajorId('');
+              }}
+              placeholder="All levels"
+            />
+          </div>
+          <div className="min-w-[160px] flex-1">
+            <SearchableSelect
+              label="Program"
+              value={filterProgramId}
+              options={[{ value: '', label: 'All programs' }, ...programOptions]}
+              onChange={value => {
+                setFilterProgramId(value);
+                setFilterMajorId('');
+              }}
+              placeholder={loadingDegrees ? 'Loading programs...' : 'All programs'}
+              disabled={loadingDegrees}
+            />
+          </div>
+          <div className="min-w-[160px] flex-1">
+            <SearchableSelect
+              label="Major"
+              value={filterMajorId}
+              options={[{ value: '', label: 'All majors' }, ...majorOptions]}
+              onChange={setFilterMajorId}
+              placeholder={loadingMajors ? 'Loading majors...' : 'All majors'}
+              disabled={loadingMajors}
+            />
+          </div>
+          <label className="min-w-[200px] flex-1 space-y-1 text-sm">
+            <span className="font-medium text-text-main">Search</span>
+            <div className="relative">
+              <input
+                type="text"
+                value={search}
+                onChange={event => setSearch(event.target.value)}
+                placeholder="Search by name or code..."
+                className="w-full rounded-xl border border-border-subtle bg-surface-bg py-2 pl-3 pr-9 text-sm outline-none focus:border-accent"
+              />
+              {search ? (
+                <button
+                  type="button"
+                  onClick={() => setSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-text-muted hover:bg-black/5 hover:text-text-main"
+                  aria-label="Clear search"
+                >
+                  <X size={14} />
+                </button>
+              ) : null}
             </div>
-          )}
+          </label>
           <button
             type="button"
             onClick={openCreate}
-            className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-text-dark-bg"
+            className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-text-dark-bg"
           >
             <Plus size={16} />
             Add New Course
           </button>
-        </div>
-
-        <div className="grid grid-cols-1 gap-3 border-b border-border-subtle px-6 py-4 md:grid-cols-4">
-          <SearchableSelect
-            label="Level"
-            value={filterLevelId}
-            options={[{ value: '', label: 'All levels' }, ...levelSelectOptions(levels)]}
-            onChange={value => {
-              setFilterLevelId(value);
-              setFilterProgramId('');
-              setFilterMajorId('');
-            }}
-            placeholder="All levels"
-          />
-          <SearchableSelect
-            label="Program"
-            value={filterProgramId}
-            options={[{ value: '', label: 'All programs' }, ...programOptions]}
-            onChange={value => {
-              setFilterProgramId(value);
-              setFilterMajorId('');
-            }}
-            placeholder={loadingDegrees ? 'Loading programs...' : 'All programs'}
-            disabled={loadingDegrees}
-          />
-          <SearchableSelect
-            label="Major"
-            value={filterMajorId}
-            options={[{ value: '', label: 'All majors' }, ...majorOptions]}
-            onChange={setFilterMajorId}
-            placeholder={loadingMajors ? 'Loading majors...' : 'All majors'}
-            disabled={loadingMajors}
-          />
-          <label className="space-y-1 text-sm">
-            <span className="font-medium text-text-main">Search</span>
-            <input
-              type="text"
-              value={search}
-              onChange={event => setSearch(event.target.value)}
-              placeholder="Search by name or code..."
-              className="w-full rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent"
-            />
-          </label>
         </div>
 
         {loadingCourses ? (
@@ -365,6 +378,10 @@ const FrameworkCoursesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
               <table className="min-w-full text-sm">
                 <thead className="bg-surface-bg text-left text-xs uppercase tracking-wide text-text-muted">
                   <tr>
+                    <FrameworkIdHeader />
+                    <FrameworkIdHeader label="Program ID" />
+                    <FrameworkIdHeader label="Major ID" />
+                    <FrameworkIdHeader label="Level ID" />
                     <FrameworkSortableHeader
                       label="Course name"
                       column="name"
@@ -389,6 +406,18 @@ const FrameworkCoursesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
                 <tbody>
                   {courses.map(course => (
                     <tr key={course.id} className="border-t border-border-subtle/70">
+                      <FrameworkIdCell value={course.id} />
+                      <FrameworkIdCell value={course.degree_id} />
+                      <FrameworkIdCell
+                        values={
+                          course.major_ids?.length
+                            ? course.major_ids
+                            : course.major_id != null
+                              ? [course.major_id]
+                              : []
+                        }
+                      />
+                      <FrameworkIdCell value={course.level_id} />
                       <td className="px-6 py-3 font-medium text-text-main">
                         {course.name || course.label}
                       </td>

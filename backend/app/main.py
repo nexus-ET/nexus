@@ -39,6 +39,7 @@ from app.models.course_education_major_mapping import CourseEducationMajorMappin
 from app.models.education_degree import EducationDegree
 from app.models.education_major import EducationMajor
 from app.models.education_major_level import EducationMajorLevel
+from app.models.education_sub_major import EducationSubMajor  # noqa: F401
 from app.models.program_education_major_mapping import ProgramEducationMajorMapping
 from app.models.gpa_cgpa_score import GpaCgpaScore
 from app.models.full_time_study_year import FullTimeStudyYear  # noqa: F401
@@ -65,6 +66,7 @@ from app.api.v1 import analytics, notifications, dashboard, users, login, agents
 from app.models.nexus_intel import (  # noqa: F401
     IntelAcademyModule,
     IntelGlossary,
+    IntelInquiryFaq,
     IntelScrapeReview,
     IntelScraperConfig,
     IntelTrivia,
@@ -73,6 +75,8 @@ from app.models.nexus_intel import (  # noqa: F401
 )
 from app.routers import (
     counselling,
+    students_master,
+    invoices,
     whatsapp_flow_webhook,
     whatsapp_webhook,
     webhooks,
@@ -103,7 +107,28 @@ from app.services.lead_processor_scheduler import (
     shutdown_raw_lead_processor_scheduler,
     start_raw_lead_processor_scheduler,
 )
+from starlette.requests import Request as StarletteRequest
 from slowapi.middleware import SlowAPIMiddleware
+
+# High-volume authenticated SPA traffic — must not share the 60/min global bucket
+# with exception-log / audit / academia list pagination (that 429 loop can starve saves).
+_RATE_LIMIT_DEFAULT_EXEMPT_PREFIXES = (
+    "/api/v1/academia",
+    "/api/v1/reports/exception-logs",
+    "/api/v1/audit-events",
+    "/api/v1/analytics",
+)
+
+
+class NexusSlowAPIMiddleware(SlowAPIMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        path = request.url.path
+        if any(
+            path == prefix or path.startswith(f"{prefix}/")
+            for prefix in _RATE_LIMIT_DEFAULT_EXEMPT_PREFIXES
+        ):
+            return await call_next(request)
+        return await super().dispatch(request, call_next)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -115,11 +140,21 @@ bootstrap_logger = logging.getLogger(__name__)
 
 def bootstrap_application(*, include_deferred: bool = True) -> None:
     """Run one-time DB/schema seeding. Called from lifespan, not at import time."""
+    skip_db_sync = os.getenv("NEXUS_SKIP_STARTUP_DB_SYNC", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     try:
-        bootstrap_logger.info("Nexus database synchronization: checking table structures...")
-        Base.metadata.create_all(bind=engine)
-        sync_schema_columns()
-        bootstrap_logger.info("Nexus database synchronization: tables initialized successfully.")
+        if skip_db_sync:
+            bootstrap_logger.info(
+                "Skipping create_all/sync_schema (NEXUS_SKIP_STARTUP_DB_SYNC is set)."
+            )
+        else:
+            bootstrap_logger.info("Nexus database synchronization: checking table structures...")
+            Base.metadata.create_all(bind=engine)
+            sync_schema_columns()
+            bootstrap_logger.info("Nexus database synchronization: tables initialized successfully.")
         bootstrap_db = SessionLocal()
         try:
             get_or_create_agent_config(bootstrap_db)
@@ -128,6 +163,10 @@ def bootstrap_application(*, include_deferred: bool = True) -> None:
             if recovered:
                 bootstrap_logger.info("Recovered %s stale in-progress sync log(s).", recovered)
             ensure_default_business(bootstrap_db)
+            from app.services.navigation_rbac import ensure_navigation_rbac
+
+            ensure_navigation_rbac(bootstrap_db)
+            bootstrap_logger.info("Navigation pages and role access catalog synchronized.")
             bootstrap_logger.info("Startup catalog/reference seeds are disabled (manage data via Admin UI).")
             bootstrap_logger.info("Dynamic settings initialized.")
             if include_deferred:
@@ -205,6 +244,9 @@ async def lifespan(_: FastAPI):
     shutdown_raw_lead_processor_scheduler()
     shutdown_lead_sync_scheduler()
     shutdown_security_scheduler()
+    from app.services.messaging import close_whatsapp_graph_http_client
+
+    await close_whatsapp_graph_http_client()
 
 
 app = FastAPI(
@@ -231,7 +273,7 @@ from app.middleware.exception_capture import register_exception_handlers
 
 register_exception_handlers(app)
 
-app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(NexusSlowAPIMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.middleware("http")(audit_middleware)
 
@@ -278,7 +320,7 @@ async def absolute_cors_and_ngrok_bypass(request: Request, call_next):
         response = Response()
         response.headers["Access-Control-Allow-Origin"] = allowed_origin
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, PUT, DELETE, OPTIONS, HEAD"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, ngrok-skip-browser-warning"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Nexus-Page, X-Requested-With, ngrok-skip-browser-warning"
         response.headers["Access-Control-Allow-Credentials"] = "true"
         return response
 
@@ -288,14 +330,16 @@ async def absolute_cors_and_ngrok_bypass(request: Request, call_next):
     # 3. Append global override authorization headers
     response.headers["Access-Control-Allow-Origin"] = allowed_origin
     response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, ngrok-skip-browser-warning"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Nexus-Page, X-Requested-With, ngrok-skip-browser-warning"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, PUT, DELETE, OPTIONS, HEAD"
     return response
 
 app.add_middleware(NavigationRBACMiddleware)
 
 @app.get("/")
+@app.get("/api/health")
 @app.get("/api/v1")
+@app.get("/api/v1/health")
 async def read_nexus_root_health_check():
     return {
         "status": "online",
@@ -327,6 +371,8 @@ app.include_router(nexus_intel.router, prefix="/api/v1", tags=["Nexus Intel"])
 app.include_router(flowx.router, prefix="/api/v1", tags=["FlowX"])
 app.include_router(login.router, prefix="/api/v1", tags=["Auth"])
 app.include_router(counselling.router, prefix="/api/v1", tags=["Counselling"])
+app.include_router(students_master.router, prefix="/api/v1", tags=["Students Master"])
+app.include_router(invoices.router, prefix="/api/v1", tags=["Invoices"])
 app.include_router(command_center.router, prefix="/api/v1", tags=["Command Center"])
 app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
 app.include_router(nexus_ws.router, prefix="/api/v1", tags=["WebSocket"])

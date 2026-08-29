@@ -6,6 +6,7 @@ import {
   Route,
   RouterProvider,
 } from 'react-router-dom';
+import { lazy, Suspense } from 'react';
 import './index.css';
 import Layout from './components/Layout';
 import NexusSessionRoot from './components/NexusSessionRoot';
@@ -14,6 +15,7 @@ import AiActiveView from './pages/AiActiveView';
 import HandoffsView from './pages/HandoffsView';
 import ProspectsPage from './pages/ProspectsPage';
 import StudentPipelinePage from './pages/StudentPipelinePage';
+import ExpressLeadsPage from './pages/ExpressLeadsPage';
 import OfflineLeadsPage from './pages/OfflineLeadsPage';
 import ArchiveView from './pages/ArchiveView';
 import UsersView from './pages/UsersView';
@@ -42,16 +44,21 @@ import FrameworkSectionPage from './pages/academia/FrameworkSectionPage';
 import AcademiaEntityPage from './components/academia/AcademiaEntityPage';
 import GeographyCitiesPage from './components/academia/GeographyCitiesPage';
 import FrameworkProgramsPage from './components/academia/FrameworkProgramsPage';
+import FrameworkSubMajorsPage from './components/academia/FrameworkSubMajorsPage';
+import FrameworkSuperMajorsPage from './components/academia/FrameworkSuperMajorsPage';
 import FrameworkCoursesPage from './components/academia/FrameworkCoursesPage';
 import FrameworkDegreesPage from './components/academia/FrameworkDegreesPage';
 import FrameworkLevelsPage from './components/academia/FrameworkLevelsPage';
 import FrameworkHierarchySummaryPage from './components/academia/FrameworkHierarchySummaryPage';
+import FrameworkNzMappingReviewPage from './components/academia/FrameworkNzMappingReviewPage';
+import FrameworkCaMappingReviewPage from './components/academia/FrameworkCaMappingReviewPage';
 import InstitutionsManagePage from './components/academia/InstitutionsManagePage';
 import InstitutionsCollegesManagePage from './components/academia/InstitutionsCollegesManagePage';
 import InstitutionIntakeManagePage from './components/academia/intakes/InstitutionIntakeManagePage';
 import InstitutionWizardPage from './components/academia/wizard/InstitutionWizardPage';
 import InstitutionHistoryPage from './components/academia/wizard/InstitutionHistoryPage';
 import NexusIntelShell from './pages/nexus-intel/NexusIntelShell';
+import InquiryHubPage from './modules/IntelX/InquiryHub';
 import KnowledgeHubPage from './pages/nexus-intel/KnowledgeHubPage';
 import AiAssistantPage from './pages/nexus-intel/AiAssistantPage';
 import WorkflowsPage from './pages/nexus-intel/WorkflowsPage';
@@ -64,7 +71,6 @@ import FlowxCountryHubPage from './pages/flowx/FlowxCountryHubPage';
 import FlowxCountriesPage from './pages/flowx/FlowxCountriesPage';
 import FlowxCountryDetailPage from './pages/flowx/FlowxCountryDetailPage';
 import FlowxMasterWorkflowPage from './pages/flowx/FlowxMasterWorkflowPage';
-import FlowxJourneysPage from './pages/flowx/FlowxJourneysPage';
 import FlowxAddApplicationPage from './pages/flowx/FlowxAddApplicationPage';
 import FlowxJourneyDetailPage from './pages/flowx/FlowxJourneyDetailPage';
 import FlowxStudentApplicationsPage from './pages/flowx/FlowxStudentApplicationsPage';
@@ -77,6 +83,16 @@ import {
   UnsavedChangesNavigationGuard,
   UnsavedChangesProvider,
 } from './context/UnsavedChangesContext';
+
+const InvoiceWorkspacePage = lazy(() => import('./pages/InvoiceWorkspacePage'));
+
+function InvoiceWorkspaceFallback() {
+  return (
+    <div className="flex items-center justify-center py-24 text-sm text-text-muted">
+      Loading invoice workspace…
+    </div>
+  );
+}
 
 function AppRoot() {
   return (
@@ -113,6 +129,7 @@ const router = createBrowserRouter(
         <Route path="prospects/:leadId" element={<ProspectsPage />} />
         <Route path="students/:pipelineSlug" element={<StudentPipelinePage />} />
         <Route path="students/:pipelineSlug/:leadId" element={<StudentPipelinePage />} />
+        <Route path="express-leads" element={<ExpressLeadsPage />} />
         <Route path="offline-leads" element={<OfflineLeadsPage />} />
         <Route path="archive" element={<ArchiveView />} />
         <Route path="users" element={<UsersView />} />
@@ -128,6 +145,14 @@ const router = createBrowserRouter(
         </Route>
         <Route path="my-profile" element={<MyProfile />} />
         <Route path="settings" element={<AppSettings />} />
+        <Route
+          path="invoices"
+          element={
+            <Suspense fallback={<InvoiceWorkspaceFallback />}>
+              <InvoiceWorkspacePage />
+            </Suspense>
+          }
+        />
         <Route path="reports" element={<ReportsLayout />}>
           <Route index element={<Navigate to="meta-leads" replace />} />
           <Route path="meta-leads" element={<MetaLeadsReportPage />} />
@@ -180,9 +205,13 @@ const router = createBrowserRouter(
             <Route path="summary" element={<FrameworkHierarchySummaryPage embedded />} />
             <Route path="levels" element={<FrameworkLevelsPage embedded />} />
             <Route path="programs" element={<FrameworkDegreesPage embedded />} />
+            <Route path="super-majors" element={<FrameworkSuperMajorsPage embedded />} />
             <Route path="majors" element={<FrameworkProgramsPage embedded />} />
+            <Route path="sub-majors" element={<FrameworkSubMajorsPage embedded />} />
             <Route path="degrees" element={<Navigate to="../programs" replace />} />
             <Route path="courses" element={<FrameworkCoursesPage embedded />} />
+            <Route path="nz-mapping-review" element={<FrameworkNzMappingReviewPage embedded />} />
+            <Route path="ca-mapping-review" element={<FrameworkCaMappingReviewPage embedded />} />
           </Route>
           <Route path=":section/:entity" element={<AcademiaEntityPage />} />
           <Route path=":section/:entity/:recordId" element={<AcademiaEntityPage />} />
@@ -190,6 +219,7 @@ const router = createBrowserRouter(
         <Route path="nexus-intel" element={<NexusIntelShell />}>
           <Route index element={<Navigate to="knowledge" replace />} />
           <Route path="knowledge" element={<KnowledgeHubPage />} />
+          <Route path="inquiry-hub" element={<InquiryHubPage />} />
           <Route path="ai-assistant" element={<AiAssistantPage />} />
           <Route path="flowx" element={<Navigate to="/flowx" replace />} />
           <Route path="flowx/:studentId" element={<Navigate to="/flowx" replace />} />
@@ -205,7 +235,7 @@ const router = createBrowserRouter(
           <Route path="countries" element={<FlowxCountriesPage />} />
           <Route path="master" element={<FlowxMasterWorkflowPage />} />
           <Route path="countries/:countryCode" element={<FlowxCountryDetailPage />} />
-          <Route path="journeys" element={<FlowxJourneysPage />} />
+          <Route path="journeys" element={<Navigate to="/flowx/ops" replace />} />
           <Route path="journeys/new" element={<FlowxAddApplicationPage />} />
           <Route path="journeys/student/:leadId" element={<FlowxStudentApplicationsPage />} />
           <Route path="journeys/:enrollmentId" element={<FlowxJourneyDetailPage />} />

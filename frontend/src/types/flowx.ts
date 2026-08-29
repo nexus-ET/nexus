@@ -193,7 +193,7 @@ export interface FlowxEnrollment {
   campus_name?: string | null;
   level_id?: number | null;
   level_name?: string | null;
-  qualification_program_id?: string | null;
+  qualification_program_id?: number | null;
   program_name?: string | null;
   intake_id?: number | null;
   intake_name?: string | null;

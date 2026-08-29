@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Pencil, Search, Unlink } from 'lucide-react';
+import { ChevronDown, Pencil, Search, Unlink } from 'lucide-react';
 
 import { ACADEMIC_FRAMEWORK_LABELS } from '../../../schemas/academicFrameworkHierarchy';
 import type { WizardCollegeItem } from '../../../schemas/wizard/step3-colleges';
@@ -11,7 +11,10 @@ import {
   collegeScopeKey,
   filterOfferingsForScope,
   institutionScopeKey,
+  majorGroupHeading,
+  NO_MAJOR_GROUP_LABEL,
   offeringScopeKey,
+  programUrlHref,
   type GroupedProgramLink,
   type WizardAcademicsEntityScope,
 } from './wizardAcademicsScope';
@@ -62,8 +65,8 @@ function matchesSearch(group: GroupedProgramLink, query: string): boolean {
 
 /**
  * Compact browse panel for large program/course mappings:
- * fixed height, search + level filter, programs grouped under level headings,
- * headless scroll for program and course panes.
+ * fixed height, search + optional level filter, programs grouped under major headings,
+ * level shown as a badge on each program row.
  */
 function LinkedProgramsBrowser({
   groups,
@@ -77,6 +80,7 @@ function LinkedProgramsBrowser({
   const [query, setQuery] = useState('');
   const [levelFilter, setLevelFilter] = useState<string>('all');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [collapsedMajors, setCollapsedMajors] = useState<Set<string>>(() => new Set());
 
   const normalizedQuery = query.trim().toLowerCase();
 
@@ -94,6 +98,24 @@ function LinkedProgramsBrowser({
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [groups]);
 
+  const majors = useMemo(() => {
+    const counts = new Map<string, { programs: number; courses: number }>();
+    for (const group of groups) {
+      const major = majorGroupHeading(group.majorName);
+      const current = counts.get(major) || { programs: 0, courses: 0 };
+      current.programs += 1;
+      current.courses += group.courseNames.length;
+      counts.set(major, current);
+    }
+    return [...counts.entries()]
+      .map(([name, stats]) => ({ name, ...stats }))
+      .sort((a, b) => {
+        if (a.name === NO_MAJOR_GROUP_LABEL) return 1;
+        if (b.name === NO_MAJOR_GROUP_LABEL) return -1;
+        return a.name.localeCompare(b.name);
+      });
+  }, [groups]);
+
   const filteredGroups = useMemo(() => {
     return groups
       .filter(group => {
@@ -102,26 +124,30 @@ function LinkedProgramsBrowser({
       })
       .filter(group => matchesSearch(group, normalizedQuery))
       .sort((a, b) => {
-        const levelA = (a.levelName || '').trim() || 'Other';
-        const levelB = (b.levelName || '').trim() || 'Other';
-        const levelCmp = levelA.localeCompare(levelB);
-        if (levelCmp !== 0) return levelCmp;
+        const majorA = majorGroupHeading(a.majorName);
+        const majorB = majorGroupHeading(b.majorName);
+        if (majorA === NO_MAJOR_GROUP_LABEL && majorB !== NO_MAJOR_GROUP_LABEL) return 1;
+        if (majorB === NO_MAJOR_GROUP_LABEL && majorA !== NO_MAJOR_GROUP_LABEL) return -1;
+        const majorCmp = majorA.localeCompare(majorB);
+        if (majorCmp !== 0) return majorCmp;
         const programCmp = a.programName.localeCompare(b.programName);
         if (programCmp !== 0) return programCmp;
-        return (a.majorName || '').localeCompare(b.majorName || '');
+        return ((a.levelName || '').trim() || 'Other').localeCompare(
+          (b.levelName || '').trim() || 'Other'
+        );
       });
   }, [groups, levelFilter, normalizedQuery]);
 
-  const groupsByLevel = useMemo(() => {
-    const sections: Array<{ levelName: string; items: GroupedProgramLink[] }> = [];
-    const indexByLevel = new Map<string, number>();
+  const groupsByMajor = useMemo(() => {
+    const sections: Array<{ majorName: string; items: GroupedProgramLink[] }> = [];
+    const indexByMajor = new Map<string, number>();
     for (const group of filteredGroups) {
-      const levelName = (group.levelName || '').trim() || 'Other';
-      let sectionIndex = indexByLevel.get(levelName);
+      const majorName = majorGroupHeading(group.majorName);
+      let sectionIndex = indexByMajor.get(majorName);
       if (sectionIndex === undefined) {
         sectionIndex = sections.length;
-        indexByLevel.set(levelName, sectionIndex);
-        sections.push({ levelName, items: [] });
+        indexByMajor.set(majorName, sectionIndex);
+        sections.push({ majorName, items: [] });
       }
       sections[sectionIndex].items.push(group);
     }
@@ -156,6 +182,13 @@ function LinkedProgramsBrowser({
           <span className="mx-1.5 text-border-subtle">·</span>
           <span className="font-semibold text-text-main">{totalCourses}</span> course
           {totalCourses === 1 ? '' : 's'}
+          {majors.length > 0 ? (
+            <>
+              <span className="mx-1.5 text-border-subtle">·</span>
+              <span className="font-semibold text-text-main">{majors.length}</span> major
+              {majors.length === 1 ? '' : 's'}
+            </>
+          ) : null}
           {levels.length > 0 ? (
             <>
               <span className="mx-1.5 text-border-subtle">·</span>
@@ -224,26 +257,50 @@ function LinkedProgramsBrowser({
         <div className="grid h-[22rem] grid-cols-1 md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
           <HeadlessScrollArea className="h-full border-b border-border-subtle md:border-b-0 md:border-r">
             <div className="pb-2">
-              {groupsByLevel.map(section => (
-                <div key={section.levelName}>
-                  <div className="sticky top-0 z-10 border-b border-border-subtle bg-surface-bg/95 px-3 py-1.5 backdrop-blur-sm">
-                    <p className="text-[11px] font-bold uppercase tracking-wide text-text-muted">
-                      {section.levelName}
-                      <span className="ml-1.5 font-semibold normal-case tracking-normal text-text-muted/80">
+              {groupsByMajor.map(section => {
+                const expanded = !collapsedMajors.has(section.majorName);
+                return (
+                <div key={section.majorName}>
+                  <div className="sticky top-0 z-10">
+                    <button
+                      type="button"
+                      aria-expanded={expanded}
+                      onClick={() => {
+                        setCollapsedMajors(prev => {
+                          const next = new Set(prev);
+                          if (next.has(section.majorName)) next.delete(section.majorName);
+                          else next.add(section.majorName);
+                          return next;
+                        });
+                      }}
+                      className="flex w-full items-center gap-2 border-b border-accent/30 bg-accent px-3 py-1.5 text-left text-white"
+                    >
+                      <ChevronDown
+                        size={16}
+                        className={`shrink-0 transition-transform ${expanded ? '' : '-rotate-90'}`}
+                        aria-hidden
+                      />
+                      <span className="min-w-0 flex-1 truncate text-base font-semibold">
+                        {section.majorName}
+                      </span>
+                      <span className="shrink-0 text-xs font-semibold text-white/80">
                         {section.items.length} program{section.items.length === 1 ? '' : 's'}
                       </span>
-                    </p>
+                    </button>
                   </div>
+                  {expanded ? (
                   <ul>
                     {section.items.map(group => {
                       const isSelected = group.key === selectedKey;
                       const courseCount = group.courseNames.length;
+                      const levelLabel = (group.levelName || '').trim();
+                      const programUrl = group.programUrl?.trim() || '';
                       return (
-                        <li key={group.key}>
+                        <li key={group.key} className="flex items-start gap-1">
                           <button
                             type="button"
                             onClick={() => setSelectedKey(group.key)}
-                            className={`flex w-full items-start gap-2 px-3 py-2.5 text-left transition-colors ${
+                            className={`flex min-w-0 flex-1 items-start gap-2 px-3 py-2.5 text-left transition-colors ${
                               isSelected ? 'bg-accent/10' : 'hover:bg-card/80'
                             }`}
                           >
@@ -251,22 +308,38 @@ function LinkedProgramsBrowser({
                               <p className="truncate text-sm font-semibold text-text-main">
                                 {group.programName}
                               </p>
-                              <p className="truncate text-xs text-text-muted">
-                                {group.majorName && group.majorName !== '—'
-                                  ? group.majorName
-                                  : 'No major'}
-                                {courseCount > 0
-                                  ? ` · ${courseCount} course${courseCount === 1 ? '' : 's'}`
-                                  : ' · Program scope'}
-                              </p>
+                              <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                                {levelLabel && levelLabel !== '—' ? (
+                                  <span className="rounded-md bg-card px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+                                    {levelLabel}
+                                  </span>
+                                ) : null}
+                                <span className="truncate text-xs text-text-muted">
+                                  {courseCount > 0
+                                    ? `${courseCount} course${courseCount === 1 ? '' : 's'}`
+                                    : 'Program scope'}
+                                </span>
+                              </div>
                             </div>
                           </button>
+                          {programUrl ? (
+                            <a
+                              href={programUrlHref(programUrl)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="shrink-0 px-2 py-2.5 text-xs font-semibold text-accent hover:underline"
+                            >
+                              View Program
+                            </a>
+                          ) : null}
                         </li>
                       );
                     })}
                   </ul>
+                  ) : null}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </HeadlessScrollArea>
 
@@ -284,6 +357,18 @@ function LinkedProgramsBrowser({
                         ? ` · ${selectedGroup.majorName}`
                         : ''}
                     </p>
+                    {selectedGroup.programUrl?.trim() ? (
+                      <a
+                        href={programUrlHref(selectedGroup.programUrl)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-1 inline-block text-xs font-semibold text-accent hover:underline"
+                      >
+                        View Program
+                      </a>
+                    ) : (
+                      <span className="mt-1 block text-xs text-text-muted">—</span>
+                    )}
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
                     {onEdit ? (
@@ -372,12 +457,19 @@ const WizardAcademicsHierarchyTree: React.FC<WizardAcademicsHierarchyTreeProps> 
     const scoped = filterOfferingsForScope(linkedCourses, institutionScope, {
       collegeOverrides,
     });
+    const knownCollegeIds = new Set(
+      colleges.map(college => college.id).filter((id): id is number => Number(id) > 0)
+    );
     const orphans = linkedCourses.filter(offering => {
       const key = offeringScopeKey(offering);
-      return key !== institutionScopeKey() && !knownCollegeKeys.has(key);
+      if (key === institutionScopeKey()) return false;
+      if (knownCollegeKeys.has(key)) return false;
+      // Live DB college_id without matching draft local_id — still owned by a known college.
+      if (offering.college_id && knownCollegeIds.has(offering.college_id)) return false;
+      return true;
     });
     return [...scoped, ...orphans];
-  }, [collegeOverrides, knownCollegeKeys, linkedCourses]);
+  }, [collegeOverrides, colleges, knownCollegeKeys, linkedCourses]);
 
   const institutionPrograms = useMemo(
     () => groupProgramsForScope(institutionScope, institutionOfferings),
@@ -401,6 +493,7 @@ const WizardAcademicsHierarchyTree: React.FC<WizardAcademicsHierarchyTreeProps> 
         type: 'college',
         collegeLocalId: activeCollege.local_id || activeCollege.name,
         collegeName: activeCollege.name,
+        collegeId: activeCollege.id ?? null,
       }
     : institutionScope;
 

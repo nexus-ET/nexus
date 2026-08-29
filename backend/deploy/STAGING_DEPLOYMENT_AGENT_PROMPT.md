@@ -21,12 +21,12 @@ You are assisting with a **NEXUS Hostinger staging deployment** for `https://nex
 
 Work through these as a **preflight + postflight** checklist. Each item caused real staging pain.
 
-### A. Database / Neon
+### A. Database / Postgres
 
 | # | Issue | Prevention / verify |
 |---|--------|---------------------|
-| A1 | Staging pointed at **exhausted old Neon** (`ep-round-rain…`) | Confirm `DATABASE_URL` host is **Nexus-Dev-1** (`ep-broad-breeze-azi6kz33-pooler…` or current staging project). |
-| A2 | `postgresql://` / `channel_binding=require` broke psycopg | Prefer `postgresql+psycopg://…?sslmode=require` **without** `channel_binding`. App `normalize_database_url()` should strip binding; still set a clean URL. |
+| A1 | Staging pointed at **wrong DB** (develop Neon still-paper, old Neon Nexus-Dev-1 / sparkling-violet) | Confirm `DATABASE_URL` is **Hostinger KVM 1**: `postgresql+psycopg://nexus_et_admin:…@127.0.0.1:5432/nexus_edutrust`. See [setup_staging_db.md](./setup_staging_db.md). |
+| A2 | Neon `channel_binding=require` or systemd 502 from bad `.env` parsing | Hostinger Postgres: no Neon query params. Unit must `ExecStart` the dotenv wrapper ([run-nexus-backend.sh](./run-nexus-backend.sh)). Strip CRLF: `sed -i 's/\r$//' .env`. |
 | A3 | Fresh DB: early Alembic revisions are ALTER-only → fail on empty DB | Use `python scripts/bootstrap_alembic.py` (create_all + stamp head + seeds) on empty DBs, not blind `alembic upgrade head` alone. |
 | A4 | Fresh DB had **no users** → login impossible | After bootstrap: `python scripts/seed_staging_users.py --password '…'` (real password). Canonical admins: `ishq@edutrust.in`, `arunpk@edutrust.in`, `admin@edutrust.in`. |
 | A5 | Seed used example password `YourSecurePass` → **401 login** | Document the password that was actually set; never leave example strings. Verify with local `curl` to `/api/v1/login` expecting 200. |
@@ -65,7 +65,8 @@ Work through these as a **preflight + postflight** checklist. Each item caused r
 
 | # | Issue | Prevention / verify |
 |---|--------|---------------------|
-| E1 | Backend slow to bind; curl to `:8002` too early | Wait for health; check `systemctl status nexus-backend` + `journalctl -u nexus-backend -n 40`. |
+| E1 | Backend slow to bind; curl to `:8002` too early | Wait up to ~3 min after restart (cold Neon bootstrap); check `ss -lntp \| grep 8002`, `systemctl status nexus-backend`, `journalctl -u nexus-backend -n 100`. |
+| E1b | **502 after DB URL change** while `seed_staging_users.py` works | Scripts use python-dotenv; old unit used `EnvironmentFile=` (CRLF/`&`/quotes diverge). Fix `.env` to clean URL, install wrapper unit from `deploy/nexus-backend.service`, `daemon-reload`, restart. |
 | E2 | WhatsApp webhook 502 / hairpin NAT | Prefer loopback verify (`127.0.0.1:8002`); `sync_whatsapp_webhook.py` should try loopback first. Confirm `PUBLIC_TUNNEL_BASE` is staging HTTPS host. |
 | E3 | Long “simple” deploys from missing seeds | Treat **users + nav RBAC + settings/SMTP + academia copy (+ drafts) + R2 staging bucket** as part of deploy, not optional cleanup. |
 
@@ -111,11 +112,11 @@ After SMTP env edits: `sudo systemctl restart nexus-backend`. Confirm journals a
 | **States** | `geography_states` | academia copy |
 | **Cities** | `geography_cities` | academia copy |
 | **Institutions tree** | `institutions`, `campuses`, `colleges`, intakes, pictures metadata | academia copy |
-| **Default student (lead id 27)** | Lead **`id=27`** + `students_master` **Ishan Ahmed** (`lead_id=27`, email `ishq@erxa.in`) and full related graph: bookings, messages, message_history, candidate_educations, candidate_test_scores, work_experiences, non_academic_activities, digital_presence_links, status_history, conversation audits, aspirations on `students_master` | **Required every full staging refresh:** `python scripts/copy_student_to_staging.py --lead-id 27 --target 'postgresql+psycopg://…Nexus-Dev-1…'` (from Windows; default with only `--target` is also lead 27). Verify staging has `leads.id=27` and `students_master` where `lead_id=27`. |
+| **Default student (lead id 27)** | Lead **`id=27`** + `students_master` **Ishan Ahmed** (`lead_id=27`, email `ishq@erxa.in`) and full related graph: bookings, messages, message_history, candidate_educations, candidate_test_scores, work_experiences, non_academic_activities, digital_presence_links, status_history, conversation audits, aspirations on `students_master` | **Required every full staging refresh:** `python scripts/copy_student_to_staging.py --lead-id 27 --target 'postgresql+psycopg://nexus_et_admin:…@HOST:5432/nexus_edutrust'` (from Windows; default with only `--target` is also lead 27). Verify staging has `leads.id=27` and `students_master` where `lead_id=27`. |
 
 **Primary tool for geography + LMPC + institutions + drafts:**
 
-`python scripts/copy_academia_to_staging.py --target 'postgresql+psycopg://…Nexus-Dev-1…'`
+`python scripts/copy_academia_to_staging.py --target 'postgresql+psycopg://nexus_et_admin:…@HOST:5432/nexus_edutrust'`
 
 (from Windows; password = `npg_…` only). Expect non-zero counts for `levels`, `programs`, `education_majors`, `education_courses`, `countries`, `geography_states`, `geography_cities`, `institutions`, `institution_wizard_drafts`.
 
@@ -181,7 +182,8 @@ python scripts/ensure_navigation_rbac.py   # if nav changed (new pages/links)
 Confirm these **keys** exist and are staging-correct (print names + non-secret values only):
 
 ```text
-DATABASE_URL=postgresql+psycopg://…@<Nexus-Dev-1-pooler>…/neondb?sslmode=require
+DATABASE_URL=postgresql+psycopg://nexus_et_admin:…@127.0.0.1:5432/nexus_edutrust
+# Or Hostinger hPanel DB host instead of 127.0.0.1
 ENVIRONMENT=staging
 NEXUS_INSTANCE=nexus-dev
 FRONTEND_URL=https://nexus-dev.edutrust.in
@@ -216,7 +218,7 @@ R2_PUBLIC_BASE_URL=…   # private S3 host OK → app uses media proxy
 ### 1. Preflight (before code push)
 
 - [ ] Confirm target branch `staging` and VPS path `/var/www/nexus`
-- [ ] Confirm Neon project is Nexus-Dev-1 (not old exhausted project)
+- [ ] Confirm Hostinger KVM 1 Postgres (`nexus_edutrust` / `nexus_et_admin`) — not develop Neon or old staging Neon
 - [ ] Confirm local develop `.env` will not be overwritten
 - [ ] **Branch divergence (G2):** `git fetch` + check `git merge-base` / `git log origin/staging..origin/develop` — expect a **merge**, not fast-forward
 - [ ] **Single Alembic head (G3):** after merging, `python -m alembic heads` → exactly 1 head, 0 branch points
@@ -361,8 +363,7 @@ PY
 ```powershell
 cd E:\NEXUS\backend
 .\.venv\Scripts\Activate.ps1
-$pw = 'npg_…'   # ONLY the password segment; length ~24; no spaces
-$target = "postgresql+psycopg://neondb_owner:${pw}@ep-broad-breeze-azi6kz33-pooler.c-3.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
+$target = "postgresql+psycopg://nexus_et_admin:YOUR_PASSWORD@YOUR_VPS_IP_OR_DB_HOST:5432/nexus_edutrust"
 
 python scripts/copy_academia_to_staging.py --target $target
 # Expect institution_wizard_drafts: N rows

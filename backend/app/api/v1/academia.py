@@ -1,10 +1,11 @@
-from uuid import UUID
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_academia_admin
 from app.db.database import get_db
+from app.models.target_course import TargetCourse
 from app.models.user import User
 from app.schemas.education_major import (
     EducationMajorCreate,
@@ -12,9 +13,25 @@ from app.schemas.education_major import (
     EducationMajorRead,
     EducationMajorUpdate,
 )
+from app.schemas.education_sub_major import (
+    EducationSubMajorCreate,
+    EducationSubMajorListResponse,
+    EducationSubMajorRead,
+    EducationSubMajorUpdate,
+)
+from app.schemas.education_super_major import (
+    EducationSuperMajorCreate,
+    EducationSuperMajorListResponse,
+    EducationSuperMajorRead,
+    EducationSuperMajorUpdate,
+)
 from app.schemas.program_major_mapping import (
     EducationMajorBulkAssignRequest,
     EducationMajorBulkAssignResponse,
+    NzProgramMappingSuggestionsResponse,
+    CaProgramMappingSuggestionsResponse,
+    ProgramMappingBulkApplyRequest,
+    ProgramMappingBulkApplyResponse,
     ProgramMajorMappingListResponse,
 )
 from app.schemas.level import LevelCreate, LevelRead, LevelUpdate
@@ -48,11 +65,13 @@ from app.schemas.academia_hub import (
     GeographyStateListResponse,
     GeographyStateRead,
     GeographyStateUpdate,
+    INSTITUTION_PROFILE_TEXT_FIELD_NAMES,
     InstitutionalHierarchySummary,
     InstitutionAdminListResponse,
     InstitutionCreate,
     InstitutionRead,
     InstitutionSummaryRead,
+    InstitutionTypeRead,
     InstitutionUpdate,
     ProgramAdminCreate,
     ProgramAdminRead,
@@ -95,6 +114,21 @@ def _city_read(row) -> GeographyCityRead:
     )
 
 
+def _institution_profile_text(row) -> dict[str, str | None]:
+    return {
+        name: getattr(row, name, None) for name in INSTITUTION_PROFILE_TEXT_FIELD_NAMES
+    }
+
+
+def _institution_type_fields(row) -> dict[str, str | int | None]:
+    institution_type = getattr(row, "institution_type_ref", None)
+    return {
+        "institution_type_id": row.institution_type_id,
+        "institution_type_code": institution_type.code if institution_type else None,
+        "institution_type_name": institution_type.name if institution_type else None,
+    }
+
+
 def _institution_read(
     row,
     *,
@@ -106,13 +140,14 @@ def _institution_read(
         country_id=row.country_id,
         name=row.name,
         code=row.code,
-        institution_type=row.institution_type,
         accreditation_details=row.accreditation_details,
         is_active=row.is_active,
         sort_order=row.sort_order,
         country_name=row.country.name if row.country else None,
         campus_count=campus_count or 0,
         college_count=college_count or 0,
+        **_institution_type_fields(row),
+        **_institution_profile_text(row),
     )
 
 
@@ -129,31 +164,29 @@ def _normalize_institution_publish_status(
     return "pending"
 
 
+def _clip_text(value: str | None, limit: int) -> str | None:
+    """Clamp stored text so summary responses never fail schema max_length checks."""
+    if value is None:
+        return None
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip()
+
+
 def _institution_summary_read(
     row,
-    db: Session,
     *,
-    campus_count: int | None = None,
-    college_count: int | None = None,
+    metrics: dict[str, int] | None = None,
 ) -> InstitutionSummaryRead:
+    resolved = metrics or {}
     return InstitutionSummaryRead(
         id=row.id,
         country_id=row.country_id,
         state_id=row.state_id,
         city_id=row.city_id,
-        zipcode=row.zipcode,
         name=row.name,
         code=row.code,
-        institution_type=row.institution_type,
-        company_affiliated=row.company_affiliated,
-        ranking_tier_global=row.ranking_tier_global,
-        ad_promotion_flag=row.ad_promotion_flag,
-        institution_web_url=row.institution_web_url,
-        currency_type=row.currency_type,
-        students_count=row.students_count,
-        accreditation_details=row.accreditation_details,
-        short_description=row.short_description,
-        long_description=row.long_description,
         is_active=row.is_active,
         sort_order=row.sort_order,
         publish_status=_normalize_institution_publish_status(
@@ -164,16 +197,18 @@ def _institution_summary_read(
         country_name=row.country.name if row.country else None,
         state_name=row.state.name if row.state else None,
         city_name=row.city.name if row.city else None,
-        campus_count=campus_count or 0,
-        college_count=college_count or 0,
+        campus_count=resolved.get("campus_count", 0),
+        college_count=resolved.get("college_count", 0),
         created_at=row.created_at,
         updated_at=row.updated_at,
-        level_count=service._institution_level_count(db, row.id),
-        program_count=service._institution_program_count(db, row.id),
-        major_count=service._institution_major_count(db, row.id),
-        course_count=service._institution_course_count(db, row.id),
-        intake_count=service._institution_intake_count(db, row.id),
-        picture_count=service._institution_picture_count(db, row.id),
+        level_count=resolved.get("level_count", 0),
+        program_count=resolved.get("program_count", 0),
+        major_count=resolved.get("major_count", 0),
+        sub_major_count=resolved.get("sub_major_count", 0),
+        course_count=resolved.get("course_count", 0),
+        intake_count=resolved.get("intake_count", 0),
+        picture_count=resolved.get("picture_count", 0),
+        **_institution_type_fields(row),
     )
 
 
@@ -225,10 +260,41 @@ def _college_read(row) -> CollegeRead:
             part for part in [city, state, country] if part
         ) or None
     breadcrumb_parts = [part for part in [institution_name, campus_name, row.name] if part]
+    linked_campuses = []
+    for link in sorted(
+        getattr(row, "campus_links", []) or [],
+        key=lambda item: (not item.is_primary, item.campus.name if item.campus else ""),
+    ):
+        linked = link.campus
+        if linked is None:
+            continue
+        linked_location = getattr(linked, "location", None)
+        linked_location_label = ", ".join(
+            part
+            for part in [
+                linked.city or (linked_location.name if linked_location else None),
+                linked.state.name if getattr(linked, "state", None) else None,
+                linked.country.name if getattr(linked, "country", None) else None,
+            ]
+            if part
+        ) or None
+        linked_campuses.append(
+            {
+                "campus_id": linked.id,
+                "name": linked.name,
+                "address": linked.address,
+                "location_label": linked_location_label,
+                "is_primary": link.is_primary,
+                "source_url": link.source_url,
+                "evidence": link.evidence,
+            }
+        )
     return CollegeRead(
         id=row.id,
         institution_id=row.institution_id,
         campus_id=row.campus_id,
+        campus_ids=[item["campus_id"] for item in linked_campuses],
+        linked_campuses=linked_campuses,
         name=row.name,
         code=row.code,
         category=row.category,
@@ -252,16 +318,25 @@ def _degree_read(
     *,
     major_count: int | None = None,
     major_ids: list[int] | None = None,
+    major_names: list[str] | None = None,
+    sub_major_ids: list[int] | None = None,
+    sub_major_names: list[str] | None = None,
     institution_id: int | None = None,
+    institution_ids: list[int] | None = None,
+    institution_names: list[str] | None = None,
+    country_id: int | None = None,
+    college_id: int | None = None,
     intake_ids: list[int] | None = None,
 ) -> DegreeAdminRead:
     level = getattr(row, "level", None)
     resolved_major_ids = major_ids or []
+    resolved_institution_ids = institution_ids or []
     return DegreeAdminRead(
         id=row.id,
         code=row.code,
         name=row.name,
         description=row.description,
+        program_url=getattr(row, "program_url", None),
         level_id=row.level_id,
         level_code=level.code if level else None,
         level_name=level.name if level else None,
@@ -269,9 +344,31 @@ def _degree_read(
         sort_order=row.sort_order,
         major_count=major_count if major_count is not None else len(resolved_major_ids),
         major_ids=resolved_major_ids,
-        institution_id=institution_id,
+        major_names=major_names or [],
+        sub_major_ids=sub_major_ids or [],
+        sub_major_names=sub_major_names or [],
+        institution_id=institution_id if institution_id is not None else (
+            resolved_institution_ids[0] if resolved_institution_ids else None
+        ),
+        institution_ids=resolved_institution_ids,
+        institution_names=institution_names or [],
+        country_id=country_id,
+        college_id=college_id,
         intake_ids=intake_ids or [],
     )
+
+
+def _degree_read_with_mappings(db: Session, row, **kwargs) -> DegreeAdminRead:
+    payload = service.program_major_mapping_payloads(db, [row.id]).get(int(row.id), {})
+    offering = service.program_offering_institution_payloads(db, [row.id]).get(int(row.id), {})
+    merged = {**offering, **payload}
+    merged["intake_ids"] = kwargs.get("intake_ids") or []
+    if not merged.get("institution_id"):
+        merged["institution_id"] = kwargs.get("institution_id")
+        ids = merged.get("institution_ids") or []
+        if not merged["institution_id"] and ids:
+            merged["institution_id"] = ids[0]
+    return _degree_read(row, **merged)
 
 
 def _program_read(row, *, course_count: int | None = None) -> ProgramAdminRead:
@@ -296,7 +393,42 @@ def _program_read(row, *, course_count: int | None = None) -> ProgramAdminRead:
     )
 
 
+def _target_course_read(row: TargetCourse) -> CourseAdminRead:
+    program = row.qualification_program
+    program_name = program.name if program else None
+    major = row.education_major
+    major_name = major.label if major else None
+    major_id = row.education_major_id
+    level_obj = program.level if program else None
+    level_name = level_obj.name if level_obj else None
+    breadcrumb_parts = [part for part in [level_name, program_name, major_name] if part]
+    return CourseAdminRead(
+        id=row.id,
+        program_id=0,
+        major_id=major_id,
+        major_ids=[major_id] if major_id else [],
+        degree_id=row.qualification_program_id,
+        level_id=program.level_id if program else None,
+        code=row.code,
+        description=None,
+        label=row.label,
+        name=row.label,
+        level=row.level,
+        is_active=row.is_active,
+        sort_order=row.sort_order or 0,
+        program_code=program.code if program else None,
+        program_label=program_name,
+        program_name=program_name,
+        major_name=major_name,
+        major_names=[major_name] if major_name else [],
+        degree_name=program_name,
+        hierarchy_breadcrumb=" > ".join(breadcrumb_parts) if breadcrumb_parts else None,
+    )
+
+
 def _course_read(row) -> CourseAdminRead:
+    if isinstance(row, TargetCourse):
+        return _target_course_read(row)
     program_name = row.program.name if row.program else None
     program_id = row.program_id
     mappings = getattr(row, "education_major_mappings", None) or []
@@ -328,6 +460,7 @@ def _course_read(row) -> CourseAdminRead:
         major_id=major_id,
         major_ids=major_ids,
         degree_id=program_id,
+        level_id=getattr(row, "level_id", None),
         code=row.code,
         description=row.description,
         label=row.label,
@@ -359,6 +492,10 @@ def search_academia(
 def list_countries(
     q: str | None = Query(None, max_length=120),
     active_only: bool = Query(False),
+    with_institutions: bool = Query(
+        False,
+        description="When true, only countries with at least one institution are returned.",
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     sort_by: str = Query("name", pattern="^(name|iso2|dial_code|sort_order|is_active|id)$"),
@@ -370,6 +507,7 @@ def list_countries(
         db,
         query=q,
         active_only=active_only,
+        with_institutions=with_institutions,
         page=page,
         page_size=page_size,
         sort_by=sort_by,
@@ -588,34 +726,56 @@ def list_institutions(
     db: Session = Depends(get_db),
     _: User = Depends(require_academia_admin),
 ):
+    rows = service.list_institutions_admin(db, query=q)
+    counts = service.institution_hierarchy_counts(db, [row.id for row in rows])
     return [
         _institution_read(
             row,
-            campus_count=service._institution_campus_count(db, row.id),
-            college_count=service._institution_college_count(db, row.id),
+            campus_count=counts.get(row.id, (0, 0))[0],
+            college_count=counts.get(row.id, (0, 0))[1],
         )
-        for row in service.list_institutions_admin(db, query=q)
+        for row in rows
     ]
+
+
+# Per-item constraints for list query params. Putting ge= on Query() for list[int]
+# makes Pydantic apply ge to the whole list (TypeError → HTTP 500).
+_SummaryIdList = Annotated[list[Annotated[int, Query(ge=1)]] | None, Query()]
 
 
 @router.get("/academia/institutions/summary", response_model=InstitutionAdminListResponse)
 def list_institutions_summary(
     q: str | None = Query(None, max_length=120, description="Search institution names"),
-    country_id: int | None = Query(None, ge=1),
-    state_id: int | None = Query(None, ge=1),
-    city_id: int | None = Query(None, ge=1),
+    country_id: _SummaryIdList = None,
+    state_id: _SummaryIdList = None,
+    city_id: _SummaryIdList = None,
     is_active: bool | None = Query(None, description="Filter by active/inactive status"),
-    institution_type: str | None = Query(None, max_length=80, description="Institution type / program type"),
-    program_id: UUID | None = Query(None, description="Filter institutions offering courses under this program"),
-    major_id: int | None = Query(None, ge=1, description="Filter institutions offering courses under this major"),
-    template_id: int | None = Query(None, ge=1, description="Filter institutions using this academic template"),
+    institution_type_id: Annotated[
+        list[Annotated[int, Query(ge=1)]] | None,
+        Query(description="Filter by institution type id"),
+    ] = None,
+    program_id: list[int] | None = Query(None, description="Filter institutions offering courses under these programs"),
+    major_id: Annotated[
+        list[Annotated[int, Query(ge=1)]] | None,
+        Query(description="Filter institutions offering courses under these majors"),
+    ] = None,
+    sub_major_id: Annotated[
+        list[Annotated[int, Query(ge=1)]] | None,
+        Query(
+            description="Filter institutions offering programs mapped to these education sub-majors",
+        ),
+    ] = None,
+    template_id: Annotated[
+        list[Annotated[int, Query(ge=1)]] | None,
+        Query(description="Filter institutions using these academic templates"),
+    ] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     sort_by: str = Query(
         "created_at",
         pattern=(
-            "^(name|city|state|country|created_at|code|institution_type|status|sort_order|id|"
-            "program_count|major_count|course_count|campus_count|college_count|intake_count)$"
+            "^(name|city|state|country|created_at|code|institution_type_id|institution_type|status|sort_order|id|"
+            "level_count|program_count|major_count|sub_major_count|course_count|campus_count|college_count|intake_count)$"
         ),
     ),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
@@ -625,14 +785,15 @@ def list_institutions_summary(
     rows, total = service.list_institutions_summary_admin(
         db,
         query=q,
-        country_id=country_id,
-        state_id=state_id,
-        city_id=city_id,
+        country_ids=country_id,
+        state_ids=state_id,
+        city_ids=city_id,
         is_active=is_active,
-        institution_type=institution_type,
-        program_id=program_id,
-        major_id=major_id,
-        template_id=template_id,
+        institution_type_ids=institution_type_id,
+        program_ids=program_id,
+        major_ids=major_id,
+        sub_major_ids=sub_major_id,
+        template_ids=template_id,
         page=page,
         page_size=page_size,
         sort_by=sort_by,
@@ -640,14 +801,10 @@ def list_institutions_summary(
     )
     total_pages = max(1, (total + page_size - 1) // page_size) if total else 0
     active_count, inactive_count = service.get_institution_status_counts(db)
+    metrics = service.institution_summary_metrics(db, [row.id for row in rows])
     return InstitutionAdminListResponse(
         items=[
-            _institution_summary_read(
-                row,
-                db,
-                campus_count=service._institution_campus_count(db, row.id),
-                college_count=service._institution_college_count(db, row.id),
-            )
+            _institution_summary_read(row, metrics=metrics.get(row.id))
             for row in rows
         ],
         page=page,
@@ -727,6 +884,17 @@ def list_campus_types(
     return [
         CampusTypeRead.model_validate(row)
         for row in service.list_campus_types_admin(db)
+    ]
+
+
+@router.get("/academia/institution-types", response_model=list[InstitutionTypeRead])
+def list_institution_types(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    return [
+        InstitutionTypeRead.model_validate(row)
+        for row in service.list_institution_types_admin(db)
     ]
 
 
@@ -904,12 +1072,16 @@ def delete_level(
 def list_education_majors_admin(
     q: str | None = Query(None, max_length=120),
     level_id: int | None = Query(None, ge=1),
-    program_id: UUID | None = Query(None, description="Parent qualification program (programs.id)"),
+    program_id: int | None = Query(None, description="Parent qualification program (programs.id)"),
+    super_major_id: int | None = Query(None, ge=1, description="education_super_majors.id"),
     catalog_only: bool = Query(True, description="Return only catalog majors (not program clones)"),
     active_only: bool = Query(False),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
-    sort_by: str = Query("name", pattern="^(name|code|program|level|id|sort_order)$"),
+    sort_by: str = Query(
+        "name",
+        pattern="^(name|code|program|level|id|sort_order|super_major)$",
+    ),
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
     _: User = Depends(require_academia_admin),
@@ -921,6 +1093,7 @@ def list_education_majors_admin(
         query=q,
         level_id=level_id,
         program_id=program_id,
+        super_major_id=super_major_id,
         catalog_only=catalog_only,
         active_only=active_only,
         page=page,
@@ -981,6 +1154,51 @@ def list_program_major_mappings_admin(
     return ProgramMajorMappingListResponse(items=mapping_service.list_program_major_mappings_read(db))
 
 
+@router.get(
+    "/academia/nz-program-mapping-suggestions",
+    response_model=NzProgramMappingSuggestionsResponse,
+)
+def list_nz_program_mapping_suggestions_admin(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from app.services import nz_program_mapping_review as review_service
+
+    return review_service.list_nz_program_mapping_suggestions(db)
+
+
+@router.get(
+    "/academia/ca-program-mapping-suggestions",
+    response_model=CaProgramMappingSuggestionsResponse,
+)
+def list_ca_program_mapping_suggestions_admin(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from app.services import ca_program_mapping_review as review_service
+
+    return review_service.list_ca_program_mapping_suggestions(db)
+
+
+@router.post(
+    "/academia/program-mappings/bulk-apply",
+    response_model=ProgramMappingBulkApplyResponse,
+)
+def bulk_apply_program_mappings_admin(
+    payload: ProgramMappingBulkApplyRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from app.services import nz_program_mapping_review as review_service
+
+    return review_service.bulk_apply_program_mappings(
+        db,
+        payload.items,
+        nz_scope_only=payload.nz_scope_only,
+        ca_scope_only=payload.ca_scope_only,
+    )
+
+
 @router.get("/academia/education-majors/{major_id}", response_model=EducationMajorRead)
 def get_education_major_admin(
     major_id: int,
@@ -1018,6 +1236,184 @@ def delete_education_major_admin(
     from app.services import education_majors as major_service
 
     major_service.delete_education_major(db, major_id)
+    return {"ok": True}
+
+
+@router.get("/academia/education-sub-majors", response_model=EducationSubMajorListResponse)
+def list_education_sub_majors_admin(
+    q: str | None = Query(None, max_length=120),
+    major_id: int | None = Query(None, ge=1),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    sort_by: str = Query("name", pattern="^(name|major|id)$"),
+    sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from app.services import education_sub_majors as sub_major_service
+
+    rows, total = sub_major_service.list_education_sub_majors_read(
+        db,
+        query=q,
+        major_id=major_id,
+        page=page,
+        page_size=page_size,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    total_pages = max(1, (total + page_size - 1) // page_size) if total else 0
+    return EducationSubMajorListResponse(
+        items=rows,
+        page=page,
+        page_size=page_size,
+        total=total,
+        total_pages=total_pages,
+    )
+
+
+@router.post("/academia/education-sub-majors", response_model=EducationSubMajorRead)
+def create_education_sub_major_admin(
+    payload: EducationSubMajorCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from app.services import education_sub_majors as sub_major_service
+
+    return sub_major_service.create_education_sub_major(db, payload)
+
+
+@router.get("/academia/education-sub-majors/{sub_major_id}", response_model=EducationSubMajorRead)
+def get_education_sub_major_admin(
+    sub_major_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from fastapi import HTTPException
+
+    from app.services import education_sub_majors as sub_major_service
+
+    record = sub_major_service.get_education_sub_major(db, sub_major_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Sub-major not found.")
+    return sub_major_service.education_sub_major_read(db, record)
+
+
+@router.put("/academia/education-sub-majors/{sub_major_id}", response_model=EducationSubMajorRead)
+def update_education_sub_major_admin(
+    sub_major_id: int,
+    payload: EducationSubMajorUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from app.services import education_sub_majors as sub_major_service
+
+    return sub_major_service.update_education_sub_major(db, sub_major_id, payload)
+
+
+@router.delete("/academia/education-sub-majors/{sub_major_id}")
+def delete_education_sub_major_admin(
+    sub_major_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from app.services import education_sub_majors as sub_major_service
+
+    sub_major_service.delete_education_sub_major(db, sub_major_id)
+    return {"ok": True}
+
+
+@router.get(
+    "/academia/education-super-majors",
+    response_model=EducationSuperMajorListResponse,
+)
+def list_education_super_majors_admin(
+    q: str | None = Query(None, max_length=120),
+    active_only: bool = Query(False),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    sort_by: str = Query("sort_order", pattern="^(name|code|sort_order|id)$"),
+    sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from app.services import education_super_majors as super_major_service
+
+    rows, total = super_major_service.list_education_super_majors_read(
+        db,
+        query=q,
+        active_only=active_only,
+        page=page,
+        page_size=page_size,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    total_pages = max(1, (total + page_size - 1) // page_size) if total else 0
+    return EducationSuperMajorListResponse(
+        items=rows,
+        page=page,
+        page_size=page_size,
+        total=total,
+        total_pages=total_pages,
+    )
+
+
+@router.post(
+    "/academia/education-super-majors",
+    response_model=EducationSuperMajorRead,
+)
+def create_education_super_major_admin(
+    payload: EducationSuperMajorCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from app.services import education_super_majors as super_major_service
+
+    return super_major_service.create_education_super_major(db, payload)
+
+
+@router.get(
+    "/academia/education-super-majors/{super_major_id}",
+    response_model=EducationSuperMajorRead,
+)
+def get_education_super_major_admin(
+    super_major_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from fastapi import HTTPException
+
+    from app.services import education_super_majors as super_major_service
+
+    record = super_major_service.get_education_super_major(db, super_major_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Super-major not found.")
+    return super_major_service.education_super_major_read(db, record)
+
+
+@router.put(
+    "/academia/education-super-majors/{super_major_id}",
+    response_model=EducationSuperMajorRead,
+)
+def update_education_super_major_admin(
+    super_major_id: int,
+    payload: EducationSuperMajorUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from app.services import education_super_majors as super_major_service
+
+    return super_major_service.update_education_super_major(db, super_major_id, payload)
+
+
+@router.delete("/academia/education-super-majors/{super_major_id}")
+def delete_education_super_major_admin(
+    super_major_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from app.services import education_super_majors as super_major_service
+
+    super_major_service.delete_education_super_major(db, super_major_id)
     return {"ok": True}
 
 
@@ -1075,6 +1471,16 @@ def get_academic_hierarchy(
 def list_degrees(
     q: str | None = Query(None, max_length=120),
     level_id: int | None = Query(None, ge=1),
+    major_id: Annotated[
+        list[Annotated[int, Query(ge=1)]] | None,
+        Query(description="Filter programs mapped to these catalog majors"),
+    ] = None,
+    sub_major_id: Annotated[
+        list[Annotated[int, Query(ge=1)]] | None,
+        Query(description="Filter programs mapped to these catalog sub-majors"),
+    ] = None,
+    country_id: _SummaryIdList = None,
+    institution_id: _SummaryIdList = None,
     active_only: bool = Query(False),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
@@ -1087,18 +1493,26 @@ def list_degrees(
         db,
         query=q,
         level_id=level_id,
+        major_ids=major_id,
+        sub_major_ids=sub_major_id,
+        country_ids=country_id,
+        institution_ids=institution_id,
         active_only=active_only,
         page=page,
         page_size=page_size,
         sort_by=sort_by,
         sort_dir=sort_dir,
     )
+    program_ids = [row.id for row in rows]
+    mapping_by_program = service.program_major_mapping_payloads(db, program_ids)
+    institutions_by_program = service.program_offering_institution_payloads(db, program_ids)
     total_pages = max(1, (total + page_size - 1) // page_size) if total else 0
     return DegreeAdminListResponse(
         items=[
             _degree_read(
                 row,
-                major_ids=service._degree_major_ids(db, row.id),
+                **mapping_by_program.get(int(row.id), {}),
+                **institutions_by_program.get(int(row.id), {}),
             )
             for row in rows
         ],
@@ -1119,9 +1533,9 @@ def create_degree(
 
     row = service.create_degree_admin(db, payload)
     intake_meta = enrich_degree_with_intakes(db, row)
-    return _degree_read(
+    return _degree_read_with_mappings(
+        db,
         row,
-        major_ids=service._degree_major_ids(db, row.id),
         institution_id=intake_meta["institution_id"],
         intake_ids=intake_meta["intake_ids"],
     )
@@ -1129,7 +1543,7 @@ def create_degree(
 
 @router.get("/academia/degrees/{degree_id}", response_model=DegreeAdminRead)
 def get_degree(
-    degree_id: UUID,
+    degree_id: int,
     db: Session = Depends(get_db),
     _: User = Depends(require_academia_admin),
 ):
@@ -1137,9 +1551,9 @@ def get_degree(
 
     row = service.get_degree_admin(db, degree_id)
     intake_meta = enrich_degree_with_intakes(db, row)
-    return _degree_read(
+    return _degree_read_with_mappings(
+        db,
         row,
-        major_ids=service._degree_major_ids(db, degree_id),
         institution_id=intake_meta["institution_id"],
         intake_ids=intake_meta["intake_ids"],
     )
@@ -1147,7 +1561,7 @@ def get_degree(
 
 @router.put("/academia/degrees/{degree_id}", response_model=DegreeAdminRead)
 def update_degree(
-    degree_id: UUID,
+    degree_id: int,
     payload: DegreeAdminUpdate,
     db: Session = Depends(get_db),
     _: User = Depends(require_academia_admin),
@@ -1156,9 +1570,9 @@ def update_degree(
 
     row = service.update_degree_admin(db, degree_id, payload)
     intake_meta = enrich_degree_with_intakes(db, row)
-    return _degree_read(
+    return _degree_read_with_mappings(
+        db,
         row,
-        major_ids=service._degree_major_ids(db, degree_id),
         institution_id=intake_meta["institution_id"],
         intake_ids=intake_meta["intake_ids"],
     )
@@ -1166,20 +1580,25 @@ def update_degree(
 
 @router.delete("/academia/degrees/{degree_id}")
 def delete_degree(
-    degree_id: UUID,
+    degree_id: int,
+    institution_id: int | None = Query(
+        None,
+        ge=1,
+        description="When set, remove this institution's offering only if others remain",
+    ),
     db: Session = Depends(get_db),
     _: User = Depends(require_academia_admin),
 ):
-    service.delete_degree_admin(db, degree_id)
+    service.delete_degree_admin(db, degree_id, institution_id=institution_id)
     return {"ok": True}
 
 
 @router.get("/academia/programs", response_model=list[ProgramAdminRead])
 def list_programs(
     q: str | None = Query(None, max_length=120),
-    degree_id: UUID | None = Query(None, description="Parent qualification program UUID (programs.id)"),
-    program_id: UUID | None = Query(
-        None, description="Alias for degree_id — parent qualification program UUID"
+    degree_id: int | None = Query(None, description="Parent qualification program id (programs.id)"),
+    program_id: int | None = Query(
+        None, description="Alias for degree_id — parent qualification program id"
     ),
     level_id: int | None = Query(None, ge=1),
     db: Session = Depends(get_db),
@@ -1199,10 +1618,10 @@ def list_programs(
 @router.get("/academia/majors", response_model=list[ProgramAdminRead])
 def list_majors(
     q: str | None = Query(None, max_length=120),
-    program_id: UUID | None = Query(
-        None, description="Parent qualification program UUID (programs.id)"
+    program_id: int | None = Query(
+        None, description="Parent qualification program id (programs.id)"
     ),
-    degree_id: UUID | None = Query(None, description="Alias for program_id"),
+    degree_id: int | None = Query(None, description="Alias for program_id"),
     level_id: int | None = Query(None, ge=1),
     db: Session = Depends(get_db),
     _: User = Depends(require_academia_admin),
@@ -1284,7 +1703,7 @@ def list_courses(
         None, ge=1, description="Legacy major id (target_programs.id)"
     ),
     major_id: int | None = Query(None, ge=1, description="education_majors.id"),
-    degree_id: UUID | None = Query(None, description="Parent qualification program UUID"),
+    degree_id: int | None = Query(None, description="Parent qualification program id"),
     level_id: int | None = Query(None, ge=1),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),

@@ -29,7 +29,7 @@ def _courses_for_major_query(db: Session, major_id: int):
     )
 
 
-def _courses_for_program_query(db: Session, program_id: uuid.UUID):
+def _courses_for_program_query(db: Session, program_id: int):
     return (
         db.query(EducationCourse.id)
         .join(
@@ -207,7 +207,7 @@ def _major_impact(
 
 
 def _program_impact(
-    db: Session, program_id: uuid.UUID, proposed_is_active: bool
+    db: Session, program_id: int, proposed_is_active: bool
 ) -> tuple[str, bool, int, int, int]:
     record = db.query(Program).filter(Program.id == program_id).first()
     if not record:

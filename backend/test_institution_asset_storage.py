@@ -6,8 +6,10 @@ from fastapi import HTTPException
 
 from app.services.institution_asset_storage import (
     ALLOWED_ASSET_TYPES,
+    INSTITUTION_PICTURES_ROOT,
     build_r2_object_key,
     institution_asset_prefix,
+    institution_nick_folder,
     normalize_asset_type,
     sanitize_asset_filename,
 )
@@ -34,12 +36,20 @@ def test_r2_account_id_rejects_api_tokens(monkeypatch):
     assert "Account ID" in exc.value.detail
 
 
-def test_institution_asset_prefix_prefers_code_then_slugifies_name():
-    institution = SimpleNamespace(id=58, code="jhu", name="Johns Hopkins University")
-    assert institution_asset_prefix(institution) == "jhu"
+def test_institution_asset_prefix_uses_pictures_root_and_id_nick():
+    institution = SimpleNamespace(id=7, code="jhu", name="Johns Hopkins University")
+    assert institution_nick_folder(institution) == "INS-7-JHU"
+    assert institution_asset_prefix(institution) == f"{INSTITUTION_PICTURES_ROOT}/INS-7-JHU"
+
+    institution = SimpleNamespace(id=6, code="UCLA", name="University of California Los Angeles")
+    assert institution_nick_folder(institution) == "INS-6-UCLA"
+    assert institution_asset_prefix(institution) == f"{INSTITUTION_PICTURES_ROOT}/INS-6-UCLA"
 
     institution = SimpleNamespace(id=58, code=None, name="Johns Hopkins University")
-    assert institution_asset_prefix(institution) == "johns-hopkins-university"
+    assert institution_nick_folder(institution) == "INS-58-JOHNSHOPKINSUNIVERSITY"
+    assert institution_asset_prefix(institution) == (
+        f"{INSTITUTION_PICTURES_ROOT}/INS-58-JOHNSHOPKINSUNIVERSITY"
+    )
 
 
 def test_sanitize_asset_filename_lowercases_and_hyphenates():
@@ -50,8 +60,8 @@ def test_sanitize_asset_filename_lowercases_and_hyphenates():
 
 
 def test_build_r2_object_key_uses_prefix_type_and_sanitized_filename():
-    key = build_r2_object_key("johns-hopkins", "banner", "Hero Main.webp")
-    assert key == "johns-hopkins/banner/hero-main.webp"
+    key = build_r2_object_key(f"{INSTITUTION_PICTURES_ROOT}/INS-7-JHU", "banner", "Hero Main.webp")
+    assert key == f"{INSTITUTION_PICTURES_ROOT}/INS-7-JHU/banner/hero-main.webp"
 
 
 def test_public_url_uses_media_proxy_for_private_s3_host(monkeypatch):
@@ -63,10 +73,8 @@ def test_public_url_uses_media_proxy_for_private_s3_host(monkeypatch):
         "https://4b5bef12f702ca8e5cf57fe5ecd90da1.r2.cloudflarestorage.com",
     )
     monkeypatch.setattr(storage.settings, "API_V1_STR", "/api/v1")
-    assert (
-        storage.public_url_for_key("johns-hopkins/logo/primary-logo.svg")
-        == "/api/v1/academia/media/johns-hopkins/logo/primary-logo.svg"
-    )
+    key = f"{INSTITUTION_PICTURES_ROOT}/INS-7-JHU/logo/primary-logo.svg"
+    assert storage.public_url_for_key(key) == f"/api/v1/academia/media/{key}"
 
 
 def test_rewrite_media_url_from_private_s3_host(monkeypatch):
@@ -78,10 +86,11 @@ def test_rewrite_media_url_from_private_s3_host(monkeypatch):
         "R2_PUBLIC_BASE_URL",
         "https://4b5bef12f702ca8e5cf57fe5ecd90da1.r2.cloudflarestorage.com",
     )
+    key = f"{INSTITUTION_PICTURES_ROOT}/INS-7-JHU/logo/primary-logo.svg"
     rewritten = storage.rewrite_media_url(
-        "https://4b5bef12f702ca8e5cf57fe5ecd90da1.r2.cloudflarestorage.com/johns-hopkins/logo/primary-logo.svg"
+        f"https://4b5bef12f702ca8e5cf57fe5ecd90da1.r2.cloudflarestorage.com/{key}"
     )
-    assert rewritten == "/api/v1/academia/media/johns-hopkins/logo/primary-logo.svg"
+    assert rewritten == f"/api/v1/academia/media/{key}"
 
 
 def test_normalize_upload_content_type_accepts_jpg_aliases():
@@ -101,7 +110,7 @@ def test_delete_institution_asset_rejects_foreign_prefix():
     with pytest.raises(HTTPException) as exc:
         storage.delete_institution_asset(
             institution=institution,
-            object_key="other-school/logo/logo.png",
+            object_key=f"{INSTITUTION_PICTURES_ROOT}/INS-2-UCLA/logo/logo.png",
         )
     assert "does not belong" in exc.value.detail
 
@@ -115,19 +124,22 @@ def test_delete_all_institution_assets_removes_local_files(monkeypatch):
     monkeypatch.setattr(storage.settings, "R2_BUCKET_NAME", "")
 
     uploads_root = Path(storage.__file__).resolve().parents[2] / "uploads"
-    institution_dir = uploads_root / "jhu-test-delete"
+    institution = SimpleNamespace(id=99, code="jhu-test-delete", name="Test")
+    prefix = storage.institution_asset_prefix(institution)
+    institution_dir = uploads_root.joinpath(*prefix.split("/"))
     logo_dir = institution_dir / "logo"
     logo_dir.mkdir(parents=True, exist_ok=True)
     target = logo_dir / "primary-logo.png"
     target.write_bytes(b"png-bytes")
 
-    institution = SimpleNamespace(id=99, code="jhu-test-delete", name="Test")
+    # Also plant a legacy local prefix so cleanup covers both layouts.
+    legacy_dir = uploads_root / "jhu-test-delete" / "logo"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_target = legacy_dir / "old-logo.png"
+    legacy_target.write_bytes(b"png-bytes")
+
     result = storage.delete_all_institution_assets(institution)
     assert result["ok"] is True
-    assert result["deleted"] >= 1
+    assert result["deleted"] >= 2
     assert not target.exists()
-    if institution_dir.exists():
-        # Directory may remain if non-empty; files under prefix must be gone.
-        assert list(institution_dir.rglob("*")) == [] or not any(
-            path.is_file() for path in institution_dir.rglob("*")
-        )
+    assert not legacy_target.exists()

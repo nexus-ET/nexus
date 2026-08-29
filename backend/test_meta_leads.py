@@ -22,8 +22,9 @@ from app.models.lead import LeadChannel, LeadSource
 
 
 class _FakeSaveResult:
-    def __init__(self, *, created: bool):
+    def __init__(self, *, created: bool, skipped: bool = False):
         self.created = created
+        self.skipped = skipped
         self.lead = MagicMock(id=42)
 
 
@@ -190,11 +191,14 @@ def test_backfill_historical_leads_uses_sync_and_skips_existing(monkeypatch) -> 
         ],
     )
 
+    def _fake_ingest(event, access_token=None, **kwargs):
+        if event.leadgen_id == "LEAD_EXISTING":
+            return _FakeSaveResult(created=False, skipped=True)
+        return _FakeSaveResult(created=True)
+
     monkeypatch.setattr(
         "app.services.leads.ingest_meta_leadgen_event_sync",
-        lambda event, access_token=None: _FakeSaveResult(
-            created=event.leadgen_id == "LEAD_NEW"
-        ),
+        _fake_ingest,
     )
     monkeypatch.setattr(
         "app.services.leads.meta_leadgen_id_exists",

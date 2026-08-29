@@ -43,5 +43,10 @@ export function useExceptionLogs(query: ExceptionLogsQueryState) {
     queryFn: () => fetchExceptionLogs(query),
     staleTime: 5000,
     placeholderData: previous => previous,
+    retry: (failureCount, error) => {
+      const message = error instanceof Error ? error.message : String(error ?? '');
+      if (/too many requests|429/i.test(message)) return false;
+      return failureCount < 2;
+    },
   });
 }

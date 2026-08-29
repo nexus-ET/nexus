@@ -76,6 +76,10 @@ class StudentsMaster(Base):
         JSON().with_variant(JSONB, "postgresql"),
         nullable=True,
     )
+    registration_data: Mapped[dict | None] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

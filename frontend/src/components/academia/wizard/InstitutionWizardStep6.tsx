@@ -1458,6 +1458,8 @@ const InstitutionWizardStep6 = forwardRef<
                     </p>
                     <p className="mt-0.5 text-xs text-text-muted">
                       {typeLabel(picture.picture_type)}
+                      {picture.id ? ` · ID ${picture.id}` : ''}
+                      {picture.college_id ? ` · College ID ${picture.college_id}` : ''}
                       {picture.file_size ? ` · ${Math.round(picture.file_size / 1024)} KB` : ''}
                     </p>
                   </div>

@@ -41,6 +41,7 @@ const linkedCampusEmailSchema = optionalEmailContactListSchema.optional().defaul
 
 export const wizardCollegeItemSchema = z
   .object({
+    id: z.number().int().positive().optional(),
     local_id: z.string().optional(),
     code: z.preprocess(emptyToNull, z.string().max(50).nullable().optional()),
     name: z.string().min(1, 'School / College name is required').max(255),
@@ -85,34 +86,7 @@ export const wizardCollegeItemSchema = z
   .superRefine((data, ctx) => {
     const links = data.linked_campuses || [];
     if (links.length === 0) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Link at least one campus and add phone and email contacts on that campus.',
-        path: ['linked_campuses'],
-      });
       return;
-    }
-
-    const campusPhones = links.some(
-      link => serializeContacts(link.phone_numbers || []).length > 0
-    );
-    const campusEmails = links.some(
-      link => serializeContacts(link.email_addresses || []).length > 0
-    );
-
-    if (!campusPhones) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Add at least one phone number on a linked campus contact set.',
-        path: ['linked_campuses'],
-      });
-    }
-    if (!campusEmails) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Add at least one email address on a linked campus contact set.',
-        path: ['linked_campuses'],
-      });
     }
 
     links.forEach((link, linkIndex) => {
@@ -354,6 +328,7 @@ export function mergeWizardCollegesByName(
     merged[existingIndex] = hydrateWizardCollege({
       ...existing,
       ...college,
+      id: existing.id ?? college.id,
       local_id: existing.local_id || college.local_id,
       name: existing.name || college.name,
       code: college.code ?? existing.code,

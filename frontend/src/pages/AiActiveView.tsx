@@ -1,10 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bot, Archive, Users, Calendar, CheckCircle2, Circle, Map, RotateCcw } from 'lucide-react';
-import { apiFetch, hasValidSession } from '../utils/api';
+import { apiFetch, formatApiUiError, hasValidSession } from '../utils/api';
 import StudentJourneyPanel from '../components/StudentJourneyPanel';
 import AiActivePulseBoard from '../components/AiActivePulseBoard';
+import InlineErrorBanner from '../components/InlineErrorBanner';
 import LeadQueueSidebarFilters from '../components/LeadQueueSidebarFilters';
 import QueuePaginationControls from '../components/QueuePaginationControls';
+import WhatsAppConversationHeader from '../components/WhatsAppConversationHeader';
+import WhatsAppIntakeOptionTray, {
+  type WhatsAppIntakeOption,
+} from '../components/WhatsAppIntakeOptionTray';
 import HeadlessScrollArea, {
   type HeadlessScrollAreaHandle,
 } from '../components/HeadlessScrollArea';
@@ -23,6 +28,8 @@ import {
   type InteractionDaysFilter,
   type LeadQueuePageSize,
 } from '../utils/leadQueueFilters';
+import { CountryWithFlag } from '../utils/countryFlag';
+import { formatStudyField, formatStudyProgram } from '../utils/studyChoiceIcons';
 
 interface ConsultationDateOption {
   date: string;
@@ -83,6 +90,7 @@ interface ActiveLead {
   available_consultation_dates?: ConsultationDateOption[];
   available_consultation_times?: ConsultationTimeOption[];
   selected_consultation_date?: string | null;
+  intake_options?: WhatsAppIntakeOption[];
   status_definition_id?: number | null;
   status_stage_name?: string | null;
   status_category?: string | null;
@@ -225,6 +233,7 @@ const mapLeadFromApi = (lead: Record<string, unknown>): ActiveLead => {
     available_consultation_dates: (lead.available_consultation_dates as ConsultationDateOption[] | undefined) ?? [],
     available_consultation_times: (lead.available_consultation_times as ConsultationTimeOption[] | undefined) ?? [],
     selected_consultation_date: (lead.selected_consultation_date as string | null | undefined) ?? null,
+    intake_options: (lead.intake_options as WhatsAppIntakeOption[] | undefined) ?? [],
     status_definition_id: (lead.status_definition_id as number | null | undefined) ?? null,
     status_stage_name: (lead.status_stage_name as string | null | undefined) ?? null,
     status_category: (lead.status_category as string | null | undefined) ?? null,
@@ -346,6 +355,7 @@ const mergeLeadSnapshot = (
     available_consultation_dates: incoming.available_consultation_dates ?? [],
     available_consultation_times: incoming.available_consultation_times ?? [],
     selected_consultation_date: incoming.selected_consultation_date ?? null,
+    intake_options: incoming.intake_options ?? [],
   };
 };
 
@@ -399,6 +409,19 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
         second: undefined,
       })
     : '';
+  const sessionTimeLabel =
+    lead.intake_complete &&
+    lead.consultation_scheduled_at &&
+    (!lead.consultation_session_time ||
+      lead.consultation_session_time.trim().toLowerCase() === 'pending selection')
+      ? formatBusinessLocal(lead.consultation_scheduled_at, {
+          year: undefined,
+          month: undefined,
+          day: undefined,
+          hour: 'numeric',
+          minute: '2-digit',
+        })
+      : lead.consultation_session_time || '—';
   const hasProfileData =
     lead.preferred_country ||
     targetProgram ||
@@ -483,15 +506,25 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
         </div>
         <div style={styles.intakeFieldCell}>
           <span style={styles.intakeFieldLabel}>Target program</span>
-          <span style={styles.intakeFieldValue}>{targetProgram || '—'}</span>
+          <span style={styles.intakeFieldValue}>
+            {targetProgram ? formatStudyProgram(targetProgram) : '—'}
+          </span>
         </div>
         <div style={styles.intakeFieldCell}>
           <span style={styles.intakeFieldLabel}>TARGET MAJOR</span>
-          <span style={styles.intakeFieldValue}>{targetMajor || '—'}</span>
+          <span style={styles.intakeFieldValue}>
+            {targetMajor ? formatStudyField(targetMajor) : '—'}
+          </span>
         </div>
         <div style={styles.intakeFieldCell}>
           <span style={styles.intakeFieldLabel}>TARGET COUNTRY</span>
-          <span style={styles.intakeFieldValue}>{lead.preferred_country || '—'}</span>
+          <span style={styles.intakeFieldValue}>
+            {lead.preferred_country ? (
+              <CountryWithFlag country={lead.preferred_country} />
+            ) : (
+              '—'
+            )}
+          </span>
         </div>
         <div style={styles.intakeFieldCell}>
           <span style={styles.intakeFieldLabel}>Advisor call</span>
@@ -509,7 +542,7 @@ function IntakeProfilePanel({ lead }: { lead: ActiveLead }) {
         </div>
         <div style={styles.intakeFieldCell}>
           <span style={styles.intakeFieldLabel}>Session time</span>
-          <span style={styles.intakeFieldValue}>{lead.consultation_session_time || '—'}</span>
+          <span style={styles.intakeFieldValue}>{sessionTimeLabel}</span>
         </div>
         <div style={styles.intakeFieldCell}>
           <span style={styles.intakeFieldLabel}>Assigned counsellor</span>
@@ -613,6 +646,7 @@ export default function AiActiveView() {
   const [hasMorePages, setHasMorePages] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [updatingRowId, setUpdatingRowId] = useState<number | null>(null);
   const [startingOutreachId, setStartingOutreachId] = useState<number | null>(null);
   const [resettingConversationId, setResettingConversationId] = useState<number | null>(null);
@@ -740,7 +774,9 @@ export default function AiActiveView() {
     } catch (error: unknown) {
       if (error instanceof Error && error.name !== 'AbortError') {
         console.error('Failed to fetch AI active queue:', error);
-        setLoadError(error.message || 'Failed to load AI active leads.');
+        setLoadError(
+          formatApiUiError(error, 'Failed to load AI active leads.', { retrying: true })
+        );
       }
     } finally {
       if (!signal?.aborted) {
@@ -808,7 +844,7 @@ export default function AiActiveView() {
       } finally {
         queuePollInFlightRef.current = false;
         if (isActive && abortControllerRef.current === controller) {
-          pollingTimerRef.current = setTimeout(pollQueue, 10000);
+          pollingTimerRef.current = setTimeout(pollQueue, 5000);
         }
       }
     }
@@ -844,7 +880,7 @@ export default function AiActiveView() {
     };
 
     void refreshSelectedConversation();
-    const interval = setInterval(refreshSelectedConversation, 8000);
+    const interval = setInterval(refreshSelectedConversation, 3000);
 
     return () => {
       controller.abort();
@@ -899,7 +935,7 @@ export default function AiActiveView() {
 
     const disabledReason = getStartOutreachDisabledReason(target);
     if (disabledReason) {
-      alert(disabledReason);
+      setActionError(disabledReason);
       return;
     }
 
@@ -909,6 +945,7 @@ export default function AiActiveView() {
 
     setStartingOutreachId(target.id);
     setOutreachSuccess(null);
+    setActionError(null);
     if (leadOverride) setSelectedLead(target);
 
     try {
@@ -922,13 +959,15 @@ export default function AiActiveView() {
       setOutreachSuccess(
         `WhatsApp message sent from ${whatsappConfig?.business_phone_number || 'business line'} to ${getLeadPhone(mapped) || 'student'}.`
       );
+      setActionError(null);
     } catch (error) {
       console.error('Failed to start AI conversation:', error);
-      const message =
-        error instanceof Error && error.message
-          ? error.message
-          : 'Could not start the AI WhatsApp conversation. Check Meta WhatsApp settings and try again.';
-      alert(message);
+      setActionError(
+        formatApiUiError(
+          error,
+          'Could not start the AI WhatsApp conversation. Check Meta WhatsApp settings and try again.'
+        )
+      );
     } finally {
       setStartingOutreachId(null);
     }
@@ -951,6 +990,7 @@ export default function AiActiveView() {
 
     setResettingConversationId(selectedLead.id);
     setOutreachSuccess(null);
+    setActionError(null);
 
     try {
       const result = (await apiFetch(`leads/${selectedLead.id}/reset-whatsapp`, {
@@ -1008,13 +1048,12 @@ export default function AiActiveView() {
         `WhatsApp conversation with ${cleared.name} was reset (${messagePart} and ${bookingPart} removed). ` +
           'Lead Status is New — you can start a fresh AI conversation.'
       );
+      setActionError(null);
     } catch (error) {
       console.error('Failed to reset WhatsApp conversation:', error);
-      const message =
-        error instanceof Error && error.message
-          ? error.message
-          : 'Could not reset the WhatsApp conversation. Please try again.';
-      alert(message);
+      setActionError(
+        formatApiUiError(error, 'Could not reset the WhatsApp conversation. Please try again.')
+      );
     } finally {
       setResettingConversationId(null);
     }
@@ -1089,6 +1128,7 @@ export default function AiActiveView() {
   return (
     <>
     <div style={styles.pageShell}>
+      <InlineErrorBanner message={actionError} onDismiss={() => setActionError(null)} />
       {whatsappConfig?.business_phone_number ? (
         <div style={styles.whatsappLineBanner}>
           <span>
@@ -1294,28 +1334,26 @@ export default function AiActiveView() {
       <div style={styles.rightChatPanel}>
         {selectedLead ? (
           <div style={styles.activeChatInterface}>
-            <div style={styles.chatHeaderBar}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <h3 style={styles.headerProfileName}>{selectedLead.name}</h3>
-                <p style={styles.headerProfileMeta}>
-                  📱 {getLeadPhone(selectedLead) || 'No phone'} | 📧 {selectedLead.email || 'No email'}
-                </p>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setJourneyModal({
-                      studentId: selectedLead.id,
-                      studentName: selectedLead.name,
-                    })
-                  }
-                  style={styles.headerJourneyLink}
-                  title="View student journey timeline"
-                >
-                  <Map size={13} />
-                  View Journey
-                </button>
-              </div>
-              <div style={styles.headerActionGroup}>
+            <WhatsAppConversationHeader
+              name={selectedLead.name}
+              meta={`${getLeadPhone(selectedLead) || 'No phone'} • ${selectedLead.email || 'No email'}`}
+              mode="ai"
+              actions={
+                <div style={styles.headerActionGroup}>
+              <button
+                type="button"
+                onClick={() =>
+                  setJourneyModal({
+                    studentId: selectedLead.id,
+                    studentName: selectedLead.name,
+                  })
+                }
+                style={styles.headerJourneyButton}
+                title="View student journey timeline"
+              >
+                <Map size={13} />
+                Journey
+              </button>
               <button
                 type="button"
                 onClick={() => {
@@ -1367,7 +1405,8 @@ export default function AiActiveView() {
                 </div>
               )}
               </div>
-            </div>
+              }
+            />
 
             <IntakeProfilePanel key={selectedLead.id} lead={selectedLead} />
 
@@ -1433,17 +1472,20 @@ export default function AiActiveView() {
                           <div
                             style={{
                               ...styles.messageBubbleCell,
-                              backgroundColor: isAiAgent ? '#dcfce7' : '#ffffff',
-                              borderRadius: isAiAgent ? '8px 8px 0 8px' : '8px 8px 8px 0',
-                              boxShadow: '0 1px 1px rgba(0,0,0,0.12)',
+                              backgroundColor: isAiAgent ? '#d9fdd3' : '#ffffff',
+                              borderRadius: isAiAgent ? '14px 14px 3px 14px' : '14px 14px 14px 3px',
+                              boxShadow: '0 1px 2px rgba(25,39,52,0.12)',
                             }}
                           >
                             <span style={styles.senderLabel}>
-                              {isAiAgent ? 'AI Agent' : selectedLead.name}
+                              {isAiAgent ? 'Nexus Assistant' : selectedLead.name}
                             </span>
                             {renderMessageContent(msg)}
                             {msg.created_at && (
-                              <span style={styles.bubbleTimestampLabel}>{formatTime(msg.created_at)}</span>
+                              <span style={styles.bubbleTimestampLabel}>
+                                {formatTime(msg.created_at)}
+                                {isAiAgent ? <span style={styles.deliveryTicks}>✓✓</span> : null}
+                              </span>
                             )}
                           </div>
                         </div>
@@ -1454,6 +1496,12 @@ export default function AiActiveView() {
               )}
               <div ref={chatEndRef} style={{ height: '1px', width: '100%' }} />
             </HeadlessScrollArea>
+
+            <WhatsAppIntakeOptionTray
+              step={selectedLead.intake_step}
+              stepLabel={selectedLead.intake_step_label}
+              options={selectedLead.intake_options}
+            />
 
             <div style={styles.readOnlyFooter}>
               <Bot size={16} />
@@ -1781,23 +1829,23 @@ const styles = {
     marginLeft: '16px',
   } as React.CSSProperties,
   headerOverviewButton: {
-    border: '1px solid #cbd5e1',
-    backgroundColor: '#ffffff',
-    color: '#322f86',
-    padding: '8px 12px',
-    borderRadius: '8px',
-    fontSize: '12px',
+    border: '1px solid rgba(255,255,255,0.32)',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    color: '#ffffff',
+    padding: '7px 10px',
+    borderRadius: '999px',
+    fontSize: '11px',
     fontWeight: '700',
     cursor: 'pointer',
     flexShrink: 0,
   } as React.CSSProperties,
   headerResetButton: {
-    border: '1px solid #fecaca',
-    backgroundColor: '#fef2f2',
-    color: '#b91c1c',
-    padding: '8px 12px',
-    borderRadius: '8px',
-    fontSize: '12px',
+    border: '1px solid rgba(254,202,202,0.55)',
+    backgroundColor: 'rgba(127,29,29,0.24)',
+    color: '#fee2e2',
+    padding: '7px 10px',
+    borderRadius: '999px',
+    fontSize: '11px',
     fontWeight: '700',
     cursor: 'pointer',
     flexShrink: 0,
@@ -1818,13 +1866,27 @@ const styles = {
     alignItems: 'center',
     gap: '5px',
   } as React.CSSProperties,
-  headerStartButton: {
-    border: 'none',
-    backgroundColor: '#322f86',
+  headerJourneyButton: {
+    border: '1px solid rgba(255,255,255,0.32)',
+    backgroundColor: 'rgba(255,255,255,0.1)',
     color: '#ffffff',
-    padding: '10px 16px',
-    borderRadius: '8px',
-    fontSize: '13px',
+    padding: '7px 10px',
+    borderRadius: '999px',
+    fontSize: '11px',
+    fontWeight: '700',
+    cursor: 'pointer',
+    flexShrink: 0,
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '5px',
+  } as React.CSSProperties,
+  headerStartButton: {
+    border: '1px solid rgba(255,255,255,0.7)',
+    backgroundColor: '#ffffff',
+    color: '#155e52',
+    padding: '8px 12px',
+    borderRadius: '999px',
+    fontSize: '11px',
     fontWeight: '700',
     cursor: 'pointer',
     flexShrink: 0,
@@ -1836,7 +1898,7 @@ const styles = {
     height: '100%',
     display: 'flex',
     flexDirection: 'column',
-    backgroundColor: '#efeae2',
+    backgroundColor: '#ece7df',
     overflow: 'hidden',
     boxSizing: 'border-box',
   } as React.CSSProperties,
@@ -1859,10 +1921,11 @@ const styles = {
     gap: '12px',
   } as React.CSSProperties,
   intakeProfilePanel: {
-    padding: '14px 20px',
-    borderBottom: '1px solid #e2e8f0',
-    backgroundColor: '#f8fafc',
+    padding: '11px 18px',
+    borderBottom: '1px solid #d9e0e6',
+    backgroundColor: '#f5f7f9',
     flexShrink: 0,
+    boxShadow: 'inset 0 -1px 0 rgba(15,23,42,0.03)',
   } as React.CSSProperties,
   intakeProfileHeader: {
     display: 'flex',
@@ -1886,7 +1949,7 @@ const styles = {
     maxWidth: '52%',
   } as React.CSSProperties,
   intakePipelineStatus: {
-    fontSize: '18px',
+    fontSize: '13px',
     fontWeight: '800',
     lineHeight: 1.2,
     textAlign: 'right',
@@ -1898,20 +1961,23 @@ const styles = {
     textAlign: 'right',
   } as React.CSSProperties,
   intakeProfileTitle: {
-    display: 'block',
-    fontSize: '12px',
-    fontWeight: '700',
-    color: '#0f172a',
+    display: 'inline-flex',
+    fontSize: '10px',
+    fontWeight: '800',
+    color: '#ffffff',
     textTransform: 'uppercase',
-    letterSpacing: '0.04em',
+    letterSpacing: '0.055em',
+    backgroundColor: '#287c6c',
+    borderRadius: '999px',
+    padding: '4px 10px',
   } as React.CSSProperties,
   intakeStepBadge: {
     display: 'inline-block',
     marginTop: '4px',
     padding: '2px 8px',
     borderRadius: '999px',
-    backgroundColor: '#ecfdf5',
-    color: '#047857',
+    backgroundColor: '#e4f3ef',
+    color: '#216a5d',
     fontSize: '11px',
     fontWeight: '600',
   } as React.CSSProperties,
@@ -1937,7 +2003,7 @@ const styles = {
     alignItems: 'center',
     gap: '4px',
     padding: '4px 8px',
-    borderRadius: '999px',
+    borderRadius: '7px',
     border: '1px solid',
     fontSize: '10px',
     fontWeight: '600',
@@ -1946,27 +2012,28 @@ const styles = {
   intakeFieldGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-    gap: '8px',
+    gap: '8px 12px',
+    padding: '10px 12px',
+    borderRadius: '12px',
+    border: '1px solid #d5dce3',
+    backgroundColor: '#fbfcfd',
   } as React.CSSProperties,
   intakeFieldCell: {
-    padding: '8px 10px',
-    borderRadius: '8px',
-    backgroundColor: '#ffffff',
-    border: '1px solid #e2e8f0',
+    padding: '4px 2px',
   } as React.CSSProperties,
   intakeFieldLabel: {
     display: 'block',
-    fontSize: '13px',
+    fontSize: '10px',
     fontWeight: '700',
-    color: '#64748b',
+    color: '#6b778c',
     textTransform: 'uppercase',
     marginBottom: '4px',
   } as React.CSSProperties,
   intakeFieldValue: {
     display: 'block',
-    fontSize: '14px',
-    color: '#0f172a',
-    fontWeight: '500',
+    fontSize: '13px',
+    color: '#172033',
+    fontWeight: '700',
     wordBreak: 'break-word',
   } as React.CSSProperties,
   consultationCalendarSection: {
@@ -2049,8 +2116,9 @@ const styles = {
     gap: '6px',
     padding: '6px 12px',
     borderRadius: '9999px',
-    backgroundColor: '#dcfce7',
-    color: '#166534',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    color: '#dcfce7',
+    border: '1px solid rgba(220,252,231,0.3)',
     fontSize: '12px',
     fontWeight: '700',
     flexShrink: 0,
@@ -2060,28 +2128,30 @@ const styles = {
     minHeight: 0,
   } as React.CSSProperties,
   whatsappChatFeedSurface: {
-    padding: '20px 4%',
+    padding: '20px 6%',
     display: 'flex',
     flexDirection: 'column',
     gap: '8px',
     backgroundImage:
-      'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")',
-    backgroundColor: '#efeae2',
+      'radial-gradient(circle at 1px 1px, rgba(83, 92, 91, 0.2) 1px, transparent 1.25px)',
+    backgroundSize: '18px 18px',
+    backgroundColor: '#ece7df',
     backgroundRepeat: 'repeat',
   } as React.CSSProperties,
   timelineDividerCenter: {
     display: 'flex',
     justifyContent: 'center',
     width: '100%',
-    margin: '14px 0',
+    margin: '12px 0',
   } as React.CSSProperties,
   timelineBadgeBubble: {
     backgroundColor: '#ffffff',
-    color: '#54656f',
+    color: '#667085',
     fontSize: '12px',
-    padding: '5px 12px',
-    borderRadius: '7px',
-    boxShadow: '0 1px 1px rgba(0,0,0,0.08)',
+    fontWeight: '700',
+    padding: '5px 13px',
+    borderRadius: '999px',
+    boxShadow: '0 1px 4px rgba(0,0,0,0.1)',
   } as React.CSSProperties,
   systemLogCentralRow: {
     display: 'flex',
@@ -2094,34 +2164,42 @@ const styles = {
   } as React.CSSProperties,
   messageStreamRow: { display: 'flex', width: '100%', margin: '2px 0' } as React.CSSProperties,
   messageBubbleCell: {
-    maxWidth: '65%',
-    padding: '8px 12px 10px 12px',
+    maxWidth: '68%',
+    minWidth: '130px',
+    padding: '9px 12px 18px',
     position: 'relative',
     display: 'flex',
     flexDirection: 'column',
-    gap: '4px',
+    gap: '3px',
   } as React.CSSProperties,
   senderLabel: {
-    fontSize: '10px',
-    fontWeight: '700',
-    color: '#64748b',
-    textTransform: 'uppercase',
-    letterSpacing: '0.04em',
+    fontSize: '11px',
+    fontWeight: '800',
+    color: '#216a5d',
   } as React.CSSProperties,
   bubbleTextString: {
     margin: 0,
-    color: '#111b21',
+    color: '#182230',
     whiteSpace: 'pre-wrap',
-    paddingRight: '45px',
+    paddingRight: '22px',
     fontSize: '14px',
     lineHeight: '1.45',
   } as React.CSSProperties,
   bubbleTimestampLabel: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '3px',
     fontSize: '10.5px',
-    color: '#667781',
+    color: '#75808c',
     position: 'absolute',
-    bottom: '3px',
-    right: '8px',
+    bottom: '4px',
+    right: '9px',
+  } as React.CSSProperties,
+  deliveryTicks: {
+    color: '#3aa0d8',
+    fontWeight: '800',
+    letterSpacing: '-2px',
+    marginLeft: '1px',
   } as React.CSSProperties,
   inlineImagePreview: {
     width: '100%',
@@ -2149,9 +2227,9 @@ const styles = {
     maxWidth: '420px',
   } as React.CSSProperties,
   readOnlyFooter: {
-    padding: '12px 18px',
-    backgroundColor: '#f0f2f5',
-    borderTop: '1px solid #e3e6e9',
+    padding: '10px 16px',
+    backgroundColor: '#eef1f4',
+    borderTop: '1px solid #d9dee3',
     display: 'flex',
     alignItems: 'center',
     gap: '10px',
@@ -2162,10 +2240,10 @@ const styles = {
   } as React.CSSProperties,
   startConversationButton: {
     border: 'none',
-    backgroundColor: '#322f86',
+    backgroundColor: '#246b60',
     color: '#ffffff',
     padding: '10px 16px',
-    borderRadius: '8px',
+    borderRadius: '999px',
     fontSize: '13px',
     fontWeight: '700',
     cursor: 'pointer',
@@ -2173,10 +2251,10 @@ const styles = {
   footerActionButton: {
     marginLeft: 'auto',
     border: 'none',
-    backgroundColor: '#322f86',
+    backgroundColor: '#246b60',
     color: '#ffffff',
     padding: '8px 14px',
-    borderRadius: '8px',
+    borderRadius: '999px',
     fontSize: '12px',
     fontWeight: '700',
     cursor: 'pointer',

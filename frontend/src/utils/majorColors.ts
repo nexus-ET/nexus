@@ -93,7 +93,7 @@ export function assignMajorColor(
 }
 
 export function buildMajorColorByLabel(
-  majors: Array<{ label: string; color?: string | null; program_id?: string | null; id: number }>
+  majors: Array<{ label: string; color?: string | null; program_id?: number | string | null; id: number }>
 ): Map<string, string> {
   const sorted = [...majors].sort((left, right) => {
     if (!left.program_id && right.program_id) return -1;

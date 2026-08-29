@@ -3,14 +3,8 @@ import { Building2, ChevronDown, ChevronRight, Link2, RefreshCw, Unlink } from '
 
 import { apiFetch } from '../../../utils/api';
 import { fetchAcademiaListItems } from '../../../utils/academiaList';
+import { WEB_LINK_TYPES } from '../../../constants/contactTypes';
 import {
-  EMAIL_CONTACT_TYPES,
-  FAX_CONTACT_TYPES,
-  PHONE_CONTACT_TYPES,
-  WEB_LINK_TYPES,
-} from '../../../constants/contactTypes';
-import {
-  formatContactList,
   normalizeEmailContacts,
   normalizeFaxContacts,
   normalizePhoneContacts,
@@ -21,12 +15,16 @@ import { PHONE_LOCAL_PLACEHOLDER } from '../../../utils/phoneCountry';
 import type { WizardCampusItem } from '../../../schemas/wizard/step2-campus';
 import type { CountryRecord } from '../../../types/country';
 import type { GeographyCountry } from '../../../types/geography';
+import {
+  useEmailContactTypeOptions,
+  usePhoneContactTypeOptions,
+} from '../../../hooks/useContactTypeOptions';
 import { CharCountInput } from '../form/CharCountField';
 import LabeledContactListField from '../form/LabeledContactListField';
 import SearchableSelect from '../SearchableSelect';
 import {
+  wizardAddressRowClass,
   wizardContactRowClass,
-  wizardGeoRowClass,
   wizardLabelClass,
 } from '../wizard/form/wizardFormStyles';
 import {
@@ -87,87 +85,6 @@ function buildLocationLabel(parts: {
 }): string {
   return [parts.city, parts.state, parts.country, parts.zipcode].filter(Boolean).join(' · ') || '—';
 }
-
-const CampusGeographyDetails: React.FC<{
-  address?: string | null;
-  country?: string | null;
-  state?: string | null;
-  city?: string | null;
-  zipcode?: string | null;
-  phoneNumbers?: ContactEntry[] | null;
-  faxNumbers?: ContactEntry[] | null;
-  emailAddresses?: ContactEntry[] | null;
-  webLinks?: ContactEntry[] | null;
-}> = ({
-  address,
-  country,
-  state,
-  city,
-  zipcode,
-  phoneNumbers,
-  faxNumbers,
-  emailAddresses,
-  webLinks,
-}) => {
-  const fieldClass = 'min-w-0';
-  const labelClass = 'text-[11px] font-semibold uppercase tracking-wide text-text-muted';
-  const valueClass = 'truncate text-sm text-text-main';
-  const phoneDisplay = formatContactList(phoneNumbers || []);
-  const faxDisplay = formatContactList(faxNumbers || []);
-  const emailDisplay = formatContactList(emailAddresses || []);
-  const webDisplay = formatContactList(webLinks || []);
-
-  return (
-    <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 md:grid-cols-4">
-      <div className={`${fieldClass} col-span-2 md:col-span-4`}>
-        <dt className={labelClass}>Address</dt>
-        <dd className={`${valueClass} whitespace-normal break-words`} title={address?.trim() || undefined}>
-          {address?.trim() || '—'}
-        </dd>
-      </div>
-      <div className={fieldClass}>
-        <dt className={labelClass}>Country</dt>
-        <dd className={valueClass}>{country?.trim() || '—'}</dd>
-      </div>
-      <div className={fieldClass}>
-        <dt className={labelClass}>State</dt>
-        <dd className={valueClass}>{state?.trim() || '—'}</dd>
-      </div>
-      <div className={fieldClass}>
-        <dt className={labelClass}>City</dt>
-        <dd className={valueClass}>{city?.trim() || '—'}</dd>
-      </div>
-      <div className={fieldClass}>
-        <dt className={labelClass}>Zipcode</dt>
-        <dd className={valueClass}>{zipcode?.trim() || '—'}</dd>
-      </div>
-      <div className={fieldClass}>
-        <dt className={labelClass}>Phone</dt>
-        <dd className={valueClass} title={phoneDisplay === '—' ? undefined : phoneDisplay}>
-          {phoneDisplay}
-        </dd>
-      </div>
-      <div className={fieldClass}>
-        <dt className={labelClass}>Fax</dt>
-        <dd className={valueClass} title={faxDisplay === '—' ? undefined : faxDisplay}>
-          {faxDisplay}
-        </dd>
-      </div>
-      <div className={`${fieldClass} col-span-2`}>
-        <dt className={labelClass}>Email</dt>
-        <dd className={valueClass} title={emailDisplay === '—' ? undefined : emailDisplay}>
-          {emailDisplay}
-        </dd>
-      </div>
-      <div className={`${fieldClass} col-span-2 md:col-span-4`}>
-        <dt className={labelClass}>Web URLs</dt>
-        <dd className={`${valueClass} whitespace-normal break-words`} title={webDisplay === '—' ? undefined : webDisplay}>
-          {webDisplay}
-        </dd>
-      </div>
-    </dl>
-  );
-};
 
 const LinkedCampusAddressEditor: React.FC<{
   link: WizardCollegeCampusLink;
@@ -243,105 +160,115 @@ const LinkedCampusAddressEditor: React.FC<{
 
   return (
     <div className="mt-4 space-y-3">
-      <CharCountInput
-        label={`Campus address · ${link.name}`}
-        maxLength={200}
-        value={link.address || ''}
-        onChange={value => onChange({ address: value || null })}
-        placeholder="Street address, building, or campus location"
-      />
+      <div className={wizardAddressRowClass}>
+        <div className="md:min-w-0 md:flex-[1.75]">
+          <CharCountInput
+            label={`Campus address · ${link.name}`}
+            maxLength={200}
+            value={link.address || ''}
+            onChange={value => onChange({ address: value || null })}
+            placeholder="Street address, building, or campus location"
+          />
+        </div>
 
-      <div className={wizardGeoRowClass}>
-        <SearchableSelect
-          label="Country"
-          value={link.country_id ? String(link.country_id) : ''}
-          options={countryOptions}
-          onChange={value => {
-            const nextCountryId = value ? Number(value) : null;
-            const countryName =
-              countryOptions.find(option => option.value === value)?.label ||
-              resolveCountryName(nextCountryId);
-            onChange({
-              country_id: nextCountryId,
-              country_name: countryName,
-              state_id: null,
-              state_name: null,
-              location_id: null,
-              city_name: null,
-              location_label: buildLocationLabel({
-                country: countryName,
-                zipcode: link.zipcode,
-              }),
-            });
-          }}
-          placeholder="Select country..."
-        />
+        <div className="md:min-w-0 md:flex-1">
+          <SearchableSelect
+            label="Country"
+            value={link.country_id ? String(link.country_id) : ''}
+            options={countryOptions}
+            onChange={value => {
+              const nextCountryId = value ? Number(value) : null;
+              const countryName =
+                countryOptions.find(option => option.value === value)?.label ||
+                resolveCountryName(nextCountryId);
+              onChange({
+                country_id: nextCountryId,
+                country_name: countryName,
+                state_id: null,
+                state_name: null,
+                location_id: null,
+                city_name: null,
+                location_label: buildLocationLabel({
+                  country: countryName,
+                  zipcode: link.zipcode,
+                }),
+              });
+            }}
+            placeholder="Select country..."
+          />
+        </div>
 
-        <SearchableSelect
-          label="State"
-          value={link.state_id ? String(link.state_id) : ''}
-          options={stateOptions}
-          onChange={value => {
-            const nextStateId = value ? Number(value) : null;
-            const stateName =
-              stateOptions.find(option => option.value === value)?.label || null;
-            onChange({
-              state_id: nextStateId,
-              state_name: stateName,
-              location_id: null,
-              city_name: null,
-              location_label: buildLocationLabel({
-                state: stateName,
-                country: link.country_name,
-                zipcode: link.zipcode,
-              }),
-            });
-          }}
-          placeholder={link.country_id ? 'Select state...' : 'Select country first'}
-          disabled={!link.country_id}
-        />
+        <div className="md:min-w-0 md:flex-1">
+          <SearchableSelect
+            label="State"
+            value={link.state_id ? String(link.state_id) : ''}
+            options={stateOptions}
+            onChange={value => {
+              const nextStateId = value ? Number(value) : null;
+              const stateName =
+                stateOptions.find(option => option.value === value)?.label || null;
+              onChange({
+                state_id: nextStateId,
+                state_name: stateName,
+                location_id: null,
+                city_name: null,
+                location_label: buildLocationLabel({
+                  state: stateName,
+                  country: link.country_name,
+                  zipcode: link.zipcode,
+                }),
+              });
+            }}
+            placeholder={link.country_id ? 'Select state...' : 'Select country first'}
+            disabled={!link.country_id}
+          />
+        </div>
 
-        <SearchableSelect
-          label="City"
-          value={link.location_id ? String(link.location_id) : ''}
-          options={cityOptions}
-          onChange={value => {
-            const nextCityId = value ? Number(value) : null;
-            const cityName =
-              cityOptions.find(option => option.value === value)?.label || null;
-            onChange({
-              location_id: nextCityId,
-              city_name: cityName,
-              location_label: buildLocationLabel({
-                city: cityName,
-                state: link.state_name,
-                country: link.country_name,
-                zipcode: link.zipcode,
-              }),
-            });
-          }}
-          placeholder={link.state_id ? 'Select city...' : 'Select state first'}
-          disabled={!link.state_id}
-        />
+        <div className="md:min-w-0 md:flex-1">
+          <SearchableSelect
+            label="City"
+            value={link.location_id ? String(link.location_id) : ''}
+            options={cityOptions}
+            onChange={value => {
+              const nextCityId = value ? Number(value) : null;
+              const cityName =
+                cityOptions.find(option => option.value === value)?.label || null;
+              onChange({
+                location_id: nextCityId,
+                city_name: cityName,
+                location_label: buildLocationLabel({
+                  city: cityName,
+                  state: link.state_name,
+                  country: link.country_name,
+                  zipcode: link.zipcode,
+                }),
+              });
+            }}
+            placeholder={link.state_id ? 'Select city...' : 'Select state first'}
+            disabled={!link.state_id}
+          />
+        </div>
 
-        <CharCountInput
-          label="Zipcode"
-          maxLength={10}
-          value={link.zipcode || ''}
-          onChange={value => {
-            const zipcode = value || null;
-            onChange({
-              zipcode,
-              location_label: buildLocationLabel({
-                city: link.city_name,
-                state: link.state_name,
-                country: link.country_name,
+        <div className="md:min-w-0 md:flex-1">
+          <CharCountInput
+            label="Zipcode"
+            maxLength={10}
+            value={link.zipcode || ''}
+            onChange={value => {
+              const zipcode = value || null;
+              onChange({
                 zipcode,
-              }),
-            });
-          }}
-          placeholder="e.g. 02139"
-        />
+                location_label: buildLocationLabel({
+                  city: link.city_name,
+                  state: link.state_name,
+                  country: link.country_name,
+                  zipcode,
+                }),
+              });
+            }}
+            placeholder="e.g. 02139"
+          />
+        </div>
       </div>
     </div>
   );
@@ -361,6 +288,8 @@ const CollegeCampusLinkPanel: React.FC<CollegeCampusLinkPanelProps> = ({
   onSeedWebLinks,
 }) => {
   const openConfirm = useConfirmation();
+  const phoneContactTypes = usePhoneContactTypeOptions();
+  const emailContactTypes = useEmailContactTypeOptions();
   const [expanded, setExpanded] = useState(true);
   const [selectedLocalIds, setSelectedLocalIds] = useState<string[]>([]);
   const [cascadeContactsOnLink, setCascadeContactsOnLink] = useState(true);
@@ -640,14 +569,18 @@ const CollegeCampusLinkPanel: React.FC<CollegeCampusLinkPanelProps> = ({
       {expanded ? (
         <div className="space-y-4 border-t border-border-subtle px-4 py-4">
           {campuses.length === 0 ? (
-            <p className="text-sm text-amber-700">
-              Add at least one campus in Step 2 before linking colleges to a campus.
+            <p className="text-sm text-text-muted">
+              No campuses yet. Linking is optional — add campuses on Institution & Campuses if you want to map a college to a campus.
             </p>
           ) : (
             <>
               <div className="space-y-2">
                 <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">
-                  Available campuses
+                  Not linked to this college ({availableToLink.length})
+                </p>
+                <p className="text-xs text-text-muted">
+                  These campuses are <span className="font-semibold">not</span> mapped to this
+                  college. Tick one and click link to add it.
                 </p>
                 {availableToLink.length === 0 ? (
                   <p className="text-sm text-text-muted">
@@ -676,17 +609,15 @@ const CollegeCampusLinkPanel: React.FC<CollegeCampusLinkPanelProps> = ({
                           />
                           <div className="min-w-0 flex-1">
                             <p className="font-semibold text-text-main">{campus.name}</p>
-                            <CampusGeographyDetails
-                              address={campus.address}
-                              country={geography.country_name}
-                              state={geography.state_name}
-                              city={geography.city_name}
-                              zipcode={geography.zipcode}
-                              phoneNumbers={campus.phone_numbers}
-                              faxNumbers={campus.fax_numbers}
-                              emailAddresses={campus.email_addresses}
-                              webLinks={campus.web_links}
-                            />
+                            <p className="truncate text-xs tabular-nums text-text-muted">
+                              {campus.id ? `Campus ID ${campus.id}` : 'Unsaved campus'}
+                            </p>
+                            {/* One line only: a full detail card here reads as an existing mapping. */}
+                            <p className="truncate text-xs text-text-muted">
+                              {[campus.address, geography.city_name, geography.state_name]
+                                .filter(Boolean)
+                                .join(' · ') || 'No address on file'}
+                            </p>
                           </div>
                         </label>
                       );
@@ -725,7 +656,7 @@ const CollegeCampusLinkPanel: React.FC<CollegeCampusLinkPanelProps> = ({
 
               <div className="space-y-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">
-                  Campus contact sets for this college
+                  Linked campuses ({linkedCampuses.length}) — contact set for each
                 </p>
                 {linkedCampuses.length === 0 ? (
                   <EmptyListMessage
@@ -751,6 +682,9 @@ const CollegeCampusLinkPanel: React.FC<CollegeCampusLinkPanelProps> = ({
                               <Building2 size={16} className="mt-0.5 shrink-0 text-accent" />
                               <div>
                                 <p className="font-semibold text-text-main">{link.name}</p>
+                                <p className="text-xs tabular-nums text-text-muted">
+                                  {link.campus_id ? `Campus ID ${link.campus_id}` : 'Unsaved campus'}
+                                </p>
                                 <p className="text-xs text-text-muted">
                                   {[link.city_name, link.state_name, link.country_name, link.zipcode]
                                     .filter(Boolean)
@@ -813,7 +747,7 @@ const CollegeCampusLinkPanel: React.FC<CollegeCampusLinkPanelProps> = ({
                                 label={`Phone numbers · ${link.name}`}
                                 items={phones}
                                 onChange={next => patchLink(link, { phone_numbers: next })}
-                                typeOptions={PHONE_CONTACT_TYPES}
+                                typeOptions={phoneContactTypes}
                                 valuePlaceholder={PHONE_LOCAL_PLACEHOLDER}
                                 valueInputType="tel"
                                 addLabel="Add phone number"
@@ -826,7 +760,7 @@ const CollegeCampusLinkPanel: React.FC<CollegeCampusLinkPanelProps> = ({
                                 label={`Fax numbers · ${link.name}`}
                                 items={normalizeFaxContacts(link.fax_numbers)}
                                 onChange={next => patchLink(link, { fax_numbers: next })}
-                                typeOptions={FAX_CONTACT_TYPES}
+                                typeOptions={phoneContactTypes}
                                 valuePlaceholder={PHONE_LOCAL_PLACEHOLDER}
                                 valueInputType="tel"
                                 addLabel="Add fax number"
@@ -839,7 +773,7 @@ const CollegeCampusLinkPanel: React.FC<CollegeCampusLinkPanelProps> = ({
                                 label={`Email addresses · ${link.name}`}
                                 items={emails}
                                 onChange={next => patchLink(link, { email_addresses: next })}
-                                typeOptions={EMAIL_CONTACT_TYPES}
+                                typeOptions={emailContactTypes}
                                 valuePlaceholder="college@university.edu"
                                 valueInputType="email"
                                 addLabel="Add email address"
@@ -860,6 +794,7 @@ const CollegeCampusLinkPanel: React.FC<CollegeCampusLinkPanelProps> = ({
                               typeSelectWidthClass="w-full sm:w-[8.75rem]"
                               maxLength={250}
                               fullWidth
+                              showViewWebsiteLink
                             />
                           </div>
                         </div>

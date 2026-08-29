@@ -1,12 +1,16 @@
 """Cloudflare R2 storage for institution logos, banners, and gallery images.
 
-R2 uses a flat key namespace. Keys follow:
-    {institution_prefix}/{asset_type}/{filename}
+R2 keys follow:
+    INSTITUTIONS/PICTURES/INS-{id}-{NICK}/{asset_type}/{filename}
 
 Example:
-    johns-hopkins/logo/primary-logo.svg
-    johns-hopkins/banner/hero-main.webp
-    johns-hopkins/gallery/campus-library.webp
+    INSTITUTIONS/PICTURES/INS-7-JHU/logo/primary-logo.svg
+    INSTITUTIONS/PICTURES/INS-6-UCLA/banner/hero-main.webp
+    INSTITUTIONS/PICTURES/INS-7-JHU/gallery/campus-library.webp
+
+Legacy keys (pre-migration) looked like:
+    jhu/logo/primary-logo.svg
+    INSTITUTIONS/PICTURES/7_JHU/logo/primary-logo.svg
 """
 from __future__ import annotations
 
@@ -25,6 +29,8 @@ from app.models.academia_institution import Institution
 ALLOWED_ASSET_TYPES = frozenset({"logo", "banner", "gallery"})
 LEGACY_ASSET_TYPE_ALIASES = {"campus": "banner"}
 MAX_ASSET_BYTES = 500 * 1024
+
+INSTITUTION_PICTURES_ROOT = "INSTITUTIONS/PICTURES"
 
 ALLOWED_UPLOADS: dict[str, dict[str, set[str]]] = {
     "logo": {
@@ -46,6 +52,17 @@ ALLOWED_UPLOADS: dict[str, dict[str, set[str]]] = {
 CONTENT_TYPE_ALIASES = {
     "image/jpg": "image/jpeg",
 }
+
+_MEDIA_KEY_RE = re.compile(
+    r"^(?:"
+    r"INSTITUTIONS/PICTURES/(?:INS-)?[0-9]+[_-][A-Z0-9]+/"
+    r"|"
+    r"[a-z0-9]+(?:-[a-z0-9]+)*/"
+    r")"
+    r"(?:logo|banner|gallery)/"
+    r"[a-z0-9]+(?:-[a-z0-9]+)*\.(?:svg|png|webp|jpe?g)$",
+    re.IGNORECASE,
+)
 
 
 def normalize_upload_content_type(content_type: str | None, filename: str) -> str:
@@ -73,7 +90,6 @@ def normalize_upload_content_type(content_type: str | None, filename: str) -> st
     return normalized
 
 
-
 def normalize_asset_type(asset_type: str) -> str:
     normalized = (asset_type or "").strip().lower()
     normalized = LEGACY_ASSET_TYPE_ALIASES.get(normalized, normalized)
@@ -85,13 +101,48 @@ def normalize_asset_type(asset_type: str) -> str:
     return normalized
 
 
+def institution_nick_folder(institution: Institution) -> str:
+    """Folder name under INSTITUTIONS/PICTURES — e.g. ``INS-7-JHU`` or ``INS-6-UCLA``."""
+    raw_code = (institution.code or "").strip()
+    if raw_code:
+        nick = re.sub(r"[^A-Za-z0-9]+", "", raw_code).upper()
+    else:
+        nick = re.sub(r"[^A-Za-z0-9]+", "", (institution.name or "")).upper()
+    if not nick:
+        nick = f"INSTITUTION{int(institution.id)}"
+    return f"INS-{int(institution.id)}-{nick}"
+
+
 def institution_asset_prefix(institution: Institution) -> str:
-    """Stable top-level R2 prefix for an institution (slug-style, not numeric id)."""
+    """Canonical R2/local prefix for an institution's picture assets."""
+    return f"{INSTITUTION_PICTURES_ROOT}/{institution_nick_folder(institution)}"
+
+
+def legacy_institution_asset_prefixes(institution: Institution) -> list[str]:
+    """Older top-level prefixes used before INSTITUTIONS/PICTURES/INS-{id}-{NICK}/."""
+    prefixes: list[str] = []
     code = (institution.code or "").strip().lower()
     if code and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", code):
-        return code
+        prefixes.append(code)
     slug = re.sub(r"[^a-z0-9]+", "-", (institution.name or "").strip().lower()).strip("-")
-    return slug or f"institution-{institution.id}"
+    if slug and slug not in prefixes:
+        prefixes.append(slug)
+    fallback = f"institution-{institution.id}"
+    if fallback not in prefixes:
+        prefixes.append(fallback)
+    # Intermediate format used briefly: INSTITUTIONS/PICTURES/{id}_{NICK}
+    raw_code = (institution.code or "").strip()
+    nick = re.sub(r"[^A-Za-z0-9]+", "", raw_code or (institution.name or "")).upper()
+    if nick:
+        prefixes.append(f"{INSTITUTION_PICTURES_ROOT}/{int(institution.id)}_{nick}")
+    # Also cover pre-PICTURES nesting under INSTITUTIONS/{nick}/ if it existed.
+    for nick_prefix in list(prefixes):
+        if nick_prefix.startswith(f"{INSTITUTION_PICTURES_ROOT}/"):
+            continue
+        nested = f"INSTITUTIONS/{nick_prefix}"
+        if nested not in prefixes:
+            prefixes.append(nested)
+    return prefixes
 
 
 def sanitize_asset_filename(filename: str) -> str:
@@ -113,7 +164,27 @@ def sanitize_asset_filename(filename: str) -> str:
 def build_r2_object_key(institution_prefix: str, asset_type: str, filename: str) -> str:
     asset_type = normalize_asset_type(asset_type)
     sanitized = sanitize_asset_filename(filename)
-    return f"{institution_prefix}/{asset_type}/{sanitized}"
+    return f"{institution_prefix.rstrip('/')}/{asset_type}/{sanitized}"
+
+
+def parse_institution_asset_key(object_key: str) -> tuple[str, str, str] | None:
+    """Return (institution_folder_or_prefix, asset_type, filename) when key is valid."""
+    parts = [part for part in (object_key or "").lstrip("/").split("/") if part]
+    if len(parts) >= 5 and parts[0].upper() == "INSTITUTIONS" and parts[1].upper() == "PICTURES":
+        asset_type = parts[3].lower()
+        if asset_type in ALLOWED_ASSET_TYPES:
+            return parts[2], asset_type, parts[4]
+        return None
+    if len(parts) >= 4 and parts[0].upper() == "INSTITUTIONS":
+        asset_type = parts[2].lower()
+        if asset_type in ALLOWED_ASSET_TYPES:
+            return parts[1], asset_type, parts[3]
+        return None
+    if len(parts) >= 3:
+        asset_type = parts[1].lower()
+        if asset_type in ALLOWED_ASSET_TYPES:
+            return parts[0], asset_type, parts[2]
+    return None
 
 
 def validate_image_signature(content: bytes, content_type: str) -> None:
@@ -215,10 +286,7 @@ def public_url_for_key(object_key: str) -> str:
 def fetch_r2_object(object_key: str) -> tuple[bytes, str]:
     """Download an object from R2 (or local uploads fallback)."""
     key = object_key.lstrip("/")
-    if not re.fullmatch(
-        r"[a-z0-9]+(?:-[a-z0-9]+)*/(?:logo|banner|gallery)/[a-z0-9]+(?:-[a-z0-9]+)*\.(?:svg|png|webp|jpe?g)",
-        key,
-    ):
+    if not _MEDIA_KEY_RE.fullmatch(key):
         raise HTTPException(status_code=400, detail="Invalid media object key.")
 
     if _r2_configured():
@@ -264,13 +332,25 @@ def storage_key_from_url(url: str | None) -> str | None:
     # Private S3 API host style: https://<account>.r2.cloudflarestorage.com/<key>
     if "r2.cloudflarestorage.com/" in value:
         key = value.split("r2.cloudflarestorage.com/", 1)[1].lstrip("/")
-        parts = [part for part in key.split("/") if part]
-        asset_type_index = next(
-            (index for index, part in enumerate(parts) if part in ALLOWED_ASSET_TYPES),
-            -1,
-        )
-        if asset_type_index >= 1 and len(parts) >= asset_type_index + 2:
-            return "/".join(parts[asset_type_index - 1 :])
+        parsed = parse_institution_asset_key(key)
+        if parsed:
+            # Prefer the shortest trailing key that still parses as an asset.
+            parts = [part for part in key.split("/") if part]
+            asset_type_index = next(
+                (index for index, part in enumerate(parts) if part.lower() in ALLOWED_ASSET_TYPES),
+                -1,
+            )
+            if asset_type_index >= 1:
+                # Keep INSTITUTIONS/PICTURES/{folder}/... when present.
+                if (
+                    asset_type_index >= 3
+                    and parts[0].upper() == "INSTITUTIONS"
+                    and parts[1].upper() == "PICTURES"
+                ):
+                    return "/".join(parts[: asset_type_index + 2])
+                if asset_type_index >= 2 and parts[0].upper() == "INSTITUTIONS":
+                    return "/".join(parts[: asset_type_index + 2])
+                return "/".join(parts[asset_type_index - 1 : asset_type_index + 2])
         return key
     # Public CDN: https://cdn.example.com/<key>
     base = (settings.R2_PUBLIC_BASE_URL or "").rstrip("/")
@@ -288,10 +368,20 @@ def rewrite_media_url(url: str | None) -> str | None:
         return url
     return public_url_for_key(key)
 
-def list_institution_assets(institution: Institution) -> list[dict[str, object]]:
-    """List logo/banner/gallery objects already stored for an institution."""
-    prefix = f"{institution_asset_prefix(institution)}/"
+
+def _content_type_for_suffix(suffix: str) -> str:
+    return {
+        ".svg": "image/svg+xml",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+    }.get(suffix.lower(), "application/octet-stream")
+
+
+def _list_assets_under_prefix(prefix: str) -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
+    normalized_prefix = prefix if prefix.endswith("/") else f"{prefix}/"
 
     if _r2_configured():
         client = _r2_client()
@@ -300,7 +390,7 @@ def list_institution_assets(institution: Institution) -> list[dict[str, object]]
             while True:
                 kwargs: dict[str, object] = {
                     "Bucket": settings.R2_BUCKET_NAME,
-                    "Prefix": prefix,
+                    "Prefix": normalized_prefix,
                     "MaxKeys": 100,
                 }
                 if continuation:
@@ -308,26 +398,17 @@ def list_institution_assets(institution: Institution) -> list[dict[str, object]]
                 response = client.list_objects_v2(**kwargs)
                 for obj in response.get("Contents") or []:
                     key = str(obj.get("Key") or "")
-                    parts = key.split("/")
-                    if len(parts) < 3 or parts[1] not in ALLOWED_ASSET_TYPES:
+                    parsed = parse_institution_asset_key(key)
+                    if not parsed:
                         continue
-                    asset_type = parts[1]
-                    filename = parts[-1]
-                    suffix = Path(filename).suffix.lower()
-                    content_type = {
-                        ".svg": "image/svg+xml",
-                        ".png": "image/png",
-                        ".webp": "image/webp",
-                        ".jpg": "image/jpeg",
-                        ".jpeg": "image/jpeg",
-                    }.get(suffix, "application/octet-stream")
+                    _, asset_type, filename = parsed
                     items.append(
                         {
                             "url": public_url_for_key(key),
                             "caption": None,
                             "picture_type": asset_type,
                             "file_name": filename,
-                            "file_type": content_type,
+                            "file_type": _content_type_for_suffix(Path(filename).suffix),
                             "file_size": int(obj.get("Size") or 0),
                             "storage_key": key,
                         }
@@ -339,36 +420,35 @@ def list_institution_assets(institution: Institution) -> list[dict[str, object]]
             raise HTTPException(status_code=502, detail=f"R2 list failed: {exc}") from exc
         return items
 
-    local_root = Path(__file__).resolve().parents[2] / "uploads" / institution_asset_prefix(institution)
+    local_root = Path(__file__).resolve().parents[2] / "uploads" / prefix
     if not local_root.exists():
         return []
+    uploads_root = Path(__file__).resolve().parents[2] / "uploads"
     for path in sorted(local_root.rglob("*")):
         if not path.is_file():
             continue
-        relative = path.relative_to(local_root.parent).as_posix()
-        parts = relative.split("/")
-        if len(parts) < 3 or parts[1] not in ALLOWED_ASSET_TYPES:
+        relative = path.relative_to(uploads_root).as_posix()
+        parsed = parse_institution_asset_key(relative)
+        if not parsed:
             continue
-        suffix = path.suffix.lower()
-        content_type = {
-            ".svg": "image/svg+xml",
-            ".png": "image/png",
-            ".webp": "image/webp",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-        }.get(suffix, "application/octet-stream")
+        _, asset_type, filename = parsed
         items.append(
             {
                 "url": public_url_for_key(relative),
                 "caption": None,
-                "picture_type": parts[1],
-                "file_name": path.name,
-                "file_type": content_type,
+                "picture_type": asset_type,
+                "file_name": filename,
+                "file_type": _content_type_for_suffix(path.suffix),
                 "file_size": path.stat().st_size,
                 "storage_key": relative,
             }
         )
     return items
+
+
+def list_institution_assets(institution: Institution) -> list[dict[str, object]]:
+    """List logo/banner/gallery objects already stored for an institution."""
+    return _list_assets_under_prefix(institution_asset_prefix(institution))
 
 
 def upload_institution_asset(
@@ -439,19 +519,22 @@ def upload_institution_asset(
     }
 
 
+def _owned_prefixes(institution: Institution) -> list[str]:
+    return [institution_asset_prefix(institution), *legacy_institution_asset_prefixes(institution)]
+
+
 def _assert_key_belongs_to_institution(institution: Institution, object_key: str) -> str:
     key = (object_key or "").strip().lstrip("/")
     if not key or ".." in key.split("/"):
         raise HTTPException(status_code=400, detail="Invalid storage key.")
-    prefix = institution_asset_prefix(institution)
-    if not key.startswith(f"{prefix}/"):
+    if not parse_institution_asset_key(key):
+        raise HTTPException(status_code=400, detail="Invalid institution asset key.")
+    owned = _owned_prefixes(institution)
+    if not any(key == prefix or key.startswith(f"{prefix}/") for prefix in owned):
         raise HTTPException(
             status_code=400,
             detail="Storage key does not belong to this institution.",
         )
-    parts = key.split("/")
-    if len(parts) < 3 or parts[1] not in ALLOWED_ASSET_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid institution asset key.")
     return key
 
 
@@ -481,46 +564,39 @@ def delete_institution_asset(
     return {"ok": True, "storage_key": key}
 
 
-def delete_all_institution_assets(institution: Institution) -> dict[str, object]:
-    """Delete every logo/banner/gallery object under the institution prefix."""
-    prefix = f"{institution_asset_prefix(institution)}/"
+def _delete_prefix(prefix: str) -> int:
     deleted = 0
+    normalized_prefix = prefix if prefix.endswith("/") else f"{prefix}/"
 
     if _r2_configured():
         client = _r2_client()
-        try:
-            continuation: str | None = None
-            while True:
-                kwargs: dict[str, object] = {
-                    "Bucket": settings.R2_BUCKET_NAME,
-                    "Prefix": prefix,
-                    "MaxKeys": 1000,
-                }
-                if continuation:
-                    kwargs["ContinuationToken"] = continuation
-                response = client.list_objects_v2(**kwargs)
-                objects = [
-                    {"Key": str(obj.get("Key"))}
-                    for obj in (response.get("Contents") or [])
-                    if obj.get("Key")
-                ]
-                if objects:
-                    # delete_objects accepts up to 1000 keys per request
-                    client.delete_objects(
-                        Bucket=settings.R2_BUCKET_NAME,
-                        Delete={"Objects": objects, "Quiet": True},
-                    )
-                    deleted += len(objects)
-                if not response.get("IsTruncated"):
-                    break
-                continuation = response.get("NextContinuationToken")
-        except (BotoCoreError, ClientError) as exc:
-            raise HTTPException(
-                status_code=502, detail=f"R2 bulk delete failed: {exc}"
-            ) from exc
-        return {"ok": True, "deleted": deleted, "prefix": prefix.rstrip("/")}
+        continuation: str | None = None
+        while True:
+            kwargs: dict[str, object] = {
+                "Bucket": settings.R2_BUCKET_NAME,
+                "Prefix": normalized_prefix,
+                "MaxKeys": 1000,
+            }
+            if continuation:
+                kwargs["ContinuationToken"] = continuation
+            response = client.list_objects_v2(**kwargs)
+            objects = [
+                {"Key": str(obj.get("Key"))}
+                for obj in (response.get("Contents") or [])
+                if obj.get("Key")
+            ]
+            if objects:
+                client.delete_objects(
+                    Bucket=settings.R2_BUCKET_NAME,
+                    Delete={"Objects": objects, "Quiet": True},
+                )
+                deleted += len(objects)
+            if not response.get("IsTruncated"):
+                break
+            continuation = response.get("NextContinuationToken")
+        return deleted
 
-    local_root = Path(__file__).resolve().parents[2] / "uploads" / institution_asset_prefix(institution)
+    local_root = Path(__file__).resolve().parents[2] / "uploads" / prefix
     if local_root.exists():
         for path in sorted(local_root.rglob("*"), reverse=True):
             if path.is_file():
@@ -535,5 +611,23 @@ def delete_all_institution_assets(institution: Institution) -> dict[str, object]
             local_root.rmdir()
         except OSError:
             pass
-    return {"ok": True, "deleted": deleted, "prefix": prefix.rstrip("/")}
+    return deleted
 
+
+def delete_all_institution_assets(institution: Institution) -> dict[str, object]:
+    """Delete every logo/banner/gallery object under current and legacy prefixes."""
+    deleted = 0
+    prefixes = _owned_prefixes(institution)
+    try:
+        for prefix in prefixes:
+            deleted += _delete_prefix(prefix)
+    except (BotoCoreError, ClientError) as exc:
+        raise HTTPException(
+            status_code=502, detail=f"R2 bulk delete failed: {exc}"
+        ) from exc
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "prefix": institution_asset_prefix(institution),
+        "prefixes": prefixes,
+    }

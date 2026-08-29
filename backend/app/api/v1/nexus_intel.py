@@ -28,6 +28,11 @@ from app.schemas.nexus_intel import (
     IntelGlossaryListResponse,
     IntelGlossaryRead,
     IntelGlossaryUpdate,
+    IntelInquiryFaqCreate,
+    IntelInquiryFaqListResponse,
+    IntelInquiryFaqRead,
+    IntelInquiryFaqUpdate,
+    IntelInquiryTaxonomyNode,
     IntelPreferencesRead,
     IntelPreferencesUpdate,
     IntelScrapeReviewBulkApproveRequest,
@@ -56,6 +61,63 @@ router = APIRouter(prefix="/intel", tags=["Nexus Intel"])
 def _glossary_read(row) -> IntelGlossaryRead:
     data = service.glossary_to_dict(row)
     return IntelGlossaryRead(**data)
+
+
+@router.get("/inquiry-hub/taxonomy", response_model=list[IntelInquiryTaxonomyNode])
+def get_inquiry_taxonomy(
+    _user: User = Depends(deps.get_current_active_user),
+):
+    return service.inquiry_taxonomy()
+
+
+@router.get("/inquiry-hub/faqs", response_model=IntelInquiryFaqListResponse)
+def list_inquiry_faqs(
+    path: list[str] | None = Query(None),
+    q: str | None = Query(None, max_length=200),
+    db: Session = Depends(get_db),
+    _user: User = Depends(deps.get_current_active_user),
+):
+    try:
+        rows, total = service.list_inquiry_faqs(db, paths=path, q=q)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return IntelInquiryFaqListResponse(items=rows, total=total)
+
+
+@router.post("/inquiry-hub/faqs", response_model=IntelInquiryFaqRead, status_code=201)
+def create_inquiry_faq(
+    body: IntelInquiryFaqCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(deps.get_current_active_user),
+):
+    try:
+        return service.create_inquiry_faq(db, body.model_dump(), user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.patch("/inquiry-hub/faqs/{faq_id}", response_model=IntelInquiryFaqRead)
+def update_inquiry_faq(
+    faq_id: UUID,
+    body: IntelInquiryFaqUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(deps.get_current_active_user),
+):
+    try:
+        return service.update_inquiry_faq(
+            db, faq_id, body.model_dump(exclude_unset=True), user.id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete("/inquiry-hub/faqs/{faq_id}", status_code=204)
+def delete_inquiry_faq(
+    faq_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(deps.get_current_active_user),
+):
+    service.delete_inquiry_faq(db, faq_id, user.id)
 
 
 @router.get("/terms", response_model=IntelGlossaryListResponse)

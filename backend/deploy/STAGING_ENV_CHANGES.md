@@ -15,30 +15,39 @@ Optional local staging worktree: `E:\NEXUS-staging\backend\.env`
 
 ---
 
-## Critical — switch DATABASE_URL to Nexus-Dev-1
+## Critical — switch DATABASE_URL to Hostinger KVM 1 Postgres
 
-Old Neon reached its limit. Staging must use the new DB:
+Staging no longer uses Neon (Nexus-Dev-1 / sparkling-violet reached limits). Use the **Hostinger KVM 1** database:
 
 | Item | Value |
 |------|--------|
-| Neon database | **Nexus-Dev-1** |
-| Scheme in `.env` | `postgresql+psycopg://...` |
-| Required query | `?sslmode=require` |
-| Prefer | Neon **pooled** connection host (`-pooler`) |
+| Database | **`nexus_edutrust`** |
+| User | **`nexus_et_admin`** (full privileges) |
+| Host | `127.0.0.1` on VPS, or Hostinger hPanel DB host |
+| Port | `5432` (default) |
+| Scheme | `postgresql+psycopg://...` |
 
 ```env
-DATABASE_URL=postgresql+psycopg://USER:PASSWORD@ep-XXXX-pooler.REGION.aws.neon.tech/neondb?sslmode=require
+DATABASE_URL=postgresql+psycopg://nexus_et_admin:YOUR_PASSWORD@127.0.0.1:5432/nexus_edutrust
 ```
 
-Then:
+Full bootstrap steps: [setup_staging_db.md](./setup_staging_db.md).
+
+**Do not** point staging at develop Neon (`ep-still-paper-…` / still-paper) or old staging Neon URLs.
+
+If scripts can talk to the DB but nginx returns **502** after `systemctl restart nexus-backend`, the unit is crashing or never binding — see [STAGING_DEPLOYMENT_AGENT_PROMPT.md](./STAGING_DEPLOYMENT_AGENT_PROMPT.md) gate **E1b**. Fix `.env`, install `deploy/nexus-backend.service` (dotenv wrapper), then:
 
 ```bash
+sudo sed -i 's/\r$//' /var/www/nexus/backend/.env
+sudo cp /var/www/nexus/backend/deploy/nexus-backend.service /etc/systemd/system/nexus-backend.service
+sudo chmod +x /var/www/nexus/backend/deploy/run-nexus-backend.sh
+sudo systemctl daemon-reload
 sudo systemctl restart nexus-backend
 cd /var/www/nexus/backend && source .venv/bin/activate
 python scripts/verify_staging_database.py --migrate
 ```
 
-Expected Alembic head: `c4d7e0f53g6h`
+Expected Alembic head: `yy5z6asupermaj`
 
 ---
 
@@ -125,8 +134,8 @@ NEXUS_WHATSAPP_AUTO_SYNC=true
 SECURITY_AUDIT_ALERT_WHATSAPP_ENABLED=false
 SECURITY_AUDIT_ALERT_MANUAL_ONLY=true
 
-# PASTE Nexus-Dev-1 pooled URL:
-# DATABASE_URL=postgresql+psycopg://...@ep-XXXX-pooler....neon.tech/neondb?sslmode=require
+# PASTE Hostinger KVM 1 Postgres URL (fill password on VPS):
+# DATABASE_URL=postgresql+psycopg://nexus_et_admin:YOUR_PASSWORD@127.0.0.1:5432/nexus_edutrust
 ```
 
 After edit:
@@ -141,9 +150,11 @@ python scripts/sync_whatsapp_webhook.py --status
 
 ## Do NOT copy from local development `.env`
 
+Develop should use Hostinger **`nexus_dev`** (see [setup_dev_db.md](./setup_dev_db.md)), not Neon still-paper.
+
 | Variable | Wrong on staging |
 |----------|------------------|
-| `DATABASE_URL` | Old Neon / local (limit reached) |
+| `DATABASE_URL` | Neon (still-paper / Nexus-Dev-1 / sparkling-violet), develop **`nexus_dev`**, or local SQLite |
 | `PUBLIC_TUNNEL_BASE` | `*.trycloudflare.com` / `*.ngrok-free.dev` |
 | `NEXUS_INSTANCE` | `development` |
 | `NEXUS_TUNNEL_ENABLED` | `true` |

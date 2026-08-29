@@ -41,6 +41,9 @@ class Settings(BaseSettings):
 
     # Database connection string
     DATABASE_URL: str = "sqlite:///./nexus.db"
+    # Optional Postgres statement_timeout in ms (0 / unset = server default, often unlimited).
+    # Useful over SSH tunnels so hung queries fail visibly instead of hanging the UI.
+    PG_STATEMENT_TIMEOUT_MS: int = 0
 
     @field_validator("DATABASE_URL", mode="before")
     @classmethod

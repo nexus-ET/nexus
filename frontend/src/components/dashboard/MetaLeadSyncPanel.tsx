@@ -95,7 +95,12 @@ function failureFromLastRun(summary: LeadSyncLastRunSummary | null | undefined):
   return formatLeadSyncFailure(summary.errors.join('; '), summary.errors);
 }
 
-const MetaLeadSyncPanel: React.FC = () => {
+type MetaLeadSyncPanelProps = {
+  /** Called after a successful schedule save so parent pages can refresh related settings. */
+  onConfigChanged?: () => void;
+};
+
+const MetaLeadSyncPanel: React.FC<MetaLeadSyncPanelProps> = ({ onConfigChanged }) => {
   const { formatDateTime } = useBusinessTimezone();
   const [leadSyncConfig, setLeadSyncConfig] = useState<LeadSyncConfig | null>(null);
   const [leadSyncDraft, setLeadSyncDraft] = useState<{
@@ -218,6 +223,7 @@ const MetaLeadSyncPanel: React.FC = () => {
           ? `Automated sync enabled every ${updated.interval_value} ${updated.interval_unit}.`
           : 'Manual sync mode enabled. Use Sync Now to fetch leads.'
       );
+      onConfigChanged?.();
     } catch (err: unknown) {
       setLeadSyncError(err instanceof Error ? err.message : 'Failed to save lead sync settings.');
     } finally {
@@ -362,9 +368,9 @@ const MetaLeadSyncPanel: React.FC = () => {
 
               {leadSyncDraft.mode === 'automated' ? (
                 <>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <label htmlFor="lead-sync-interval" className="text-xs text-text-muted whitespace-nowrap">
-                      Every
+                      Interval value
                     </label>
                     <input
                       id="lead-sync-interval"
@@ -378,7 +384,11 @@ const MetaLeadSyncPanel: React.FC = () => {
                         }))
                       }
                       className="w-14 rounded-md border border-border-subtle bg-surface-bg px-2 py-1 text-xs text-text-main focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/10"
+                      aria-label="Meta lead sync interval value"
                     />
+                    <label htmlFor="lead-sync-unit" className="text-xs text-text-muted whitespace-nowrap">
+                      Interval unit
+                    </label>
                     <select
                       id="lead-sync-unit"
                       value={leadSyncDraft.interval_unit}
@@ -389,6 +399,7 @@ const MetaLeadSyncPanel: React.FC = () => {
                         }))
                       }
                       className="w-24 rounded-md border border-border-subtle bg-surface-bg px-2 py-1 text-xs text-text-main focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/10"
+                      aria-label="Meta lead sync interval unit"
                     >
                       {LEAD_SYNC_INTERVAL_OPTIONS.map(option => (
                         <option key={option.value} value={option.value}>

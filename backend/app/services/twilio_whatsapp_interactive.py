@@ -10,7 +10,7 @@ from app.services.twilio_outbound import get_twilio_client, resolve_whatsapp_add
 
 logger = logging.getLogger(__name__)
 
-PickerKind = Literal["date", "time", "consent"]
+PickerKind = Literal["date", "time", "consent", "degree", "major", "country"]
 
 _REPLY_NUMBER_PROMPT_RE = re.compile(
     r"(?:\n+\s*)?Reply with the number of your choice:?\s*$",

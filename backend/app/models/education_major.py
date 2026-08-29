@@ -1,7 +1,4 @@
-import uuid
-
 from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.db.database import Base
@@ -15,9 +12,14 @@ class EducationMajor(Base):
     id = Column(Integer, primary_key=True, index=True)
     code = Column(String(50), unique=True, nullable=True, index=True)
     label = Column(String(255), nullable=False)
-    description = Column(Text, nullable=True)
-    program_id = Column(
-        UUID(as_uuid=True), ForeignKey("programs.id"), nullable=True, index=True
+    major_description = Column(Text, nullable=True)
+    sub_majors_key_fields = Column(Text, nullable=True)
+    program_id = Column(Integer, ForeignKey("programs.id"), nullable=True, index=True)
+    super_major_id = Column(
+        Integer,
+        ForeignKey("education_super_majors.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     is_other = Column(Boolean, default=False, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
@@ -25,6 +27,7 @@ class EducationMajor(Base):
     color = Column(String(7), nullable=True)
 
     program = relationship("Program", back_populates="education_majors")
+    super_major = relationship("EducationSuperMajor", back_populates="majors")
     level_links = relationship(
         "EducationMajorLevel",
         backref="education_major",
@@ -34,4 +37,8 @@ class EducationMajor(Base):
         "EducationCourse",
         back_populates="education_major",
         cascade="all, delete-orphan",
+    )
+    sub_majors = relationship(
+        "EducationSubMajor",
+        back_populates="major",
     )

@@ -20,6 +20,7 @@ import {
   resolveMajorColor,
 } from '../../utils/majorColors';
 import ActiveStatusField from './ActiveStatusField';
+import { FrameworkIdField } from './FrameworkIdDisplay';
 import SearchableMultiSelect from './SearchableMultiSelect';
 import RichTextEditor from '../ui/rich-text-editor';
 
@@ -181,6 +182,18 @@ const CourseFormModal: React.FC<CourseFormModalProps> = ({
           </button>
         </div>
         <form onSubmit={onSubmit} className="space-y-4 p-5">
+          <FrameworkIdField value={course?.id} />
+          {course ? (
+            <>
+              <FrameworkIdField label="Program ID" value={course.degree_id} placeholder="—" />
+              <FrameworkIdField label="Level ID" value={course.level_id} placeholder="—" />
+            </>
+          ) : null}
+          <FrameworkIdField
+            label="Major ID"
+            value={majorIds.length ? majorIds.join(', ') : undefined}
+            placeholder="—"
+          />
           <Controller
             control={control}
             name="major_ids"

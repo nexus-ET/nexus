@@ -22,6 +22,7 @@ frontend/dist/
 
 # Dev / local
 backend/.dev-stack.lock
+backend/.scrape/
 backend/uploads/
 backend/app/uploads/
 backend/cloudflared/config.yml

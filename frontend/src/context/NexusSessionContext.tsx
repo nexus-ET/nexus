@@ -29,7 +29,7 @@ export const NexusSessionProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const refreshUnreadMessageCount = useCallback(async () => {
     try {
-      const data = await apiFetch('chat/conversations');
+      const data = await apiFetch('chat/conversations', { authRedirect: false });
       const conversations =
         (data as { conversations?: Array<{ unread_count?: number }> }).conversations ?? [];
       const total = conversations.reduce(

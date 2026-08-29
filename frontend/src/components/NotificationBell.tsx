@@ -50,7 +50,9 @@ const NotificationBell: React.FC<{ onDarkHeader?: boolean }> = ({ onDarkHeader =
     if (!hasValidSession()) return;
     try {
       setLoading(true);
-      const data = (await apiFetch('notifications/inbox')) as NotificationInboxResponse;
+      const data = (await apiFetch('notifications/inbox', {
+        authRedirect: false,
+      })) as NotificationInboxResponse;
       setItems(Array.isArray(data.notifications) ? data.notifications : []);
       setUnreadCount(data.unread_count ?? 0);
     } catch {

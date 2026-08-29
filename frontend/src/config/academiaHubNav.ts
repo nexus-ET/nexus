@@ -2,6 +2,8 @@ export interface AcademiaSectionTab {
   key: string;
   label: string;
   path: string;
+  /** Indent under the previous sibling in mega-nav / sidebar (e.g. Sub-Majors under Majors). */
+  nested?: boolean;
 }
 
 export interface AcademiaNavSection {
@@ -22,9 +24,13 @@ export type AcademiaEntityKey =
   | 'colleges'
   | 'levels'
   | 'programs'
+  | 'super-majors'
   | 'majors'
+  | 'sub-majors'
   | 'courses'
-  | 'summary';
+  | 'summary'
+  | 'nz-mapping-review'
+  | 'ca-mapping-review';
 
 export interface AcademiaNavItem {
   key: AcademiaEntityKey;
@@ -63,10 +69,31 @@ export const GEOGRAPHY_TABS: AcademiaSectionTab[] = [
 
 export const FRAMEWORK_TABS: AcademiaSectionTab[] = [
   { key: 'summary', label: 'Summary View', path: `${FRAMEWORK_SECTION_PATH}/summary` },
-  { key: 'majors', label: 'Majors', path: `${FRAMEWORK_SECTION_PATH}/majors` },
+  {
+    key: 'super-majors',
+    label: 'Super-Majors',
+    path: `${FRAMEWORK_SECTION_PATH}/super-majors`,
+  },
+  { key: 'majors', label: 'Majors', path: `${FRAMEWORK_SECTION_PATH}/majors`, nested: true },
+  {
+    key: 'sub-majors',
+    label: 'Sub-Majors',
+    path: `${FRAMEWORK_SECTION_PATH}/sub-majors`,
+    nested: true,
+  },
   { key: 'levels', label: 'Levels', path: `${FRAMEWORK_SECTION_PATH}/levels` },
   { key: 'programs', label: 'Programs', path: `${FRAMEWORK_SECTION_PATH}/programs` },
   { key: 'courses', label: 'Courses', path: `${FRAMEWORK_SECTION_PATH}/courses` },
+  {
+    key: 'nz-mapping-review',
+    label: 'NZ Mapping Review',
+    path: `${FRAMEWORK_SECTION_PATH}/nz-mapping-review`,
+  },
+  {
+    key: 'ca-mapping-review',
+    label: 'CA Mapping Review',
+    path: `${FRAMEWORK_SECTION_PATH}/ca-mapping-review`,
+  },
 ];
 
 export const ACADEMIA_HUB_SECTIONS: AcademiaNavSection[] = [
@@ -101,11 +128,25 @@ export const ACADEMIA_HUB_SECTIONS: AcademiaNavSection[] = [
         apiPath: 'academia/hierarchy',
       },
       {
+        key: 'super-majors',
+        label: 'Super-Majors',
+        singular: 'Super-Major',
+        path: `${FRAMEWORK_SECTION_PATH}/super-majors`,
+        apiPath: 'academia/education-super-majors',
+      },
+      {
         key: 'majors',
         label: 'Majors',
         singular: 'Major',
         path: `${FRAMEWORK_SECTION_PATH}/majors`,
         apiPath: 'academia/education-majors',
+      },
+      {
+        key: 'sub-majors',
+        label: 'Sub-Majors',
+        singular: 'Sub-Major',
+        path: `${FRAMEWORK_SECTION_PATH}/sub-majors`,
+        apiPath: 'academia/education-sub-majors',
       },
       {
         key: 'levels',
@@ -127,6 +168,20 @@ export const ACADEMIA_HUB_SECTIONS: AcademiaNavSection[] = [
         singular: 'Course',
         path: `${FRAMEWORK_SECTION_PATH}/courses`,
         apiPath: 'academia/courses',
+      },
+      {
+        key: 'nz-mapping-review',
+        label: 'NZ Mapping Review',
+        singular: 'NZ Mapping Review',
+        path: `${FRAMEWORK_SECTION_PATH}/nz-mapping-review`,
+        apiPath: 'academia/nz-program-mapping-suggestions',
+      },
+      {
+        key: 'ca-mapping-review',
+        label: 'CA Mapping Review',
+        singular: 'CA Mapping Review',
+        path: `${FRAMEWORK_SECTION_PATH}/ca-mapping-review`,
+        apiPath: 'academia/ca-program-mapping-suggestions',
       },
     ],
   },

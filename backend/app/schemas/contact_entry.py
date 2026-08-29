@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -124,16 +125,43 @@ def normalize_email_contacts(raw: object) -> list[ContactEntry]:
     )
 
 
+def web_url_to_origin(value: str | None) -> str | None:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return None
+    candidate = cleaned if cleaned.startswith(("http://", "https://")) else f"https://{cleaned}"
+    parsed = urlparse(candidate)
+    if not parsed.netloc:
+        return cleaned
+    scheme = parsed.scheme or "https"
+    return urlunparse((scheme, parsed.netloc, "", "", "", ""))
+
+
+def _strip_web_link_origins(entries: list[ContactEntry]) -> list[ContactEntry]:
+    stripped: list[ContactEntry] = []
+    for entry in entries:
+        value = entry.value.strip()
+        if not value:
+            continue
+        origin = web_url_to_origin(value)
+        if origin:
+            stripped.append(ContactEntry(type=entry.type, value=origin))
+    return stripped or [ContactEntry(type=WEB_LINK_TYPE_WEBSITE, value="")]
+
+
 def normalize_web_links(raw: object, legacy_url: object = None) -> list[ContactEntry]:
     if isinstance(raw, list) and raw:
-        return _normalize_contact_items(
+        entries = _normalize_contact_items(
             raw,
             allowed_types=WEB_LINK_TYPES,
             default_type=WEB_LINK_TYPE_WEBSITE,
         )
+        return _strip_web_link_origins(entries)
     legacy = str(legacy_url or "").strip()
     if legacy:
-        return [ContactEntry(type=WEB_LINK_TYPE_WEBSITE, value=legacy)]
+        origin = web_url_to_origin(legacy)
+        if origin:
+            return [ContactEntry(type=WEB_LINK_TYPE_WEBSITE, value=origin)]
     return [ContactEntry(type=WEB_LINK_TYPE_WEBSITE, value="")]
 
 
@@ -173,6 +201,14 @@ def serialize_contacts(entries: list[ContactEntry]) -> list[dict[str, str]]:
         for entry in entries
         if entry.value.strip()
     ]
+
+
+def assert_optional_email_formats(entries: list[ContactEntry] | None) -> None:
+    """Reject malformed emails; empty lists and blank values are allowed."""
+    for entry in entries or []:
+        value = (entry.value or "").strip()
+        if value and not _EMAIL_RE.match(value):
+            raise ValueError(f"Invalid email address: {value}")
 
 
 def migrate_legacy_fax_fields(data: object) -> object:
@@ -302,6 +338,18 @@ class PhoneContactListMixin(ContactListFields):
         return self
 
 
+class OptionalPhoneContactListMixin(ContactListFields):
+    """Phone list with type checks only — empty phone lists are allowed."""
+
+    @model_validator(mode="after")
+    def validate_phone_numbers(self) -> OptionalPhoneContactListMixin:
+        allowed = set(PHONE_CONTACT_TYPES)
+        for entry in self.phone_numbers:
+            if entry.type not in allowed:
+                raise ValueError(f"Invalid phone type: {entry.type}")
+        return self
+
+
 class EmailContactListMixin(ContactListFields):
     @model_validator(mode="after")
     def validate_email_addresses(self) -> EmailContactListMixin:
@@ -317,4 +365,19 @@ class EmailContactListMixin(ContactListFields):
         if not has_email:
             raise ValueError("At least one email address is required.")
 
+        return self
+
+
+class OptionalEmailContactListMixin(ContactListFields):
+    """Email list with type/format checks — empty email lists are allowed."""
+
+    @model_validator(mode="after")
+    def validate_email_addresses(self) -> OptionalEmailContactListMixin:
+        allowed = set(EMAIL_CONTACT_TYPES)
+        for entry in self.email_addresses:
+            if entry.type not in allowed:
+                raise ValueError(f"Invalid email type: {entry.type}")
+            value = entry.value.strip()
+            if value and not _EMAIL_RE.match(value):
+                raise ValueError(f"Invalid email address: {value}")
         return self

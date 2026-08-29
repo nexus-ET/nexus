@@ -1,6 +1,7 @@
 import { expect, type Page } from '@playwright/test';
 import { gotoAppPath } from './auth';
 import { loadUatEnv } from './env';
+import { workspaceTab } from './workspaceTabs';
 
 /**
  * Open the SHORTLIST tab for the UAT lead on Counselling Students.
@@ -26,9 +27,13 @@ export async function openUniversityShortlistTab(page: Page): Promise<void> {
     await openProfile.first().click();
   }
 
-  const shortlistTab = page.getByRole('button', { name: /^SHORTLIST$/i });
+  const discoveryTab = workspaceTab(page, /^DISCOVERY$/i);
+  await expect(discoveryTab.first()).toBeVisible({ timeout: 45_000 });
+  await discoveryTab.first().click({ force: true });
+
+  const shortlistTab = workspaceTab(page, /^Shortlist$/i);
   await expect(shortlistTab.first()).toBeVisible({ timeout: 45_000 });
-  await shortlistTab.first().click();
+  await shortlistTab.first().click({ force: true });
 }
 
 /** Generate (or regenerate) a shortlist run and wait for a result signal. */

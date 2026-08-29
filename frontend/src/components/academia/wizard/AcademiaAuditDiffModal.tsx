@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { formatAuditFieldLabel } from '../../../schemas/wizard';
 
 interface AcademiaAuditDiffModalProps {
   open: boolean;
@@ -53,7 +54,7 @@ const AcademiaAuditDiffModal: React.FC<AcademiaAuditDiffModalProps> = ({ open, e
                 const changed = oldVal !== newVal;
                 return (
                   <tr key={key} className="border-t border-border-subtle/70 align-top">
-                    <td className="py-2 pr-4 font-medium text-text-main">{key}</td>
+                    <td className="py-2 pr-4 font-medium text-text-main">{formatAuditFieldLabel(key)}</td>
                     <td className={`py-2 pr-4 whitespace-pre-wrap ${changed ? 'bg-rose-500/5 text-rose-700' : 'text-text-muted'}`}>
                       {oldVal}
                     </td>

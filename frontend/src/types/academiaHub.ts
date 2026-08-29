@@ -69,6 +69,7 @@ export const ACADEMIA_ENTITY_CONFIG: Record<string, AcademiaEntityConfig> = {
   },
   institutions: {
     listColumns: [
+      { key: 'id', label: 'ID' },
       { key: 'name', label: 'Name' },
       { key: 'code', label: 'Code' },
       { key: 'country_name', label: 'Country' },
@@ -78,6 +79,18 @@ export const ACADEMIA_ENTITY_CONFIG: Record<string, AcademiaEntityConfig> = {
     fields: [
       { key: 'name', label: 'Name', required: true },
       { key: 'accreditation_details', label: 'Accreditation details', placeholder: 'Regional body, validity...' },
+      { key: 'year_established', label: 'Year established', placeholder: 'e.g. 1861' },
+      { key: 'global_ranking', label: 'Global ranking', placeholder: 'e.g. QS #3' },
+      { key: 'national_ranking', label: 'National ranking', placeholder: 'e.g. #1 nationally' },
+      { key: 'brochure_url', label: 'Brochure URL', placeholder: 'https://...' },
+      { key: 'tuition_fees', label: 'Tuition fees' },
+      { key: 'hostel_expenses', label: 'Hostel expenses' },
+      { key: 'food_expense', label: 'Food expense' },
+      { key: 'books_expense', label: 'Books expense' },
+      { key: 'commutation_expense', label: 'Commutation expense' },
+      { key: 'insurance_expense', label: 'Insurance expense' },
+      { key: 'medical_expense', label: 'Medical expense' },
+      { key: 'other_expense', label: 'Other expense' },
       { key: 'code', label: 'Code' },
       { key: 'institution_type', label: 'Type', placeholder: 'Public / Private' },
       {
@@ -94,6 +107,8 @@ export const ACADEMIA_ENTITY_CONFIG: Record<string, AcademiaEntityConfig> = {
   },
   campuses: {
     listColumns: [
+      { key: 'id', label: 'ID' },
+      { key: 'institution_id', label: 'Institution ID' },
       { key: 'name', label: 'Name' },
       { key: 'institution_name', label: 'Institution' },
       { key: 'location_label', label: 'Location' },
@@ -125,6 +140,8 @@ export const ACADEMIA_ENTITY_CONFIG: Record<string, AcademiaEntityConfig> = {
   },
   colleges: {
     listColumns: [
+      { key: 'id', label: 'ID' },
+      { key: 'institution_id', label: 'Institution ID' },
       { key: 'hierarchy_breadcrumb', label: 'Path' },
       { key: 'name', label: 'Name' },
       { key: 'dean_name', label: 'Dean' },

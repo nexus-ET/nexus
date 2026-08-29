@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
@@ -20,6 +21,7 @@ from app.models.program import Program
 from app.models.education_major import EducationMajor
 from app.models.target_course import TargetCourse
 from app.schemas.academia_hub import (
+    INSTITUTION_PROFILE_TEXT_FIELD_NAMES,
     CampusCreate,
     CampusUpdate,
     CollegeCreate,
@@ -58,7 +60,7 @@ def _step_audit_summary(step: int, payload: dict[str, Any]) -> dict[str, Any]:
         institution = payload.get("institution") or {}
         return {
             "name": institution.get("name"),
-            "institution_type": institution.get("institution_type"),
+            "institution_type_id": institution.get("institution_type_id"),
             "country_id": institution.get("country_id"),
         }
     if step == 2:
@@ -124,6 +126,9 @@ def _write_wizard_step_audit(
 
 
 def _campus_payload_from_record(campus: Campus) -> dict[str, Any]:
+    location = getattr(campus, "location", None)
+    state = getattr(campus, "state", None) or getattr(location, "state", None)
+    country = getattr(campus, "country", None) or getattr(location, "country", None)
     return {
         "id": campus.id,
         "local_id": str(campus.id),
@@ -140,6 +145,152 @@ def _campus_payload_from_record(campus: Campus) -> dict[str, Any]:
         "email_addresses": campus.email_addresses or [],
         "web_links": campus.web_links or [],
         "is_residential": campus.is_residential,
+        "city_label": location.name if location else None,
+        "state_label": state.name if state else None,
+        "country_label": country.name if country else None,
+    }
+
+
+def _refresh_draft_campuses_from_records(
+    draft: InstitutionWizardDraft,
+    campuses: Sequence[Campus],
+) -> bool:
+    """Keep saved campus rows in draft.payload aligned with live campus records.
+
+    Draft JSON can lag behind the database when descriptions or geo labels were
+    added outside the wizard (imports, admin APIs, or older drafts).
+    """
+    if not campuses:
+        return False
+    payload = deepcopy(draft.payload or _default_payload())
+    draft_items = payload.get("campuses") or []
+    if not draft_items:
+        return False
+
+    by_id = {campus.id: campus for campus in campuses}
+    changed = False
+    refreshed: list[Any] = []
+    for item in draft_items:
+        if not isinstance(item, dict):
+            refreshed.append(item)
+            continue
+        raw_id = item.get("id")
+        if raw_id is None:
+            refreshed.append(item)
+            continue
+        record = by_id.get(int(raw_id))
+        if record is None:
+            refreshed.append(item)
+            continue
+        fresh = _campus_payload_from_record(record)
+        next_item = dict(item)
+        for key in (
+            "description",
+            "address",
+            "campus_type_id",
+            "location_id",
+            "country_id",
+            "state_id",
+            "zipcode",
+            "phone_numbers",
+            "fax_numbers",
+            "email_addresses",
+            "web_links",
+            "is_residential",
+            "name",
+            "city_label",
+            "state_label",
+            "country_label",
+        ):
+            if next_item.get(key) != fresh.get(key):
+                next_item[key] = fresh.get(key)
+                changed = True
+        refreshed.append(next_item)
+
+    if not changed:
+        return False
+    payload["campuses"] = refreshed
+    payload["campus"] = refreshed[0] if refreshed else None
+    draft.payload = payload
+    flag_modified(draft, "payload")
+    return True
+
+
+def _college_link_contacts(college: College, campus: Campus | None) -> dict[str, Any]:
+    """Contact set shown on a college's campus card.
+
+    Step 3 requires a phone, an email, and a web URL per linked campus. The college
+    record already holds what was captured for it, so carry that through and only fall
+    back to the campus when the college itself has nothing.
+    """
+    return {
+        "phone_numbers": list(
+            college.phone_numbers or (campus.phone_numbers if campus else None) or []
+        ),
+        "fax_numbers": list((campus.fax_numbers if campus else None) or []),
+        "email_addresses": list(
+            college.email_addresses or (campus.email_addresses if campus else None) or []
+        ),
+        "web_links": list(
+            college.web_links or (campus.web_links if campus else None) or []
+        ),
+    }
+
+
+def _college_payload_from_record(college: College) -> dict[str, Any]:
+    campus = college.campus
+    location_label = campus.location.name if getattr(campus, "location", None) else None
+    linked_campuses = []
+    for link in sorted(
+        getattr(college, "campus_links", []) or [],
+        key=lambda item: (not item.is_primary, item.campus.name if item.campus else ""),
+    ):
+        linked = link.campus
+        if linked is None:
+            continue
+        linked_location = (
+            linked.location.name if getattr(linked, "location", None) else None
+        )
+        linked_campuses.append(
+            {
+                "campus_local_id": str(linked.id),
+                "campus_id": linked.id,
+                "name": linked.name,
+                "address": linked.address,
+                "location_label": linked_location,
+                **_college_link_contacts(college, linked),
+            }
+        )
+    if not linked_campuses and college.campus_id is not None:
+        linked_campuses = [
+            {
+                "campus_local_id": str(college.campus_id),
+                "campus_id": college.campus_id,
+                "name": campus.name if campus else "",
+                "address": campus.address if campus else None,
+                "location_label": location_label,
+                **_college_link_contacts(college, campus),
+            }
+        ]
+    return {
+        "id": college.id,
+        "local_id": str(uuid.uuid4()),
+        "code": college.code,
+        "name": college.name,
+        "category": college.category or "College",
+        "dean_name": college.dean_name,
+        "web_url": college.web_url,
+        "web_links": college.web_links or [],
+        "campus_id": college.campus_id,
+        "campus_local_id": (
+            str(college.campus_id) if college.campus_id is not None else None
+        ),
+        "campus_name": campus.name if campus else None,
+        "campus_address": campus.address if campus else None,
+        "campus_location_label": location_label,
+        "linked_campuses": linked_campuses,
+        "phone_numbers": college.phone_numbers or [],
+        "email_addresses": college.email_addresses or [],
     }
 
 
@@ -207,9 +358,14 @@ def _college_create_from_wizard(
     sort_order: int = 0,
     strict: bool = True,
 ) -> CollegeCreate:
+    linked_campuses = getattr(step, "linked_campuses", None) or []
+    campus_ids = [
+        link.campus_id for link in linked_campuses if link.campus_id is not None
+    ]
     data = {
         "institution_id": institution_id,
         "campus_id": campus_id,
+        "campus_ids": campus_ids or ([campus_id] if campus_id is not None else []),
         "name": step.name.strip(),
         "code": getattr(step, "code", None),
         "category": getattr(step, "category", None) or "College",
@@ -232,6 +388,10 @@ def _college_update_from_wizard(
     sort_order: int,
     strict: bool = True,
 ) -> CollegeUpdate:
+    linked_campuses = getattr(step, "linked_campuses", None) or []
+    campus_ids = [
+        link.campus_id for link in linked_campuses if link.campus_id is not None
+    ]
     data = {
         "name": step.name.strip(),
         "code": getattr(step, "code", None),
@@ -242,6 +402,7 @@ def _college_update_from_wizard(
         "phone_numbers": step.phone_numbers or [],
         "email_addresses": step.email_addresses or [],
         "campus_id": campus_id,
+        "campus_ids": campus_ids or ([campus_id] if campus_id is not None else []),
         "sort_order": sort_order,
     }
     if strict:
@@ -279,10 +440,14 @@ def _sync_campuses_for_institution(
         for item in campuses_data
         if isinstance(item, dict) and (campus := _parse_syncable_campus(item)) is not None
     ]
+    existing = hub.list_campuses_admin(db, institution_id=institution_id)
+    if not campuses_data:
+        for campus in existing:
+            hub.delete_campus_admin(db, campus.id)
+        return
     if not syncable:
         return
 
-    existing = hub.list_campuses_admin(db, institution_id=institution_id)
     for index, campus_item in enumerate(syncable):
         if index < len(existing):
             hub.update_campus_admin(
@@ -789,7 +954,9 @@ def _sync_draft_courses_payload(db: Session, draft: InstitutionWizardDraft) -> b
     payload = deepcopy(draft.payload or _default_payload())
     current = payload.get("courses") or []
     if current:
-        return False
+        changed = _refresh_draft_course_college_ids(db, draft, payload)
+        changed = _refresh_draft_course_program_ids(db, draft, payload) or changed
+        return _backfill_draft_course_program_urls(db, draft, payload) or changed
     items = _courses_payload_from_institution(db, draft.institution_id)
     if not items:
         return False
@@ -799,7 +966,229 @@ def _sync_draft_courses_payload(db: Session, draft: InstitutionWizardDraft) -> b
     completed = list(draft.completed_steps or [])
     if 4 not in completed:
         draft.completed_steps = sorted({*completed, 4})
+    _backfill_draft_course_program_urls(db, draft, payload)
     return True
+
+
+def _refresh_draft_course_college_ids(
+    db: Session,
+    draft: InstitutionWizardDraft,
+    payload: dict[str, Any],
+) -> bool:
+    """Keep draft course college_id / college_local_id aligned with live offerings.
+
+    Step 4 college tabs inherit institution-scoped rows (no college_id). When live
+    offerings have college_id but the draft still has nulls, every school tab shows
+    the full list. Refresh from institution_course_offerings on draft load.
+    """
+    if not draft.institution_id:
+        return False
+    offerings = _list_institution_course_offerings(db, draft.institution_id)
+    if not offerings:
+        return False
+    by_course_id = {int(row.course_id): row.college_id for row in offerings}
+    local_id_by_college_id: dict[int, str] = {}
+    for college in payload.get("colleges") or []:
+        if not isinstance(college, dict):
+            continue
+        try:
+            college_id = int(college.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        local_id = str(college.get("local_id") or "").strip()
+        if college_id > 0 and local_id:
+            local_id_by_college_id[college_id] = local_id
+    changed = False
+    for item in payload.get("courses") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            course_id = int(item.get("course_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if course_id <= 0 or course_id not in by_course_id:
+            continue
+        live_college_id = by_course_id[course_id]
+        current_college_id = item.get("college_id")
+        try:
+            current_college_id = (
+                int(current_college_id) if current_college_id is not None else None
+            )
+        except (TypeError, ValueError):
+            current_college_id = None
+        if current_college_id != live_college_id:
+            item["college_id"] = live_college_id
+            changed = True
+        if live_college_id:
+            desired_local = local_id_by_college_id.get(int(live_college_id))
+            if desired_local and str(item.get("college_local_id") or "").strip() != desired_local:
+                item["college_local_id"] = desired_local
+                changed = True
+        elif item.get("college_local_id"):
+            item["college_local_id"] = None
+            changed = True
+    if changed:
+        draft.payload = payload
+        flag_modified(draft, "payload")
+    return changed
+
+
+def _parse_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _live_program_id_by_course_id(
+    db: Session,
+    draft: InstitutionWizardDraft,
+    course_ids: set[int],
+) -> dict[int, int]:
+    """Map target_courses.id → programs.id from catalog rows and live offerings."""
+    live: dict[int, int] = {}
+    if course_ids:
+        for row in (
+            db.query(TargetCourse.id, TargetCourse.qualification_program_id)
+            .filter(TargetCourse.id.in_(course_ids))
+            .all()
+        ):
+            qpid = _parse_positive_int(row.qualification_program_id)
+            if qpid:
+                live[int(row.id)] = qpid
+    if not draft.institution_id:
+        return live
+    for offering in _list_institution_course_offerings(db, draft.institution_id):
+        course = offering.course
+        qpid = None
+        if course is not None:
+            qpid = _parse_positive_int(course.qualification_program_id)
+        if qpid:
+            live[int(offering.course_id)] = qpid
+    return live
+
+
+def _existing_program_ids(db: Session, program_ids: set[int]) -> set[int]:
+    if not program_ids:
+        return set()
+    rows = db.query(Program.id).filter(Program.id.in_(program_ids)).all()
+    return {int(row.id) for row in rows}
+
+
+def _refresh_draft_course_program_ids(
+    db: Session,
+    draft: InstitutionWizardDraft,
+    payload: dict[str, Any],
+) -> bool:
+    """Align draft program_id with live target_courses.qualification_program_id.
+
+    After programs.id was compacted, stale wizard rows still hold the old max
+    (e.g. 79). Prefer the catalog/offering FK; keep the draft id only if it
+    still exists on programs.
+    """
+    courses = payload.get("courses") or []
+    course_ids: set[int] = set()
+    for item in courses:
+        if not isinstance(item, dict):
+            continue
+        course_id = _parse_positive_int(item.get("course_id"))
+        if course_id:
+            course_ids.add(course_id)
+    live_by_course = _live_program_id_by_course_id(db, draft, course_ids)
+    referenced = {
+        pid
+        for item in courses
+        if isinstance(item, dict)
+        for pid in [_parse_positive_int(item.get("program_id"))]
+        if pid
+    }
+    existing = _existing_program_ids(db, referenced | set(live_by_course.values()))
+    changed = False
+    for item in courses:
+        if not isinstance(item, dict):
+            continue
+        course_id = _parse_positive_int(item.get("course_id"))
+        raw = item.get("program_id")
+        current_raw = str(raw).strip() if raw is not None else ""
+        current_raw = current_raw or None
+        current = _parse_positive_int(raw)
+        live = live_by_course.get(course_id) if course_id else None
+        if live:
+            desired = str(live)
+        elif current is None:
+            # Legacy UUID (or empty): do not wipe when no live mapping exists.
+            desired = current_raw
+        elif current in existing:
+            desired = str(current)
+        else:
+            # Stale compacted serial id (e.g. 79 after 2..79 → 1..78).
+            desired = None
+        if current_raw != desired:
+            item["program_id"] = desired
+            changed = True
+    if changed:
+        draft.payload = payload
+        flag_modified(draft, "payload")
+    return changed
+
+
+def _backfill_draft_course_program_urls(
+    db: Session,
+    draft: InstitutionWizardDraft,
+    payload: dict[str, Any],
+) -> bool:
+    """Attach programs.program_url onto draft course rows missing a weblink.
+
+    One programs query (plus live offering FKs) — never per-row GET /degrees/{id}.
+    """
+    courses = payload.get("courses") or []
+    course_ids: set[int] = set()
+    lookup_ids: set[int] = set()
+    for item in courses:
+        if not isinstance(item, dict):
+            continue
+        course_id = _parse_positive_int(item.get("course_id"))
+        if course_id:
+            course_ids.add(course_id)
+        program_id = _parse_positive_int(item.get("program_id"))
+        if program_id:
+            lookup_ids.add(program_id)
+    live_by_course = _live_program_id_by_course_id(db, draft, course_ids)
+    lookup_ids.update(live_by_course.values())
+    if not lookup_ids:
+        return False
+    rows = (
+        db.query(Program.id, Program.program_url)
+        .filter(Program.id.in_(lookup_ids))
+        .all()
+    )
+    by_id = {
+        int(row.id): str(row.program_url).strip()
+        for row in rows
+        if str(getattr(row, "program_url", None) or "").strip()
+    }
+    if not by_id:
+        return False
+    changed = False
+    for item in courses:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("program_url") or "").strip():
+            continue
+        course_id = _parse_positive_int(item.get("course_id"))
+        program_id = _parse_positive_int(item.get("program_id"))
+        live = live_by_course.get(course_id) if course_id else None
+        url = (by_id.get(live) if live else None) or (
+            by_id.get(program_id) if program_id else None
+        )
+        if url:
+            item["program_url"] = url
+            changed = True
+    if changed:
+        draft.payload = payload
+        flag_modified(draft, "payload")
+    return changed
 
 
 def _picture_asset_key(picture_item: Any) -> str:
@@ -901,6 +1290,88 @@ def _sync_pictures_for_institution(
             db.delete(row)
 
 
+def _sync_draft_campuses_payload(db: Session, draft: InstitutionWizardDraft) -> bool:
+    """Backfill draft.payload.campuses from campuses created outside the wizard.
+
+    Only fills an empty campus payload so unsaved wizard edits are never overwritten.
+    """
+    if not draft.institution_id:
+        return False
+    campuses = hub.list_campuses_admin(db, institution_id=draft.institution_id)
+    if _refresh_draft_campuses_from_records(draft, campuses):
+        return True
+    payload = deepcopy(draft.payload or _default_payload())
+    if payload.get("campuses"):
+        return False
+    legacy_campus = payload.get("campus") or {}
+    if isinstance(legacy_campus, dict) and str(legacy_campus.get("name") or "").strip():
+        return False
+    if not campuses:
+        return False
+    items = [_campus_payload_from_record(campus) for campus in campuses]
+    payload["campuses"] = items
+    payload["campus"] = items[0]
+    draft.payload = payload
+    flag_modified(draft, "payload")
+    draft.completed_steps = sorted({*(draft.completed_steps or []), 2})
+    return True
+
+
+def _sync_draft_colleges_payload(db: Session, draft: InstitutionWizardDraft) -> bool:
+    """Backfill draft.payload.colleges from colleges created outside the wizard."""
+    if not draft.institution_id:
+        return False
+    payload = deepcopy(draft.payload or _default_payload())
+    colleges = hub.list_colleges_admin(db, institution_id=draft.institution_id)
+    if payload.get("colleges"):
+        return _refresh_draft_college_campus_links(draft, payload, colleges)
+    if not colleges:
+        return False
+    payload["colleges"] = _dedupe_college_dicts(
+        [_college_payload_from_record(college) for college in colleges]
+    )
+    draft.payload = payload
+    flag_modified(draft, "payload")
+    draft.completed_steps = sorted({*(draft.completed_steps or []), 3})
+    return True
+
+
+def _refresh_draft_college_campus_links(
+    draft: InstitutionWizardDraft,
+    payload: dict[str, Any],
+    colleges: Sequence[College],
+) -> bool:
+    """Re-pull campus links for draft colleges that already exist in the database.
+
+    Campus links are owned by the college record, so a stale draft must not keep
+    showing a campus the college is no longer attached to.
+    """
+    if not colleges:
+        return False
+    by_name = {(college.name or "").strip().casefold(): college for college in colleges}
+    changed = False
+    for item in payload.get("colleges") or []:
+        record = by_name.get(str(item.get("name") or "").strip().casefold())
+        if record is None:
+            continue
+        fresh = _college_payload_from_record(record)
+        for key in (
+            "campus_id",
+            "campus_local_id",
+            "campus_name",
+            "campus_address",
+            "campus_location_label",
+            "linked_campuses",
+        ):
+            if item.get(key) != fresh[key]:
+                item[key] = fresh[key]
+                changed = True
+    if changed:
+        draft.payload = payload
+        flag_modified(draft, "payload")
+    return changed
+
+
 def _sync_draft_intakes_payload(db: Session, draft: InstitutionWizardDraft) -> bool:
     """Keep draft.payload.intakes aligned with calendars configured outside the draft form."""
     if not draft.institution_id:
@@ -922,7 +1393,9 @@ def get_draft_admin(db: Session, draft_id: int, *, user_id: int) -> InstitutionW
         raise HTTPException(status_code=404, detail="Wizard draft not found.")
     if draft.created_by_user_id != user_id and draft.status == "draft":
         raise HTTPException(status_code=403, detail="Not authorized for this draft.")
-    changed = _sync_draft_intakes_payload(db, draft)
+    changed = _sync_draft_campuses_payload(db, draft)
+    changed = _sync_draft_colleges_payload(db, draft) or changed
+    changed = _sync_draft_intakes_payload(db, draft) or changed
     changed = _sync_draft_courses_payload(db, draft) or changed
     changed = _apply_draft_academics_normalization(draft) or changed
     if changed:
@@ -974,6 +1447,16 @@ def _course_offering_payload_from_record(
     if display_label:
         payload["display_label"] = display_label
 
+    program_url = ""
+    if program is not None:
+        program_url = str(getattr(program, "program_url", None) or "").strip()
+    if not program_url and major is not None:
+        major_program = getattr(major, "program", None)
+        if major_program is not None:
+            program_url = str(getattr(major_program, "program_url", None) or "").strip()
+    if program_url:
+        payload["program_url"] = program_url
+
     return payload
 
 
@@ -996,7 +1479,9 @@ def create_draft_from_institution_admin(
         .first()
     )
     if existing:
-        changed = _sync_draft_intakes_payload(db, existing)
+        changed = _sync_draft_campuses_payload(db, existing)
+        changed = _sync_draft_colleges_payload(db, existing) or changed
+        changed = _sync_draft_intakes_payload(db, existing) or changed
         changed = _sync_draft_courses_payload(db, existing) or changed
         changed = _apply_draft_academics_normalization(existing) or changed
         if changed:
@@ -1026,7 +1511,7 @@ def create_draft_from_institution_admin(
             "phone_numbers": institution.phone_numbers or [],
             "fax_numbers": institution.fax_numbers or [],
             "email_addresses": institution.email_addresses or [],
-            "institution_type": institution.institution_type,
+            "institution_type_id": institution.institution_type_id,
             "company_affiliated": institution.company_affiliated,
             "ranking_tier_global": institution.ranking_tier_global,
             "ad_promotion_flag": institution.ad_promotion_flag,
@@ -1034,6 +1519,10 @@ def create_draft_from_institution_admin(
             "web_links": institution.web_links or [],
             "currency_type": institution.currency_type or "USD",
             "students_count": institution.students_count,
+            **{
+                name: getattr(institution, name, None)
+                for name in INSTITUTION_PROFILE_TEXT_FIELD_NAMES
+            },
             "accreditation_details": institution.accreditation_details,
             "short_description": institution.short_description,
             "long_description": institution.long_description,
@@ -1041,47 +1530,14 @@ def create_draft_from_institution_admin(
         "campuses": [_campus_payload_from_record(item) for item in campuses],
         "campus": _campus_payload_from_record(campus) if campus else None,
         "colleges": [
-            {
-                "local_id": str(uuid.uuid4()),
-                "code": college.code,
-                "name": college.name,
-                "category": college.category or "College",
-                "dean_name": college.dean_name,
-                "web_url": college.web_url,
-                "web_links": college.web_links or [],
-                "campus_id": college.campus_id,
-                "campus_local_id": (
-                    str(college.campus_id) if college.campus_id is not None else None
-                ),
-                "campus_name": college.campus.name if college.campus else None,
-                "campus_address": college.campus.address if college.campus else None,
-                "campus_location_label": college.campus.location.name if getattr(college.campus, "location", None) else None,
-                "linked_campuses": (
-                    [
-                        {
-                            "campus_local_id": str(college.campus_id),
-                            "campus_id": college.campus_id,
-                            "name": college.campus.name if college.campus else "",
-                            "address": college.campus.address if college.campus else None,
-                            "location_label": (
-                                college.campus.location.name
-                                if getattr(college.campus, "location", None)
-                                else None
-                            ),
-                        }
-                    ]
-                    if college.campus_id is not None
-                    else []
-                ),
-                "phone_numbers": college.phone_numbers or [],
-                "email_addresses": college.email_addresses or [],
-            }
+            _college_payload_from_record(college)
             for college in hub.list_colleges_admin(db, institution_id=institution_id)
         ],
         "courses": _courses_payload_from_institution(db, institution_id),
         "intakes": _payload_intakes_from_institution(db, institution_id),
         "pictures": [
             {
+                "id": picture.id,
                 "url": picture.url,
                 "caption": picture.caption,
                 "picture_type": picture.picture_type,
@@ -1097,9 +1553,14 @@ def create_draft_from_institution_admin(
     completed_steps: list[int] = []
     if payload["institution"] and payload["institution"].get("name"):
         completed_steps.append(1)
-    if payload["campuses"]:
+        # Campuses are optional and share UI step 1; do not leave the combined
+        # step incomplete when an institution has no campuses.
         completed_steps.append(2)
-    elif payload["campus"] and payload["campus"].get("name") and payload["campus"].get("location_id"):
+    elif payload["campuses"] or (
+        payload["campus"]
+        and payload["campus"].get("name")
+        and payload["campus"].get("location_id")
+    ):
         completed_steps.append(2)
     if payload["colleges"]:
         completed_steps.append(3)
@@ -1218,6 +1679,9 @@ def save_wizard_step(
     completed = set(draft.completed_steps or [])
     if request.mark_complete:
         completed.add(request.step)
+        if request.step == 1:
+            # Campuses share the institution step and are optional.
+            completed.add(2)
     draft.completed_steps = sorted(completed)
     flag_modified(draft, "completed_steps")
     _write_wizard_step_audit(db, user_id=user_id, draft=draft, step=request.step, payload=payload)
@@ -1299,8 +1763,6 @@ def _validate_step_save_payload(
         raise HTTPException(status_code=400, detail="Institution name is required.")
     if request.step >= 2:
         campuses = parsed.resolved_campuses
-        if not campuses:
-            raise HTTPException(status_code=400, detail="Add at least one campus.")
         for index, campus in enumerate(campuses, start=1):
             if not campus.name.strip():
                 raise HTTPException(
@@ -1331,8 +1793,6 @@ def _validate_publish_payload(payload: dict[str, Any]) -> WizardPayload:
     if not parsed.institution or not parsed.institution.name.strip():
         raise HTTPException(status_code=400, detail="Institution name is required to publish.")
     campuses = parsed.resolved_campuses
-    if not campuses:
-        raise HTTPException(status_code=400, detail="At least one campus is required to publish.")
     for index, campus_item in enumerate(campuses, start=1):
         if not campus_item.name.strip():
             raise HTTPException(status_code=400, detail=f"Campus {index} name is required to publish.")
@@ -1392,7 +1852,7 @@ def _institution_create_from_wizard(step: Any) -> InstitutionCreate:
         phone_numbers=step.phone_numbers or [],
         fax_numbers=step.fax_numbers or [],
         email_addresses=step.email_addresses or [],
-        institution_type=step.institution_type,
+        institution_type_id=step.institution_type_id,
         company_affiliated=step.company_affiliated,
         ranking_tier_global=step.ranking_tier_global,
         ad_promotion_flag=step.ad_promotion_flag,
@@ -1403,6 +1863,7 @@ def _institution_create_from_wizard(step: Any) -> InstitutionCreate:
         accreditation_details=step.accreditation_details,
         short_description=step.short_description,
         long_description=step.long_description,
+        **{name: getattr(step, name, None) for name in INSTITUTION_PROFILE_TEXT_FIELD_NAMES},
     )
 
 
@@ -1465,7 +1926,7 @@ def _apply_wizard_institution_fields(institution: Institution, step: Any) -> Non
         entry.model_dump() if hasattr(entry, "model_dump") else entry
         for entry in (step.email_addresses or [])
     ]
-    institution.institution_type = step.institution_type
+    institution.institution_type_id = step.institution_type_id
     institution.company_affiliated = step.company_affiliated
     institution.ranking_tier_global = step.ranking_tier_global
     institution.ad_promotion_flag = step.ad_promotion_flag
@@ -1476,6 +1937,8 @@ def _apply_wizard_institution_fields(institution: Institution, step: Any) -> Non
     ]
     institution.currency_type = step.currency_type or "USD"
     institution.students_count = step.students_count
+    for name in INSTITUTION_PROFILE_TEXT_FIELD_NAMES:
+        setattr(institution, name, getattr(step, name, None))
     institution.accreditation_details = step.accreditation_details
     institution.short_description = step.short_description
     institution.long_description = step.long_description
@@ -1527,7 +1990,7 @@ def publish_draft_admin(db: Session, draft_id: int, *, user_id: int) -> Institut
                     _campus_create_from_wizard(institution.id, campus_item, sort_order=index),
                 )
             campus_records.append(campus)
-        campus = campus_records[0]
+        campus = campus_records[0] if campus_records else None
         removed_campus_count = max(0, len(existing_campuses) - len(parsed.resolved_campuses))
         for campus_row in existing_campuses[len(parsed.resolved_campuses) :]:
             hub.delete_campus_admin(db, campus_row.id)
@@ -1549,9 +2012,33 @@ def publish_draft_admin(db: Session, draft_id: int, *, user_id: int) -> Institut
                     _passed_check("Payload schema", "Institution fields match the required data types and limits."),
                     _passed_check("Required name", f'Institution name "{institution.name}" is present.'),
                     _passed_check("Record synchronization", "Validated institution fields were applied to the live record."),
-                    _passed_check("Minimum campus count", f"{len(campus_records)} campus record(s) supplied."),
-                    _passed_check("Campus required fields", "Every campus has a name, campus type, and city."),
-                    _passed_check("Campus structure synchronization", "Live campus records now match the wizard payload."),
+                    *(
+                        [
+                            _passed_check(
+                                "Campus count",
+                                f"{len(campus_records)} campus record(s) supplied.",
+                            ),
+                            _passed_check(
+                                "Campus fields",
+                                "Each added campus has a name, campus type, and city.",
+                            ),
+                            _passed_check(
+                                "Campus structure synchronization",
+                                "Live campus records now match the wizard payload.",
+                            ),
+                        ]
+                        if campus_records
+                        else [
+                            _passed_check(
+                                "Campuses",
+                                "None added — campuses are optional.",
+                            ),
+                            _passed_check(
+                                "Campus structure synchronization",
+                                "No campus records to synchronize.",
+                            ),
+                        ]
+                    ),
                 ],
                 discrepancies=campus_discrepancies,
                 result={
@@ -1630,7 +2117,7 @@ def publish_draft_admin(db: Session, draft_id: int, *, user_id: int) -> Institut
             db.add(
                 InstitutionCourseOffering(
                     institution_id=institution.id,
-                    campus_id=campus.id,
+                    campus_id=campus.id if campus else None,
                     college_id=offering.college_id
                     or (college_ids[0] if college_ids else None),
                     course_id=offering.course_id,
@@ -1718,7 +2205,7 @@ def publish_draft_admin(db: Session, draft_id: int, *, user_id: int) -> Institut
             db,
             institution.id,
             parsed.pictures,
-            default_campus_id=campus.id,
+            default_campus_id=campus.id if campus else None,
             college_local_id_map=college_local_id_map,
         )
         picture_discrepancies = []
@@ -1747,7 +2234,12 @@ def publish_draft_admin(db: Session, draft_id: int, *, user_id: int) -> Institut
                         f"{len(unique_picture_assets)} unique non-empty picture asset(s) supplied.",
                     ),
                     _passed_check("Replace synchronization", "Live gallery references now match the wizard payload."),
-                    _passed_check("Campus assignment", "Pictures without a campus use the primary campus."),
+                    _passed_check(
+                        "Campus assignment",
+                        "Pictures without a campus use the primary campus."
+                        if campus
+                        else "No campus assigned — pictures stay on the institution (campuses are optional).",
+                    ),
                 ],
                 discrepancies=picture_discrepancies,
                 result={
@@ -1801,7 +2293,7 @@ def publish_draft_admin(db: Session, draft_id: int, *, user_id: int) -> Institut
             new_data={
                 "institution_id": institution.id,
                 "name": institution.name,
-                "campus_id": campus.id,
+                "campus_id": campus.id if campus else None,
                 "campus_count": len(campus_records),
                 "college_count": len(college_ids),
                 "course_count": offering_sort,

@@ -1522,7 +1522,10 @@ def retrieve_academia(db: Session, prompt: str, *, limit: int = 16) -> list[dict
             )
 
     # --- Institutions (subject and/or destination country) ---
-    inst_query = db.query(Institution).options(joinedload(Institution.country)).filter(
+    inst_query = db.query(Institution).options(
+        joinedload(Institution.country),
+        joinedload(Institution.institution_type_ref),
+    ).filter(
         Institution.is_active.is_(True)
     )
     inst_clauses = []
@@ -1580,7 +1583,11 @@ def retrieve_academia(db: Session, prompt: str, *, limit: int = 16) -> list[dict
                     "id": str(row.id),
                     "title": row.name,
                     "code": row.code,
-                    "institution_type": row.institution_type,
+                    "institution_type": (
+                        row.institution_type_ref.name
+                        if getattr(row, "institution_type_ref", None)
+                        else None
+                    ),
                     "country": country_name,
                     "country_code": country_iso,
                     "summary": _truncate(row.short_description or row.long_description, 500),

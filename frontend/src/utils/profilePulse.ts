@@ -25,6 +25,7 @@ import {
   type ResearchProjectRecord,
 } from '../types/researchProject';
 import type { ProfilePanelTab } from '../types/profilePanel';
+import type { StudentRegistrationData } from '../types/studentRegistration';
 
 export type ProfileSectionStatus = 'completed' | 'in_progress' | 'action_required';
 
@@ -60,6 +61,7 @@ export type ProfilePulseSnapshot = {
 const SECTION_ORDER: Array<{ key: ProfilePanelTab; label: string }> = [
   { key: 'aspirations', label: 'Aspirations' },
   { key: 'profile', label: 'Personal Profile' },
+  { key: 'billing', label: 'Billing' },
   { key: 'academia', label: 'Academia' },
   { key: 'non_academia', label: 'Non-Academia' },
   { key: 'digital_presence', label: 'Digital Presence' },
@@ -152,6 +154,52 @@ function evaluatePersonalProfile(profile: CandidateProfile | null | undefined) {
     return sectionResult('in_progress', gist, 'Complete all mandatory personal profile fields.');
   }
   return sectionResult('action_required', gist, 'Add your full legal name and contact details.');
+}
+
+function evaluateRegistration(raw: unknown) {
+  const registration = (raw as { registration?: StudentRegistrationData } | null)?.registration ??
+    (raw as StudentRegistrationData | null);
+  if (!registration || registration.agrees_to_register == null) {
+    return sectionResult(
+      'action_required',
+      'Registration decision not recorded.',
+      'Record Yes to qualify, or No with a follow-up outcome.'
+    );
+  }
+    if (registration.agrees_to_register) {
+    if (registration.payment_received) {
+      const balance =
+        registration.total_payable_inr != null && registration.amount_paid_inr != null
+          ? Math.max(0, registration.total_payable_inr - registration.amount_paid_inr)
+          : 0;
+      const invoiceBit = registration.invoice_number
+        ? `Payment confirmed on ${registration.invoice_number}`
+        : 'Payment confirmed. Prospect qualified.';
+      return sectionResult(
+        'completed',
+        balance >= 0.01
+          ? `${invoiceBit}. Balance ₹ ${balance.toLocaleString('en-IN', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })} due.`
+          : invoiceBit
+      );
+    }
+    return sectionResult(
+      'in_progress',
+      'Agreed to register — waiting for issued invoice and payment confirmation.',
+      'Issue the invoice and confirm payment to complete registration.'
+    );
+  }
+  const outcome =
+    registration.decline_outcome === 'follow_up'
+      ? 'Follow-up'
+      : registration.decline_outcome === 'not_interested'
+        ? 'Not interested'
+        : registration.decline_outcome === 'deferred'
+          ? 'Deferred'
+          : 'Declined';
+  return sectionResult('in_progress', `Not registering — ${outcome}.`);
 }
 
 function evaluateAcademia(educations: CandidateEducationRecord[]) {
@@ -370,6 +418,7 @@ export function buildTimeline(currentId: TimelineMilestoneId): TimelineMilestone
 export function buildProfilePulseSnapshot(input: {
   profile?: CandidateProfile | null;
   aspirations?: unknown;
+  registration?: unknown;
   educations?: CandidateEducationRecord[];
   activities?: NonAcademicActivityRecord[];
   digitalLinks?: DigitalPresenceLinkRecord[];
@@ -387,6 +436,7 @@ export function buildProfilePulseSnapshot(input: {
     profile_pulse: () => sectionResult('action_required', ''),
     aspirations: () => evaluateAspirations(input.aspirations),
     profile: () => evaluatePersonalProfile(input.profile),
+    billing: () => evaluateRegistration(input.registration),
     academia: () => evaluateAcademia(input.educations ?? []),
     non_academia: () => evaluateNonAcademia(input.activities ?? []),
     digital_presence: () => evaluateDigitalPresence(input.digitalLinks ?? []),

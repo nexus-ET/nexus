@@ -5,7 +5,6 @@ import {
   LayoutDashboard,
   LayoutGrid,
   MapPinned,
-  Users,
   Waypoints,
 } from 'lucide-react';
 
@@ -37,13 +36,6 @@ export const FLOWX_NAV_GROUPS: FlowxNavGroup[] = [
         path: '/flowx/ops',
         description: 'Global pipeline health, country volume, and SLA bottlenecks',
         icon: LayoutDashboard,
-      },
-      {
-        key: 'journeys',
-        label: 'Student Journeys',
-        path: '/flowx/journeys',
-        description: 'Students enrolled on a country process',
-        icon: Users,
       },
       {
         key: 'board',

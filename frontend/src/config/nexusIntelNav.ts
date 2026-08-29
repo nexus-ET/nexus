@@ -5,6 +5,7 @@ import {
   Brain,
   ClipboardCheck,
   GitCompare,
+  MessageCircleQuestion,
   Settings2,
   Sparkles,
 } from 'lucide-react';
@@ -24,6 +25,13 @@ export const NEXUS_INTEL_NAV: NexusIntelNavItem[] = [
     path: '/nexus-intel/knowledge',
     description: 'Glossary, filters, and live terminology',
     icon: BookOpen,
+  },
+  {
+    key: 'inquiry-hub',
+    label: 'Inquiry Hub',
+    path: '/nexus-intel/inquiry-hub',
+    description: 'Process-aligned FAQs and reusable guidance',
+    icon: MessageCircleQuestion,
   },
   {
     key: 'ai-assistant',

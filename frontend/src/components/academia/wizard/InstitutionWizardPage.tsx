@@ -527,7 +527,7 @@ const InstitutionWizardPage: React.FC = () => {
         setSuccess(null);
         setError(
           step2Ref.current.getValidationError?.()?.trim() ||
-            'Add at least one campus before continuing.'
+            'Please fix the highlighted campus fields before continuing.'
         );
         window.requestAnimationFrame(() => {
           document
@@ -857,7 +857,7 @@ const InstitutionWizardPage: React.FC = () => {
         if (!hadInstitutionId && !advance) {
           markCurrentStepClean();
           setSuccess(
-            'Institution saved. Campuses are now unlocked — add at least one campus below, then continue.'
+            'Institution saved. Campuses are now unlocked — add campuses below if you want them, then continue.'
           );
           window.requestAnimationFrame(() => {
             document
@@ -872,7 +872,7 @@ const InstitutionWizardPage: React.FC = () => {
         if (!campusValid) {
           setError(
             step2Ref.current?.getValidationError?.()?.trim() ||
-              'Add at least one campus before continuing.'
+              'Please fix the highlighted campus fields before continuing.'
           );
           return;
         }
@@ -1125,6 +1125,7 @@ const InstitutionWizardPage: React.FC = () => {
           key={`step1-${stepDataKey}`}
           ref={step1Ref}
           defaultValues={institutionDefaults}
+          institutionId={draft?.institution_id ?? null}
           countries={countries}
           states={states}
           cities={institutionCities}
@@ -1136,7 +1137,7 @@ const InstitutionWizardPage: React.FC = () => {
             <p className="text-sm font-semibold text-text-main">Campuses for this institution</p>
             <p className="text-xs text-text-muted">
               {campusesUnlocked
-                ? 'Institution is saved. Add one or more campuses below, then save & continue.'
+                ? 'Institution is saved. Campuses are optional — add any you want below, then save & continue.'
                 : 'Save the institution profile above to unlock campus entry.'}
             </p>
           </div>
@@ -1242,6 +1243,9 @@ const InstitutionWizardPage: React.FC = () => {
             <p className="text-sm text-text-muted">
               {draft?.title} · Step {currentStep} of {WIZARD_UI_STEP_COUNT} —{' '}
               {WIZARD_STEP_LABELS[currentStep - 1]}
+              {draft?.institution_id ? (
+                <span className="tabular-nums"> · Institution ID {draft.institution_id}</span>
+              ) : null}
             </p>
           </div>
           <div className="flex flex-wrap justify-end gap-2">

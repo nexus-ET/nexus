@@ -4,6 +4,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -100,11 +101,21 @@ class InstitutionPicture(Base):
 
 class InstitutionCourseOffering(Base):
     __tablename__ = "institution_course_offerings"
+    __table_args__ = (
+        Index(
+            "ix_institution_course_offerings_inst_active_course",
+            "institution_id",
+            "is_active",
+            "course_id",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     institution_id = Column(Integer, ForeignKey("institutions.id"), nullable=False, index=True)
     campus_id = Column(Integer, ForeignKey("campuses.id"), nullable=True, index=True)
     college_id = Column(Integer, ForeignKey("colleges.id"), nullable=True, index=True)
+    # Required FK. Program–institution links may point at a 1:1 program clone in
+    # target_courses; hub course_count ignores those placeholders.
     course_id = Column(Integer, ForeignKey("target_courses.id"), nullable=False, index=True)
     is_active = Column(Boolean, default=True, nullable=False)
     sort_order = Column(Integer, default=0, nullable=False)

@@ -9,7 +9,7 @@ import {
   type NavMegaLink,
   type NavMegaModule,
 } from '../config/appNavModules';
-import { isRouteActive, normalizePath } from '../utils/routeAccess';
+import { isNavLinkActive, normalizePath } from '../utils/routeAccess';
 
 interface HeaderMegaNavProps {
   allowedRoutes: string[] | null;
@@ -128,11 +128,16 @@ const HeaderMegaNav: React.FC<HeaderMegaNavProps> = ({
             id={`${baseId}-${openModule.id}-panel`}
             role="region"
             aria-label={`${openModule.label} menu`}
-            className="absolute left-0 top-full z-40 mt-2 w-[min(94vw,60rem)] overflow-hidden rounded-xl border border-border-subtle bg-card shadow-xl shadow-black/10"
+            className={`absolute left-0 top-full z-40 mt-2 overflow-hidden rounded-xl border border-border-subtle bg-card shadow-xl shadow-black/10 ${
+              openModule.groups.filter(group => group.links.length > 0).length >= 3
+                ? 'w-[min(96vw,76rem)]'
+                : 'w-[min(94vw,60rem)]'
+            }`}
           >
             <MegaPanel
               module={openModule}
               currentPath={currentPath}
+              currentSearch={location.search}
               onNavigate={() => setOpenId(null)}
             />
           </div>
@@ -145,51 +150,103 @@ const HeaderMegaNav: React.FC<HeaderMegaNavProps> = ({
 function MegaPanel({
   module,
   currentPath,
+  currentSearch,
   onNavigate,
 }: {
   module: NavMegaModule;
   currentPath: string;
+  currentSearch: string;
   onNavigate: () => void;
 }) {
-  const hasGroups = module.groups.some(group => group.links.length > 0);
+  const hasFeatured = module.featured.length > 0;
+  const visibleGroups = module.groups.filter(group => group.links.length > 0);
+  const hasGroups = visibleGroups.length > 0;
+  const columnCount = (hasFeatured ? 1 : 0) + visibleGroups.length;
 
-  return (
-    <div className="grid grid-cols-1 md:grid-cols-2">
-      <div className="border-b border-border-subtle bg-surface-bg/60 p-4 md:border-b-0 md:border-r">
+  const columnGridClass =
+    columnCount >= 4
+      ? 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-4'
+      : columnCount === 3
+        ? 'grid-cols-1 sm:grid-cols-3'
+        : columnCount === 2
+          ? 'grid-cols-1 sm:grid-cols-2'
+          : 'grid-cols-1';
+
+  const renderGroupColumn = (
+    title: string,
+    links: NavMegaLink[],
+    options?: { featured?: boolean; columnKey?: string }
+  ) => (
+    <div
+      key={options?.columnKey || title || 'untitled'}
+      className={`min-w-0 p-4 ${
+        options?.featured ? 'bg-surface-bg/60' : ''
+      }`}
+    >
+      {title ? (
+        <p className="mb-2 px-2 text-sm font-semibold uppercase tracking-wider text-text-muted">
+          {title}
+        </p>
+      ) : null}
+      <ul className="space-y-0.5">
+        {links.map(link => (
+          <li key={link.path}>
+            {options?.featured ? (
+              <FeaturedLink
+                link={link}
+                currentPath={currentPath}
+                currentSearch={currentSearch}
+                onNavigate={onNavigate}
+              />
+            ) : (
+              <SimpleLink
+                link={link}
+                currentPath={currentPath}
+                currentSearch={currentSearch}
+                onNavigate={onNavigate}
+              />
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+
+  if (!hasFeatured && hasGroups) {
+    return (
+      <div className={`grid ${columnGridClass} divide-y divide-border-subtle sm:divide-x sm:divide-y-0`}>
+        {visibleGroups.map(group => renderGroupColumn(group.title, group.links))}
+      </div>
+    );
+  }
+
+  if (!hasGroups) {
+    return (
+      <div className="p-4">
         <p className="mb-3 px-2 text-sm font-semibold uppercase tracking-wider text-text-muted">
           {module.label}
         </p>
         <ul className="space-y-1">
           {module.featured.map(link => (
             <li key={link.path}>
-              <FeaturedLink link={link} currentPath={currentPath} onNavigate={onNavigate} />
+              <FeaturedLink
+                link={link}
+                currentPath={currentPath}
+                currentSearch={currentSearch}
+                onNavigate={onNavigate}
+              />
             </li>
           ))}
         </ul>
       </div>
+    );
+  }
 
-      <div className="grid gap-6 p-4 sm:grid-cols-2">
-        {hasGroups ? (
-          module.groups.map(group => (
-            <div key={group.title}>
-              <p className="mb-2 px-2 text-sm font-semibold uppercase tracking-wider text-text-muted">
-                {group.title}
-              </p>
-              <ul className="space-y-0.5">
-                {group.links.map(link => (
-                  <li key={link.path}>
-                    <SimpleLink link={link} currentPath={currentPath} onNavigate={onNavigate} />
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))
-        ) : (
-          <div className="px-2 py-6 text-sm text-text-muted sm:col-span-2">
-            Choose an item from the list on the left.
-          </div>
-        )}
-      </div>
+  // Featured + groups share equal-width columns (Admin: Settings | Accounts | Access).
+  return (
+    <div className={`grid ${columnGridClass} divide-y divide-border-subtle sm:divide-x sm:divide-y-0`}>
+      {hasFeatured ? renderGroupColumn(module.label, module.featured, { featured: true }) : null}
+      {visibleGroups.map(group => renderGroupColumn(group.title, group.links))}
     </div>
   );
 }
@@ -197,14 +254,16 @@ function MegaPanel({
 function FeaturedLink({
   link,
   currentPath,
+  currentSearch,
   onNavigate,
 }: {
   link: NavMegaLink;
   currentPath: string;
+  currentSearch: string;
   onNavigate: () => void;
 }) {
   const Icon = link.icon;
-  const active = isRouteActive(currentPath, link.path);
+  const active = isNavLinkActive(currentPath, currentSearch, link.path);
 
   return (
     <Link
@@ -221,10 +280,12 @@ function FeaturedLink({
       >
         {Icon ? <Icon size={16} /> : <span className="text-xs font-bold">{link.label[0]}</span>}
       </span>
-      <span className="min-w-0">
-        <span className="block text-base font-semibold leading-tight">{link.label}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-base font-semibold leading-tight">{link.label}</span>
         {link.description && (
-          <span className="mt-0.5 block text-sm leading-snug text-text-muted">{link.description}</span>
+          <span className="mt-0.5 block line-clamp-2 text-sm leading-snug text-text-muted">
+            {link.description}
+          </span>
         )}
       </span>
     </Link>
@@ -234,19 +295,23 @@ function FeaturedLink({
 function SimpleLink({
   link,
   currentPath,
+  currentSearch,
   onNavigate,
 }: {
   link: NavMegaLink;
   currentPath: string;
+  currentSearch: string;
   onNavigate: () => void;
 }) {
   const Icon = link.icon;
-  const active = isRouteActive(currentPath, link.path);
+  const active = isNavLinkActive(currentPath, currentSearch, link.path);
   return (
     <Link
       to={link.path}
       onClick={onNavigate}
       className={`flex gap-3 rounded-md px-2 py-2 transition-colors ${
+        link.nested ? 'ml-5' : ''
+      } ${
         active
           ? 'bg-accent/10 font-medium text-text-main'
           : 'text-text-muted hover:bg-surface-bg hover:text-text-main'
@@ -261,10 +326,10 @@ function SimpleLink({
       >
         {Icon ? <Icon size={16} /> : <span className="text-xs font-bold">{link.label[0]}</span>}
       </span>
-      <span className="min-w-0">
-        <span className="block text-base font-medium text-text-main">{link.label}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-base font-medium text-text-main">{link.label}</span>
         {link.description && (
-          <span className="block text-sm text-text-muted">{link.description}</span>
+          <span className="block line-clamp-2 text-sm text-text-muted">{link.description}</span>
         )}
       </span>
     </Link>

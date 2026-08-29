@@ -76,6 +76,7 @@ def send_email(
     body: str,
     *,
     html_body: str | None = None,
+    attachments: list[tuple[str, bytes, str]] | None = None,
 ) -> bool:
     recipients = [addr.strip() for addr in to_addresses if addr and str(addr).strip()]
     if not recipients:
@@ -111,6 +112,22 @@ def send_email(
 
     message.set_content(body)
     message.add_alternative(html_body or _plain_to_simple_html(body), subtype="html")
+
+    for filename, content, mime in attachments or []:
+        if not content:
+            continue
+        safe_name = (filename or "attachment.bin").strip() or "attachment.bin"
+        normalized_mime = (mime or "application/octet-stream").split(";")[0].strip().lower()
+        if "/" in normalized_mime:
+            maintype, subtype = normalized_mime.split("/", 1)
+        else:
+            maintype, subtype = "application", "octet-stream"
+        message.add_attachment(
+            content,
+            maintype=maintype,
+            subtype=subtype,
+            filename=safe_name,
+        )
 
     attempts = 3
     for attempt in range(1, attempts + 1):

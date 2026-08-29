@@ -7,10 +7,14 @@ Type=simple
 User=www-data
 Group=www-data
 WorkingDirectory=/var/www/nexus/backend
-EnvironmentFile=/var/www/nexus/backend/.env
-ExecStart=/var/www/nexus/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8002
+# Prefer dotenv wrapper over EnvironmentFile=: Neon URLs with &channel_binding,
+# quoted values, or CRLF from Windows editors can break systemd's env parser
+# while `python scripts/...` (dotenv) still works — classic "seed OK, service 502".
+ExecStart=/var/www/nexus/backend/deploy/run-nexus-backend.sh
 Restart=always
 RestartSec=5
+# Bootstrap (create_all / sync_schema) can take a while on cold Neon.
+TimeoutStartSec=180
 
 [Install]
 WantedBy=multi-user.target

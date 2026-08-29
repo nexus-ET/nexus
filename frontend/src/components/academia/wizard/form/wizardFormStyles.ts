@@ -14,17 +14,39 @@ export const wizardSectionTitleClass = 'mb-2 text-sm font-bold text-text-main';
 /** Denser grid used on the merged Institution & Campuses step. */
 export const wizardDenseGridClass = 'grid grid-cols-1 gap-x-3 gap-y-2.5 md:grid-cols-2 xl:grid-cols-3';
 
+/** First identity controls on one nowrap row (medium+ screens). Institution profile and campus details. */
+export const wizardProfileRowClass =
+  'col-span-full flex flex-col gap-x-2.5 gap-y-2.5 md:flex-row md:flex-nowrap md:items-start [&_>_*]:min-w-0 [&_>_*]:flex-1';
+
+/**
+ * Campus details identity row: Campus ID stays a fixed first column (not min-w-0 / flex-1),
+ * then Campus name and Campus type share the remaining width without overflowing off-screen.
+ */
+export const wizardCampusIdentityRowClass =
+  'col-span-full grid grid-cols-1 gap-x-2.5 gap-y-2.5 md:grid-cols-[8.25rem_minmax(0,1.45fr)_minmax(11.5rem,0.95fr)]';
+
+export const wizardCampusIdentityRowClassNoId =
+  'col-span-full grid grid-cols-1 gap-x-2.5 gap-y-2.5 md:grid-cols-[minmax(0,1.45fr)_minmax(11.5rem,0.95fr)]';
+
 /** Country / State / City / Zipcode on one row (wide screens). */
 export const wizardGeoRowClass =
   'col-span-full grid grid-cols-1 gap-x-3 gap-y-2.5 sm:grid-cols-2 xl:grid-cols-4';
+
+/** Address (wider) · Country · State · City · Zip on one nowrap row (medium+). */
+export const wizardAddressRowClass =
+  'col-span-full flex flex-col gap-x-2.5 gap-y-2.5 md:flex-row md:flex-nowrap md:items-start [&_>_*]:min-w-0';
 
 /** Phone / Fax / Email on one row (medium+ screens). */
 export const wizardContactRowClass =
   'col-span-full grid grid-cols-1 gap-x-3 gap-y-2.5 md:grid-cols-3';
 
-/** Short name / Long name / Dean on one row (medium+ screens). */
+/** Short name / long name / dean / students count on one row (medium+ screens). */
 export const wizardNamingRowClass =
-  'col-span-full grid grid-cols-1 gap-x-3 gap-y-2.5 md:grid-cols-[minmax(0,0.85fr)_minmax(0,1.5fr)_minmax(0,1fr)]';
+  'col-span-full grid grid-cols-1 gap-x-2.5 gap-y-2.5 md:grid-cols-[minmax(0,13rem)_minmax(0,1.35fr)_minmax(0,1fr)_minmax(0,1fr)]';
+
+/** Equal label height + spacing so inputs align in wizardNamingRowClass. */
+export const wizardNamingFieldClass =
+  'min-w-0 space-y-1.5 text-sm [&_label]:flex [&_label]:h-[2.75rem] [&_label]:items-end [&_label]:leading-snug';
 
 /** School/College code · name · category — name gets most of the row. */
 export const wizardSchoolNamingRowClass =

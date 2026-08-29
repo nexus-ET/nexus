@@ -29,8 +29,16 @@ const ROUTE_LABELS: Record<string, string> = {
   '/ai-active': 'Manage Leads > AI Active',
   '/handoffs': 'Manage Leads > Handoffs',
   '/prospects': 'Manage Leads > All Prospects',
-  '/offline-leads': 'Manage Leads > Offline Leads',
+  '/express-leads': 'Students > Express Leads',
+  '/offline-leads': 'Students > Offline Leads',
   '/archive': 'Manage Leads > Archive',
+  '/students/counselling': 'Students > 1 Counselling',
+  '/students/college-finding': 'Students > 2 College Finding',
+  '/students/document-readiness': 'Students > 3 Document Readiness',
+  '/students/admission-processing': 'Students > 4 Admission Processing',
+  '/students/visa-processing': 'Students > 5 Visa Processing',
+  '/students/pre-departure-travel': 'Students > 6 Pre-Departure & Travel',
+  '/students/landing': 'Students > 7 Landing',
   '/users': 'Users > Manage Users',
   '/access-control': 'Users > Access Control',
   '/agents': 'Cockpit > AI Agent Brain',
@@ -43,6 +51,7 @@ const ROUTE_LABELS: Record<string, string> = {
   '/my-bookings/session': 'Appointments > Counselling Session',
   '/my-profile': 'My Profile',
   '/settings': 'Cockpit > Application Settings',
+  '/invoices': 'Admin > Accounts > Invoice Workspace',
   '/reports/meta-leads': 'Reports > Meta Leads',
   '/reports/exceptions': 'Reports > Exception Report',
   '/reports/audit-logs': 'Reports > Audit Logs',
@@ -277,31 +286,35 @@ export const trackUiClick = (target: HTMLElement): void => {
 };
 
 export const trackFieldChange = (target: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): void => {
-  if (!shouldTrackSession()) return;
-  if (target instanceof HTMLInputElement) {
-    const type = (target.type || 'text').toLowerCase();
-    if (type === 'password' || type === 'hidden' || type === 'file') return;
-  }
-  const label = getFieldLabel(target);
-  const value = getFieldValue(target);
-  const page = currentPagePath();
-  setPendingApiTrigger(label, value);
+  try {
+    if (!shouldTrackSession()) return;
+    if (target instanceof HTMLInputElement) {
+      const type = (target.type || 'text').toLowerCase();
+      if (type === 'password' || type === 'hidden' || type === 'file') return;
+    }
+    const label = getFieldLabel(target);
+    const value = getFieldValue(target);
+    const page = currentPagePath();
+    setPendingApiTrigger(label, value);
 
-  enqueue({
-    action_type: 'UI_FIELD_CHANGE',
-    page,
-    menu: labelForPath(page),
-    action: value ? `Changed ${label} to ${value}` : `Changed ${label}`,
-    target_resource: 'ui_interaction',
-    element_type: target.tagName.toLowerCase(),
-    element_label: label,
-    metadata: {
-      field_name: target.name || undefined,
-      field_id: target.id || undefined,
-      field_value: value || undefined,
-      input_type: target instanceof HTMLInputElement ? target.type : undefined,
-    },
-  });
+    enqueue({
+      action_type: 'UI_FIELD_CHANGE',
+      page,
+      menu: labelForPath(page),
+      action: value ? `Changed ${label} to ${value}` : `Changed ${label}`,
+      target_resource: 'ui_interaction',
+      element_type: target.tagName.toLowerCase(),
+      element_label: label,
+      metadata: {
+        field_name: target.name || undefined,
+        field_id: target.id || undefined,
+        field_value: value || undefined,
+        input_type: target instanceof HTMLInputElement ? target.type : undefined,
+      },
+    });
+  } catch {
+    // Never let audit tracking break the page mid-interaction.
+  }
 };
 
 export const trackApiRead = (

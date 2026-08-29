@@ -87,8 +87,8 @@ RANKING_SELECTIVITY: dict[str, float] = {
 }
 
 INSTITUTION_TYPE_CODE_TO_LABEL: dict[str, str] = {
-    "PUBLIC_STATE_UNIVERSITY": "Public / State University",
-    "PRIVATE_UNIVERSITY": "Private University",
+    "PUBLIC_STATE_UNIVERSITY": "Public / State",
+    "PRIVATE_UNIVERSITY": "Private",
     "COMMUNITY_COLLEGE_TECHNICAL": "Community College / Technical Institute",
     "ANY": "Others",
 }
@@ -544,7 +544,11 @@ def _score_aspirations(
         parts.append(55.0)
 
     preferred_types = set(ctx.aspirations.institution_type)
-    inst_type = (institution.institution_type or "").strip()
+    inst_type = (
+        institution.institution_type_ref.name
+        if getattr(institution, "institution_type_ref", None)
+        else ""
+    ).strip()
     if preferred_types:
         if "ANY" in preferred_types:
             parts.append(85.0)
@@ -742,7 +746,11 @@ def _serialize_item(item: MatchingShortlistItem) -> dict[str, Any]:
         "institution_name": institution.name if institution else None,
         "institution_country_iso2": country.iso2 if country else None,
         "ranking_tier_global": institution.ranking_tier_global if institution else None,
-        "institution_type": institution.institution_type if institution else None,
+        "institution_type": (
+            institution.institution_type_ref.name
+            if institution and getattr(institution, "institution_type_ref", None)
+            else None
+        ),
         "offering_id": item.offering_id,
         "program_code": (primary_pathway or {}).get("program_code"),
         "program_name": (primary_pathway or {}).get("program_name"),
@@ -1213,6 +1221,9 @@ def get_latest_shortlist_for_booking(db: Session, booking_id: int) -> MatchingSh
             .joinedload(MatchingShortlistItem.institution)
             .joinedload(Institution.country),
             joinedload(MatchingShortlistRun.items)
+            .joinedload(MatchingShortlistItem.institution)
+            .joinedload(Institution.institution_type_ref),
+            joinedload(MatchingShortlistRun.items)
             .joinedload(MatchingShortlistItem.offering)
             .joinedload(InstitutionCourseOffering.course)
             .joinedload(TargetCourse.program),
@@ -1239,6 +1250,9 @@ def get_shortlist_run(db: Session, run_id: int, booking_id: int) -> MatchingShor
             joinedload(MatchingShortlistRun.items)
             .joinedload(MatchingShortlistItem.institution)
             .joinedload(Institution.country),
+            joinedload(MatchingShortlistRun.items)
+            .joinedload(MatchingShortlistItem.institution)
+            .joinedload(Institution.institution_type_ref),
             joinedload(MatchingShortlistRun.items)
             .joinedload(MatchingShortlistItem.offering)
             .joinedload(InstitutionCourseOffering.course)
@@ -1274,7 +1288,10 @@ def generate_university_shortlist(
 
     institutions = (
         db.query(Institution)
-        .options(joinedload(Institution.country))
+        .options(
+            joinedload(Institution.country),
+            joinedload(Institution.institution_type_ref),
+        )
         .filter(Institution.is_active.is_(True))
         .all()
     )

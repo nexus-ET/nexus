@@ -2,25 +2,30 @@ import { useEffect, useMemo, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { apiFetch } from '../../utils/api';
 import { fetchAcademiaListItems } from '../../utils/academiaList';
-import { EMAIL_CONTACT_TYPES, PHONE_CONTACT_TYPES, WEB_LINK_TYPES } from '../../constants/contactTypes';
+import { WEB_LINK_TYPES } from '../../constants/contactTypes';
 import { PHONE_LOCAL_PLACEHOLDER } from '../../utils/phoneCountry';
 import {
   createDefaultEmailContacts,
   createDefaultPhoneContacts,
   createDefaultWebLinks,
-  emailContactListSchema,
   normalizeEmailContacts,
   normalizePhoneContacts,
   normalizeWebLinks,
-  phoneContactListSchema,
+  optionalEmailContactListSchema,
+  optionalPhoneContactListSchema,
   serializeContacts,
   type ContactEntry,
   webLinkListSchema,
 } from '../../schemas/contactEntry';
 import type { CampusRecord, CityOption, InstitutionRecord } from '../../types/institutions';
 import { useCountries } from '../../hooks/useCountries';
+import {
+  useEmailContactTypeOptions,
+  usePhoneContactTypeOptions,
+} from '../../hooks/useContactTypeOptions';
 import LabeledContactListField from './form/LabeledContactListField';
 import SearchableSelect from './SearchableSelect';
+import ReadOnlyIdField from './ReadOnlyIdField';
 
 interface CampusFormModalProps {
   open: boolean;
@@ -37,6 +42,8 @@ const CampusFormModal: React.FC<CampusFormModalProps> = ({
   onClose,
   onSaved,
 }) => {
+  const phoneContactTypes = usePhoneContactTypeOptions();
+  const emailContactTypes = useEmailContactTypeOptions();
   const [institutions, setInstitutions] = useState<InstitutionRecord[]>([]);
   const [cities, setCities] = useState<CityOption[]>([]);
   const [institutionId, setInstitutionId] = useState('');
@@ -137,8 +144,8 @@ const CampusFormModal: React.FC<CampusFormModalProps> = ({
       return;
     }
 
-    const phoneResult = phoneContactListSchema.safeParse(phoneNumbers);
-    const emailResult = emailContactListSchema.safeParse(emailAddresses);
+    const phoneResult = optionalPhoneContactListSchema.safeParse(phoneNumbers);
+    const emailResult = optionalEmailContactListSchema.safeParse(emailAddresses);
     const webLinkResult = webLinkListSchema.safeParse(webLinks);
     if (!phoneResult.success || !emailResult.success || !webLinkResult.success) {
       setPhoneErrors(
@@ -209,6 +216,12 @@ const CampusFormModal: React.FC<CampusFormModalProps> = ({
           </button>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4 p-5">
+          {campus ? (
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <ReadOnlyIdField label="Campus ID" value={campus.id} />
+              <ReadOnlyIdField label="Institution ID" value={campus.institution_id} />
+            </div>
+          ) : null}
           <SearchableSelect
             label="Step 1 — Institution"
             value={institutionId}
@@ -239,10 +252,9 @@ const CampusFormModal: React.FC<CampusFormModalProps> = ({
 
           <LabeledContactListField
             label="Phone numbers"
-            required
             items={phoneNumbers}
             onChange={setPhoneNumbers}
-            typeOptions={PHONE_CONTACT_TYPES}
+            typeOptions={phoneContactTypes}
             valuePlaceholder={PHONE_LOCAL_PLACEHOLDER}
             valueInputType="tel"
             addLabel="Add phone number"
@@ -253,10 +265,9 @@ const CampusFormModal: React.FC<CampusFormModalProps> = ({
 
           <LabeledContactListField
             label="Email addresses"
-            required
             items={emailAddresses}
             onChange={setEmailAddresses}
-            typeOptions={EMAIL_CONTACT_TYPES}
+            typeOptions={emailContactTypes}
             valuePlaceholder="campus@university.edu"
             valueInputType="email"
             addLabel="Add email address"

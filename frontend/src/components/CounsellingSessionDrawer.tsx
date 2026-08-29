@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Loader2, Sparkles, X } from 'lucide-react';
+import { CalendarDays, Loader2, Sparkles, X } from 'lucide-react';
 import IntakeSessionWorkspace from './IntakeSessionWorkspace';
 import SessionOutcomeSection from './SessionOutcomeSection';
+import { useLeadBookings } from '../hooks/useLeadBookings';
 import { useLeadProfileBooking } from '../hooks/useProspects';
 import { apiFetch, hasValidSession } from '../utils/api';
 
@@ -22,6 +23,7 @@ type BookingHeader = {
   candidate_name: string;
   date_label?: string | null;
   time_label?: string | null;
+  lead_id?: number | null;
 };
 
 const CounsellingSessionDrawer: React.FC<CounsellingSessionDrawerProps> = ({
@@ -39,17 +41,36 @@ const CounsellingSessionDrawer: React.FC<CounsellingSessionDrawerProps> = ({
       ? bookingIdProp
       : null;
 
+  const [activeBookingId, setActiveBookingId] = useState<number | null>(paramBookingId);
+
+  useEffect(() => {
+    if (!open) {
+      setActiveBookingId(null);
+      return;
+    }
+    setActiveBookingId(paramBookingId);
+  }, [open, paramBookingId]);
+
   const profileBookingQuery = useLeadProfileBooking(
-    open && paramBookingId == null ? candidateId ?? null : null,
-    open && paramBookingId == null && candidateId != null
+    open && activeBookingId == null ? candidateId ?? null : null,
+    open && activeBookingId == null && candidateId != null
   );
 
   const resolvedBookingId =
-    paramBookingId ??
+    activeBookingId ??
     (profileBookingQuery.data?.id != null ? Number(profileBookingQuery.data.id) : null);
 
   const [header, setHeader] = useState<BookingHeader | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  const chronologyLeadId =
+    candidateId ??
+    header?.lead_id ??
+    (profileBookingQuery.data?.lead_id != null
+      ? Number(profileBookingQuery.data.lead_id)
+      : null);
+
+  const meetingsQuery = useLeadBookings(open ? chronologyLeadId : null);
 
   useEffect(() => {
     if (!open) return;
@@ -73,7 +94,7 @@ const CounsellingSessionDrawer: React.FC<CounsellingSessionDrawerProps> = ({
       setLoadError(null);
       try {
         const data = (await apiFetch(`bookings/mine/${resolvedBookingId}/activity`)) as {
-          booking?: BookingHeader;
+          booking?: BookingHeader & { lead_id?: number | null };
           candidate_name?: string;
         };
         if (cancelled) return;
@@ -88,6 +109,7 @@ const CounsellingSessionDrawer: React.FC<CounsellingSessionDrawerProps> = ({
             'Candidate',
           date_label: booking?.date_label ?? dateLabel ?? null,
           time_label: booking?.time_label ?? timeLabel ?? null,
+          lead_id: booking?.lead_id ?? chronologyLeadId ?? null,
         });
       } catch (err) {
         if (cancelled) return;
@@ -99,6 +121,7 @@ const CounsellingSessionDrawer: React.FC<CounsellingSessionDrawerProps> = ({
             'Candidate',
           date_label: dateLabel ?? null,
           time_label: timeLabel ?? null,
+          lead_id: chronologyLeadId ?? null,
         });
         setLoadError(err instanceof Error ? err.message : 'Could not load session details.');
       }
@@ -115,20 +138,23 @@ const CounsellingSessionDrawer: React.FC<CounsellingSessionDrawerProps> = ({
     dateLabel,
     timeLabel,
     profileBookingQuery.data?.candidate_name,
+    chronologyLeadId,
   ]);
 
   const resolving =
     open &&
+    activeBookingId == null &&
     paramBookingId == null &&
     candidateId != null &&
     profileBookingQuery.isLoading;
 
   const resolveFailed =
     open &&
-    paramBookingId == null &&
-    candidateId != null &&
+    resolvedBookingId == null &&
     !profileBookingQuery.isLoading &&
-    (profileBookingQuery.isError || resolvedBookingId == null);
+    (paramBookingId != null || candidateId != null) &&
+    (profileBookingQuery.isError ||
+      (paramBookingId == null && candidateId != null && resolvedBookingId == null));
 
   const candidateName = useMemo(
     () =>
@@ -145,6 +171,8 @@ const CounsellingSessionDrawer: React.FC<CounsellingSessionDrawerProps> = ({
   ]
     .filter(Boolean)
     .join(' · ');
+
+  const meetings = meetingsQuery.data?.items ?? [];
 
   if (!open || typeof document === 'undefined') return null;
 
@@ -188,6 +216,52 @@ const CounsellingSessionDrawer: React.FC<CounsellingSessionDrawerProps> = ({
           </button>
         </div>
 
+        {chronologyLeadId != null && (meetingsQuery.isLoading || meetings.length > 0) ? (
+          <div className="shrink-0 border-b border-border-subtle bg-card px-5 py-3">
+            <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wide text-text-muted">
+              <CalendarDays size={12} />
+              Meeting chronology
+            </div>
+            {meetingsQuery.isLoading ? (
+              <div className="flex items-center gap-2 text-xs text-text-muted">
+                <Loader2 size={14} className="animate-spin" />
+                Loading meetings…
+              </div>
+            ) : (
+              <div className="flex gap-2 overflow-x-auto pb-1 custom-scrollbar">
+                {meetings.map(meeting => {
+                  const active = meeting.id === resolvedBookingId;
+                  return (
+                    <button
+                      key={meeting.id}
+                      type="button"
+                      onClick={() => setActiveBookingId(meeting.id)}
+                      className={`min-w-[9.5rem] shrink-0 rounded-xl border px-3 py-2 text-left transition ${
+                        active
+                          ? 'border-accent bg-accent/10 shadow-sm'
+                          : 'border-border-subtle bg-surface-bg hover:border-accent/40'
+                      }`}
+                    >
+                      <p
+                        className={`text-xs font-semibold ${
+                          active ? 'text-accent' : 'text-text-main'
+                        }`}
+                      >
+                        {meeting.date_label || `Booking #${meeting.id}`}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-text-muted">
+                        {[meeting.time_label, meeting.admin_name, meeting.session_status_label]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : null}
+
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pt-5 pb-28 custom-scrollbar">
           {resolving ? (
             <div className="flex min-h-[40vh] items-center justify-center gap-2 text-text-muted">
@@ -201,7 +275,7 @@ const CounsellingSessionDrawer: React.FC<CounsellingSessionDrawerProps> = ({
           ) : resolvedBookingId == null ? (
             <p className="text-sm text-text-muted">No session selected.</p>
           ) : (
-            <div className="space-y-8">
+            <div className="space-y-8" key={resolvedBookingId}>
               {loadError ? (
                 <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                   {loadError}

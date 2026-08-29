@@ -14,7 +14,11 @@ export function usePresence(enabled: boolean): void {
 
     const sendHeartbeat = () => {
       if (!getStoredToken()) return;
-      void apiFetch('chat/messaging/heartbeat', { method: 'POST', body: JSON.stringify({}) }).catch(
+      void apiFetch('chat/messaging/heartbeat', {
+        method: 'POST',
+        body: JSON.stringify({}),
+        authRedirect: false,
+      }).catch(
         () => {
           // Messaging hub may be disabled for this role.
         }

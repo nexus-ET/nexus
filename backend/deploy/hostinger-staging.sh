@@ -2,9 +2,8 @@
 # Complete NEXUS staging deploy for Hostinger VPS.
 #
 # Prerequisites:
-#   - /var/www/nexus/backend/.env points DATABASE_URL at Neon Nexus-Dev-1
-#     (pooled postgresql+psycopg://...?sslmode=require). See
-#     STAGING_CONFIG_REQUIREMENTS.md — do not overwrite .env from git.
+#   - /var/www/nexus/backend/.env points DATABASE_URL at Hostinger KVM 1 Postgres
+#     (nexus_edutrust / nexus_et_admin). See setup_staging_db.md — do not overwrite .env from git.
 #   - Branch "staging" on GitHub includes all alembic/versions for this release.
 #
 # Unlike deploy.sh alone, this script always builds the frontend and restarts
@@ -230,6 +229,11 @@ if command -v systemctl >/dev/null 2>&1; then
     chmod 640 "${BACKEND}/.env" 2>/dev/null || true
   fi
   chown -R www-data:www-data "${BACKEND}/app" "${BACKEND}/alembic" "${BACKEND}/scripts" 2>/dev/null || true
+  chmod +x "${BACKEND}/deploy/run-nexus-backend.sh" 2>/dev/null || true
+  if [[ -f "${BACKEND}/deploy/nexus-backend.service" ]]; then
+    cp "${BACKEND}/deploy/nexus-backend.service" /etc/systemd/system/nexus-backend.service
+    systemctl daemon-reload
+  fi
 
   systemctl restart nexus-backend
   nginx -t

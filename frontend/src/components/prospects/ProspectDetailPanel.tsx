@@ -33,6 +33,7 @@ import {
   ValidTransitionOption,
 } from '../../hooks/useStudentStatus';
 import { useQuery } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import { apiFetch } from '../../utils/api';
 import type { CandidateProfile } from '../../types/candidateProfile';
 import { formatProfileFullName } from '../../utils/profilePulse';
@@ -41,6 +42,26 @@ import StudentJourneyPanel from '../StudentJourneyPanel';
 import InteractionLogDrawer from '../InteractionLogDrawer';
 import CounsellingSessionModal from '../CounsellingSessionModal';
 import IntakeSessionWorkspace from '../IntakeSessionWorkspace';
+import CounsellingProcessStrip from './CounsellingProcessStrip';
+import PipelineProcessStrip from './PipelineProcessStrip';
+import AdmissionApplicationsWorkspace from './AdmissionApplicationsWorkspace';
+import SubprocessShellWorkspace from './SubprocessShellWorkspace';
+import CounsellingBillingWorkspace from './CounsellingBillingWorkspace';
+import CounsellingCredentialsWorkspace from './CounsellingCredentialsWorkspace';
+import CounsellingSubprocessPlaceholder from './CounsellingSubprocessPlaceholder';
+import {
+  isCounsellingBillingSubprocess,
+  isCounsellingCredentialsSubprocess,
+  isCounsellingIntakeSubprocess,
+  readCounsellingSubprocess,
+} from '../../utils/counsellingProcessNav';
+import {
+  isAdmissionApplicationsSubprocess,
+  pipelineProcessConfig,
+  readPipelineSubprocess,
+  STUDENT_PIPELINE_PROCESS_BY_PATH,
+  usePipelineProcessNodes,
+} from '../../utils/studentPipelineProcess';
 import DigitalPresenceAdminSection from '../DigitalPresenceAdminSection';
 import AiActivePulseBoard, { type PulseLead } from '../AiActivePulseBoard';
 import HeadlessScrollArea from '../HeadlessScrollArea';
@@ -60,6 +81,7 @@ type ProspectDetailPanelProps = {
   isFocusMode?: boolean;
   onToggleFocus?: () => void;
   studentProfileTabs?: boolean;
+  pipelinePath?: string;
 };
 
 const STATUS_OPTIONS = [
@@ -119,9 +141,28 @@ export default function ProspectDetailPanel({
   isFocusMode = false,
   onToggleFocus,
   studentProfileTabs = false,
+  pipelinePath,
 }: ProspectDetailPanelProps) {
   const showAlert = useAlert();
   const { timezone } = useBusinessTimezone();
+  const [searchParams] = useSearchParams();
+  const pipelineConfig = pipelinePath ? pipelineProcessConfig(pipelinePath) : null;
+  const isPipelineWorkspace = studentProfileTabs || Boolean(pipelineConfig);
+  const isCounsellingPipeline = studentProfileTabs || pipelineConfig?.path === '/students/counselling';
+  const counsellingSubprocess = readCounsellingSubprocess(searchParams);
+  const pipelineSubprocess = pipelineConfig
+    ? readPipelineSubprocess(searchParams, pipelineConfig.defaultSubprocess)
+    : counsellingSubprocess;
+  const showIntakeWorkspace = isCounsellingPipeline && isCounsellingIntakeSubprocess(counsellingSubprocess);
+  const showBillingWorkspace = isCounsellingPipeline && isCounsellingBillingSubprocess(counsellingSubprocess);
+  const showCredentialsWorkspace =
+    isCounsellingPipeline && isCounsellingCredentialsSubprocess(counsellingSubprocess);
+  const pipelineNodes = usePipelineProcessNodes(
+    pipelineConfig || STUDENT_PIPELINE_PROCESS_BY_PATH['/students/counselling']
+  );
+  const pipelineSubprocessTitle =
+    pipelineNodes.find(node => node.code === pipelineSubprocess)?.title ||
+    `Sub-process ${pipelineSubprocess}`;
   const [notesDraft, setNotesDraft] = useState('');
   const [pipelineStatusId, setPipelineStatusId] = useState('');
   const [pipelineComments, setPipelineComments] = useState('');
@@ -136,14 +177,14 @@ export default function ProspectDetailPanel({
   const { data: statusDefinitionsData } = useStatusDefinitions();
   const { data: validTransitions } = useValidTransitions(leadId);
   const pipelineStatusMutation = useUpdateStudentStatus(leadId);
-  const profileBookingQuery = useLeadProfileBooking(leadId, studentProfileTabs);
+  const profileBookingQuery = useLeadProfileBooking(leadId, isPipelineWorkspace);
   const candidateProfileQuery = useQuery({
     queryKey: ['bookings', 'candidate-profile-header', profileBookingQuery.data?.id],
     queryFn: () =>
       apiFetch(`bookings/mine/${profileBookingQuery.data!.id}/profile`) as Promise<{
         profile: CandidateProfile;
       }>,
-    enabled: studentProfileTabs && Boolean(profileBookingQuery.data?.id),
+    enabled: isPipelineWorkspace && Boolean(profileBookingQuery.data?.id),
     staleTime: 60_000,
   });
 
@@ -356,8 +397,8 @@ export default function ProspectDetailPanel({
                 Back
               </button>
             ) : null}
-            <div className={studentProfileTabs ? 'min-w-0 flex-1' : undefined}>
-              {studentProfileTabs ? (
+            <div className={isPipelineWorkspace ? 'min-w-0 flex-1' : undefined}>
+              {isPipelineWorkspace ? (
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
                     <h3 className="text-xl font-bold text-text-main leading-tight">
@@ -376,7 +417,7 @@ export default function ProspectDetailPanel({
                         {detail.stage || detail.status}
                       </span>
                     </div>
-                    {scheduledAppointment ? (
+                    {isCounsellingPipeline && scheduledAppointment ? (
                       <div className="mt-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-950">
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                           <span className="inline-flex items-center gap-1.5 font-semibold">
@@ -453,7 +494,7 @@ export default function ProspectDetailPanel({
                 {isFocusMode ? <Minimize2 size={15} /> : <Expand size={15} />}
               </button>
             ) : null}
-            {studentProfileTabs ? (
+            {isCounsellingPipeline ? (
               <>
                 <button
                   type="button"
@@ -516,7 +557,17 @@ export default function ProspectDetailPanel({
           </div>
         </div>
 
-        {!studentProfileTabs ? (
+        {isPipelineWorkspace ? (
+          <div className="prospects-detail-panel__process-strip">
+            {isCounsellingPipeline ? (
+              <CounsellingProcessStrip activeCode={counsellingSubprocess} />
+            ) : pipelineConfig ? (
+              <PipelineProcessStrip config={pipelineConfig} activeCode={pipelineSubprocess} />
+            ) : null}
+          </div>
+        ) : null}
+
+        {!isPipelineWorkspace ? (
           <div className="prospects-detail-panel__tabs">
             {(Object.keys(TAB_LABELS) as ProspectDetailTab[]).map(tab => (
               <button
@@ -532,22 +583,56 @@ export default function ProspectDetailPanel({
         ) : null}
       </div>
 
-      {studentProfileTabs ? (
-        profileBookingQuery.isLoading ? (
-          <div className="prospects-empty flex-1">Loading student profile...</div>
+      {isPipelineWorkspace ? (
+        !isCounsellingPipeline && pipelineConfig ? (
+          <div className="prospects-detail-panel__workspace">
+            {isAdmissionApplicationsSubprocess(pipelineSubprocess, pipelineConfig) ? (
+              <AdmissionApplicationsWorkspace
+                code={pipelineSubprocess}
+                title={pipelineSubprocessTitle}
+                leadId={leadId}
+                candidateName={counsellingDisplayName}
+              />
+            ) : (
+              <SubprocessShellWorkspace code={pipelineSubprocess} title={pipelineSubprocessTitle} />
+            )}
+          </div>
+        ) : !showIntakeWorkspace && !showBillingWorkspace && !showCredentialsWorkspace ? (
+          <div className="prospects-detail-panel__workspace">
+            <CounsellingSubprocessPlaceholder code={counsellingSubprocess} />
+          </div>
+        ) : profileBookingQuery.isLoading ? (
+          <div className="prospects-detail-panel__workspace prospects-empty">Loading student profile...</div>
         ) : profileBookingQuery.data ? (
-          <div className="min-h-0 flex-1 overflow-auto p-3">
-            <IntakeSessionWorkspace
-              key={profileBookingQuery.data.id}
-              bookingId={profileBookingQuery.data.id}
-              candidateName={profileBookingQuery.data.candidate_name}
-              onStatusUpdated={() => {
-                void profileBookingQuery.refetch();
-              }}
-            />
+          <div className="prospects-detail-panel__workspace">
+            {showBillingWorkspace ? (
+              <CounsellingBillingWorkspace
+                key={`billing-${profileBookingQuery.data.id}`}
+                bookingId={profileBookingQuery.data.id}
+                candidateName={profileBookingQuery.data.candidate_name}
+                onStatusUpdated={() => {
+                  void profileBookingQuery.refetch();
+                }}
+              />
+            ) : showCredentialsWorkspace ? (
+              <CounsellingCredentialsWorkspace
+                key={`credentials-${profileBookingQuery.data.id}`}
+                bookingId={profileBookingQuery.data.id}
+                candidateName={profileBookingQuery.data.candidate_name}
+              />
+            ) : (
+              <IntakeSessionWorkspace
+                key={profileBookingQuery.data.id}
+                bookingId={profileBookingQuery.data.id}
+                candidateName={profileBookingQuery.data.candidate_name}
+                onStatusUpdated={() => {
+                  void profileBookingQuery.refetch();
+                }}
+              />
+            )}
           </div>
         ) : (
-          <div className="prospects-empty flex-1">
+          <div className="prospects-detail-panel__workspace prospects-empty">
             {profileBookingQuery.error instanceof Error
               ? profileBookingQuery.error.message
               : 'No counselling booking is available for this student on your account.'}
@@ -824,7 +909,7 @@ export default function ProspectDetailPanel({
       onClose={() => setInteractionBookingId(null)}
     />
 
-    {studentProfileTabs && profileBookingQuery.data ? (
+    {isCounsellingPipeline && profileBookingQuery.data ? (
       <CounsellingSessionModal
         open={sessionOpen}
         bookingId={profileBookingQuery.data.id}

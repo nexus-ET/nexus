@@ -29,6 +29,8 @@ def register_all_models() -> None:
     from app.models.education_degree import EducationDegree  # noqa: F401
     from app.models.education_major import EducationMajor  # noqa: F401
     from app.models.education_major_level import EducationMajorLevel  # noqa: F401
+    from app.models.education_sub_major import EducationSubMajor  # noqa: F401
+    from app.models.education_super_major import EducationSuperMajor  # noqa: F401
     from app.models.gpa_cgpa_score import GpaCgpaScore  # noqa: F401
     from app.models.full_time_study_year import FullTimeStudyYear  # noqa: F401
     from app.models.internal_message import InternalMessage  # noqa: F401
@@ -68,7 +70,14 @@ def register_all_models() -> None:
     from app.models.user import User  # noqa: F401
     from app.models.work_experience import WorkExperience, WorkProject  # noqa: F401
     from app.models.academia_geography import GeographyCity, GeographyState  # noqa: F401
-    from app.models.academia_institution import Campus, CampusType, College, Institution  # noqa: F401
+    from app.models.academia_institution import (  # noqa: F401
+        Campus,
+        CampusType,
+        College,
+        CollegeCampus,
+        Institution,
+        InstitutionType,
+    )
     from app.models.academia_wizard import (  # noqa: F401
         AcademiaAuditLog,
         InstitutionCourseOffering,
@@ -84,6 +93,7 @@ def register_all_models() -> None:
         IntelAcademyModule,
         IntelAiChatLog,
         IntelGlossary,
+        IntelInquiryFaq,
         IntelScrapeReview,
         IntelScraperConfig,
         IntelTrivia,

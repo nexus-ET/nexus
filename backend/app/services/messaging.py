@@ -24,6 +24,7 @@ from app.services.lead_conversation import ensure_handoff_for_inbound, is_human_
 from app.services.phone_utils import clean_phone_number
 from app.services.twilio_outbound import dispatch_live_whatsapp_message
 from app.services.whatsapp_helpers import extract_inbound_messages, get_or_create_lead_for_phone
+from app.utils.safe_console import safe_print
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,27 @@ def record_ai_conversation_audit(
 PROVIDER_WHATSAPP = "WHATSAPP"
 PROVIDER_TWILIO = "TWILIO"
 WHATSAPP_GRAPH_API_BASE = "https://graph.facebook.com/v20.0"
+WHATSAPP_GRAPH_TIMEOUT = httpx.Timeout(10.0, connect=3.0, pool=3.0)
+_WHATSAPP_GRAPH_HTTP_CLIENT: httpx.AsyncClient | None = None
+
+
+def get_whatsapp_graph_http_client() -> httpx.AsyncClient:
+    """Reuse Graph API connections instead of paying TLS setup on every message."""
+    global _WHATSAPP_GRAPH_HTTP_CLIENT
+    if _WHATSAPP_GRAPH_HTTP_CLIENT is None or _WHATSAPP_GRAPH_HTTP_CLIENT.is_closed:
+        _WHATSAPP_GRAPH_HTTP_CLIENT = httpx.AsyncClient(
+            timeout=WHATSAPP_GRAPH_TIMEOUT,
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+        )
+    return _WHATSAPP_GRAPH_HTTP_CLIENT
+
+
+async def close_whatsapp_graph_http_client() -> None:
+    global _WHATSAPP_GRAPH_HTTP_CLIENT
+    client = _WHATSAPP_GRAPH_HTTP_CLIENT
+    _WHATSAPP_GRAPH_HTTP_CLIENT = None
+    if client is not None and not client.is_closed:
+        await client.aclose()
 
 
 class WhatsAppDeliveryError(Exception):
@@ -252,6 +274,7 @@ class MetaTemplateSendSpec:
 
 
 _TEMPLATE_SPEC_CACHE: dict[str, MetaTemplateSendSpec] = {}
+_TEMPLATE_LANGUAGE_CACHE: dict[str, tuple[str, ...]] = {}
 _NAMED_PLACEHOLDER_RE = re.compile(r"\{\{([^}]+)\}\}")
 
 
@@ -346,6 +369,11 @@ async def list_meta_template_language_codes(template_name: str) -> list[str]:
     """Return language codes Meta has for a template name (approved first)."""
     from app.services.whatsapp_config import resolve_whatsapp_waba_id
 
+    cache_key = (template_name or "").strip().lower()
+    cached = _TEMPLATE_LANGUAGE_CACHE.get(cache_key)
+    if cached is not None:
+        return list(cached)
+
     waba_id = resolve_whatsapp_waba_id()
     access_token = (settings.WHATSAPP_ACCESS_TOKEN or "").strip()
     if not waba_id or not access_token or not (template_name or "").strip():
@@ -354,36 +382,37 @@ async def list_meta_template_language_codes(template_name: str) -> list[str]:
     url = f"{WHATSAPP_GRAPH_API_BASE}/{waba_id}/message_templates"
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.get(
-                url,
-                params={"name": template_name, "limit": "50"},
-                headers=headers,
+        response = await get_whatsapp_graph_http_client().get(
+            url,
+            params={"name": template_name, "limit": "50"},
+            headers=headers,
+        )
+        if response.status_code >= 400:
+            logger.warning(
+                "Could not list WhatsApp template languages for %r: status=%s body=%s",
+                template_name,
+                response.status_code,
+                response.text,
             )
-            if response.status_code >= 400:
-                logger.warning(
-                    "Could not list WhatsApp template languages for %r: status=%s body=%s",
-                    template_name,
-                    response.status_code,
-                    response.text,
-                )
-                return []
+            return []
 
-            approved: list[str] = []
-            other: list[str] = []
-            for template in response.json().get("data", []):
-                if str(template.get("name") or "") != template_name:
-                    continue
-                language = str(template.get("language") or "").strip()
-                if not language:
-                    continue
-                status = str(template.get("status") or "").upper()
-                if status in {"APPROVED", "ACTIVE", ""}:
-                    if language not in approved:
-                        approved.append(language)
-                elif language not in other and language not in approved:
-                    other.append(language)
-            return approved or other
+        approved: list[str] = []
+        other: list[str] = []
+        for template in response.json().get("data", []):
+            if str(template.get("name") or "") != template_name:
+                continue
+            language = str(template.get("language") or "").strip()
+            if not language:
+                continue
+            status = str(template.get("status") or "").upper()
+            if status in {"APPROVED", "ACTIVE", ""}:
+                if language not in approved:
+                    approved.append(language)
+            elif language not in other and language not in approved:
+                other.append(language)
+        languages = approved or other
+        _TEMPLATE_LANGUAGE_CACHE[cache_key] = tuple(languages)
+        return languages
     except Exception:
         logger.exception("Failed to list WhatsApp template languages for %r", template_name)
         return []
@@ -449,74 +478,83 @@ async def fetch_meta_outreach_template_spec(
     url = f"{WHATSAPP_GRAPH_API_BASE}/{waba_id}/message_templates"
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.get(
-                url,
-                params={"name": template_name, "limit": "50"},
-                headers=headers,
+        response = await get_whatsapp_graph_http_client().get(
+            url,
+            params={"name": template_name, "limit": "50"},
+            headers=headers,
+        )
+        if response.status_code >= 400:
+            logger.warning(
+                "Could not load WhatsApp template %r from Meta: status=%s body=%s",
+                template_name,
+                response.status_code,
+                response.text,
             )
-            if response.status_code >= 400:
-                logger.warning(
-                    "Could not load WhatsApp template %r from Meta: status=%s body=%s",
-                    template_name,
-                    response.status_code,
-                    response.text,
-                )
-                return None
+            return None
 
-            rows = [
-                template
-                for template in response.json().get("data", [])
-                if str(template.get("name") or "") == template_name
-            ]
-            # Prefer an exact language match before any en/en_US fuzzy match.
-            ordered = sorted(
-                rows,
-                key=lambda template: (
-                    0
-                    if _language_codes_equal(str(template.get("language") or ""), language_code)
-                    else 1
-                    if _language_codes_match(str(template.get("language") or ""), language_code)
-                    else 2
+        all_templates = response.json().get("data", [])
+        rows = [
+            template
+            for template in all_templates
+            if str(template.get("name") or "") == template_name
+        ]
+        languages = tuple(
+            dict.fromkeys(
+                str(template.get("language") or "").strip()
+                for template in rows
+                if str(template.get("language") or "").strip()
+            )
+        )
+        if languages:
+            _TEMPLATE_LANGUAGE_CACHE[template_name.strip().lower()] = languages
+        # Prefer an exact language match before any en/en_US fuzzy match.
+        ordered = sorted(
+            rows,
+            key=lambda template: (
+                0
+                if _language_codes_equal(str(template.get("language") or ""), language_code)
+                else 1
+                if _language_codes_match(str(template.get("language") or ""), language_code)
+                else 2
+            ),
+        )
+        for template in ordered:
+            if not _language_codes_match(str(template.get("language") or ""), language_code):
+                continue
+
+            body_component = next(
+                (
+                    component
+                    for component in template.get("components", [])
+                    if str(component.get("type") or "").upper() == "BODY"
                 ),
+                None,
             )
-            for template in ordered:
-                if not _language_codes_match(str(template.get("language") or ""), language_code):
-                    continue
-
-                body_component = next(
-                    (
-                        component
-                        for component in template.get("components", [])
-                        if str(component.get("type") or "").upper() == "BODY"
-                    ),
-                    None,
+            if not body_component:
+                spec = MetaTemplateSendSpec(
+                    parameter_format=str(template.get("parameter_format") or "POSITIONAL").upper(),
+                    body_parameter_count=0,
+                    body_text="",
                 )
-                if not body_component:
-                    spec = MetaTemplateSendSpec(
-                        parameter_format=str(template.get("parameter_format") or "POSITIONAL").upper(),
-                        body_parameter_count=0,
-                        body_text="",
-                    )
-                else:
-                    count, names = _parse_body_parameter_spec(body_component)
-                    spec = MetaTemplateSendSpec(
-                        parameter_format=str(template.get("parameter_format") or "POSITIONAL").upper(),
-                        body_parameter_count=count,
-                        body_named_parameter_names=names,
-                        body_text=str(body_component.get("text") or ""),
-                    )
-                _TEMPLATE_SPEC_CACHE[cache_key] = spec
-                logger.info(
-                    "Loaded WhatsApp template spec for %r (%s→%s): format=%s body_params=%s names=%s",
-                    template_name,
-                    language_code,
-                    template.get("language"),
-                    spec.parameter_format,
-                    spec.body_parameter_count,
-                    spec.body_named_parameter_names,
+            else:
+                count, names = _parse_body_parameter_spec(body_component)
+                spec = MetaTemplateSendSpec(
+                    parameter_format=str(template.get("parameter_format") or "POSITIONAL").upper(),
+                    body_parameter_count=count,
+                    body_named_parameter_names=names,
+                    body_text=str(body_component.get("text") or ""),
                 )
-                return spec
+            _TEMPLATE_SPEC_CACHE[cache_key] = spec
+            logger.info(
+                "Loaded WhatsApp template spec for %r (%s→%s): format=%s body_params=%s names=%s",
+                template_name,
+                language_code,
+                template.get("language"),
+                spec.parameter_format,
+                spec.body_parameter_count,
+                spec.body_named_parameter_names,
+            )
+            return spec
     except Exception:
         logger.exception("Failed to fetch WhatsApp template spec for %r", template_name)
     return None
@@ -968,8 +1006,11 @@ async def send_whatsapp_template(
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            return await client.post(url, json=payload, headers=headers)
+        return await get_whatsapp_graph_http_client().post(
+            url,
+            json=payload,
+            headers=headers,
+        )
 
     response = await _post(resolved_language)
     if response.status_code >= 400:
@@ -1182,23 +1223,26 @@ async def send_whatsapp_text_message(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            if response.status_code >= 400:
-                detail = format_meta_graph_error(response, to_number=to_number)
-                logger.error(
-                    "WhatsApp Graph API text delivery failed: status=%s body=%s",
-                    response.status_code,
-                    response.text,
-                )
-                raise WhatsAppDeliveryError(detail, status_code=response.status_code)
-            message_id = extract_meta_message_id(response)
-            logger.info(
-                "WhatsApp session text queued to %s message_id=%s",
-                clean_phone_number(to_number),
-                message_id,
+        response = await get_whatsapp_graph_http_client().post(
+            url,
+            json=payload,
+            headers=headers,
+        )
+        if response.status_code >= 400:
+            detail = format_meta_graph_error(response, to_number=to_number)
+            logger.error(
+                "WhatsApp Graph API text delivery failed: status=%s body=%s",
+                response.status_code,
+                response.text,
             )
-            return message_id
+            raise WhatsAppDeliveryError(detail, status_code=response.status_code)
+        message_id = extract_meta_message_id(response)
+        logger.info(
+            "WhatsApp session text queued to %s message_id=%s",
+            clean_phone_number(to_number),
+            message_id,
+        )
+        return message_id
     except WhatsAppDeliveryError:
         raise
     except Exception as exc:
@@ -1239,7 +1283,7 @@ async def process_meta_webhook_payload(payload: dict[str, Any]) -> None:
             parsed_preview.message_body,
             parsed_preview.message_id,
         )
-        print(
+        safe_print(
             "[Meta Webhook] parsed: "
             f"sender_id={parsed_preview.sender_id!r} "
             f"message_body={parsed_preview.message_body!r}"
@@ -1251,7 +1295,7 @@ async def process_meta_webhook_payload(payload: dict[str, Any]) -> None:
             "Meta webhook: no inbound text messages (delivery receipt or unsupported type). object=%r",
             payload.get("object"),
         )
-        print(
+        safe_print(
             "[Meta Webhook] no inbound text messages to save "
             f"(object={payload.get('object')!r} — may be a delivery status update only)"
         )

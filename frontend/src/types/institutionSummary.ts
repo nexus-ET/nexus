@@ -10,7 +10,9 @@ export interface InstitutionSummaryRecord {
   country_name?: string | null;
   state_name?: string | null;
   city_name?: string | null;
-  institution_type?: string | null;
+  institution_type_id?: number | null;
+  institution_type_code?: string | null;
+  institution_type_name?: string | null;
   accreditation_details?: string | null;
   is_active: boolean;
   publish_status: 'pending' | 'success' | 'failure';
@@ -19,6 +21,7 @@ export interface InstitutionSummaryRecord {
   level_count: number;
   program_count: number;
   major_count: number;
+  sub_major_count: number;
   course_count: number;
   campus_count: number;
   college_count: number;
@@ -34,6 +37,7 @@ export type InstitutionSummaryListResponse = PaginatedListResponse<InstitutionSu
 };
 
 export type InstitutionSummarySortBy =
+  | 'id'
   | 'name'
   | 'city'
   | 'state'
@@ -41,8 +45,10 @@ export type InstitutionSummarySortBy =
   | 'created_at'
   | 'code'
   | 'institution_type'
+  | 'level_count'
   | 'program_count'
   | 'major_count'
+  | 'sub_major_count'
   | 'course_count'
   | 'campus_count'
   | 'college_count'
@@ -52,15 +58,18 @@ export type InstitutionSummarySortBy =
 export type InstitutionSummarySortOrder = 'asc' | 'desc';
 
 export type InstitutionSummaryColumnKey =
+  | 'id'
   | 'name'
   | 'code'
   | 'city'
   | 'state'
   | 'country'
   | 'institution_type'
+  | 'institution_type_id'
   | 'level_count'
   | 'program_count'
   | 'major_count'
+  | 'sub_major_count'
   | 'course_count'
   | 'campus_count'
   | 'college_count'
@@ -75,17 +84,20 @@ export const INSTITUTION_SUMMARY_COLUMN_DEFS: {
   label: string;
   defaultVisible: boolean;
 }[] = [
+  { key: 'id', label: 'ID', defaultVisible: true },
   { key: 'name', label: 'Name', defaultVisible: true },
   { key: 'code', label: 'Code', defaultVisible: false },
   { key: 'city', label: 'City', defaultVisible: true },
   { key: 'state', label: 'State', defaultVisible: true },
   { key: 'country', label: 'Country', defaultVisible: true },
-  { key: 'institution_type', label: 'Program Type', defaultVisible: true },
+  { key: 'institution_type', label: 'Institution Type', defaultVisible: true },
+  { key: 'institution_type_id', label: 'Institution Type ID', defaultVisible: false },
   { key: 'campus_count', label: 'Campuses', defaultVisible: true },
   { key: 'college_count', label: 'Colleges', defaultVisible: true },
   { key: 'level_count', label: 'Levels', defaultVisible: true },
   { key: 'program_count', label: 'Programs', defaultVisible: true },
   { key: 'major_count', label: 'Majors', defaultVisible: true },
+  { key: 'sub_major_count', label: 'Sub-majors', defaultVisible: true },
   { key: 'course_count', label: 'Courses', defaultVisible: true },
   { key: 'intake_count', label: 'Intakes', defaultVisible: true },
   { key: 'picture_count', label: 'Pictures', defaultVisible: true },
@@ -97,7 +109,7 @@ export const INSTITUTION_SUMMARY_COLUMN_DEFS: {
 export const INSTITUTION_SUMMARY_COLUMNS_STORAGE_KEY = 'nexus.institutionsSummary.visibleColumns';
 
 /** Bump when new default-visible columns are added so saved prefs pick them up. */
-export const INSTITUTION_SUMMARY_COLUMNS_VERSION = 6;
+export const INSTITUTION_SUMMARY_COLUMNS_VERSION = 10;
 
 export const DEFAULT_INSTITUTION_SUMMARY_SORT: {
   sortBy: InstitutionSummarySortBy;

@@ -43,21 +43,25 @@ const ProgramFormModal: React.FC<ProgramFormModalProps> = ({
   }, [open, presetDegreeId, program]);
 
   useEffect(() => {
-    if (!open || !program) return;
-    void apiFetch<DegreeRecord>(`academia/degrees/${program.degree_id}`).then(degree => {
-      if (degree?.level_id) {
-        setLevelId(String(degree.level_id));
-      }
-    });
+    if (!open || !program?.degree_id) return;
+    void apiFetch<DegreeRecord>(`academia/degrees/${program.degree_id}`)
+      .then(degree => {
+        if (degree?.level_id) {
+          setLevelId(String(degree.level_id));
+        }
+      })
+      .catch(() => undefined);
   }, [open, program]);
 
   useEffect(() => {
     if (!open || program || !presetDegreeId) return;
-    void apiFetch<DegreeRecord>(`academia/degrees/${presetDegreeId}`).then(degree => {
-      if (degree?.level_id) {
-        setLevelId(String(degree.level_id));
-      }
-    });
+    void apiFetch<DegreeRecord>(`academia/degrees/${presetDegreeId}`)
+      .then(degree => {
+        if (degree?.level_id) {
+          setLevelId(String(degree.level_id));
+        }
+      })
+      .catch(() => undefined);
   }, [open, presetDegreeId, program]);
 
   useEffect(() => {

@@ -162,17 +162,20 @@ bash backend/deploy/promote-to-staging.sh --message "Release" --vps root@YOUR_VP
 
 `.env` is gitignored — after promote, verify staging secrets on the server (`/var/www/nexus/backend/.env`).
 
-**Staging Neon:** use **Nexus-Dev-1** only (old Neon hit its limit). Never copy local `DATABASE_URL`.
+**Staging database:** Hostinger KVM 1 PostgreSQL (`nexus_edutrust` / `nexus_et_admin`).  
+**Development database:** Hostinger PostgreSQL (`nexus_dev` / `nexus_dev_admin`) — see [setup_dev_db.md](./setup_dev_db.md). Do not reuse staging credentials or Neon still-paper after switching.
 
 | Doc | Purpose |
 |-----|---------|
+| [setup_dev_db.md](./setup_dev_db.md) | **One-time** develop Hostinger Postgres bootstrap + migrations |
+| [setup_staging_db.md](./setup_staging_db.md) | **One-time** staging Hostinger Postgres bootstrap + migrations |
 | [DEPLOYMENT_INSTRUCTIONS.md](./DEPLOYMENT_INSTRUCTIONS.md) | Full Hostinger staging deploy |
-| [STAGING_CONFIG_REQUIREMENTS.md](./STAGING_CONFIG_REQUIREMENTS.md) | Manual VPS `.env` checklist (Nexus-Dev-1) |
+| [STAGING_CONFIG_REQUIREMENTS.md](./STAGING_CONFIG_REQUIREMENTS.md) | Manual VPS `.env` checklist |
 | [STAGING_ENV_CHANGES.md](./STAGING_ENV_CHANGES.md) | Same env notes (shorter) |
-| [STAGING_DATABASE_MIGRATIONS.md](./STAGING_DATABASE_MIGRATIONS.md) | Alembic head + empty-DB bootstrap |
+| [STAGING_DATABASE_MIGRATIONS.md](./STAGING_DATABASE_MIGRATIONS.md) | Alembic chain reference + empty-DB bootstrap |
 | [env.staging.example](./env.staging.example) | Staging `.env` template (no secrets) |
 
-**Database:** `hostinger-staging.sh` runs `bootstrap_alembic.py` → `alembic upgrade head`. Fresh Nexus-Dev-1 gets the full schema (head `c4d7e0f53g6h`).
+**Database:** `hostinger-staging.sh` runs `bootstrap_alembic.py` → `alembic upgrade head`. Fresh `nexus_edutrust` gets the full schema (head `yy5z6asupermaj`, ~110 public tables).
 
 **On VPS after env is set:**
 
@@ -243,7 +246,7 @@ The `post-receive` hook runs `deploy.sh` automatically.
 | `502 Bad Gateway` | `sudo systemctl status nexus-backend` and `journalctl -u nexus-backend -f` |
 | Meta verify fails | URL must end with `/api/webhook`; token must match `.env` |
 | Frontend blank | `cd /var/www/nexus/frontend && npm run build` |
-| DB errors | Check `DATABASE_URL` in `.env`; staging must use Neon **Nexus-Dev-1**; Neon must allow VPS IP if restricted |
+| DB errors | Check `DATABASE_URL` in `.env`; staging must use Hostinger Postgres **`nexus_edutrust`** (see [setup_staging_db.md](./setup_staging_db.md)) |
 
 ```bash
 sudo systemctl status nexus-backend

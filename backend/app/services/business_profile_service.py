@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.business import Business
 from app.models.user import User
@@ -21,6 +23,7 @@ EMAIL_DOMAIN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 OFFICE_PHONE_PATTERN = re.compile(r"^\+?[0-9()\-\s.]{7,50}$")
+EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 UPLOADS_ROOT = Path(__file__).resolve().parents[1] / "uploads"
 BUSINESS_LOGO_DIR = UPLOADS_ROOT / "business"
@@ -81,6 +84,10 @@ def update_business_profile(
     office_mobile_number: str | None,
     web_url: str | None,
     email_domain: str | None,
+    office_phone_active: bool = True,
+    office_mobile_active: bool = True,
+    office_phone_contacts: list[dict[str, Any]] | None = None,
+    office_email_contacts: list[dict[str, Any]] | None = None,
 ) -> dict:
     cleaned_name = business_name.strip()
     cleaned_domain = _optional_text(business_domain)
@@ -91,10 +98,27 @@ def update_business_profile(
     cleaned_state = _optional_text(state)
     cleaned_country = _optional_text(country)
     cleaned_zip_code = _optional_text(zip_code)
-    cleaned_office_phone = _optional_text(office_phone_number)
-    cleaned_office_mobile = _optional_text(office_mobile_number)
     cleaned_web_url = _optional_text(web_url)
     cleaned_email_domain = _optional_text(email_domain)
+    phone_active = bool(office_phone_active)
+    mobile_active = bool(office_mobile_active)
+
+    phone_contacts = _normalize_contact_entries(
+        office_phone_contacts,
+        value_kind="phone",
+        legacy_values=(office_phone_number, office_mobile_number),
+        legacy_types=("Main Line", "WhatsApp"),
+    )
+    email_contacts = _normalize_contact_entries(
+        office_email_contacts,
+        value_kind="email",
+        legacy_values=(),
+        legacy_types=("General",),
+    )
+
+    # Keep legacy scalar columns in sync for older consumers.
+    cleaned_office_phone = phone_contacts[0]["value"] if phone_contacts else None
+    cleaned_office_mobile = phone_contacts[1]["value"] if len(phone_contacts) > 1 else None
 
     _validate_business_profile(
         business_name=cleaned_name,
@@ -121,6 +145,13 @@ def update_business_profile(
     business.zip_code = cleaned_zip_code
     business.office_phone_number = cleaned_office_phone
     business.office_mobile_number = cleaned_office_mobile
+    business.office_phone_active = phone_active
+    business.office_mobile_active = mobile_active
+    # Copy + flag_modified so JSON list changes always persist (SQLAlchemy mutability).
+    business.office_phone_contacts = [dict(entry) for entry in phone_contacts]
+    business.office_email_contacts = [dict(entry) for entry in email_contacts]
+    flag_modified(business, "office_phone_contacts")
+    flag_modified(business, "office_email_contacts")
     business.web_url = cleaned_web_url
     business.email_domain = cleaned_email_domain.lower() if cleaned_email_domain else None
     business.updated_at = utc_now()
@@ -314,8 +345,80 @@ def _is_valid_web_url(value: str) -> bool:
     return True
 
 
+def _normalize_contact_entries(
+    raw: list[dict[str, Any]] | None,
+    *,
+    value_kind: str,
+    legacy_values: tuple[str | None, ...] = (),
+    legacy_types: tuple[str, ...] = (),
+    validate: bool = True,
+) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            contact_type = str(item.get("type") or "").strip()
+            value = str(item.get("value") or "").strip()
+            if not value:
+                continue
+            if validate and value_kind == "phone" and not OFFICE_PHONE_PATTERN.match(value):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid office phone number: {value}",
+                )
+            if validate and value_kind == "email" and not EMAIL_PATTERN.match(value):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid office email address: {value}",
+                )
+            if not contact_type:
+                contact_type = legacy_types[0] if legacy_types else "General"
+            entries.append({"type": contact_type, "value": value})
+        # Explicit empty list means "clear contacts" (do not fall back to legacy).
+        return entries
+
+    for index, legacy in enumerate(legacy_values):
+        cleaned = _optional_text(legacy)
+        if not cleaned:
+            continue
+        contact_type = (
+            legacy_types[index]
+            if index < len(legacy_types)
+            else (legacy_types[-1] if legacy_types else "General")
+        )
+        entries.append({"type": contact_type, "value": cleaned})
+    return entries
+
+
+def _phone_contacts_for_business(business: Business) -> list[dict[str, str]]:
+    raw = getattr(business, "office_phone_contacts", None)
+    return _normalize_contact_entries(
+        raw if isinstance(raw, list) else None,
+        value_kind="phone",
+        legacy_values=(business.office_phone_number, business.office_mobile_number),
+        legacy_types=("Main Line", "WhatsApp"),
+        validate=False,
+    )
+
+
+def _email_contacts_for_business(business: Business) -> list[dict[str, str]]:
+    raw = getattr(business, "office_email_contacts", None)
+    return _normalize_contact_entries(
+        raw if isinstance(raw, list) else None,
+        value_kind="email",
+        legacy_values=(),
+        legacy_types=("General",),
+        validate=False,
+    )
+
+
 def _serialize_business(business: Business) -> dict:
     has_logo = bool(business.logo_path)
+    phone_active = getattr(business, "office_phone_active", None)
+    mobile_active = getattr(business, "office_mobile_active", None)
+    phone_contacts = _phone_contacts_for_business(business)
+    email_contacts = _email_contacts_for_business(business)
     return {
         "business_id": business.id,
         "business_name": business.name,
@@ -327,8 +430,14 @@ def _serialize_business(business: Business) -> dict:
         "state": business.state,
         "country": business.country,
         "zip_code": business.zip_code,
-        "office_phone_number": business.office_phone_number,
-        "office_mobile_number": business.office_mobile_number,
+        "office_phone_number": business.office_phone_number
+        or (phone_contacts[0]["value"] if phone_contacts else None),
+        "office_mobile_number": business.office_mobile_number
+        or (phone_contacts[1]["value"] if len(phone_contacts) > 1 else None),
+        "office_phone_active": True if phone_active is None else bool(phone_active),
+        "office_mobile_active": True if mobile_active is None else bool(mobile_active),
+        "office_phone_contacts": phone_contacts,
+        "office_email_contacts": email_contacts,
         "web_url": business.web_url,
         "email_domain": business.email_domain,
         "has_logo": has_logo,

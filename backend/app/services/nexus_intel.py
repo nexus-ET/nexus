@@ -18,12 +18,14 @@ from sqlalchemy.orm import Session
 from app.models.nexus_intel import (
     IntelAcademyModule,
     IntelGlossary,
+    IntelInquiryFaq,
     IntelScrapeReview,
     IntelScraperConfig,
     IntelTrivia,
     IntelTriviaAnswer,
     IntelUserPreferences,
 )
+from app.data.intel_inquiry_seed import INQUIRY_TAXONOMY, resolve_inquiry_path
 from app.models.user import User  # noqa: F401 — ensure users table is in metadata for FKs
 from app.schemas.nexus_intel import (
     CountryComparisonItem,
@@ -1133,3 +1135,86 @@ def approve_scrape_reviews_bulk(
 def slugify(value: str) -> str:
     text = re.sub(r"[^a-z0-9]+", "-", (value or "").strip().lower())
     return text.strip("-") or "term"
+
+
+def inquiry_taxonomy() -> list[dict[str, Any]]:
+    return INQUIRY_TAXONOMY
+
+
+def list_inquiry_faqs(
+    db: Session,
+    *,
+    paths: list[str] | None = None,
+    q: str | None = None,
+) -> tuple[list[IntelInquiryFaq], int]:
+    query = db.query(IntelInquiryFaq).filter(IntelInquiryFaq.is_active.is_(True))
+    selected_paths = list(dict.fromkeys(path for path in (paths or []) if path))
+    if selected_paths:
+        hierarchy_filters = []
+        for path in selected_paths:
+            hierarchy = resolve_inquiry_path(path)
+            if hierarchy["nested_process_code"]:
+                hierarchy_filters.append(IntelInquiryFaq.nested_process_code == path)
+            elif hierarchy["subprocess_code"]:
+                hierarchy_filters.append(IntelInquiryFaq.subprocess_code == path)
+            else:
+                hierarchy_filters.append(IntelInquiryFaq.process_code == path)
+        query = query.filter(or_(*hierarchy_filters))
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        query = query.filter(
+            or_(
+                IntelInquiryFaq.question.ilike(term),
+                IntelInquiryFaq.answer.ilike(term),
+                IntelInquiryFaq.process_name.ilike(term),
+                IntelInquiryFaq.subprocess_name.ilike(term),
+                IntelInquiryFaq.nested_process_name.ilike(term),
+            )
+        )
+    total = query.count()
+    rows = query.order_by(
+        IntelInquiryFaq.process_code.asc(),
+        IntelInquiryFaq.subprocess_code.asc().nullsfirst(),
+        IntelInquiryFaq.nested_process_code.asc().nullsfirst(),
+        IntelInquiryFaq.sort_order.asc(),
+        IntelInquiryFaq.created_at.asc(),
+    ).all()
+    return rows, total
+
+
+def create_inquiry_faq(
+    db: Session, payload: dict[str, Any], user_id: int
+) -> IntelInquiryFaq:
+    hierarchy = resolve_inquiry_path(payload.pop("path"))
+    row = IntelInquiryFaq(**hierarchy, **payload, created_by=user_id, updated_by=user_id)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def update_inquiry_faq(
+    db: Session, faq_id: UUID, payload: dict[str, Any], user_id: int
+) -> IntelInquiryFaq:
+    row = db.query(IntelInquiryFaq).filter(IntelInquiryFaq.id == faq_id).first()
+    if not row or not row.is_active:
+        raise HTTPException(status_code=404, detail="Inquiry not found.")
+    path = payload.pop("path", None)
+    if path is not None:
+        for key, value in resolve_inquiry_path(path).items():
+            setattr(row, key, value)
+    for key, value in payload.items():
+        setattr(row, key, value)
+    row.updated_by = user_id
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def delete_inquiry_faq(db: Session, faq_id: UUID, user_id: int) -> None:
+    row = db.query(IntelInquiryFaq).filter(IntelInquiryFaq.id == faq_id).first()
+    if not row or not row.is_active:
+        raise HTTPException(status_code=404, detail="Inquiry not found.")
+    row.is_active = False
+    row.updated_by = user_id
+    db.commit()

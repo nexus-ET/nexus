@@ -2,9 +2,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { createPortal } from 'react-dom';
 import { ChevronDown, X } from 'lucide-react';
 
+import MajorColorSwatch from './MajorColorSwatch';
+
 export interface SearchableMultiSelectOption {
   value: string;
   label: string;
+  color?: string | null;
+  disabled?: boolean;
 }
 
 interface SearchableMultiSelectProps {
@@ -18,6 +22,7 @@ interface SearchableMultiSelectProps {
   disabled?: boolean;
   emptyMessage?: string;
   hint?: string;
+  onOpen?: () => void;
   /** When set, shown on the closed control instead of listing every selected label. */
   selectedDisplay?: string;
   /** Maximum number of selections allowed. */
@@ -28,7 +33,7 @@ interface SearchableMultiSelectProps {
   preferDropUp?: boolean;
 }
 
-const MENU_MAX_HEIGHT = 280;
+const MENU_MAX_HEIGHT = 360;
 
 function computeMenuStyle(
   trigger: HTMLElement,
@@ -80,6 +85,7 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
   disabled = false,
   emptyMessage = 'No matches found.',
   hint,
+  onOpen,
   selectedDisplay,
   maxSelections,
   className,
@@ -186,7 +192,8 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
       onChange(values.filter(item => item !== value));
       return;
     }
-    if (atMax) return;
+    const option = options.find(item => item.value === value);
+    if (option?.disabled || atMax) return;
     onChange([...values, value]);
   };
 
@@ -198,7 +205,7 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
       : selectedDisplay ?? (selectedLabels.length ? selectedLabels.join(', ') : placeholder);
 
   const listMaxHeight =
-    typeof menuStyle.maxHeight === 'number' ? Math.max(80, menuStyle.maxHeight - 92) : 180;
+    typeof menuStyle.maxHeight === 'number' ? Math.max(140, menuStyle.maxHeight - 92) : 240;
 
   const menu = open
     ? createPortal(
@@ -215,6 +222,8 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
         >
           <div className={compact ? 'offline-leads-multiselect__search' : 'border-b border-border-subtle p-2'}>
             <input
+              id={id ? `${id}-search` : 'multiselect-search'}
+              name={id ? `${id}-search` : 'multiselect-search'}
               type="text"
               value={search}
               onChange={event => setSearch(event.target.value)}
@@ -258,7 +267,7 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
             ) : (
               filteredOptions.map(option => {
                 const checked = values.includes(option.value);
-                const blocked = atMax && !checked;
+                const blocked = (atMax && !checked) || Boolean(option.disabled && !checked);
                 return (
                   <li key={option.value}>
                     <button
@@ -275,12 +284,19 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
                     >
                       <input
                         type="checkbox"
+                        id={id ? `${id}-opt-${option.value}` : `opt-${option.value}`}
+                        name={id ? `${id}-opt-${option.value}` : `opt-${option.value}`}
                         readOnly
                         checked={checked}
                         disabled={blocked}
                         className="rounded border-border-subtle"
+                        tabIndex={-1}
+                        aria-hidden
                       />
-                      {option.label}
+                      {option.color ? (
+                        <MajorColorSwatch color={option.color} label={option.label} size="sm" />
+                      ) : null}
+                      <span className="truncate">{option.label}</span>
                     </button>
                   </li>
                 );
@@ -312,6 +328,7 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
           aria-expanded={open}
           onClick={() => {
             if (disabled) return;
+            onOpen?.();
             if (open) setOpen(false);
             else openMenu();
           }}
@@ -326,10 +343,10 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
               values.length
                 ? compact
                   ? undefined
-                  : 'text-text-main'
+                  : 'min-w-0 truncate text-text-main'
                 : compact
                   ? 'is-placeholder'
-                  : 'text-text-muted'
+                  : 'min-w-0 truncate text-text-muted'
             }
           >
             {closedDisplay}

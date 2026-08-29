@@ -4,14 +4,16 @@ import { z } from 'zod';
  * LPMC Academic Framework hierarchy (maps to DB tables):
  *   levels           → Level (e.g. Undergraduate)
  *   programs         → Program / qualification (e.g. BEng, BSc)
+ *   education_super_majors → Super-Major / marketing cluster
  *   education_majors → Major / discipline (e.g. Computer Science)
  *   education_courses→ Course (optional, e.g. Thermodynamics 101)
  */
-
 export const ACADEMIC_FRAMEWORK_LABELS = {
   level: 'Level',
   program: 'Program',
+  superMajor: 'Super-Major',
   major: 'Major / Discipline',
+  subMajor: 'Sub-majors',
   course: 'Course',
 } as const;
 
@@ -28,8 +30,9 @@ export const frameworkLevelIdField = z
   .positive('Select a level');
 
 export const frameworkProgramIdField = z
-  .string({ error: 'Select a program' })
-  .uuid('Select a program');
+  .number({ error: 'Select a program' })
+  .int()
+  .positive('Select a program');
 
 export const frameworkMajorIdField = z
   .number({ error: 'Select a major or discipline' })
@@ -37,13 +40,13 @@ export const frameworkMajorIdField = z
   .positive('Select a major or discipline');
 
 export const frameworkCatalogCourseIdField = z
-  .number({ error: 'Select a course from the catalog' })
+  .number({ error: 'Select a catalog course' })
   .int()
-  .positive('Select a course from the catalog');
+  .positive('Select a catalog course');
 
 export interface FrameworkHierarchyContext {
   levelId: number;
-  programId: string;
+  programId: number;
   majorId: number;
 }
 

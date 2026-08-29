@@ -9,6 +9,8 @@ import AcademiaBreadcrumbs from './AcademiaBreadcrumbs';
 import EntityStatusBadge from './EntityStatusBadge';
 import FrameworkSortableHeader from './FrameworkSortableHeader';
 import FrameworkTablePagination from './FrameworkTablePagination';
+import SearchableSelect from './SearchableSelect';
+import ReadOnlyIdField, { entityIdCellClass, formatEntityId } from './ReadOnlyIdField';
 import { useConfirmation } from '../../context/ConfirmationContext';
 import {
   fetchGeographyStatusImpact,
@@ -62,12 +64,15 @@ const AcademiaEntityPage: React.FC<AcademiaEntityPageProps> = ({
   const isDetail = Boolean(recordId);
   const geographyType = geographyEntityTypeFromKey(entity);
   const isGeographyList = Boolean(geographyType) && (entity === 'countries' || entity === 'states');
+  const isStatesList = entity === 'states';
 
   const [rows, setRows] = useState<EntityRecord[]>([]);
   const [record, setRecord] = useState<EntityRecord | null>(null);
   const [formState, setFormState] = useState<EntityRecord>({ is_active: true, sort_order: 0 });
   const [options, setOptions] = useState<Record<string, EntityRecord[]>>({});
   const [listQuery, setListQuery] = useState('');
+  const [filterCountryId, setFilterCountryId] = useState('');
+  const [filterCountries, setFilterCountries] = useState<EntityRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [togglingStatusId, setTogglingStatusId] = useState<number | null>(null);
@@ -111,6 +116,7 @@ const AcademiaEntityPage: React.FC<AcademiaEntityPageProps> = ({
       if (isGeographyList) {
         const params = new URLSearchParams();
         if (listQuery.trim()) params.set('q', listQuery.trim());
+        if (isStatesList && filterCountryId) params.set('country_id', filterCountryId);
         params.set('page', String(page));
         params.set('page_size', String(pageSize));
         const apiSortBy =
@@ -146,8 +152,10 @@ const AcademiaEntityPage: React.FC<AcademiaEntityPageProps> = ({
       setLoading(false);
     }
   }, [
+    filterCountryId,
     isDetail,
     isGeographyList,
+    isStatesList,
     listQuery,
     navItem,
     page,
@@ -175,7 +183,22 @@ const AcademiaEntityPage: React.FC<AcademiaEntityPageProps> = ({
   useEffect(() => {
     if (!isGeographyList) return;
     setPage(current => (current === 1 ? current : 1));
-  }, [isGeographyList, listQuery, pageSize, sortBy, sortDir]);
+  }, [filterCountryId, isGeographyList, listQuery, pageSize, sortBy, sortDir]);
+
+  useEffect(() => {
+    if (!isStatesList || isDetail) return;
+    let cancelled = false;
+    void fetchAcademiaListItems<EntityRecord>('academia/countries')
+      .then(data => {
+        if (!cancelled) setFilterCountries(data);
+      })
+      .catch(() => {
+        if (!cancelled) setFilterCountries([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isDetail, isStatesList]);
 
   useEffect(() => {
     if (!navItem || !config) return;
@@ -221,6 +244,15 @@ const AcademiaEntityPage: React.FC<AcademiaEntityPageProps> = ({
     }
     return items;
   }, [entity, isDetail, isNew, navItem, record, recordId, sectionLabel]);
+
+  const countryFilterOptions = useMemo(
+    () =>
+      filterCountries.map(country => ({
+        value: String(country.id),
+        label: String(country.name || country.id),
+      })),
+    [filterCountries]
+  );
 
   if (!navItem || !config) {
     return <Navigate to="/academia" replace />;
@@ -434,6 +466,11 @@ const AcademiaEntityPage: React.FC<AcademiaEntityPageProps> = ({
                 void handleSave();
               }}
             >
+              {!isNew &&
+              record?.id != null &&
+              (entity === 'institutions' || entity === 'campuses' || entity === 'colleges') ? (
+                <ReadOnlyIdField value={Number(record.id)} />
+              ) : null}
               {config.fields.map(field => {
                 const value = formState[field.key];
                 if (field.type === 'checkbox') {
@@ -538,14 +575,42 @@ const AcademiaEntityPage: React.FC<AcademiaEntityPageProps> = ({
           </Link>
         </div>
 
-        <div className="border-b border-border-subtle px-6 py-4">
-          <input
-            type="text"
-            value={listQuery}
-            onChange={event => setListQuery(event.target.value)}
-            placeholder={`Filter ${navItem.label.toLowerCase()}...`}
-            className="w-full max-w-md rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent"
-          />
+        <div
+          className={
+            isStatesList
+              ? 'grid grid-cols-1 gap-3 border-b border-border-subtle px-6 py-4 md:grid-cols-4'
+              : 'border-b border-border-subtle px-6 py-4'
+          }
+        >
+          {isStatesList ? (
+            <>
+              <SearchableSelect
+                label="Filter by country"
+                value={filterCountryId}
+                options={countryFilterOptions}
+                onChange={setFilterCountryId}
+                placeholder="All countries"
+              />
+              <label className="space-y-1 text-sm md:col-span-3">
+                <span className="font-medium text-text-main">Search states</span>
+                <input
+                  type="text"
+                  value={listQuery}
+                  onChange={event => setListQuery(event.target.value)}
+                  placeholder="Filter states..."
+                  className="w-full rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent"
+                />
+              </label>
+            </>
+          ) : (
+            <input
+              type="text"
+              value={listQuery}
+              onChange={event => setListQuery(event.target.value)}
+              placeholder={`Filter ${navItem.label.toLowerCase()}...`}
+              className="w-full max-w-md rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent"
+            />
+          )}
         </div>
 
         {loading ? (
@@ -589,9 +654,21 @@ const AcademiaEntityPage: React.FC<AcademiaEntityPageProps> = ({
                     return (
                       <tr key={String(row.id)} className="border-t border-border-subtle/70">
                         {config.listColumns.map(column => (
-                          <td key={column.key} className="px-6 py-3 text-text-main">
+                          <td
+                            key={column.key}
+                            className={`px-6 py-3 ${
+                              column.key === 'id' || column.key.endsWith('_id')
+                                ? entityIdCellClass
+                                : 'text-text-main'
+                            }`}
+                          >
                             {column.key === 'is_active' ? (
                               <EntityStatusBadge isActive={isActive} />
+                            ) : entity !== 'countries' &&
+                              entity !== 'states' &&
+                              entity !== 'cities' &&
+                              (column.key === 'id' || column.key.endsWith('_id')) ? (
+                              formatEntityId(row[column.key] as number | string | null)
                             ) : (
                               formatCellValue(row[column.key])
                             )}

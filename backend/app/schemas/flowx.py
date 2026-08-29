@@ -238,7 +238,7 @@ class FlowxEnrollmentRead(BaseModel):
     campus_name: str | None = None
     level_id: int | None = None
     level_name: str | None = None
-    qualification_program_id: UUID | None = None
+    qualification_program_id: int | None = None
     program_name: str | None = None
     intake_id: int | None = None
     intake_name: str | None = None
@@ -406,7 +406,7 @@ class FlowxEnrollRequest(BaseModel):
     college_id: int | None = None
     campus_id: int | None = None
     level_id: int | None = None
-    qualification_program_id: UUID | None = None
+    qualification_program_id: int | None = None
     intake_id: int | None = None
     pathway_type: str | None = None
     pathway_name: str | None = None

@@ -56,14 +56,44 @@ function isTokenExpired(token: string | null | undefined): boolean {
   }
 }
 
+/** Collapse unique resource IDs so N 404s on /courses/1,/courses/2 share one fingerprint. */
+export function normalizeApiEndpoint(endpoint: string): string {
+  const path = String(endpoint || '')
+    .replace(/^\//, '')
+    .split(/[?#]/)[0]
+    .replace(/\/{2,}/g, '/');
+  return path
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ':id')
+    .replace(/\/\d+(?=\/|$)/g, '/:id');
+}
+
+function isExceptionLogsEndpoint(endpoint: string): boolean {
+  return normalizeApiEndpoint(endpoint).toLowerCase().includes('reports/exception-logs');
+}
+
+/** Lookups like academia/courses/123 — missing rows are expected, not an incident flood. */
+function isExpectedMissingResource(endpoint: string): boolean {
+  const path = normalizeApiEndpoint(endpoint);
+  if (!path) return false;
+  if (/\/:id(?:\/|$)/.test(path) || path.endsWith('/:id')) return true;
+  return /^academia\/(courses|degrees|programs|education-majors|institutions|offerings)\//i.test(
+    path
+  );
+}
+
 function fingerprint(payload: ClientExceptionPayload): string {
+  const related = normalizeApiEndpoint(payload.related_id || '');
+  const messageCore = (payload.message || '')
+    .replace(/https?:\/\/[^\s]+/gi, '')
+    .replace(/\d+/g, ':n')
+    .slice(0, 180);
   return [
     payload.severity || 'ERROR',
     payload.source || 'api_client',
     payload.category || 'general',
     payload.exception_type || '',
-    (payload.message || '').slice(0, 180),
-    payload.related_id || '',
+    messageCore,
+    related,
   ].join('|');
 }
 
@@ -90,6 +120,10 @@ export function reportClientException(payload: ClientExceptionPayload): void {
   try {
     const message = (payload.message || '').trim();
     if (!message) return;
+
+    const haystack = `${message} ${(payload.details || []).join(' ')} ${payload.related_id || ''}`.toLowerCase();
+    if (haystack.includes('reports/exception-logs')) return;
+    if (/\b429\b/.test(haystack) || haystack.includes('too many requests')) return;
 
     const pagePath =
       payload.page_path ||
@@ -168,7 +202,8 @@ export function reportApiFailure(options: {
   timeoutMs?: number;
 }): void {
   const endpoint = options.endpoint.replace(/^\//, '');
-  if (endpoint.startsWith('reports/exception-logs')) return;
+  // Never report failures of the exception sink itself (breaks the 429 feedback loop).
+  if (isExceptionLogsEndpoint(endpoint)) return;
 
   if (options.kind === 'timeout') {
     reportClientException({
@@ -199,18 +234,24 @@ export function reportApiFailure(options: {
   }
 
   const status = options.status ?? 0;
-  // Capture every HTTP failure (including 4xx) into Exception Report.
+  // Rate-limit responses must not be logged — reporting them retriggers 429s.
+  if (status === 429) return;
+  // Auth failures must not be logged — reporting them can 401/429 and eject the session.
+  if (status === 401) return;
+  if (status === 404 && isExpectedMissingResource(endpoint)) return;
+
   const severity: ClientExceptionSeverity =
     status >= 500 ? 'EXCEPTION' : status >= 400 ? 'ERROR' : 'WARNING';
+  const normalized = normalizeApiEndpoint(endpoint);
 
   reportClientException({
     severity,
     source: 'api_client',
     category: 'http_error',
-    message: `HTTP ${status} from ${endpoint}${options.detail ? `: ${options.detail}` : ''}`,
+    message: `HTTP ${status} from ${normalized}${options.detail ? `: ${options.detail}` : ''}`,
     details: [`endpoint=${endpoint}`, `status=${status}`, options.detail || ''].filter(Boolean),
     exception_type: `HTTP_${status}`,
     related_resource: 'api',
-    related_id: endpoint.slice(0, 100),
+    related_id: normalized.slice(0, 100),
   });
 }

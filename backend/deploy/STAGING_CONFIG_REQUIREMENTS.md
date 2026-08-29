@@ -1,7 +1,9 @@
 # Staging config requirements
 
-**Do not copy this into `.env` automatically.** Apply keys manually on the Staging server (`nexus-dev` / Hostinger) after review.  
-**Never overwrite** staging `/var/www/nexus/backend/.env` with develop tunnel/ngrok values, and never overwrite local develop `.env` with staging Neon URLs.
+**Do not copy this into `.env` automatically.** Apply keys manually on the Staging server (`nexus-dev` / Hostinger KVM 1) after review.  
+**Never overwrite** staging `/var/www/nexus/backend/.env` with develop tunnel/ngrok values, and never overwrite local develop `.env` with staging Postgres URLs.
+
+**New database setup:** [setup_staging_db.md](./setup_staging_db.md) (`nexus_edutrust` / `nexus_et_admin` on Hostinger KVM 1).
 
 ---
 
@@ -48,7 +50,7 @@ This release does **not** introduce new mandatory secrets beyond what Staging al
 
 | Key | Required? | Notes |
 |-----|-----------|--------|
-| `DATABASE_URL` | Yes | Staging Neon URL (psycopg3-compatible; strip `channel_binding` if needed) |
+| `DATABASE_URL` | Yes | Hostinger KVM 1 Postgres: `postgresql+psycopg://nexus_et_admin:…@127.0.0.1:5432/nexus_edutrust` (see [setup_staging_db.md](./setup_staging_db.md)) |
 | `ENVIRONMENT` | Yes | Should be staging-like (not develop tunnel settings) |
 | `FRONTEND_URL` | Yes | `https://nexus-dev.edutrust.in` (or current Staging front URL) |
 | `SMTP_HOST` | Yes for Exception emails | Hostinger / SMTP provider |

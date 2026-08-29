@@ -34,13 +34,14 @@ def _program_majors(row) -> list[QualificationProgramMajorRead]:
 def _program_read(row) -> QualificationProgramRead:
     level = row.level
     return QualificationProgramRead(
-        id=str(row.id),
+        id=row.id,
         code=row.code,
         name=row.name,
         label=row.name,
         level_id=row.level_id,
         level_code=level.code if level else None,
         level_name=level.name if level else None,
+        program_url=getattr(row, "program_url", None),
         sort_order=row.sort_order or 0,
         majors=_program_majors(row),
     )

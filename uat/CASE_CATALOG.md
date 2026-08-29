@@ -91,7 +91,7 @@ Do not commit secrets. Keep this catalog in sync when adding/removing specs unde
 | # | Case |
 | ---: | --- |
 | 29 | FlowX Ops Dashboard loads |
-| 30 | FlowX Student Journeys page loads |
+| 30 | FlowX `/journeys` redirects to ops (list moved to session Applications tab) |
 | 31 | FlowX Country Workflows page loads |
 | 32 | FlowX Master Workflow page loads |
 
@@ -105,7 +105,7 @@ Do not commit secrets. Keep this catalog in sync when adding/removing specs unde
 
 | # | Case |
 | ---: | --- |
-| 34 | Session workspace exposes Session / Aspirations / Future Insights / ROI tabs |
+| 34 | Session workspace exposes Session / Aspirations / Applications / Future Insights / ROI tabs |
 | 35 | Aspirations tab shows editable consultation aspirations surface |
 | 36 | Session tab renders counselling session notes / status surface |
 | 37 | Future Insights tab loads insight surface (or aspirations prerequisite) |

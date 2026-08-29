@@ -22,6 +22,7 @@ function isAllowedMediaUrl(value: string): boolean {
 
 export const wizardPictureItemSchema = z
   .object({
+    id: z.number().int().positive().optional(),
     local_id: z.string().optional(),
     url: z.preprocess(emptyToNull, z.string().nullable().optional()),
     caption: z.preprocess(emptyToNull, z.string().max(255).nullable().optional()),
@@ -212,5 +213,6 @@ export function pictureToApiPayload(picture: WizardPictureItem) {
     college_id: college_id ?? null,
     college_local_id: college_local_id?.trim() || null,
     storage_key: storage_key?.trim() || null,
+    ...(picture.id ? { id: picture.id } : {}),
   };
 }
