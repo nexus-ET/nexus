@@ -10,7 +10,9 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Transient transport failures worth one or two retries (provider resets, flaky TLS).
+# Transient transport failures worth a short retry (provider resets, flaky TLS).
+# Do NOT include bare OSError: since Python 3.4, smtplib.SMTPException subclasses
+# OSError, so auth/protocol failures would be misclassified and retried.
 _TRANSIENT_SMTP_ERRORS = (
     ConnectionResetError,
     ConnectionAbortedError,
@@ -18,7 +20,6 @@ _TRANSIENT_SMTP_ERRORS = (
     TimeoutError,
     smtplib.SMTPServerDisconnected,
     smtplib.SMTPConnectError,
-    OSError,
 )
 
 
@@ -46,6 +47,12 @@ def _plain_to_simple_html(body: str) -> str:
     )
 
 
+# Keep request-path callers (e.g. Book Appointment) under the client 60s budget.
+# Connection timeouts rarely recover on immediate retry — fail fast instead of 3×20s.
+_SMTP_SOCKET_TIMEOUT_SECONDS = 8
+_SMTP_MAX_ATTEMPTS = 2
+
+
 def _deliver(message: EmailMessage, *, recipients: list[str]) -> None:
     host = settings.SMTP_HOST
     port = int(settings.SMTP_PORT or 587)
@@ -56,13 +63,13 @@ def _deliver(message: EmailMessage, *, recipients: list[str]) -> None:
     envelope_from = (settings.SMTP_USER or settings.SMTP_FROM_EMAIL or "").strip() or None
 
     if use_implicit_ssl:
-        with smtplib.SMTP_SSL(host, port, timeout=20) as server:
+        with smtplib.SMTP_SSL(host, port, timeout=_SMTP_SOCKET_TIMEOUT_SECONDS) as server:
             if settings.SMTP_USER and settings.SMTP_PASSWORD:
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
             server.send_message(message, from_addr=envelope_from, to_addrs=recipients)
         return
 
-    with smtplib.SMTP(host, port, timeout=20) as server:
+    with smtplib.SMTP(host, port, timeout=_SMTP_SOCKET_TIMEOUT_SECONDS) as server:
         if settings.SMTP_USE_TLS:
             server.starttls()
         if settings.SMTP_USER and settings.SMTP_PASSWORD:
@@ -129,7 +136,7 @@ def send_email(
             filename=safe_name,
         )
 
-    attempts = 3
+    attempts = _SMTP_MAX_ATTEMPTS
     for attempt in range(1, attempts + 1):
         try:
             _deliver(message, recipients=recipients)
@@ -153,6 +160,27 @@ def send_email(
         except smtplib.SMTPDataError as exc:
             # Permanent/data errors (often surfaced as "mail delivery failure" by providers).
             logger.error("SMTP data error sending %r: %s", subject, exc)
+            return False
+        except smtplib.SMTPAuthenticationError as exc:
+            logger.error("SMTP authentication failed for %r: %s", subject, exc)
+            return False
+        except smtplib.SMTPResponseException as exc:
+            # Other SMTP protocol responses (e.g. 5xx) — do not burn the request budget.
+            logger.error(
+                "SMTP response error for %r: code=%s msg=%s",
+                subject,
+                getattr(exc, "smtp_code", None),
+                getattr(exc, "smtp_error", exc),
+            )
+            return False
+        except TimeoutError as exc:
+            # Unreachable SMTP (blocked egress / bad host) will not recover mid-request.
+            logger.error(
+                "SMTP connect/read timed out for %r after %.0fs — not retrying: %s",
+                subject,
+                _SMTP_SOCKET_TIMEOUT_SECONDS,
+                exc,
+            )
             return False
         except _TRANSIENT_SMTP_ERRORS as exc:
             if attempt >= attempts:

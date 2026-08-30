@@ -832,6 +832,9 @@ class NotificationService:
                 return "failed"
 
         # Candidate + counsellor each get email and WhatsApp independently.
+        # Keep sequential: NotificationService shares one Session and channel
+        # helpers commit notification_logs. SMTP fail-fast keeps this under
+        # the Book Appointment client budget.
         whatsapp_status = await _safe(
             "whatsapp",
             self.send_whatsapp_confirmation(
@@ -1008,34 +1011,61 @@ class NotificationService:
         return sent
 
 
+# Hard ceiling for sync notification fan-out (Book Appointment waits on this).
+# Must stay well under the frontend API_FETCH_TIMEOUT_MS (60s).
+_ASSIGNMENT_NOTIFICATION_BUDGET_SECONDS = 35.0
+
+
 def run_assignment_notifications(booking_id: int) -> dict[str, str]:
     """Send candidate/counsellor email + WhatsApp. Safe to call from BackgroundTasks."""
+    failed = {
+        "whatsapp": "failed",
+        "email": "failed",
+        "whatsapp_admin": "failed",
+        "email_admin": "failed",
+        "push": "failed",
+    }
     db = SessionLocal()
     try:
         service = NotificationService(db)
 
         async def _run() -> dict[str, str]:
-            return await service.send_booking_assignment_notifications(booking_id)
+            return await asyncio.wait_for(
+                service.send_booking_assignment_notifications(booking_id),
+                timeout=_ASSIGNMENT_NOTIFICATION_BUDGET_SECONDS,
+            )
 
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(_run())
+            try:
+                return asyncio.run(_run())
+            except TimeoutError:
+                logger.error(
+                    "Assignment notifications timed out after %.0fs for booking %s",
+                    _ASSIGNMENT_NOTIFICATION_BUDGET_SECONDS,
+                    booking_id,
+                )
+                return failed
 
         # Already inside an event loop (e.g. some ASGI contexts): run in a worker thread.
         import concurrent.futures
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(asyncio.run, _run()).result()
+            try:
+                return executor.submit(asyncio.run, _run()).result(
+                    timeout=_ASSIGNMENT_NOTIFICATION_BUDGET_SECONDS + 5
+                )
+            except TimeoutError:
+                logger.error(
+                    "Assignment notifications timed out after %.0fs for booking %s",
+                    _ASSIGNMENT_NOTIFICATION_BUDGET_SECONDS,
+                    booking_id,
+                )
+                return failed
     except Exception:
         logger.exception("Failed to send assignment notifications for booking %s", booking_id)
-        return {
-            "whatsapp": "failed",
-            "email": "failed",
-            "whatsapp_admin": "failed",
-            "email_admin": "failed",
-            "push": "failed",
-        }
+        return failed
     finally:
         db.close()
 
