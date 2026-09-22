@@ -204,6 +204,37 @@ def resolve_study_interest_fields(
         if legacy:
             iso2s = [legacy]
 
+    level_id = getattr(payload, "target_level_id", None)
+    major_ids = [
+        int(item)
+        for item in (getattr(payload, "target_major_ids", None) or [])
+        if item is not None
+    ]
+    program_codes = [
+        (item or "").strip().upper()
+        for item in (getattr(payload, "target_program_codes", None) or [])
+        if (item or "").strip()
+    ]
+
+    # All study-interest fields optional: empty means clear / skip.
+    if not iso2s and not level_id and not major_ids and not program_codes:
+        return {
+            "target_destination_iso2s": [],
+            "target_destinations": [],
+            "target_destination_iso2": None,
+            "target_destination": None,
+            "target_level_id": None,
+            "target_level_name": None,
+            "target_major_ids": [],
+            "target_majors": [],
+            "target_program_codes": [],
+            "target_programs": [],
+            "target_program_code": None,
+            "target_program": None,
+            "target_course_code": None,
+            "target_course": None,
+        }
+
     if not iso2s:
         raise HTTPException(status_code=400, detail="Target destination is required.")
     if len(iso2s) > 6:
@@ -219,18 +250,12 @@ def resolve_study_interest_fields(
             )
         destination_names.append(country.name)
 
-    level_id = getattr(payload, "target_level_id", None)
     if not level_id:
         raise HTTPException(status_code=400, detail="Target level is required.")
     level = get_level(db, int(level_id))
     if not level:
         raise HTTPException(status_code=400, detail="Select a valid target level.")
 
-    major_ids = [
-        int(item)
-        for item in (getattr(payload, "target_major_ids", None) or [])
-        if item is not None
-    ]
     if not major_ids:
         raise HTTPException(status_code=400, detail="Target major is required.")
     if len(major_ids) > 3:
@@ -268,11 +293,6 @@ def resolve_study_interest_fields(
             detail="Selected majors must belong to the chosen target level.",
         )
 
-    program_codes = [
-        (item or "").strip().upper()
-        for item in (getattr(payload, "target_program_codes", None) or [])
-        if (item or "").strip()
-    ]
     if not program_codes:
         raise HTTPException(status_code=400, detail="Target program is required.")
 

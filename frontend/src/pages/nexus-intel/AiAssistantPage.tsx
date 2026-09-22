@@ -12,22 +12,31 @@ import {
   Layers,
   Loader2,
   MapPin,
+  Bookmark,
+  Pencil,
+  Save,
   Send,
   Sparkles,
+  Trash2,
   Users,
 } from 'lucide-react';
 import {
+  useCreateIntelAiPrompt,
+  useDeleteIntelAiPrompt,
   useIntelAiChat,
+  useIntelAiPrompts,
   useIntelAiThread,
   useIntelAiThreads,
+  useUpdateIntelAiPrompt,
 } from '../../hooks/useNexusIntel';
-import type { IntelAiSource } from '../../types/nexusIntel';
+import type { IntelAiPrompt, IntelAiPromptVisibility, IntelAiSource } from '../../types/nexusIntel';
 import SimpleMarkdown, { stripHtml } from '../../components/nexus-intel/SimpleMarkdown';
 import IntelLoadingBubble from '../../components/nexus-intel/IntelLoadingBubble';
 import IntelAiHistorySidebar from '../../components/nexus-intel/IntelAiHistorySidebar';
 import HeadlessScrollArea, {
   type HeadlessScrollAreaHandle,
 } from '../../components/HeadlessScrollArea';
+import { displaySourceUrl, sourceHref } from '../../utils/intelSourceHref';
 
 interface ChatMessage {
   id: string;
@@ -98,6 +107,8 @@ function sourceIcon(type: string) {
     case 'course':
       return GraduationCap;
     case 'major':
+    case 'sub_major':
+    case 'super_major':
     case 'level':
       return Layers;
     case 'country':
@@ -128,6 +139,10 @@ function sourceLabel(type: string) {
       return 'Course';
     case 'major':
       return 'Major';
+    case 'sub_major':
+      return 'Sub-major';
+    case 'super_major':
+      return 'Super-major';
     case 'level':
       return 'Level';
     case 'country':
@@ -156,6 +171,12 @@ const AiAssistantPage: React.FC = () => {
   const [activeSources, setActiveSources] = useState<IntelAiSource[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => readSidebarOpen());
+  const [selectedPromptId, setSelectedPromptId] = useState('');
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveTitle, setSaveTitle] = useState('');
+  const [saveVisibility, setSaveVisibility] = useState<IntelAiPromptVisibility>('private');
+  const [editingPrompt, setEditingPrompt] = useState<IntelAiPrompt | null>(null);
+  const [promptError, setPromptError] = useState<string | null>(null);
   const chatScrollRef = useRef<HeadlessScrollAreaHandle | null>(null);
   // Blocks thread-hydration from wiping the optimistic user bubble mid-request.
   const suppressHydrateRef = useRef(false);
@@ -163,6 +184,17 @@ const AiAssistantPage: React.FC = () => {
   const threadsQuery = useIntelAiThreads();
   const threadQuery = useIntelAiThread(activeThreadId, Boolean(activeThreadId));
   const chatMutation = useIntelAiChat();
+  const promptsQuery = useIntelAiPrompts();
+  const createPromptMutation = useCreateIntelAiPrompt();
+  const updatePromptMutation = useUpdateIntelAiPrompt();
+  const deletePromptMutation = useDeleteIntelAiPrompt();
+
+  const savedPrompts = promptsQuery.data?.items || [];
+  const selectedPrompt = savedPrompts.find(p => p.id === selectedPromptId) || null;
+  const promptBusy =
+    createPromptMutation.isPending ||
+    updatePromptMutation.isPending ||
+    deletePromptMutation.isPending;
 
   useEffect(() => {
     writeStoredThreadId(activeThreadId);
@@ -331,6 +363,75 @@ const AiAssistantPage: React.FC = () => {
     }
   };
 
+  const openSaveForm = (prompt?: IntelAiPrompt | null) => {
+    setPromptError(null);
+    if (prompt) {
+      setEditingPrompt(prompt);
+      setSaveTitle(prompt.title);
+      setSaveVisibility(prompt.visibility);
+      setInput(prompt.prompt_text);
+    } else {
+      setEditingPrompt(null);
+      setSaveTitle('');
+      setSaveVisibility('private');
+    }
+    setSaveOpen(true);
+  };
+
+  const closeSaveForm = () => {
+    setSaveOpen(false);
+    setEditingPrompt(null);
+    setPromptError(null);
+  };
+
+  const handleSavePrompt = async () => {
+    const title = saveTitle.trim();
+    const promptText = input.trim() || editingPrompt?.prompt_text || '';
+    if (!title) {
+      setPromptError('Title is required.');
+      return;
+    }
+    if (promptText.length < 2) {
+      setPromptError('Prompt text is required (type it in the box below first).');
+      return;
+    }
+    setPromptError(null);
+    try {
+      if (editingPrompt) {
+        const updated = await updatePromptMutation.mutateAsync({
+          id: editingPrompt.id,
+          title,
+          prompt_text: promptText,
+          visibility: saveVisibility,
+        });
+        setSelectedPromptId(updated.id);
+      } else {
+        const created = await createPromptMutation.mutateAsync({
+          title,
+          prompt_text: promptText,
+          visibility: saveVisibility,
+        });
+        setSelectedPromptId(created.id);
+      }
+      closeSaveForm();
+    } catch (err) {
+      setPromptError(err instanceof Error ? err.message : 'Could not save prompt.');
+    }
+  };
+
+  const handleDeletePrompt = async (prompt: IntelAiPrompt) => {
+    if (!prompt.is_owner) return;
+    if (!window.confirm(`Delete saved prompt “${prompt.title}”?`)) return;
+    setPromptError(null);
+    try {
+      await deletePromptMutation.mutateAsync(prompt.id);
+      if (selectedPromptId === prompt.id) setSelectedPromptId('');
+      if (editingPrompt?.id === prompt.id) closeSaveForm();
+    } catch (err) {
+      setPromptError(err instanceof Error ? err.message : 'Could not delete prompt.');
+    }
+  };
+
   const threadLoading =
     Boolean(activeThreadId) && threadQuery.isLoading && messages.length === 0;
 
@@ -478,6 +579,142 @@ const AiAssistantPage: React.FC = () => {
             void sendPrompt(input);
           }}
         >
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <label className="sr-only" htmlFor="intel-ai-saved-prompt">
+              Saved prompts
+            </label>
+            <select
+              id="intel-ai-saved-prompt"
+              value={selectedPromptId}
+              onChange={e => {
+                const id = e.target.value;
+                setSelectedPromptId(id);
+                const found = savedPrompts.find(p => p.id === id);
+                if (found) setInput(found.prompt_text);
+              }}
+              className="min-w-[12rem] flex-1 rounded-lg border border-border-subtle bg-surface-bg px-2.5 py-1.5 text-xs text-text-main outline-none focus:border-accent"
+            >
+              <option value="">Saved prompts…</option>
+              {savedPrompts.map(p => (
+                <option key={p.id} value={p.id}>
+                  {p.visibility === 'shared' ? '[Shared] ' : '[Private] '}
+                  {p.title}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={!selectedPrompt || chatMutation.isPending}
+              onClick={() => {
+                if (selectedPrompt) void sendPrompt(selectedPrompt.prompt_text);
+              }}
+              className="inline-flex items-center gap-1 rounded-lg border border-border-subtle bg-surface-bg px-2.5 py-1.5 text-xs text-text-main hover:border-accent/40 disabled:opacity-40"
+            >
+              <Bookmark size={12} />
+              Run
+            </button>
+            <button
+              type="button"
+              disabled={!selectedPrompt}
+              onClick={() => {
+                if (selectedPrompt) setInput(selectedPrompt.prompt_text);
+              }}
+              className="inline-flex items-center gap-1 rounded-lg border border-border-subtle bg-surface-bg px-2.5 py-1.5 text-xs text-text-muted hover:text-text-main disabled:opacity-40"
+            >
+              Load
+            </button>
+            {selectedPrompt?.is_owner ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => openSaveForm(selectedPrompt)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-border-subtle bg-surface-bg px-2.5 py-1.5 text-xs text-text-muted hover:text-text-main"
+                >
+                  <Pencil size={12} />
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  disabled={promptBusy}
+                  onClick={() => void handleDeletePrompt(selectedPrompt)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-border-subtle bg-surface-bg px-2.5 py-1.5 text-xs text-alert hover:bg-alert/5 disabled:opacity-40"
+                >
+                  <Trash2 size={12} />
+                  Delete
+                </button>
+              </>
+            ) : null}
+            <button
+              type="button"
+              disabled={!input.trim()}
+              onClick={() => openSaveForm(null)}
+              className="inline-flex items-center gap-1 rounded-lg border border-border-subtle bg-surface-bg px-2.5 py-1.5 text-xs text-text-main hover:border-accent/40 disabled:opacity-40"
+            >
+              <Save size={12} />
+              Save current
+            </button>
+          </div>
+
+          {saveOpen ? (
+            <div className="mb-2 space-y-2 rounded-xl border border-border-subtle bg-surface-bg/80 p-3">
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="min-w-[10rem] flex-1">
+                  <label className="mb-1 block text-[11px] text-text-muted" htmlFor="intel-ai-prompt-title">
+                    {editingPrompt ? 'Update prompt title' : 'Save as'}
+                  </label>
+                  <input
+                    id="intel-ai-prompt-title"
+                    value={saveTitle}
+                    onChange={e => setSaveTitle(e.target.value)}
+                    placeholder="e.g. MBBS Russia counselling"
+                    className="w-full rounded-lg border border-border-subtle bg-card px-2.5 py-1.5 text-sm outline-none focus:border-accent"
+                  />
+                </div>
+                <div className="flex items-center gap-1 rounded-lg border border-border-subtle bg-card p-0.5">
+                  {(['private', 'shared'] as const).map(vis => (
+                    <button
+                      key={vis}
+                      type="button"
+                      onClick={() => setSaveVisibility(vis)}
+                      className={`rounded-md px-2.5 py-1 text-[11px] font-medium capitalize ${
+                        saveVisibility === vis
+                          ? 'bg-accent text-white'
+                          : 'text-text-muted hover:text-text-main'
+                      }`}
+                    >
+                      {vis}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  disabled={promptBusy}
+                  onClick={() => void handleSavePrompt()}
+                  className="inline-flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                >
+                  {promptBusy ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                  {editingPrompt ? 'Update' : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  onClick={closeSaveForm}
+                  className="rounded-lg px-2 py-1.5 text-xs text-text-muted hover:text-text-main"
+                >
+                  Cancel
+                </button>
+              </div>
+              <p className="text-[11px] text-text-muted">
+                {editingPrompt
+                  ? 'Updates title, visibility, and the prompt text currently in the box below.'
+                  : 'Saves the text currently in the prompt box. Shared prompts are visible to all signed-in users.'}
+              </p>
+            </div>
+          ) : null}
+
+          {promptError ? (
+            <p className="mb-2 text-xs text-alert">{promptError}</p>
+          ) : null}
+
           <div className="flex items-end gap-2">
             <textarea
               value={input}
@@ -532,6 +769,7 @@ const AiAssistantPage: React.FC = () => {
           ) : (
             activeSources.map((source, index) => {
               const Icon = sourceIcon(source.type);
+              const href = sourceHref(source.url);
               return (
                 <article
                   key={`${source.type}-${source.id || source.title}-${index}`}
@@ -546,20 +784,33 @@ const AiAssistantPage: React.FC = () => {
                       <span className="text-[10px] text-text-muted">{source.country_code}</span>
                     ) : null}
                   </div>
-                  <p className="text-sm font-medium text-text-main">{source.title}</p>
+                  {href ? (
+                    <a
+                      href={href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm font-medium text-accent hover:underline"
+                    >
+                      {source.title}
+                    </a>
+                  ) : (
+                    <p className="text-sm font-medium text-text-main">{source.title}</p>
+                  )}
                   {source.summary ? (
                     <p className="mt-1 line-clamp-4 text-xs text-text-muted">
                       {stripHtml(source.summary)}
                     </p>
                   ) : null}
-                  {source.url ? (
+                  {href ? (
                     <a
-                      href={source.url}
+                      href={href}
                       target="_blank"
-                      rel="noreferrer"
-                      className="mt-2 inline-flex items-center gap-1 text-xs text-accent hover:underline"
+                      rel="noopener noreferrer"
+                      className="mt-2 inline-flex max-w-full items-center gap-1 text-xs text-accent hover:underline"
+                      title={href}
                     >
-                      Open source <ExternalLink size={11} />
+                      <ExternalLink size={11} className="shrink-0" />
+                      <span className="truncate">{displaySourceUrl(href)}</span>
                     </a>
                   ) : source.slug ? (
                     <p className="mt-2 text-[11px] text-text-muted">Glossary slug: {source.slug}</p>

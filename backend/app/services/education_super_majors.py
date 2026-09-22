@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import TypedDict
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_
@@ -8,13 +9,24 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.education_major import EducationMajor
+from app.models.education_sub_major import EducationSubMajor
 from app.models.education_super_major import EducationSuperMajor
+from app.models.program_education_major_mapping import ProgramEducationMajorMapping
+from app.models.target_course import TargetCourse
 from app.schemas.education_super_major import (
     EducationSuperMajorCreate,
     EducationSuperMajorRead,
     EducationSuperMajorUpdate,
 )
 from app.services.name_uniqueness import filter_by_display_name, normalized_display_name
+
+
+class SuperMajorDependentCounts(TypedDict):
+    majors: int
+    sub_majors: int
+    program_mappings: int
+    programs: int
+    target_courses: int
 
 
 def _slugify_code(name: str) -> str:
@@ -185,6 +197,9 @@ def create_education_super_major(
             detail="A super-major with this name or code already exists.",
         ) from None
     db.refresh(record)
+    from app.services.taxonomy_embeddings import schedule_super_major_embedding
+
+    schedule_super_major_embedding(record.id)
     return education_super_major_to_read(record, major_count=0)
 
 
@@ -232,14 +247,108 @@ def update_education_super_major(
             detail="A super-major with this name or code already exists.",
         ) from None
     db.refresh(record)
+    from app.services.taxonomy_embeddings import schedule_super_major_embedding
+
+    schedule_super_major_embedding(record.id)
     count = _major_counts(db, [record.id]).get(record.id, 0)
     return education_super_major_to_read(record, major_count=count)
+
+
+def count_super_major_dependents(
+    db: Session, super_major_id: int
+) -> SuperMajorDependentCounts:
+    """Counts taxonomy/program dependents reachable through this super-major."""
+    major_ids = [
+        int(row[0])
+        for row in db.query(EducationMajor.id)
+        .filter(EducationMajor.super_major_id == super_major_id)
+        .all()
+    ]
+    if not major_ids:
+        return {
+            "majors": 0,
+            "sub_majors": 0,
+            "program_mappings": 0,
+            "programs": 0,
+            "target_courses": 0,
+        }
+
+    sub_majors = (
+        db.query(func.count(EducationSubMajor.id))
+        .filter(EducationSubMajor.major_id.in_(major_ids))
+        .scalar()
+        or 0
+    )
+    program_mappings = (
+        db.query(func.count(ProgramEducationMajorMapping.id))
+        .filter(ProgramEducationMajorMapping.education_major_id.in_(major_ids))
+        .scalar()
+        or 0
+    )
+    programs = (
+        db.query(func.count(func.distinct(ProgramEducationMajorMapping.program_id)))
+        .filter(ProgramEducationMajorMapping.education_major_id.in_(major_ids))
+        .scalar()
+        or 0
+    )
+    target_courses = (
+        db.query(func.count(TargetCourse.id))
+        .filter(TargetCourse.education_major_id.in_(major_ids))
+        .scalar()
+        or 0
+    )
+    return {
+        "majors": len(major_ids),
+        "sub_majors": int(sub_majors),
+        "program_mappings": int(program_mappings),
+        "programs": int(programs),
+        "target_courses": int(target_courses),
+    }
+
+
+def format_super_major_delete_block_detail(
+    counts: SuperMajorDependentCounts,
+) -> str | None:
+    """Return a 409 detail when the super still has children/programs; else None."""
+    majors = counts["majors"]
+    program_mappings = counts["program_mappings"]
+    target_courses = counts["target_courses"]
+    if majors == 0 and program_mappings == 0 and target_courses == 0:
+        return None
+
+    parts = [
+        f"{majors} major{'s' if majors != 1 else ''}",
+        f"{counts['sub_majors']} sub-major{'s' if counts['sub_majors'] != 1 else ''}",
+        (
+            f"{counts['programs']} program{'s' if counts['programs'] != 1 else ''} "
+            f"({program_mappings} mapping{'s' if program_mappings != 1 else ''})"
+        ),
+    ]
+    if target_courses:
+        parts.append(
+            f"{target_courses} target course{'s' if target_courses != 1 else ''}"
+        )
+    return (
+        "Cannot delete this super-major because it still has "
+        + ", ".join(parts[:-1])
+        + (f", and {parts[-1]}" if len(parts) > 1 else parts[0])
+        + ". Remap or remove those majors, sub-majors, and program mappings first."
+    )
+
+
+def ensure_super_major_deletable(db: Session, super_major_id: int) -> None:
+    """Raise 409 if this super-major still has majors or reachable program links."""
+    detail = format_super_major_delete_block_detail(
+        count_super_major_dependents(db, super_major_id)
+    )
+    if detail:
+        raise HTTPException(status_code=409, detail=detail)
 
 
 def delete_education_super_major(db: Session, super_major_id: int) -> None:
     record = get_education_super_major(db, super_major_id)
     if not record:
         raise HTTPException(status_code=404, detail="Super-major not found.")
-    # FK is ON DELETE SET NULL — majors keep their rows with super_major_id cleared.
+    ensure_super_major_deletable(db, super_major_id)
     db.delete(record)
     db.commit()

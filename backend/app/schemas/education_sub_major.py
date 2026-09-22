@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.schemas.rich_text import OptionalRichText2000
+from app.schemas.rich_text import OptionalRichText4000
 
 
 def _strip_optional_text(value: object) -> object:
@@ -13,7 +13,7 @@ def _strip_optional_text(value: object) -> object:
 class EducationSubMajorCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     major_id: int = Field(ge=1)
-    sub_major_description: OptionalRichText2000 = None
+    sub_major_description: OptionalRichText4000 = None
 
     @field_validator("name", mode="before")
     @classmethod
@@ -31,7 +31,7 @@ class EducationSubMajorCreate(BaseModel):
 class EducationSubMajorUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     major_id: int | None = Field(default=None, ge=1)
-    sub_major_description: OptionalRichText2000 = None
+    sub_major_description: OptionalRichText4000 = None
 
     @field_validator("name", mode="before")
     @classmethod

@@ -88,12 +88,20 @@ export function validateEducationFields(
   graduationYear?: number,
   fullTimeStudyYears?: string
 ): string | null {
-  if (!fullTimeStudyYears?.trim()) return 'Full-Time Study Years is required.';
-  if (!programCode) return 'Program is required.';
+  const hasAny = Boolean(
+    programCode ||
+      major?.trim() ||
+      university?.trim() ||
+      graduationYear ||
+      fullTimeStudyYears?.trim()
+  );
+  if (!hasAny) return null;
+  if (!fullTimeStudyYears?.trim()) return 'Full-Time Study Years is required when education is provided.';
+  if (!programCode) return 'Program is required when education is provided.';
   const selected = programs.find(item => item.code.toUpperCase() === programCode.toUpperCase());
   if (!selected) return 'Select a valid program.';
-  if (!major?.trim()) return 'Major is required.';
-  if (!university?.trim()) return 'University is required.';
-  if (!graduationYear) return 'Graduation year is required.';
+  if (!major?.trim()) return 'Major is required when education is provided.';
+  if (!university?.trim()) return 'University is required when education is provided.';
+  if (!graduationYear) return 'Graduation year is required when education is provided.';
   return null;
 }

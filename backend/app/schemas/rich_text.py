@@ -20,17 +20,17 @@ def _validate_optional_rich_text(value: str | None, max_chars: int, field_label:
     return value
 
 
-def _validate_optional_rich_text_2000(value: str | None) -> str | None:
-    return _validate_optional_rich_text(value, 2000, "Sub-major description")
+def _validate_optional_rich_text_4000(value: str | None) -> str | None:
+    return _validate_optional_rich_text(value, 4000, "Description")
 
 
 def _validate_optional_rich_text_5000(value: str | None) -> str | None:
     return _validate_optional_rich_text(value, 5000, "Description")
 
 
-OptionalRichText2000 = Annotated[
+OptionalRichText4000 = Annotated[
     str | None,
-    AfterValidator(_validate_optional_rich_text_2000),
+    AfterValidator(_validate_optional_rich_text_4000),
 ]
 
 OptionalRichText5000 = Annotated[

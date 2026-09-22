@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { useLocation, useSearchParams } from 'react-router-dom';
+import { Loader2, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { apiFetch } from '../../utils/api';
 import { fetchAcademiaListItems } from '../../utils/academiaList';
 import {
@@ -9,6 +9,10 @@ import {
   readMultiParam,
   type FilterParamValue,
 } from '../../utils/filterParams';
+import {
+  PEM_MAPPINGS_CHANGED_EVENT,
+  readPemMappingsChangedAt,
+} from '../../utils/pemMappingEvents';
 import { useAcademiaLevels } from '../../hooks/useLevels';
 import { levelSelectOptions } from '../../constants/levels';
 import {
@@ -37,6 +41,13 @@ type SortDir = 'asc' | 'desc';
 const PAGE_SIZE_OPTIONS = FRAMEWORK_PAGE_SIZE_OPTIONS;
 const FILTER_FIELD_CLASS = 'min-w-[200px]';
 const SORT_BY_OPTIONS: SortBy[] = ['level', 'name', 'code'];
+/** Gap filters hit live program_education_major_mappings (same table Mapping Review writes). */
+const PEM_GAP_OPTIONS = [
+  { value: '', label: 'All' },
+  { value: 'both', label: 'Unmapped (no PEM)' },
+  { value: 'sub_major', label: 'Major only (no sub)' },
+] as const;
+type PemGap = (typeof PEM_GAP_OPTIONS)[number]['value'];
 
 function sameIdList(left: string[], right: string[]): boolean {
   if (left === right) return true;
@@ -115,6 +126,7 @@ function NameChips({ names }: { names?: string[] | null }) {
 
 const FrameworkDegreesPage: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const openConfirm = useConfirmation();
+  const location = useLocation();
   const { levels } = useAcademiaLevels();
   const [searchParams, setSearchParams] = useSearchParams();
   const [degrees, setDegrees] = useState<DegreeRecord[]>([]);
@@ -128,12 +140,20 @@ const FrameworkDegreesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
   const [totalPages, setTotalPages] = useState(0);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingDegree, setEditingDegree] = useState<DegreeRecord | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [deleting, setDeleting] = useState(false);
+  const [flash, setFlash] = useState<{ tone: 'success' | 'error'; text: string } | null>(
+    null
+  );
+  const loadSeqRef = useRef(0);
+  const pemBumpRef = useRef<string | null>(readPemMappingsChangedAt());
+  const flashTimerRef = useRef<number | null>(null);
 
   const page = Math.max(1, Number.parseInt(searchParams.get('page') || '1', 10) || 1);
-  const rawPageSize = Number.parseInt(searchParams.get('page_size') || '20', 10);
+  const rawPageSize = Number.parseInt(searchParams.get('page_size') || '50', 10);
   const pageSize = (PAGE_SIZE_OPTIONS as readonly number[]).includes(rawPageSize)
     ? (rawPageSize as (typeof PAGE_SIZE_OPTIONS)[number])
-    : 20;
+    : 50;
   const searchQuery = searchParams.get('q') || '';
   const [searchDraft, setSearchDraft] = useState(searchQuery);
   const filterLevelId = searchParams.get('level_id') || '';
@@ -141,6 +161,12 @@ const FrameworkDegreesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
   const filterSubMajorIds = readMultiParam(searchParams, 'sub_major_id');
   const filterCountryIds = readMultiParam(searchParams, 'country_id');
   const filterInstitutionIds = readMultiParam(searchParams, 'institution_id');
+  const rawPemGap = searchParams.get('pem_gap') || '';
+  // Legacy `major` was identical to `both` (no PEM row ⇒ no major). Normalize.
+  const normalizedPemGap = rawPemGap === 'major' ? 'both' : rawPemGap;
+  const filterPemGap: PemGap = PEM_GAP_OPTIONS.some(option => option.value === normalizedPemGap)
+    ? (normalizedPemGap as PemGap)
+    : '';
   const rawSortBy = searchParams.get('sort_by') as SortBy | null;
   const sortBy: SortBy = rawSortBy && SORT_BY_OPTIONS.includes(rawSortBy) ? rawSortBy : 'name';
   const rawSortDir = searchParams.get('sort_dir');
@@ -235,6 +261,7 @@ const FrameworkDegreesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
   };
 
   const loadDegrees = useCallback(async (activePage: number) => {
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -245,12 +272,14 @@ const FrameworkDegreesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
       appendMultiParam(params, 'sub_major_id', subMajorFilterKey ? subMajorFilterKey.split(',') : []);
       appendMultiParam(params, 'country_id', countryFilterKey ? countryFilterKey.split(',') : []);
       appendMultiParam(params, 'institution_id', institutionFilterKey ? institutionFilterKey.split(',') : []);
+      if (filterPemGap) params.set('pem_gap', filterPemGap);
       params.set('page', String(activePage));
       params.set('page_size', String(pageSize));
       params.set('sort_by', sortBy);
       params.set('sort_dir', sortDir);
 
       const data = await apiFetch<DegreeListResponse>(`academia/degrees?${params.toString()}`);
+      if (seq !== loadSeqRef.current) return;
       const items = Array.isArray(data.items) ? data.items : [];
       const nextTotalPages = data.total_pages || 0;
       setDegrees(items);
@@ -260,16 +289,18 @@ const FrameworkDegreesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
         updateFilterParams({ page: String(nextTotalPages) }, { resetPage: false });
       }
     } catch (err) {
+      if (seq !== loadSeqRef.current) return;
       setError(err instanceof Error ? err.message : 'Failed to load programs');
       setDegrees([]);
       setTotal(0);
       setTotalPages(0);
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, [
     countryFilterKey,
     filterLevelId,
+    filterPemGap,
     institutionFilterKey,
     majorFilterKey,
     pageSize,
@@ -292,11 +323,32 @@ const FrameworkDegreesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     setSearchDraft(searchQuery);
   }, [searchQuery]);
 
+  // Remount / tab return / PEM apply bump: always hit live degrees API (no React Query cache).
   useEffect(() => {
     const timeout = window.setTimeout(() => {
       void loadDegrees(page);
     }, 250);
     return () => window.clearTimeout(timeout);
+  }, [loadDegrees, page, location.pathname, location.key]);
+
+  useEffect(() => {
+    const refetchIfPemBumped = () => {
+      const at = readPemMappingsChangedAt();
+      if (!at || at === pemBumpRef.current) return;
+      pemBumpRef.current = at;
+      void loadDegrees(page);
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refetchIfPemBumped();
+    };
+    window.addEventListener(PEM_MAPPINGS_CHANGED_EVENT, refetchIfPemBumped);
+    window.addEventListener('focus', refetchIfPemBumped);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener(PEM_MAPPINGS_CHANGED_EVENT, refetchIfPemBumped);
+      window.removeEventListener('focus', refetchIfPemBumped);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [loadDegrees, page]);
 
   const toggleSort = (column: SortBy) => {
@@ -314,6 +366,157 @@ const FrameworkDegreesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     void loadDegrees(page);
   };
 
+  const pageDegreeIds = useMemo(() => degrees.map(degree => degree.id), [degrees]);
+  const selectedCount = selectedIds.size;
+  const allPageSelected =
+    pageDegreeIds.length > 0 && pageDegreeIds.every(id => selectedIds.has(id));
+  const somePageSelected =
+    pageDegreeIds.some(id => selectedIds.has(id)) && !allPageSelected;
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [
+    searchQuery,
+    filterLevelId,
+    majorFilterKey,
+    subMajorFilterKey,
+    countryFilterKey,
+    institutionFilterKey,
+    filterPemGap,
+    pageSize,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (flashTimerRef.current != null) window.clearTimeout(flashTimerRef.current);
+    };
+  }, []);
+
+  const showFlash = (tone: 'success' | 'error', text: string) => {
+    if (flashTimerRef.current != null) window.clearTimeout(flashTimerRef.current);
+    setFlash({ tone, text });
+    flashTimerRef.current = window.setTimeout(() => setFlash(null), 6000);
+  };
+
+  const toggleOne = (id: number) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllPage = () => {
+    if (allPageSelected) {
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        for (const id of pageDegreeIds) next.delete(id);
+        return next;
+      });
+      return;
+    }
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      for (const id of pageDegreeIds) next.add(id);
+      return next;
+    });
+  };
+
+  const institutionIdForDelete =
+    filterInstitutionIds.length === 1 ? Number(filterInstitutionIds[0]) : null;
+
+  const handleDeleteOne = async (degree: DegreeRecord) => {
+    if (
+      !(await openConfirm({
+        title: 'Delete program?',
+        message: `Delete program "${degree.name}"?`,
+        confirmLabel: 'Delete',
+        variant: 'danger',
+      }))
+    ) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      const params = new URLSearchParams();
+      if (institutionIdForDelete) {
+        params.set('institution_id', String(institutionIdForDelete));
+      }
+      const query = params.toString();
+      await apiFetch(`academia/degrees/${degree.id}${query ? `?${query}` : ''}`, {
+        method: 'DELETE',
+      });
+      setSelectedIds(prev => {
+        if (!prev.has(degree.id)) return prev;
+        const next = new Set(prev);
+        next.delete(degree.id);
+        return next;
+      });
+      showFlash('success', `Deleted “${degree.name}”.`);
+      void loadDegrees(page);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to delete program';
+      setError(message);
+      showFlash('error', message);
+      await openConfirm({
+        title: 'Could not delete program',
+        message,
+        confirmLabel: 'OK',
+        variant: 'warning',
+        mode: 'alert',
+      });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (!selectedCount || deleting) return;
+    if (
+      !(await openConfirm({
+        title: 'Delete selected programs?',
+        message: `Delete ${selectedCount} selected program${
+          selectedCount === 1 ? '' : 's'
+        }? This permanently removes them and cannot be undone.`,
+        confirmLabel: 'Delete selected',
+        variant: 'danger',
+      }))
+    ) {
+      return;
+    }
+    const ids = Array.from(selectedIds);
+    setDeleting(true);
+    try {
+      const result = await apiFetch<{ deleted: number; skipped: number; ids: number[] }>(
+        'academia/degrees/bulk-delete',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            ids,
+            ...(institutionIdForDelete
+              ? { institution_id: institutionIdForDelete }
+              : {}),
+          }),
+        }
+      );
+      setSelectedIds(new Set());
+      showFlash(
+        'success',
+        `Deleted ${result.deleted} program${result.deleted === 1 ? '' : 's'}${
+          result.skipped ? ` (${result.skipped} skipped)` : ''
+        }.`
+      );
+      void loadDegrees(page);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Bulk delete failed';
+      setError(message);
+      showFlash('error', message);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const createProgramButton = (
     <button
       type="button"
@@ -325,6 +528,20 @@ const FrameworkDegreesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     >
       <Plus size={16} />
       Create Program
+    </button>
+  );
+
+  const bulkDeleteButton = (
+    <button
+      type="button"
+      disabled={!selectedCount || deleting}
+      onClick={() => void handleBulkDelete()}
+      className="inline-flex h-[38px] shrink-0 items-center gap-2 rounded-xl border border-alert/40 bg-alert/10 px-4 text-sm font-semibold text-alert disabled:opacity-50"
+    >
+      {deleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+      {deleting
+        ? 'Deleting…'
+        : `Delete selected${selectedCount ? ` (${selectedCount})` : ''}`}
     </button>
   );
 
@@ -457,6 +674,32 @@ const FrameworkDegreesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
               placeholder="All sub-majors"
             />
           </div>
+          <label className={`block ${FILTER_FIELD_CLASS} space-y-1 text-sm`}>
+            <span className="font-medium text-text-main">PEM mapping</span>
+            <select
+              value={filterPemGap}
+              onChange={e =>
+                updateFilterParams({ pem_gap: e.target.value || null })
+              }
+              className="w-full rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent"
+            >
+              {PEM_GAP_OPTIONS.map(option => (
+                <option key={option.value || 'all'} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={() => void loadDegrees(page)}
+            disabled={loading}
+            className="inline-flex h-[38px] shrink-0 items-center gap-2 self-end rounded-xl border border-border-subtle px-3 text-sm font-medium text-text-main hover:bg-surface-bg disabled:opacity-50"
+            title="Reload programs and PEM gap counts from the live database"
+          >
+            <RefreshCw size={14} className={loading ? 'animate-spin' : undefined} />
+            Refresh
+          </button>
           <label className="block min-w-[240px] flex-1 space-y-1 text-sm">
             <span className="font-medium text-text-main">Search</span>
             <div className="relative">
@@ -479,8 +722,22 @@ const FrameworkDegreesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
               ) : null}
             </div>
           </label>
+          {bulkDeleteButton}
           {createProgramButton}
         </div>
+
+        {flash ? (
+          <div
+            role="status"
+            className={`mx-6 mt-4 rounded-xl border px-4 py-3 text-sm ${
+              flash.tone === 'success'
+                ? 'border-emerald-500/30 bg-emerald-500/10 text-text-main'
+                : 'border-alert/30 bg-alert/5 text-alert'
+            }`}
+          >
+            {flash.text}
+          </div>
+        ) : null}
 
         {error && degrees.length > 0 ? (
           <div className="px-6 pt-4 text-sm text-alert">{error}</div>
@@ -501,6 +758,19 @@ const FrameworkDegreesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
               <table className="min-w-full text-sm">
                 <thead className="bg-surface-bg text-left text-xs uppercase tracking-wide text-text-muted">
                   <tr>
+                    <th className="w-10 px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={allPageSelected}
+                        ref={el => {
+                          if (el) el.indeterminate = somePageSelected;
+                        }}
+                        onChange={toggleAllPage}
+                        disabled={deleting || pageDegreeIds.length === 0}
+                        className="h-4 w-4 rounded border-border-subtle"
+                        aria-label="Select all programs on this page"
+                      />
+                    </th>
                     <FrameworkIdHeader />
                     <FrameworkIdHeader label="Level ID" />
                     <FrameworkSortableHeader
@@ -530,6 +800,16 @@ const FrameworkDegreesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
                 <tbody>
                   {degrees.map(degree => (
                     <tr key={degree.id} className="border-t border-border-subtle/70">
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(degree.id)}
+                          onChange={() => toggleOne(degree.id)}
+                          disabled={deleting}
+                          className="h-4 w-4 rounded border-border-subtle"
+                          aria-label={`Select ${degree.name}`}
+                        />
+                      </td>
                       <FrameworkIdCell value={degree.id} />
                       <FrameworkIdCell value={degree.level_id} />
                       <td className="px-6 py-3 text-text-muted">{degree.level_name || '—'}</td>
@@ -580,45 +860,17 @@ const FrameworkDegreesPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
                               setEditingDegree(degree);
                               setModalOpen(true);
                             }}
-                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-accent hover:bg-accent/10"
+                            disabled={deleting}
+                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-accent hover:bg-accent/10 disabled:opacity-50"
                           >
                             <Pencil size={14} />
                             Edit
                           </button>
                           <button
                             type="button"
-                            onClick={async () => {
-                              if (!(await openConfirm({
-                                title: 'Delete program?',
-                                message: `Delete program "${degree.name}"?`,
-                                confirmLabel: 'Delete',
-                                variant: 'danger',
-                              }))) return;
-                              try {
-                                const params = new URLSearchParams();
-                                if (filterInstitutionIds.length === 1) {
-                                  params.set('institution_id', filterInstitutionIds[0]);
-                                }
-                                const query = params.toString();
-                                await apiFetch(
-                                  `academia/degrees/${degree.id}${query ? `?${query}` : ''}`,
-                                  { method: 'DELETE' }
-                                );
-                                void loadDegrees(page);
-                              } catch (err) {
-                                const message =
-                                  err instanceof Error ? err.message : 'Failed to delete program';
-                                setError(message);
-                                await openConfirm({
-                                  title: 'Could not delete program',
-                                  message,
-                                  confirmLabel: 'OK',
-                                  variant: 'warning',
-                                  mode: 'alert',
-                                });
-                              }
-                            }}
-                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-alert hover:bg-alert/10"
+                            onClick={() => void handleDeleteOne(degree)}
+                            disabled={deleting}
+                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-alert hover:bg-alert/10 disabled:opacity-50"
                           >
                             <Trash2 size={14} />
                             Delete

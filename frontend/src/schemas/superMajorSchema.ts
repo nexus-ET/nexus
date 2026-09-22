@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+import { FRAMEWORK_DESCRIPTION_MAX_LENGTH } from './frameworkDescriptionLimits';
+import { richTextField } from './wizard/shared';
+
 const optionalSuperMajorCodeField = z
   .string()
   .trim()
@@ -11,17 +14,7 @@ const optionalSuperMajorCodeField = z
 export const superMajorSchema = z.object({
   name: z.string().trim().min(1, 'Super-major name is required').max(255),
   code: optionalSuperMajorCodeField,
-  description: z
-    .union([
-      z.string().trim().max(5000, 'Description must be 5000 characters or fewer'),
-      z.null(),
-    ])
-    .optional()
-    .transform(value => {
-      if (value == null) return null;
-      const trimmed = value.trim();
-      return trimmed || null;
-    }),
+  description: richTextField(FRAMEWORK_DESCRIPTION_MAX_LENGTH, 'Description'),
   sort_order: z.coerce.number().int().min(0).default(0),
   is_active: z.boolean().default(true),
 });

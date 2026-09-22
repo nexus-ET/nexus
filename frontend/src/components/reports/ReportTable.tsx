@@ -1,5 +1,7 @@
-import React from 'react';
-import { ArrowDown, ArrowUp, ArrowUpDown, Loader2 } from 'lucide-react';
+import { useMemo } from 'react';
+import type { SortingState } from '@tanstack/react-table';
+import DataTable from '../ui/DataTable/DataTable';
+import type { DataTableColumnDef } from '../ui/DataTable/types';
 
 export interface ReportColumn<T> {
   id: string;
@@ -22,21 +24,12 @@ interface ReportTableProps<T> {
   sortBy?: string;
   sortOrder?: 'asc' | 'desc';
   onSort?: (columnId: string) => void;
-}
-
-function SortIndicator({
-  columnId,
-  sortBy,
-  sortOrder,
-}: {
-  columnId: string;
-  sortBy?: string;
-  sortOrder?: 'asc' | 'desc';
-}) {
-  if (sortBy !== columnId) {
-    return <ArrowUpDown size={12} className="opacity-40" />;
-  }
-  return sortOrder === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />;
+  onRefresh?: () => void;
+  refreshing?: boolean;
+  enableRowSelection?: boolean;
+  persistenceKey?: string;
+  enableColumnFilters?: boolean;
+  showSearch?: boolean;
 }
 
 function ReportTable<T>({
@@ -50,87 +43,66 @@ function ReportTable<T>({
   sortBy,
   sortOrder,
   onSort,
+  onRefresh,
+  refreshing,
+  enableRowSelection = false,
+  persistenceKey,
+  enableColumnFilters = true,
+  showSearch = true,
 }: ReportTableProps<T>) {
+  const tableColumns = useMemo<DataTableColumnDef<T>[]>(
+    () =>
+      columns.map(column => ({
+        id: column.id,
+        accessorFn: row => {
+          try {
+            const rendered = column.pdfValue?.(row);
+            if (rendered != null) return rendered;
+          } catch {
+            /* ignore */
+          }
+          return '';
+        },
+        header: column.header,
+        enableSorting: column.sortable !== false && Boolean(onSort),
+        meta: {
+          headerClassName: column.headerClassName,
+          cellClassName: column.cellClassName,
+        },
+        cell: ({ row }) => column.render(row.original),
+      })),
+    [columns, onSort]
+  );
+
+  const sorting = useMemo<SortingState>(() => {
+    if (!sortBy) return [];
+    return [{ id: sortBy, desc: sortOrder === 'desc' }];
+  }, [sortBy, sortOrder]);
+
   return (
-    <div className="rounded-2xl border border-border-subtle bg-card overflow-hidden">
-      {title ? (
-        <div className="border-b border-border-subtle bg-surface-bg px-4 py-3 md:px-5">
-          <h2 className="text-base font-semibold text-text-main">{title}</h2>
-        </div>
-      ) : null}
-
-      <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-border-subtle">
-          <thead className="bg-surface-bg">
-            <tr>
-              {columns.map(column => {
-                const isSortable = column.sortable !== false && Boolean(onSort);
-                const headerContent = (
-                  <span className="inline-flex items-center gap-1.5">
-                    {column.header}
-                    {isSortable ? (
-                      <SortIndicator columnId={column.id} sortBy={sortBy} sortOrder={sortOrder} />
-                    ) : null}
-                  </span>
-                );
-
-                return (
-                  <th
-                    key={column.id}
-                    scope="col"
-                    className={`px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-text-muted ${column.headerClassName ?? ''}`}
-                  >
-                    {isSortable ? (
-                      <button
-                        type="button"
-                        onClick={() => onSort?.(column.id)}
-                        className="inline-flex items-center gap-1.5 hover:text-text-main transition-colors"
-                      >
-                        {headerContent}
-                      </button>
-                    ) : (
-                      headerContent
-                    )}
-                  </th>
-                );
-              })}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border-subtle bg-card">
-            {loading ? (
-              <tr>
-                <td colSpan={columns.length} className="px-4 py-10 text-center text-sm text-text-muted">
-                  <Loader2 size={18} className="inline animate-spin mr-2" />
-                  Loading report...
-                </td>
-              </tr>
-            ) : rows.length === 0 ? (
-              <tr>
-                <td colSpan={columns.length} className="px-4 py-10 text-center text-sm text-text-muted">
-                  {emptyMessage}
-                </td>
-              </tr>
-            ) : (
-              rows.map(row => (
-                <tr
-                  key={getRowKey(row)}
-                  className={`hover:bg-surface-bg/40 transition-colors ${getRowClassName?.(row) ?? ''}`}
-                >
-                  {columns.map(column => (
-                    <td
-                      key={column.id}
-                      className={`px-4 py-3 text-sm text-text-main align-top ${column.cellClassName ?? ''}`}
-                    >
-                      {column.render(row)}
-                    </td>
-                  ))}
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <DataTable
+      title={title}
+      columns={tableColumns}
+      data={rows}
+      getRowId={row => String(getRowKey(row))}
+      loading={loading}
+      emptyMessage={emptyMessage}
+      getRowClassName={getRowClassName}
+      showSearch={showSearch}
+      enableColumnFilters={enableColumnFilters}
+      enableRowSelection={enableRowSelection}
+      manualSorting
+      sorting={sorting}
+      onSortingChange={next => {
+        const first = next[0];
+        if (first) onSort?.(first.id);
+        else if (sortBy) onSort?.(sortBy);
+      }}
+      onRefresh={onRefresh}
+      refreshing={refreshing}
+      persistenceKey={persistenceKey}
+      enableColumnResizing
+    />
   );
 }
 

@@ -112,11 +112,91 @@ def _whatsapp_auto_sync_enabled(env: dict[str, str]) -> bool:
     return _parse_env_bool(raw, default=True)
 
 
-def _sync_whatsapp_webhook_for_dev(tunnel_url: str | None = None) -> None:
+def _resolve_verify_token_from_env(env: dict[str, str]) -> str:
+    for key in ("WEBHOOK_VERIFY_TOKEN", "WHATSAPP_VERIFY_TOKEN"):
+        token = (os.getenv(key) or env.get(key) or "").strip()
+        if token:
+            return token
+    return ""
+
+
+def _handoff_preflight_ok(env: dict[str, str]) -> bool:
+    """
+    True when we can safely claim the shared WABA webhook.
+
+    If NEXUS_WHATSAPP_HANDOFF_URL is set, Meta must be able to verify that host
+    with our local WEBHOOK_VERIFY_TOKEN — otherwise we refuse to steal ownership.
+    """
+    handoff = (
+        os.getenv("NEXUS_WHATSAPP_HANDOFF_URL") or env.get("NEXUS_WHATSAPP_HANDOFF_URL") or ""
+    ).strip().rstrip("/")
+    if not handoff:
+        return True
+
+    token = _resolve_verify_token_from_env(env)
+    if not token:
+        print(
+            "[whatsapp] WARNING: WEBHOOK_VERIFY_TOKEN is empty - skipping Meta auto-sync.",
+            file=sys.stderr,
+        )
+        return False
+
+    callback = f"{handoff}/api/webhook"
+    challenge = "nexus-handoff-preflight"
+    try:
+        import httpx
+
+        response = httpx.get(
+            callback,
+            params={
+                "hub.mode": "subscribe",
+                "hub.verify_token": token,
+                "hub.challenge": challenge,
+            },
+            headers={
+                "User-Agent": "facebookexternalua",
+                "ngrok-skip-browser-warning": "true",
+            },
+            timeout=15,
+            follow_redirects=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — preflight must never crash the stack
+        print(
+            f"[whatsapp] WARNING: handoff preflight failed ({exc}). "
+            "Skipping Meta auto-sync so nexus-dev keeps ownership. "
+            "Fix connectivity or set NEXUS_WHATSAPP_AUTO_SYNC=false.",
+            file=sys.stderr,
+        )
+        return False
+
+    if response.status_code == 200 and response.text.strip() == challenge:
+        return True
+
+    if response.status_code == 403:
+        print(
+            "[whatsapp] WARNING: handoff preflight got 403 from "
+            f"{callback} - local WEBHOOK_VERIFY_TOKEN does not match nexus-dev. "
+            "Skipping Meta auto-sync (will not steal the webhook). "
+            "Copy the staging verify token into backend/.env, or set "
+            "NEXUS_WHATSAPP_AUTO_SYNC=false for local-only UI work.",
+            file=sys.stderr,
+        )
+        return False
+
+    print(
+        f"[whatsapp] WARNING: handoff preflight failed for {callback} "
+        f"(status={response.status_code}). Skipping Meta auto-sync. "
+        "Set NEXUS_WHATSAPP_AUTO_SYNC=false to silence this.",
+        file=sys.stderr,
+    )
+    return False
+
+
+def _sync_whatsapp_webhook_for_dev(tunnel_url: str | None = None) -> bool:
     python = sys.executable
     script = BACKEND_ROOT / "scripts" / "sync_whatsapp_webhook.py"
     if not script.is_file():
-        return
+        return False
     base = (tunnel_url or "").strip().rstrip("/")
     cmd = [python, str(script)]
     if base:
@@ -132,22 +212,13 @@ def _sync_whatsapp_webhook_for_dev(tunnel_url: str | None = None) -> None:
         print("[whatsapp] Webhook registered for local development.")
         if result.stdout.strip():
             print(result.stdout.strip())
-    else:
-        print("[whatsapp] WARNING: webhook sync failed.", file=sys.stderr)
-        if result.stderr.strip():
-            print(result.stderr.strip(), file=sys.stderr)
-        if result.stdout.strip():
-            print(result.stdout.strip(), file=sys.stderr)
-
-
-def _schedule_whatsapp_webhook_sync(tunnel_url: str) -> None:
-    """Wait for the quick tunnel to become reachable, then register with Meta."""
-
-    def _worker() -> None:
-        time.sleep(3)
-        _sync_whatsapp_webhook_for_dev(tunnel_url)
-
-    threading.Thread(target=_worker, daemon=True).start()
+        return True
+    print("[whatsapp] WARNING: webhook sync failed.", file=sys.stderr)
+    if result.stderr.strip():
+        print(result.stderr.strip(), file=sys.stderr)
+    if result.stdout.strip():
+        print(result.stdout.strip(), file=sys.stderr)
+    return False
 
 
 def _release_whatsapp_webhook_handoff(env: dict[str, str]) -> None:
@@ -171,8 +242,9 @@ def _release_whatsapp_webhook_handoff(env: dict[str, str]) -> None:
             print(result.stdout.strip())
         return
     print(
-        "[whatsapp] WARNING: webhook handoff failed — nexus-dev may still be unreachable to Meta. "
-        "Ensure the handoff server is running or set NEXUS_WHATSAPP_AUTO_SYNC=false for local-only work.",
+        "[whatsapp] WARNING: webhook handoff failed - Meta may still point at a dead tunnel. "
+        "Align WEBHOOK_VERIFY_TOKEN with nexus-dev, ensure staging /api/webhook is up, "
+        "or set NEXUS_WHATSAPP_AUTO_SYNC=false for local-only work.",
         file=sys.stderr,
     )
     if result.stderr.strip():
@@ -252,6 +324,37 @@ def _env_int(values: dict[str, str], key: str, default: int) -> int:
 
 def _env_str(values: dict[str, str], key: str, default: str) -> str:
     return (os.getenv(key) or values.get(key) or default).strip()
+
+
+def _database_url_from_env(env: dict[str, str] | None = None) -> str:
+    values = env if env is not None else _load_env_file()
+    return (os.getenv("DATABASE_URL") or values.get("DATABASE_URL") or "").strip()
+
+
+def _is_local_ssh_tunnel_database_url(database_url: str) -> bool:
+    """True when DATABASE_URL targets a local SSH DB forward (e.g. Hostinger :15432)."""
+    url = (database_url or "").lower()
+    if not url:
+        return False
+    local_hosts = ("127.0.0.1", "localhost", "[::1]")
+    if not any(h in url for h in local_hosts):
+        return False
+    port = (os.getenv("NEXUS_SSH_LOCAL_PORT") or "").strip() or "15432"
+    return f":{port}" in url or ":15432" in url
+
+
+def _apply_hostinger_tunnel_startup_defaults(child_env: dict[str, str]) -> None:
+    """Skip heavy startup DDL when developing against Hostinger over SSH tunnel."""
+    if child_env.get("NEXUS_SKIP_STARTUP_DB_SYNC", "").strip():
+        return
+    db_url = _database_url_from_env()
+    if not _is_local_ssh_tunnel_database_url(db_url):
+        return
+    child_env["NEXUS_SKIP_STARTUP_DB_SYNC"] = "1"
+    print(
+        "[backend] NEXUS_SKIP_STARTUP_DB_SYNC=1 "
+        "(local SSH-tunnel DATABASE_URL; skipping create_all/sync_schema)."
+    )
 
 
 def load_dev_config(args: argparse.Namespace) -> DevConfig:
@@ -502,6 +605,40 @@ def _nexus_backend_pids(port: int) -> set[int]:
     return filtered or pids
 
 
+def _windows_child_pids(parent_pids: set[int]) -> set[int]:
+    """Find live children of dead/live parents (covers uvicorn --reload orphans)."""
+    if sys.platform != "win32" or not parent_pids:
+        return set()
+    children: set[int] = set()
+    parents = ",".join(str(pid) for pid in sorted(parent_pids))
+    # Avoid $PID — it is a read-only automatic variable in PowerShell.
+    script = f"""
+$parents = @({parents})
+Get-CimInstance Win32_Process | ForEach-Object {{
+  $childId = $_.ProcessId
+  $ppid = $_.ParentProcessId
+  $cmd = $_.CommandLine
+  if ($parents -contains $ppid) {{ $childId; return }}
+  if ($cmd -and $cmd -like '*multiprocessing.spawn*') {{
+    foreach ($p in $parents) {{
+      if ($cmd -like "*parent_pid=$p*") {{ $childId; break }}
+    }}
+  }}
+}}
+"""
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.isdigit():
+            children.add(int(line))
+    return children
+
+
 def _stop_pid(pid: int) -> bool:
     if pid <= 0 or pid == os.getpid():
         return False
@@ -528,6 +665,19 @@ def free_port(port: int, *, kill_backends: bool = False) -> list[int]:
     targets: set[int] = set(_pids_listening_on_port(port))
     if kill_backends:
         targets.update(_nexus_backend_pids(port))
+    # Uvicorn --reload on Windows can leave the worker alive after the
+    # reloader PID disappears from the process table but still owns the port.
+    targets.update(_windows_child_pids(set(targets)))
+    if kill_backends:
+        targets.update(
+            _windows_child_pids(
+                {
+                    pid
+                    for pid in _nexus_backend_pids(port)
+                    if pid > 0
+                }
+            )
+        )
     targets.discard(os.getpid())
 
     stopped: list[int] = []
@@ -540,6 +690,7 @@ def free_port(port: int, *, kill_backends: bool = False) -> list[int]:
 
     remaining = _pids_listening_on_port(port)
     if remaining:
+        remaining.update(_windows_child_pids(set(remaining)))
         for pid in sorted(remaining):
             if pid != os.getpid() and _stop_pid(pid):
                 stopped.append(pid)
@@ -563,7 +714,7 @@ def _wait_for_backend_ready(
     import urllib.error
     import urllib.request
 
-    url = f"http://{host}:{port}/docs"
+    url = f"http://127.0.0.1:{port}/docs"
     deadline = time.time() + timeout
     started = time.time()
     last_progress = 0.0
@@ -573,9 +724,36 @@ def _wait_for_backend_ready(
     )
     while time.time() < deadline:
         if proc is not None and proc.poll() is not None:
+            # Port may still answer briefly after a reload worker swap; prefer a
+            # live /docs response over assuming the stack is dead.
+            try:
+                with urllib.request.urlopen(url, timeout=1.5) as resp:
+                    if resp.status == 200:
+                        elapsed = time.time() - started
+                        print(f"[backend] ready on http://127.0.0.1:{port} ({elapsed:.0f}s)")
+                        return True
+            except (urllib.error.URLError, TimeoutError, OSError):
+                pass
+            # Windows venv uvicorn.exe / python.exe launchers sometimes exit with
+            # code -1 (unsigned 4294967295) while the real worker is still alive.
+            live_workers = _nexus_backend_pids(port) | _windows_child_pids({proc.pid})
+            if live_workers:
+                elapsed = time.time() - started
+                if elapsed - last_progress >= 15.0:
+                    print(
+                        f"[backend] launcher exited (code {proc.returncode}); "
+                        f"worker PIDs {sorted(live_workers)} still running... "
+                        f"{elapsed:.0f}s elapsed"
+                    )
+                    last_progress = elapsed
+                time.sleep(0.5)
+                continue
             print(
                 f"ERROR: backend process exited early (code {proc.returncode}). "
-                "Check [backend] logs above for import or database errors.",
+                "Check [backend] logs above for import or database errors. "
+                "On Windows, avoid --reload if the reloader exits after file changes. "
+                "If DATABASE_URL is an SSH tunnel (127.0.0.1:15432), set "
+                "NEXUS_SKIP_STARTUP_DB_SYNC=1 or use .\\start-dev.ps1.",
                 file=sys.stderr,
             )
             return False
@@ -583,7 +761,7 @@ def _wait_for_backend_ready(
             with urllib.request.urlopen(url, timeout=2) as resp:
                 if resp.status == 200:
                     elapsed = time.time() - started
-                    print(f"[backend] ready on http://{host}:{port} ({elapsed:.0f}s)")
+                    print(f"[backend] ready on http://127.0.0.1:{port} ({elapsed:.0f}s)")
                     return True
         except (urllib.error.URLError, TimeoutError, OSError):
             pass
@@ -596,8 +774,14 @@ def _wait_for_backend_ready(
 
 
 def build_uvicorn_cmd(config: DevConfig, *, reload: bool) -> list[str]:
-    uvicorn_bin = _venv_uvicorn()
-    if uvicorn_bin.name == "python.exe":
+    # Prefer `python -m uvicorn` on Windows so Popen tracks a stable interpreter
+    # process (uvicorn.exe is a short-lived launcher that can exit -1 / 4294967295).
+    if sys.platform == "win32":
+        py = BACKEND_ROOT / ".venv" / "Scripts" / "python.exe"
+        uvicorn_bin = py if py.exists() else _venv_uvicorn()
+    else:
+        uvicorn_bin = _venv_uvicorn()
+    if uvicorn_bin.name.lower() in {"python.exe", "python", "python3"}:
         cmd = [
             str(uvicorn_bin),
             "-m",
@@ -619,6 +803,26 @@ def build_uvicorn_cmd(config: DevConfig, *, reload: bool) -> list[str]:
         ]
     if reload:
         cmd.append("--reload")
+        # Windows WatchFiles often kills the whole reloader on .pyc / lock churn.
+        # Never reload on .env rewrites (tunnel URL updates) — that exits code 1 on Windows.
+        cmd.extend(
+            [
+                "--reload-exclude",
+                "**/__pycache__/**",
+                "--reload-exclude",
+                "**/*.pyc",
+                "--reload-exclude",
+                "**/.dev-stack.lock",
+                "--reload-exclude",
+                "**/.pytest_cache/**",
+                "--reload-exclude",
+                "**/.env",
+                "--reload-exclude",
+                "**/.env.*",
+                "--reload-exclude",
+                "**/*.tmp",
+            ]
+        )
     return cmd
 
 
@@ -683,7 +887,13 @@ def build_tunnel_cmd(config: DevConfig) -> list[str]:
     return cmd
 
 
-def _popen(cmd: list[str], *, cwd: Path, name: str) -> subprocess.Popen[str]:
+def _popen(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    name: str,
+    env: dict[str, str] | None = None,
+) -> subprocess.Popen[str]:
     creationflags = 0
     if sys.platform == "win32":
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
@@ -696,6 +906,7 @@ def _popen(cmd: list[str], *, cwd: Path, name: str) -> subprocess.Popen[str]:
         text=True,
         bufsize=1,
         creationflags=creationflags,
+        env=env,
     )
 
 
@@ -814,6 +1025,7 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
     backend_only = args.backend_only
     start_frontend = not backend_only and not args.no_frontend
     start_tunnel = config.tunnel_enabled
+    auto_sync = _whatsapp_auto_sync_enabled(env)
 
     if start_frontend and not FRONTEND_ROOT.is_dir():
         print(f"ERROR: frontend not found at {FRONTEND_ROOT}", file=sys.stderr)
@@ -851,71 +1063,33 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
     procs: list[tuple[str, subprocess.Popen[str]]] = []
     tunnel_url: str | None = None
     webhook_synced_locally = False
+    sync_lock = threading.Lock()
+    tunnel_url_event = threading.Event()
+
+    def _mark_webhook_synced() -> None:
+        nonlocal webhook_synced_locally
+        with sync_lock:
+            webhook_synced_locally = True
 
     def on_tunnel_line(line: str) -> None:
-        nonlocal tunnel_url, webhook_synced_locally
+        nonlocal tunnel_url
         match = TUNNEL_URL_RE.search(line)
-        if match and tunnel_url != match.group(0):
-            tunnel_url = match.group(0)
-            _update_env_key("PUBLIC_TUNNEL_BASE", tunnel_url)
-            print(f"[tunnel] PUBLIC_TUNNEL_BASE updated in .env -> {tunnel_url}")
-            if _whatsapp_auto_sync_enabled(env):
-                _schedule_whatsapp_webhook_sync(tunnel_url)
-                webhook_synced_locally = True
-            else:
-                _print_meta_webhook_hint(tunnel_url)
+        if not match:
+            return
+        url = match.group(0)
+        if tunnel_url == url:
+            return
+        tunnel_url = url
+        _update_env_key("PUBLIC_TUNNEL_BASE", url)
+        os.environ["PUBLIC_TUNNEL_BASE"] = url
+        print(f"[tunnel] PUBLIC_TUNNEL_BASE updated in .env -> {url}")
+        tunnel_url_event.set()
 
     try:
-        backend_proc = _popen(
-            build_uvicorn_cmd(config, reload=args.reload),
-            cwd=BACKEND_ROOT,
-            name="backend",
-        )
-        procs.append(("backend", backend_proc))
-        threading.Thread(
-            target=_stream_process,
-            args=(backend_proc, "backend"),
-            daemon=True,
-        ).start()
-
-        if not _wait_for_backend_ready(
-            config.host, config.backend_port, proc=backend_proc
-        ):
-            print(
-                "ERROR: backend did not become ready in time. "
-                "Check [backend] logs above for import or database errors "
-                "(cold Neon create_all often exceeds 2 minutes).",
-                file=sys.stderr,
-            )
-            return 1
-
-        if start_frontend:
-            frontend_proc = _popen(
-                build_frontend_cmd(config),
-                cwd=FRONTEND_ROOT,
-                name="frontend",
-            )
-            procs.append(("frontend", frontend_proc))
-            threading.Thread(
-                target=_stream_process,
-                args=(frontend_proc, "frontend"),
-                daemon=True,
-            ).start()
-
-        if start_tunnel:
-            if config.tunnel_mode == "named":
-                try:
-                    _validate_named_tunnel(config)
-                except RuntimeError as exc:
-                    print(f"ERROR: {exc}", file=sys.stderr)
-                    return 1
-                assert config.public_tunnel_base
-                print(f"[tunnel] Stable URL: {config.public_tunnel_base.rstrip('/')}")
-                if _whatsapp_auto_sync_enabled(env):
-                    _sync_whatsapp_webhook_for_dev(config.public_tunnel_base.rstrip("/"))
-                    webhook_synced_locally = True
-                else:
-                    _print_meta_webhook_hint(config.public_tunnel_base)
+        # Quick tunnels: start cloudflared first so PUBLIC_TUNNEL_BASE is fresh
+        # before the backend process loads settings (avoids stale-URL audit noise
+        # and mid-run .env rewrites that can kill uvicorn --reload on Windows).
+        if start_tunnel and config.tunnel_mode == "quick":
             tunnel_proc = _popen(
                 build_tunnel_cmd(config),
                 cwd=BACKEND_ROOT,
@@ -928,6 +1102,118 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
                 kwargs={"on_line": on_tunnel_line},
                 daemon=True,
             ).start()
+            print("[tunnel] waiting for trycloudflare.com URL (up to 45s)...")
+            if tunnel_url_event.wait(timeout=45):
+                print(f"[tunnel] ready: {tunnel_url}")
+            else:
+                print(
+                    "[tunnel] WARNING: no public URL yet - continuing; "
+                    "WhatsApp auto-sync will wait if the URL appears later.",
+                    file=sys.stderr,
+                )
+
+        if start_tunnel and config.tunnel_mode == "named":
+            try:
+                _validate_named_tunnel(config)
+            except RuntimeError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return 1
+            assert config.public_tunnel_base
+            tunnel_url = config.public_tunnel_base.rstrip("/")
+            os.environ["PUBLIC_TUNNEL_BASE"] = tunnel_url
+            print(f"[tunnel] Stable URL: {tunnel_url}")
+
+        child_env = os.environ.copy()
+        if tunnel_url:
+            child_env["PUBLIC_TUNNEL_BASE"] = tunnel_url.rstrip("/")
+        _apply_hostinger_tunnel_startup_defaults(child_env)
+
+        backend_proc = _popen(
+            build_uvicorn_cmd(config, reload=args.reload),
+            cwd=BACKEND_ROOT,
+            name="backend",
+            env=child_env,
+        )
+        procs.append(("backend", backend_proc))
+        threading.Thread(
+            target=_stream_process,
+            args=(backend_proc, "backend"),
+            daemon=True,
+        ).start()
+
+        ready_timeout = 300.0
+        if _is_local_ssh_tunnel_database_url(_database_url_from_env()):
+            # Tunnel RTT makes even skipped-DDL bootstrap slower; allow more headroom.
+            ready_timeout = 420.0
+        if not _wait_for_backend_ready(
+            config.host,
+            config.backend_port,
+            proc=backend_proc,
+            timeout=ready_timeout,
+        ):
+            print(
+                "ERROR: backend did not become ready in time. "
+                "Check [backend] logs above for import or database errors "
+                "(cold Neon create_all often exceeds 2 minutes; "
+                "Hostinger SSH tunnel should use NEXUS_SKIP_STARTUP_DB_SYNC=1).",
+                file=sys.stderr,
+            )
+            return 1
+
+        if start_frontend:
+            frontend_proc = _popen(
+                build_frontend_cmd(config),
+                cwd=FRONTEND_ROOT,
+                name="frontend",
+                env=child_env,
+            )
+            procs.append(("frontend", frontend_proc))
+            threading.Thread(
+                target=_stream_process,
+                args=(frontend_proc, "frontend"),
+                daemon=True,
+            ).start()
+
+        if start_tunnel and config.tunnel_mode == "named":
+            tunnel_proc = _popen(
+                build_tunnel_cmd(config),
+                cwd=BACKEND_ROOT,
+                name="tunnel",
+            )
+            procs.append(("tunnel", tunnel_proc))
+            threading.Thread(
+                target=_stream_process,
+                args=(tunnel_proc, "tunnel"),
+                kwargs={"on_line": on_tunnel_line},
+                daemon=True,
+            ).start()
+
+        # Claim Meta webhook only after backend is up, and only if handoff will work.
+        if start_tunnel and auto_sync:
+            if _handoff_preflight_ok(env):
+                if config.tunnel_mode == "named":
+                    if tunnel_url and _sync_whatsapp_webhook_for_dev(tunnel_url):
+                        _mark_webhook_synced()
+                else:
+
+                    def _claim_when_ready() -> None:
+                        if not tunnel_url_event.wait(timeout=60):
+                            print(
+                                "[whatsapp] WARNING: no tunnel URL for Meta sync.",
+                                file=sys.stderr,
+                            )
+                            return
+                        url = tunnel_url
+                        if not url:
+                            return
+                        if _sync_whatsapp_webhook_for_dev(url):
+                            _mark_webhook_synced()
+
+                    threading.Thread(target=_claim_when_ready, daemon=True).start()
+            elif tunnel_url:
+                _print_meta_webhook_hint(tunnel_url)
+        elif start_tunnel and tunnel_url:
+            _print_meta_webhook_hint(tunnel_url)
 
         while True:
             tunnel_exited = False
@@ -950,7 +1236,7 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
                     tunnel_exited = True
                     break
                 print(f"[{name}] exited with code {code}", file=sys.stderr)
-                return code
+                return code if code is not None else 1
             if tunnel_exited:
                 continue
             time.sleep(0.5)
@@ -963,7 +1249,9 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
             if proc.poll() is None:
                 print(f"[{name}] stopping...")
                 _stop_pid(proc.pid)
-        if start_tunnel and _whatsapp_auto_sync_enabled(env) and webhook_synced_locally:
+        with sync_lock:
+            should_handoff = webhook_synced_locally
+        if start_tunnel and auto_sync and should_handoff:
             _release_whatsapp_webhook_handoff(env)
 
 

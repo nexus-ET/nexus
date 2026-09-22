@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import String, asc, cast, desc, or_, text
 from sqlalchemy.orm import Session
 
-from app.models.lead import Lead, LeadChannel, LeadStage
+from app.models.lead import Lead, LeadChannel, LeadSource, LeadStage
 from app.schemas.offline_lead import OfflineLeadCreate, SortDirection, SortField
 from app.services.countries import get_country_by_iso2
 from app.services.education_degrees import resolve_education_payload
@@ -17,6 +17,7 @@ from app.services.target_programs import resolve_study_interest_fields
 
 OFFLINE_SOURCE = "OFFLINE"
 EXPRESS_SOURCE = "EXPRESS"
+META_SOURCES = (LeadSource.FACEBOOK_LEAD.value, LeadSource.INSTAGRAM_LEAD.value)
 
 SORT_COLUMNS: dict[SortField, Any] = {
     "full_name": Lead.full_name,
@@ -26,8 +27,12 @@ SORT_COLUMNS: dict[SortField, Any] = {
 }
 
 
-def _compose_full_name(first: str, middle: str | None, last: str) -> str:
-    parts = [first.strip().title(), (middle or "").strip().title(), last.strip().title()]
+def _compose_full_name(first: str, middle: str | None, last: str | None) -> str:
+    parts = [
+        first.strip().title(),
+        (middle or "").strip().title(),
+        (last or "").strip().title(),
+    ]
     return " ".join(part for part in parts if part)
 
 
@@ -67,16 +72,19 @@ def _resolve_country_name(db: Session, iso2: str | None) -> str | None:
 
 
 def _build_location_string(db: Session, payload: OfflineLeadCreate) -> str | None:
-    if not payload.location:
+    if not payload.location or not payload.location.has_content():
         return None
     loc = payload.location
-    country_name = _resolve_country_name(db, loc.country_iso2)
+    country_name = _resolve_country_name(db, loc.country_iso2) if loc.country_iso2 else None
+    street = ", ".join(
+        p.strip() for p in (loc.address_line_1, loc.address_line_2) if p and p.strip()
+    )
     city_state = ", ".join(
         p.strip() for p in (loc.city, loc.state) if p and p.strip()
     )
     if loc.zip_code and loc.zip_code.strip():
         city_state = f"{city_state} {loc.zip_code.strip()}" if city_state else loc.zip_code.strip()
-    parts = [p for p in (city_state, country_name) if p]
+    parts = [p for p in (street, city_state, country_name) if p]
     return ", ".join(parts) if parts else None
 
 
@@ -97,11 +105,30 @@ def _build_academic_summary(db: Session, payload: OfflineLeadCreate) -> str | No
     return " — ".join(bits) if bits else None
 
 
+def _empty_study_interest() -> dict[str, Any]:
+    return {
+        "target_destination_iso2s": [],
+        "target_destinations": [],
+        "target_destination_iso2": None,
+        "target_destination": None,
+        "target_level_id": None,
+        "target_level_name": None,
+        "target_major_ids": [],
+        "target_majors": [],
+        "target_program_codes": [],
+        "target_programs": [],
+        "target_program_code": None,
+        "target_program": None,
+        "target_course_code": None,
+        "target_course": None,
+    }
+
+
 def _build_additional_data(db: Session, payload: OfflineLeadCreate) -> dict[str, Any]:
     data: dict[str, Any] = {
         "entry_type": "offline",
         "first_name": payload.first_name.strip(),
-        "last_name": payload.last_name.strip(),
+        "last_name": (payload.last_name or "").strip(),
     }
     if payload.middle_name and payload.middle_name.strip():
         data["middle_name"] = payload.middle_name.strip()
@@ -112,16 +139,20 @@ def _build_additional_data(db: Session, payload: OfflineLeadCreate) -> dict[str,
         edu = resolve_education_payload(db, payload.education)
         if edu:
             data["education"] = edu
-    loc = payload.location.model_dump()
-    if not get_country_by_iso2(db, loc["country_iso2"]):
-        raise HTTPException(status_code=400, detail="Select a valid location country.")
-    loc["country"] = _resolve_country_name(db, loc["country_iso2"])
-    data["location"] = loc
+    loc = payload.location
+    if loc and loc.has_content():
+        if loc.country_iso2 and not get_country_by_iso2(db, loc.country_iso2):
+            raise HTTPException(status_code=400, detail="Select a valid location country.")
+        loc_dump = loc.model_dump()
+        loc_dump["country"] = _resolve_country_name(db, loc.country_iso2) if loc.country_iso2 else None
+        data["location"] = loc_dump
     data.update(resolve_study_interest_fields(db, payload))
     return data
 
 
 def _status_label(lead: Lead) -> str:
+    if lead.archived_at is not None:
+        return "Inactive"
     stage = lead.stage.value if hasattr(lead.stage, "value") else str(lead.stage or "")
     if lead.is_human_locked or "HANDOFF" in stage.upper():
         return "Handoff"
@@ -158,6 +189,17 @@ def build_offline_lead_list_item(lead: Lead, db: Session | None = None) -> dict[
             elif len(parts) == 2:
                 last_name = parts[1]
 
+    list_source = lead.source or OFFLINE_SOURCE
+    if lead.meta_leadgen_id and list_source not in {
+        OFFLINE_SOURCE,
+        EXPRESS_SOURCE,
+        *META_SOURCES,
+    }:
+        if getattr(lead.channel, "value", lead.channel) == LeadChannel.INSTAGRAM.value:
+            list_source = LeadSource.INSTAGRAM_LEAD.value
+        else:
+            list_source = LeadSource.FACEBOOK_LEAD.value
+
     return {
         "id": lead.id,
         "full_name": lead.full_name,
@@ -169,7 +211,8 @@ def build_offline_lead_list_item(lead: Lead, db: Session | None = None) -> dict[
         "phone_country_iso2": extra.get("phone_country_iso2"),
         "stage": lead.stage.value if hasattr(lead.stage, "value") else str(lead.stage),
         "status_label": _status_label(lead),
-        "source": lead.source or OFFLINE_SOURCE,
+        "source": list_source,
+        "is_active": lead.archived_at is None,
         "target_destination": extra.get("target_destination") or lead.preferred_country,
         "target_destination_iso2": extra.get("target_destination_iso2"),
         "target_destination_iso2s": list(extra.get("target_destination_iso2s") or (
@@ -195,6 +238,8 @@ def build_offline_lead_list_item(lead: Lead, db: Session | None = None) -> dict[
         "city": location.get("city"),
         "state": location.get("state"),
         "zip_code": location.get("zip_code"),
+        "address_line_1": location.get("address_line_1"),
+        "address_line_2": location.get("address_line_2"),
         "country": country_name,
         "country_iso2": country_iso2,
         "degree": education.get("degree"),
@@ -212,10 +257,12 @@ def build_offline_lead_list_item(lead: Lead, db: Session | None = None) -> dict[
         "age": _compute_age(dob if isinstance(dob, str) else None),
         "created_at": lead.created_at.isoformat() if lead.created_at else None,
         "booking_count": 0,
+        "followup_count": 0,
     }
 
 
-def _base_offline_query(db: Session):
+def _base_manual_offline_query(db: Session):
+    """Offline / Express rows only (create/edit via All Leads form)."""
     return db.query(Lead).filter(
         or_(
             Lead.source == OFFLINE_SOURCE,
@@ -225,10 +272,32 @@ def _base_offline_query(db: Session):
     )
 
 
+def _base_all_leads_query(db: Session):
+    """All Leads list: Offline, Express, and Meta (Facebook/Instagram)."""
+    return db.query(Lead).filter(
+        or_(
+            Lead.source == OFFLINE_SOURCE,
+            Lead.source == EXPRESS_SOURCE,
+            Lead.channel == LeadChannel.OFFLINE,
+            Lead.source.in_(META_SOURCES),
+            Lead.meta_leadgen_id.isnot(None),
+        )
+    )
+
+
+def _base_offline_query(db: Session):
+    """Backward-compatible alias for manual offline/express rows."""
+    return _base_manual_offline_query(db)
+
+
 def _apply_status_filter(query, status: str | None):
     normalized = (status or "ALL").strip().upper().replace("-", "_").replace(" ", "_")
     if normalized in {"", "ALL", "ALL_PROSPECTS"}:
         return query
+    if normalized in {"ACTIVE_LEAD", "ACTIVE_LEADS", "ACTIVE"}:
+        return query.filter(Lead.archived_at.is_(None))
+    if normalized in {"OFFLINE", "OFFLINE_LEADS", "OFFLINE_LEAD"}:
+        return query.filter(Lead.source == OFFLINE_SOURCE)
     if normalized in {"AI_ACTIVE", "AIACTIVE"}:
         return query.filter(
             cast(Lead.stage, String).ilike("%AI_ACTIVE%"),
@@ -277,7 +346,7 @@ def list_offline_leads(
 ) -> dict[str, Any]:
     safe_page = max(1, page)
     safe_page_size = max(1, min(page_size, 100))
-    query = _base_offline_query(db)
+    query = _base_all_leads_query(db)
 
     if q and q.strip():
         term = f"%{q.strip()}%"
@@ -306,11 +375,16 @@ def list_offline_leads(
     offset = (safe_page - 1) * safe_page_size
     rows = query.offset(offset).limit(safe_page_size).all()
 
-    booking_counts = _count_bookings_for_lead_ids(db, [row.id for row in rows])
+    lead_ids = [row.id for row in rows]
+    booking_counts = _count_bookings_for_lead_ids(db, lead_ids)
+    from app.services.counselor_followup_service import count_followups_for_lead_ids
+
+    followup_counts = count_followups_for_lead_ids(db, lead_ids)
     items = []
     for row in rows:
         item = build_offline_lead_list_item(row, db)
         item["booking_count"] = booking_counts.get(row.id, 0)
+        item["followup_count"] = followup_counts.get(row.id, 0)
         items.append(item)
 
     return {
@@ -335,7 +409,7 @@ def create_offline_lead(db: Session, payload: OfflineLeadCreate) -> Lead:
         if existing_phone:
             raise HTTPException(status_code=409, detail="A lead with this phone number already exists.")
 
-    if payload.location.country_iso2:
+    if payload.location and payload.location.country_iso2:
         if not get_country_by_iso2(db, payload.location.country_iso2):
             raise HTTPException(status_code=400, detail="Select a valid location country.")
 
@@ -367,9 +441,9 @@ def create_offline_lead(db: Session, payload: OfflineLeadCreate) -> Lead:
 
 
 def get_offline_lead(db: Session, lead_id: int) -> Lead:
-    lead = _base_offline_query(db).filter(Lead.id == lead_id).first()
+    lead = _base_all_leads_query(db).filter(Lead.id == lead_id).first()
     if not lead:
-        raise HTTPException(status_code=404, detail="Offline lead not found.")
+        raise HTTPException(status_code=404, detail="Lead not found.")
     return lead
 
 
@@ -418,7 +492,7 @@ def update_offline_lead(db: Session, lead_id: int, payload: OfflineLeadCreate) -
     if existing_phone:
         raise HTTPException(status_code=409, detail="A lead with this phone number already exists.")
 
-    if payload.location.country_iso2:
+    if payload.location and payload.location.country_iso2:
         if not get_country_by_iso2(db, payload.location.country_iso2):
             raise HTTPException(status_code=400, detail="Select a valid location country.")
 
@@ -428,7 +502,10 @@ def update_offline_lead(db: Session, lead_id: int, payload: OfflineLeadCreate) -
     study_interest = resolve_study_interest_fields(db, payload)
 
     extra = _extract_additional(lead)
+    inactive_previous_stage = extra.get("inactive_previous_stage")
     merged = {**extra, **_build_additional_data(db, payload)}
+    if inactive_previous_stage is not None:
+        merged["inactive_previous_stage"] = inactive_previous_stage
 
     if not payload.middle_name or not payload.middle_name.strip():
         merged.pop("middle_name", None)
@@ -436,6 +513,8 @@ def update_offline_lead(db: Session, lead_id: int, payload: OfflineLeadCreate) -
         merged.pop("date_of_birth", None)
     if not payload.education or not resolve_education_payload(db, payload.education):
         merged.pop("education", None)
+    if not (payload.location and payload.location.has_content()):
+        merged.pop("location", None)
 
     lead.full_name = full_name
     lead.email = email
@@ -445,6 +524,68 @@ def update_offline_lead(db: Session, lead_id: int, payload: OfflineLeadCreate) -
     lead.current_location = location_str
     lead.additional_data = merged
 
+    db.commit()
+    db.refresh(lead)
+    return lead
+
+
+def set_offline_lead_active(
+    db: Session,
+    lead_id: int,
+    *,
+    is_active: bool,
+    reasons: list[str],
+    changed_by_user_id: int | None = None,
+    changed_by: str | None = None,
+) -> Lead:
+    """Toggle lead active/inactive without deleting; write an audit log row."""
+    from app.constants.lead_status_change import normalize_status_reasons
+    from app.models.lead_status_change_log import LeadStatusChangeLog
+
+    lead = get_offline_lead(db, lead_id)
+    normalized_reasons = normalize_status_reasons(is_active, reasons)
+    if not normalized_reasons:
+        raise HTTPException(status_code=400, detail="Select at least one valid reason.")
+
+    previous_status = "inactive" if lead.archived_at is not None else "active"
+    new_status = "active" if is_active else "inactive"
+    if previous_status == new_status:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Lead is already {new_status}.",
+        )
+
+    extra = _extract_additional(lead)
+
+    if is_active:
+        lead.archived_at = None
+        previous = extra.pop("inactive_previous_stage", None)
+        if previous:
+            try:
+                lead.stage = LeadStage(previous)
+            except ValueError:
+                lead.stage = LeadStage.AI_ACTIVE
+        elif lead.stage == LeadStage.ARCHIVE:
+            lead.stage = LeadStage.AI_ACTIVE
+        lead.additional_data = extra or None
+    else:
+        stage_value = lead.stage.value if hasattr(lead.stage, "value") else str(lead.stage or "")
+        if "ARCHIVE" not in stage_value.upper():
+            extra["inactive_previous_stage"] = stage_value
+            lead.stage = LeadStage.ARCHIVE
+        lead.additional_data = extra
+        lead.archived_at = datetime.now(timezone.utc)
+
+    db.add(
+        LeadStatusChangeLog(
+            lead_id=lead.id,
+            previous_status=previous_status,
+            new_status=new_status,
+            reasons=normalized_reasons,
+            changed_by_user_id=changed_by_user_id,
+            changed_by=(changed_by or "").strip() or None,
+        )
+    )
     db.commit()
     db.refresh(lead)
     return lead

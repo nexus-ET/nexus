@@ -5,7 +5,7 @@ import asyncio
 import json
 
 from app.core.security import decode_access_token
-from app.db.database import SessionLocal
+from app.db.database import SessionLocal, safe_close_session
 from app.models.user import User
 from app.services.exception_log_service import (
     SEVERITY_ERROR,
@@ -14,7 +14,7 @@ from app.services.exception_log_service import (
 from app.services.navigation_rbac import (
     RBAC_EXEMPT_PREFIXES,
     RBAC_PUBLIC_AUTH_PREFIXES,
-    check_page_access,
+    check_any_page_access,
     resolve_page_routes_for_api_path,
 )
 
@@ -27,9 +27,15 @@ def _record_rbac_denial(
     user_label: str = "SYSTEM",
     user_id: int | None = None,
 ) -> None:
-    """Ensure auth/RBAC denials still appear in Exception Report."""
+    """Ensure RBAC denials still appear in Exception Report.
+
+    Routine 401s (missing/expired/invalid Bearer) are the auth gate working as
+    designed — do not flood Exception Report. Still record 403 access denials.
+    """
     path = request.url.path
     if path.startswith("/api/v1/reports/exception-logs"):
+        return
+    if status_code == 401:
         return
     record_exception_event_isolated(
         severity=SEVERITY_ERROR,
@@ -77,7 +83,7 @@ def _authorize_request(token: str, page_routes: list[str]) -> tuple[JSONResponse
                 int(user.id),
             )
 
-        if not any(check_page_access(db, user, page_route) for page_route in page_routes):
+        if not check_any_page_access(db, user, page_routes):
             label = (user.email or user.full_name or f"User #{user.id}")[:255]
             return (
                 JSONResponse(
@@ -89,7 +95,7 @@ def _authorize_request(token: str, page_routes: list[str]) -> tuple[JSONResponse
             )
         return None, (user.email or user.full_name or f"User #{user.id}")[:255], int(user.id)
     finally:
-        db.close()
+        safe_close_session(db)
 
 
 class NavigationRBACMiddleware(BaseHTTPMiddleware):

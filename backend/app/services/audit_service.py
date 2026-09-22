@@ -60,27 +60,74 @@ def log_action(action_type: str, target_resource: str, resource_id_key: str | No
             method: str,
             status: str,
             extra: dict[str, Any] | None = None,
+            isolated: bool = False,
         ) -> None:
-            if db is None:
-                return
-            write_audit_log(
-                db,
-                user_id=current_user.id if current_user else None,
-                action_type=action_type,
-                target_resource=target_resource,
-                resource_id=resource_id,
-                request=request,
-                status=status,
-                details=build_audit_details(
-                    method=method,
-                    api_path=api_path,
-                    status_code=200 if status == "success" else 500,
+            """Persist an audit row.
+
+            ``isolated=True`` opens a short-lived session so a poisoned request
+            session (PendingRollbackError after a handler failure) cannot mask
+            the original exception or leave the request DB unusable.
+            """
+            from app.db.database import SessionLocal, safe_close_session
+
+            write_db = db
+            owned = False
+            if isolated or write_db is None:
+                write_db = SessionLocal()
+                owned = True
+            try:
+                write_audit_log(
+                    write_db,
+                    user_id=current_user.id if current_user else None,
                     action_type=action_type,
-                    referer=request.headers.get("referer") if request else None,
-                    ui_page_header=request.headers.get("x-nexus-page") if request else None,
-                    extra=extra,
-                ),
-            )
+                    target_resource=target_resource,
+                    resource_id=resource_id,
+                    request=request,
+                    status=status,
+                    details=build_audit_details(
+                        method=method,
+                        api_path=api_path,
+                        status_code=200 if status == "success" else 500,
+                        action_type=action_type,
+                        referer=request.headers.get("referer") if request else None,
+                        ui_page_header=request.headers.get("x-nexus-page") if request else None,
+                        extra=extra,
+                    ),
+                )
+            finally:
+                if owned:
+                    safe_close_session(write_db)
+
+        def _safe_failure_audit(
+            *,
+            db: Session | None,
+            request: Request | None,
+            current_user: User | None,
+            resource_id: str | None,
+            api_path: str,
+            method: str,
+            exc: BaseException,
+        ) -> None:
+            if db is not None:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            try:
+                _write(
+                    db=db,
+                    request=request,
+                    current_user=current_user,
+                    resource_id=resource_id,
+                    api_path=api_path,
+                    method=method,
+                    status="failed",
+                    extra={"error": str(exc)[:500]},
+                    isolated=True,
+                )
+            except Exception:
+                # Never replace the handler's exception with an audit failure.
+                pass
 
         if inspect.iscoroutinefunction(func):
 
@@ -100,15 +147,14 @@ def log_action(action_type: str, target_resource: str, resource_id_key: str | No
                     )
                     return result
                 except Exception as exc:
-                    _write(
+                    _safe_failure_audit(
                         db=db,
                         request=request,
                         current_user=current_user,
                         resource_id=resource_id,
                         api_path=api_path,
                         method=method,
-                        status="failed",
-                        extra={"error": str(exc)},
+                        exc=exc,
                     )
                     raise
 
@@ -136,15 +182,14 @@ def log_action(action_type: str, target_resource: str, resource_id_key: str | No
                 )
                 return result
             except Exception as exc:
-                _write(
+                _safe_failure_audit(
                     db=db,
                     request=request,
                     current_user=current_user,
                     resource_id=resource_id,
                     api_path=api_path,
                     method=method,
-                    status="failed",
-                    extra={"error": str(exc)},
+                    exc=exc,
                 )
                 raise
 

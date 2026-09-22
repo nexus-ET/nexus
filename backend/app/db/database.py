@@ -1,52 +1,760 @@
-from sqlalchemy import create_engine, inspect, text
+import errno
+import logging
+import os
+import socket
+import threading
+import time
+from urllib.parse import urlparse
+
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, sessionmaker
 from app.config import normalize_database_url, settings
 
+_db_logger = logging.getLogger("nexus.db")
+
+
+def is_ssh_tunnel_database_url(database_url: str) -> bool:
+    """True when DATABASE_URL targets a local SSH DB forward (Hostinger :15432)."""
+    url = (database_url or "").strip().lower()
+    if not url or url.startswith("sqlite"):
+        return False
+    local_hosts = ("127.0.0.1", "localhost", "[::1]")
+    if not any(h in url for h in local_hosts):
+        return False
+    port = (os.getenv("NEXUS_SSH_LOCAL_PORT") or "").strip() or "15432"
+    return f":{port}" in url or ":15432" in url
+
 
 def _engine_pool_recycle(database_url: str) -> int:
     if database_url.startswith("sqlite"):
         return 1800
+    # SSH tunnels flap on Windows sleep / NAT idle; recycle well under typical idle kills.
+    if is_ssh_tunnel_database_url(database_url):
+        return 90
     # Neon/serverless Postgres terminates idle connections; recycle before that.
-    # Fine on Hostinger too (idle TCP / SSH-tunnel drops).
     return 300
 
 
+def _engine_connect_timeout(database_url: str) -> int:
+    # Hostinger via SSH often needs >20s under concurrent pool pressure; cold
+    # connects alone are often 6–9s, and contended opens can exceed 20s.
+    env_raw = (os.getenv("NEXUS_DB_CONNECT_TIMEOUT") or "").strip()
+    if env_raw.isdigit():
+        return max(1, int(env_raw))
+    if is_ssh_tunnel_database_url(database_url):
+        return 45
+    return 10
+
+
 def _engine_connect_args(database_url: str) -> dict:
-    """Optional libpq options — keep empty unless PG_STATEMENT_TIMEOUT_MS is set."""
+    """psycopg connect kwargs — connect_timeout always; statement_timeout if configured."""
     if database_url.startswith("sqlite"):
         return {}
+    # Fail fast when the SSH tunnel (or remote DB) is down instead of hanging ~minutes.
+    args: dict = {"connect_timeout": _engine_connect_timeout(database_url)}
+    # Keepalive knobs (libpq / psycopg3) help detect dead tunnel sockets mid-query.
+    if is_ssh_tunnel_database_url(database_url):
+        args["keepalives"] = 1
+        args["keepalives_idle"] = 30
+        args["keepalives_interval"] = 10
+        args["keepalives_count"] = 3
     timeout_ms = int(getattr(settings, "PG_STATEMENT_TIMEOUT_MS", 0) or 0)
-    if timeout_ms <= 0:
-        return {}
-    # Applied on every new connection (pool checkout of a fresh conn).
-    return {"options": f"-c statement_timeout={timeout_ms}"}
+    if timeout_ms > 0:
+        # Applied on every new connection (pool checkout of a fresh conn).
+        args["options"] = f"-c statement_timeout={timeout_ms}"
+    return args
 
 
 # Belt-and-suspenders: Settings already normalizes, but re-apply so engine never
 # sees Neon console channel_binding=require or bare postgresql:// (psycopg2).
 _DATABASE_URL = normalize_database_url(settings.DATABASE_URL)
+_IS_SSH_TUNNEL_DB = is_ssh_tunnel_database_url(_DATABASE_URL)
+
+_TUNNEL_WAIT_HINT = (
+    "powershell -ExecutionPolicy Bypass -File .\\start-hostinger-db-tunnel.ps1 "
+    "(do not -ForceRestart while the backend is waiting — that kills a recovering ssh)"
+)
+_TUNNEL_RESTART_HINT = (
+    "powershell -ExecutionPolicy Bypass -File .\\start-hostinger-db-tunnel.ps1 -ForceRestart"
+)
+_TUNNEL_DOWN_LOG_INTERVAL_SEC = 15.0
+# Local refused is instant; 0.4s was too short after ForceRestart (TIME_WAIT /
+# ssh still binding) and was logged as "not listening" when the real failure
+# was ConnectionTimeout (forward accepting, remote Postgres still warming).
+_TUNNEL_TCP_PROBE_SEC = 1.0
+_TUNNEL_CLOSED_ERROR_AFTER = 3
+_last_tunnel_down_log_monotonic = 0.0
+_tunnel_closed_streak = 0
+_in_db_wait = threading.local()
+_tunnel_recover_lock = threading.Lock()
+_tunnel_recover_in_progress = False
+_tunnel_recover_waiters = threading.Event()
+_tunnel_recover_waiters.set()
+_tunnel_recover_ok = True
+# Cap simultaneous new TCP opens through one Windows ssh.exe forward.
+_TUNNEL_CONNECT_GATE = threading.Semaphore(3)
+_SCANX_DB_SLOTS = threading.BoundedSemaphore(2 if _IS_SSH_TUNNEL_DB else 8)
+# Jobs wait in line (OCR already ran); API GETs keep a short slot wait.
+_SCANX_SLOT_TIMEOUT_SEC = 120.0 if _IS_SSH_TUNNEL_DB else 30.0
+# Fail-fast for SPA (/me). ScanX jobs use the long value via thread-local.
+_API_CONNECT_GATE_TIMEOUT_SEC = 12.0
+_SCANX_CONNECT_GATE_TIMEOUT_SEC = 120.0
+_scanx_long_connect_gate = threading.local()
+
+
+def ssh_tunnel_local_port() -> int:
+    raw = (os.getenv("NEXUS_SSH_LOCAL_PORT") or "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return 15432
+
+
+def _classify_tunnel_tcp_error(exc: BaseException) -> str:
+    """Map a TCP OSError to 'closed' (refused) or 'warming' (timeout/reset)."""
+    if isinstance(exc, ConnectionRefusedError):
+        return "closed"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "warming"
+    err = getattr(exc, "winerror", None)
+    if err is None:
+        err = getattr(exc, "errno", None)
+    # Windows WSA* plus POSIX. Timeout/reset ≠ nothing listening.
+    if err in (errno.ECONNREFUSED, 10061):
+        return "closed"
+    return "warming"
+
+
+def probe_ssh_tunnel_tcp(*, timeout: float | None = None) -> str:
+    """Return 'up', 'closed' (connection refused), or 'warming' (timeout/reset).
+
+    Uses connect, never bind — binding would race ssh.exe for :15432.
+    A TCP timeout is not 'closed': after ForceRestart the port can sit in
+    TIME_WAIT, and a live -L forward can accept slowly while Postgres warms.
+    """
+    global _tunnel_closed_streak
+    if not _IS_SSH_TUNNEL_DB:
+        _tunnel_closed_streak = 0
+        return "up"
+    wait = _TUNNEL_TCP_PROBE_SEC if timeout is None else timeout
+    try:
+        with socket.create_connection(("127.0.0.1", ssh_tunnel_local_port()), timeout=wait):
+            _tunnel_closed_streak = 0
+            return "up"
+    except OSError as exc:
+        state = _classify_tunnel_tcp_error(exc)
+        if state == "closed":
+            _tunnel_closed_streak += 1
+        else:
+            _tunnel_closed_streak = 0
+        return state
+
+
+def is_ssh_tunnel_tcp_up(*, timeout: float | None = None) -> bool:
+    """True when 127.0.0.1:<ssh-local-port> completed a TCP handshake."""
+    return probe_ssh_tunnel_tcp(timeout=timeout) == "up"
+
+
+def log_ssh_tunnel_down(*, detail: str = "", state: str = "closed") -> None:
+    """Rate-limited tunnel status. WARNING while warming or early refused.
+
+    ERROR only when the port is truly refused for several consecutive probes
+    and we are not inside wait_for_database. Never suggests -ForceRestart
+    during bootstrap wait (that drops a recovering ssh).
+    """
+    global _last_tunnel_down_log_monotonic
+    now = time.monotonic()
+    if (
+        _last_tunnel_down_log_monotonic
+        and now - _last_tunnel_down_log_monotonic < _TUNNEL_DOWN_LOG_INTERVAL_SEC
+    ):
+        return
+    _last_tunnel_down_log_monotonic = now
+    extra = f" ({detail})" if detail else ""
+    port = ssh_tunnel_local_port()
+    in_wait = bool(getattr(_in_db_wait, "active", False))
+    truly_closed = state == "closed" and _tunnel_closed_streak >= _TUNNEL_CLOSED_ERROR_AFTER
+
+    if state == "warming":
+        _db_logger.warning(
+            "[db-tunnel] SSH tunnel still warming on 127.0.0.1:%s%s — "
+            "wait for the start-dev watchdog; do not -ForceRestart mid-bootstrap. Hint: %s",
+            port,
+            extra,
+            _TUNNEL_WAIT_HINT,
+        )
+        return
+    if truly_closed and not in_wait:
+        _db_logger.error(
+            "[db-tunnel] SSH tunnel is down on 127.0.0.1:%s%s — restart: %s",
+            port,
+            extra,
+            _TUNNEL_RESTART_HINT,
+        )
+        return
+    _db_logger.warning(
+        "[db-tunnel] SSH tunnel not listening yet on 127.0.0.1:%s%s — waiting. %s",
+        port,
+        extra,
+        _TUNNEL_WAIT_HINT,
+    )
+
+
+def _quick_select1(*, timeout: int = 4) -> bool:
+    """One-off SELECT 1 that does not use the SQLAlchemy pool."""
+    import psycopg
+    from sqlalchemy.engine.url import make_url
+
+    url = make_url(_DATABASE_URL)
+    try:
+        conn = psycopg.connect(
+            host=url.host,
+            port=url.port or 5432,
+            dbname=url.database,
+            user=url.username,
+            password=url.password,
+            connect_timeout=max(1, int(timeout)),
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            return True
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
+def recover_ssh_tunnel(*, reason: str = "") -> bool:
+    """Single-flight wait until TCP + SELECT 1 succeed (or ~12s). Stampede-safe.
+
+    Does not spawn ssh.exe — start-dev.ps1 / start-hostinger-db-tunnel.ps1
+    watchdog owns the single :15432 forward. A second -L here would dual-bind
+    and ForceRestart would drop a tunnel that is already recovering.
+    """
+    global _tunnel_recover_in_progress, _tunnel_recover_ok
+    if not _IS_SSH_TUNNEL_DB:
+        return True
+    if probe_ssh_tunnel_tcp() == "up" and _quick_select1(timeout=3):
+        return True
+
+    with _tunnel_recover_lock:
+        if _tunnel_recover_in_progress:
+            waiter = True
+        else:
+            waiter = False
+            _tunnel_recover_in_progress = True
+            _tunnel_recover_waiters.clear()
+
+    if waiter:
+        _tunnel_recover_waiters.wait(timeout=20)
+        return bool(_tunnel_recover_ok)
+
+    ok = False
+    try:
+        tcp = probe_ssh_tunnel_tcp()
+        if tcp != "up":
+            log_ssh_tunnel_down(detail=reason or tcp, state=tcp)
+        dispose_db_pool(reason=reason or "tunnel recover")
+        deadline = time.monotonic() + 12.0
+        while time.monotonic() < deadline:
+            tcp = probe_ssh_tunnel_tcp()
+            if tcp != "up":
+                log_ssh_tunnel_down(detail=reason or tcp, state=tcp)
+                time.sleep(0.6)
+                continue
+            if _quick_select1(timeout=4):
+                dispose_db_pool(reason=f"recovered {reason}".strip())
+                ok = True
+                break
+            time.sleep(0.6)
+        if not ok:
+            tcp = probe_ssh_tunnel_tcp()
+            if tcp != "up":
+                log_ssh_tunnel_down(detail=reason or "SELECT 1 failed", state=tcp)
+            else:
+                _db_logger.warning(
+                    "[db-tunnel] SELECT 1 failed with port listening (%s)",
+                    reason or "tunnel recover",
+                )
+        _tunnel_recover_ok = ok
+        return ok
+    finally:
+        with _tunnel_recover_lock:
+            _tunnel_recover_in_progress = False
+            _tunnel_recover_waiters.set()
+
+
+def connect_gate_timeout_sec() -> float:
+    """Seconds to wait for a new-TCP slot through ssh.exe.
+
+    API / SPA checkouts fail fast (12s) so /users/me is not pinned behind OCR.
+    ScanX job threads wait much longer — enhance/classify already finished and
+    the file is fine; a 12s leftover must not mark the document failed.
+    """
+    if getattr(_scanx_long_connect_gate, "active", False):
+        return _SCANX_CONNECT_GATE_TIMEOUT_SEC
+    return _API_CONNECT_GATE_TIMEOUT_SEC
+
+
+def open_scanx_session(*, timeout: float | None = None, optional: bool = False):
+    """SessionLocal checkout that cannot take more than the ScanX slot cap.
+
+    On the SSH tunnel this reserves pool capacity for SPA GETs (/me, permissions).
+    Job checkouts (default timeout) also opt into the long connect-gate wait so
+    a busy ssh.exe forward queues OCR resume instead of TimeoutError.
+    Heartbeats use a short optional timeout and keep the API fail-fast gate.
+    """
+    wait = _SCANX_SLOT_TIMEOUT_SEC if timeout is None else timeout
+    got = _SCANX_DB_SLOTS.acquire(timeout=max(0.0, wait))
+    if not got:
+        if optional:
+            return None
+        raise TimeoutError("ScanX DB slot timeout")
+    # Optional/short checkouts (OCR heartbeats) must not hold the SPA fail-fast
+    # gate for 120s. Job sessions stay flagged until safe_close_session so a
+    # lazy first execute still gets the long wait.
+    long_gate = (not optional) and wait >= 15.0
+    if long_gate:
+        _scanx_long_connect_gate.active = True
+    try:
+        db = SessionLocal()
+        db.info["_scanx_slot"] = True
+        db.info["_scanx_long_gate"] = long_gate
+        return db
+    except Exception:
+        if long_gate:
+            _scanx_long_connect_gate.active = False
+        _SCANX_DB_SLOTS.release()
+        raise
+
 
 # Pool notes for remote / SSH-tunnel Postgres:
-# - pool_pre_ping=True costs one SELECT 1 after idle; over an SSH tunnel that is
-#   often 200–500 ms RTT (server-side work is ~0.01 ms). Prefer backend-on-VPS
-#   or firewall-to-home-IP when developing against Hostinger.
-# - pool_size=10 is appropriate for local single-worker uvicorn; Hostinger does
-#   not use Neon's pooler endpoint, so this is direct Postgres connections.
+# - pool_pre_ping=True discards dead conns after tunnel flap (SELECT 1 on checkout).
+# - pool_recycle=90 (tunnel) / 300 (other) refreshes sockets before NAT/SSH idle kills.
+# - connect_timeout=20 (tunnel, override via NEXUS_DB_CONNECT_TIMEOUT) balances
+#   fail-fast vs Hostinger RTT spikes that used to false-timeout at 5s.
+# - Prefer backend-on-VPS or firewall-to-home-IP when developing against Hostinger
+#   (tunnel RTT is often 200–500 ms per query).
+# - Direct/local Postgres: pool_size=15 / max_overflow=25 for ScanX threads.
+# - SSH tunnel: keep the multiplex modest (default 5+5). Opening 40 sockets through
+#   one Windows ssh.exe forward saturates the tunnel → ConnectionTimeout storms
+#   on cheap GETs like /leads/{id}/followups. 3+2 was too tight for document-readiness
+#   (ScanX list + FlowX master strip + prospects typeahead + inbox in parallel).
+#   Override via NEXUS_DB_POOL_SIZE / NEXUS_DB_MAX_OVERFLOW if needed.
+def _engine_pool_size(database_url: str) -> tuple[int, int, int]:
+    """Return (pool_size, max_overflow, pool_timeout)."""
+    size_env = (os.getenv("NEXUS_DB_POOL_SIZE") or "").strip()
+    overflow_env = (os.getenv("NEXUS_DB_MAX_OVERFLOW") or "").strip()
+    timeout_env = (os.getenv("NEXUS_DB_POOL_TIMEOUT") or "").strip()
+    if is_ssh_tunnel_database_url(database_url):
+        size = int(size_env) if size_env.isdigit() else 5
+        overflow = int(overflow_env) if overflow_env.isdigit() else 5
+        # Fail fast so SPA GETs get 503 (and retry) instead of hanging to AbortError.
+        # Silent ScanX polls budget ~20s; 12s leaves room for one client retry.
+        timeout = int(timeout_env) if timeout_env.isdigit() else 12
+    else:
+        size = int(size_env) if size_env.isdigit() else 15
+        overflow = int(overflow_env) if overflow_env.isdigit() else 25
+        timeout = int(timeout_env) if timeout_env.isdigit() else 30
+    return max(1, size), max(0, overflow), max(5, timeout)
+
+
+DB_TEMPORARILY_BUSY_DETAIL = "Database temporarily busy; retry shortly."
+DB_TEMPORARILY_BUSY_RETRY_AFTER = "2"
+
+
+def db_temporarily_busy_headers() -> dict[str, str]:
+    """Advise clients to wait briefly before retrying a 503 pool/tunnel miss."""
+    return {"Retry-After": DB_TEMPORARILY_BUSY_RETRY_AFTER}
+
+
+def is_db_pool_pressure_error(exc_or_text: BaseException | str) -> bool:
+    """True when SQLAlchemy could not check out a pooled connection in time."""
+    if isinstance(exc_or_text, BaseException):
+        try:
+            from sqlalchemy.exc import TimeoutError as SATimeoutError
+
+            if isinstance(exc_or_text, SATimeoutError):
+                return True
+        except Exception:
+            pass
+    text = str(exc_or_text).lower()
+    return any(
+        needle in text
+        for needle in (
+            "queuepool",
+            "pool limit of size",
+            "connection timed out, timeout",
+            "scanx db slot timeout",
+            "tunnel connect gate busy",
+        )
+    )
+
+
+def should_dispose_pool_for_error(exc_or_text: BaseException | str) -> bool:
+    """Dispose pooled sockets after a tunnel flap — not after QueuePool wait timeout.
+
+    Pool timeout means connections are still in use. Disposing them kills in-flight
+    work and triggers a reconnect storm through the SSH tunnel.
+    """
+    if is_db_pool_pressure_error(exc_or_text):
+        return False
+    return is_db_tunnel_transient_error(exc_or_text)
+
+
+_TUNNEL_TRANSIENT_NEEDLES = (
+    "server closed the connection",
+    "connection refused",
+    "could not connect",
+    "connection timeout",
+    "timeout expired",
+    "consuming input failed",
+    "ssl connection has been closed",
+    "connection reset by peer",
+    "broken pipe",
+    "can't reconnect until invalid transaction",
+    "pendingrollbackerror",
+    "the connection is closed",
+    "connection is lost",
+    "network is unreachable",
+    # Postgres AdminShutdown / host kill — retryable disconnect, not app logic.
+    "adminshutdown",
+    "administrator command",
+    "terminating connection due to",
+)
+
+
+def _iter_tunnel_exceptions(exc: BaseException):
+    """Yield an exception plus its cause chain, DBAPI ``orig``, and ExceptionGroup members."""
+    seen: set[int] = set()
+    stack: list[BaseException | None] = [exc]
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        orig = getattr(current, "orig", None)
+        if isinstance(orig, BaseException):
+            stack.append(orig)
+        cause = getattr(current, "__cause__", None)
+        if isinstance(cause, BaseException):
+            stack.append(cause)
+        nested = getattr(current, "exceptions", None)
+        if nested:
+            for sub in nested:
+                if isinstance(sub, BaseException):
+                    stack.append(sub)
+
+
+def is_db_tunnel_transient_error(exc_or_text: BaseException | str) -> bool:
+    """True for Hostinger SSH-tunnel flaps / Postgres dropping the socket mid-query.
+
+    These are infrastructure noise during local ``start-dev`` — return 503 and do
+    not email Exception Report (same treatment as pool pressure).
+    """
+    if is_db_pool_pressure_error(exc_or_text):
+        return True
+    if isinstance(exc_or_text, BaseException):
+        parts = [str(part) for part in _iter_tunnel_exceptions(exc_or_text)]
+        text = "\n".join(parts).lower()
+        try:
+            from sqlalchemy.exc import PendingRollbackError
+
+            if any(isinstance(part, PendingRollbackError) for part in _iter_tunnel_exceptions(exc_or_text)):
+                return True
+        except Exception:
+            pass
+    else:
+        text = str(exc_or_text).lower()
+    return any(needle in text for needle in _TUNNEL_TRANSIENT_NEEDLES)
+
+
+def install_quiet_tunnel_logging() -> None:
+    """Stop SSH-tunnel drops from printing multi-page tracebacks.
+
+    Starlette's ServerErrorMiddleware re-raises after the 503 handler, so uvicorn
+    logs ``Exception in ASGI application`` with a full stack. SQLAlchemy's pool
+    does the same for ``Exception during reset`` when ROLLBACK hits a dead socket.
+    The request still fails; the stack is not actionable.
+    """
+    if getattr(install_quiet_tunnel_logging, "_installed", False):
+        return
+    original_handle = logging.Logger.handle
+
+    def handle(self: logging.Logger, record: logging.LogRecord) -> None:
+        exc = record.exc_info[1] if record.exc_info and record.exc_info[1] is not None else None
+        if exc is not None and is_db_tunnel_transient_error(exc):
+            text = record.msg if isinstance(record.msg, str) else ""
+            if (
+                "Exception in ASGI application" in text
+                or "Exception during reset" in text
+                or "closing connection" in text
+                or "terminating connection" in text
+            ):
+                return
+            record.exc_info = None
+            record.exc_text = None
+            if record.levelno >= logging.ERROR:
+                record.levelno = logging.WARNING
+                record.levelname = "WARNING"
+        original_handle(self, record)
+
+    logging.Logger.handle = handle  # type: ignore[method-assign]
+    install_quiet_tunnel_logging._installed = True  # type: ignore[attr-defined]
+
+
+_POOL_SIZE, _MAX_OVERFLOW, _POOL_TIMEOUT = _engine_pool_size(_DATABASE_URL)
+
+
+def _psycopg_connect_with_retry():
+    """Open a psycopg connection; retry briefly on SSH-tunnel timeouts.
+
+    Fail-fast (2s) only when the local port is truly refused. A TCP timeout
+    means the forward may still be warming — do not log "port not listening"
+    and do not cut connect_timeout to 2s (that turns a slow ssh into
+    ConnectionTimeout). Concurrent new opens are gated so a SPA stampede
+    cannot saturate one Windows ssh.exe forward.
+    """
+    import psycopg
+    from sqlalchemy.engine.url import make_url
+
+    url = make_url(_DATABASE_URL)
+    kwargs: dict = {
+        "host": url.host,
+        "port": url.port or 5432,
+        "dbname": url.database,
+        "user": url.username,
+        "password": url.password,
+        **_engine_connect_args(_DATABASE_URL),
+    }
+    attempts = 3 if _IS_SSH_TUNNEL_DB else 1
+    last_exc: BaseException | None = None
+    gate_held = False
+    if _IS_SSH_TUNNEL_DB:
+        gate_timeout = connect_gate_timeout_sec()
+        gate_held = _TUNNEL_CONNECT_GATE.acquire(timeout=gate_timeout)
+        if not gate_held:
+            raise TimeoutError("tunnel connect gate busy")
+    try:
+        for attempt in range(1, attempts + 1):
+            attempt_kwargs = dict(kwargs)
+            tcp_state = "up"
+            if _IS_SSH_TUNNEL_DB:
+                tcp_state = probe_ssh_tunnel_tcp()
+                if tcp_state == "closed":
+                    log_ssh_tunnel_down(
+                        detail="port closed before connect",
+                        state="closed",
+                    )
+                    attempt_kwargs["connect_timeout"] = 2
+                elif tcp_state == "warming":
+                    log_ssh_tunnel_down(
+                        detail="TCP timeout before connect (not closed)",
+                        state="warming",
+                    )
+                    # Keep enough time for a recovering -L; 2s was a false timeout.
+                    attempt_kwargs["connect_timeout"] = min(
+                        int(attempt_kwargs.get("connect_timeout") or 8), 8
+                    )
+                elif attempt > 1:
+                    # After a timeout/reset, fail faster so request retry can wait
+                    # for the start-dev watchdog instead of blocking 45s again.
+                    attempt_kwargs["connect_timeout"] = min(
+                        int(attempt_kwargs.get("connect_timeout") or 8), 8
+                    )
+            try:
+                return psycopg.connect(**attempt_kwargs)
+            except Exception as exc:  # noqa: BLE001 — surface after retries
+                last_exc = exc
+                msg = str(exc).lower()
+                retryable = any(
+                    n in msg
+                    for n in (
+                        "connection timeout",
+                        "timeout expired",
+                        "server closed the connection",
+                        "connection refused",
+                        "could not connect",
+                        "connection is closed",
+                        "connection is lost",
+                        "broken pipe",
+                        "connection reset",
+                    )
+                )
+                if not retryable or attempt >= attempts:
+                    if _IS_SSH_TUNNEL_DB:
+                        tcp_after = probe_ssh_tunnel_tcp()
+                        if tcp_after != "up":
+                            log_ssh_tunnel_down(
+                                detail=type(exc).__name__,
+                                state=tcp_after,
+                            )
+                    raise
+                _db_logger.warning(
+                    "[db-tunnel] connect attempt %s/%s failed (%s)%s; retrying",
+                    attempt,
+                    attempts,
+                    type(exc).__name__,
+                    ""
+                    if tcp_state != "up"
+                    else " — port is listening, remote Postgres still warming",
+                )
+                time.sleep(0.8 if tcp_state == "closed" else 1.5 * attempt)
+        assert last_exc is not None
+        raise last_exc
+    finally:
+        if gate_held:
+            _TUNNEL_CONNECT_GATE.release()
+
+
 engine = create_engine(
     _DATABASE_URL,
-    pool_size=10,
-    max_overflow=20,
-    pool_timeout=30,
+    pool_size=_POOL_SIZE,
+    max_overflow=_MAX_OVERFLOW,
+    pool_timeout=_POOL_TIMEOUT,
     pool_recycle=_engine_pool_recycle(_DATABASE_URL),
     pool_pre_ping=True,
-    connect_args=_engine_connect_args(_DATABASE_URL),
+    # Tunnel: custom creator (retries). Direct DB: default connect + connect_args.
+    **(
+        {"creator": _psycopg_connect_with_retry}
+        if _IS_SSH_TUNNEL_DB
+        else {"connect_args": _engine_connect_args(_DATABASE_URL)}
+    ),
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
+
+# Global dispose throttle — concurrent ScanX heartbeats + health checks used to
+# dispose on every ConnectionTimeout, wiping healthy sockets and causing a
+# reconnect storm through the SSH tunnel (GET /scanx/documents 500s).
+_POOL_DISPOSE_MIN_INTERVAL_SEC = 45.0
+_pool_dispose_lock = threading.Lock()
+_last_pool_dispose_monotonic = 0.0
+
+
+def dispose_db_pool(*, reason: str = "", force: bool = False) -> bool:
+    """Drop pooled connections after tunnel flap. Rate-limited unless force=True.
+
+    Returns True when dispose actually ran.
+    """
+    global _last_pool_dispose_monotonic
+    detail = f" ({reason})" if reason else ""
+    with _pool_dispose_lock:
+        now = time.monotonic()
+        elapsed = now - _last_pool_dispose_monotonic
+        if (
+            not force
+            and _last_pool_dispose_monotonic > 0
+            and elapsed < _POOL_DISPOSE_MIN_INTERVAL_SEC
+        ):
+            _db_logger.info(
+                "[db-tunnel] skip pool dispose%s — last dispose %.1fs ago (min %.0fs)",
+                detail,
+                elapsed,
+                _POOL_DISPOSE_MIN_INTERVAL_SEC,
+            )
+            return False
+        _db_logger.warning("[db-tunnel] disposing SQLAlchemy pool%s", detail)
+        engine.dispose()
+        _last_pool_dispose_monotonic = now
+        return True
+
+
+def wait_for_database(
+    *,
+    attempts: int | None = None,
+    delay_sec: float | None = None,
+    dispose_between: bool = True,
+) -> None:
+    """Block until SELECT 1 succeeds. Raises OperationalError after exhausting attempts.
+
+    For SSH-tunnel DATABASE_URL defaults to many retries so start-dev / uvicorn
+    do not accept work against a dead :15432. Early failures are WARNING; ERROR
+    only after all attempts (do not -ForceRestart while this wait is running).
+    """
+    if _DATABASE_URL.startswith("sqlite"):
+        return
+
+    if attempts is None:
+        attempts = 60 if _IS_SSH_TUNNEL_DB else 15
+    if delay_sec is None:
+        delay_sec = 2.0 if _IS_SSH_TUNNEL_DB else 1.0
+
+    host = "db"
+    try:
+        parsed = urlparse(_DATABASE_URL.replace("postgresql+psycopg://", "postgresql://", 1))
+        host = f"{parsed.hostname or '?'}:{parsed.port or 5432}"
+    except Exception:
+        pass
+
+    _in_db_wait.active = True
+    last_exc: BaseException | None = None
+    try:
+        for i in range(1, max(1, attempts) + 1):
+            try:
+                if dispose_between and i > 1:
+                    engine.dispose()
+                with engine.connect() as conn:
+                    conn.execute(text("SELECT 1"))
+                if _IS_SSH_TUNNEL_DB:
+                    _db_logger.info(
+                        "[db-tunnel] healthy SELECT 1 via %s (attempt %s)", host, i
+                    )
+                else:
+                    _db_logger.info("Database ready (%s) on attempt %s", host, i)
+                return
+            except (OperationalError, DBAPIError, OSError) as exc:
+                last_exc = exc
+                _db_logger.warning(
+                    "[db-tunnel] waiting for database %s (attempt %s/%s): %s",
+                    host,
+                    i,
+                    attempts,
+                    type(exc).__name__,
+                )
+                time.sleep(max(0.2, delay_sec))
+
+        assert last_exc is not None
+        tcp = probe_ssh_tunnel_tcp() if _IS_SSH_TUNNEL_DB else "up"
+        hint = _TUNNEL_RESTART_HINT if tcp == "closed" else _TUNNEL_WAIT_HINT
+        _db_logger.error(
+            "[db-tunnel] giving up after %s attempts — is the SSH tunnel up? Run: %s",
+            attempts,
+            hint,
+        )
+        raise last_exc
+    finally:
+        _in_db_wait.active = False
+
+
+@event.listens_for(engine, "handle_error")
+def _mark_tunnel_disconnect(context) -> None:  # type: ignore[no-untyped-def]
+    """Treat SSH-tunnel timeouts as disconnects so the pool drops the dead socket."""
+    if not _IS_SSH_TUNNEL_DB:
+        return
+    exc = context.original_exception
+    if exc is None:
+        return
+    msg = str(exc).lower()
+    if any(
+        needle in msg
+        for needle in (
+            "connection timeout",
+            "timeout expired",
+            "server closed the connection",
+            "connection refused",
+            "could not connect",
+            "broken pipe",
+            "connection reset",
+        )
+    ):
+        context.is_disconnect = True
 
 
 def init_db():
@@ -744,6 +1452,9 @@ def sync_schema_columns() -> None:
         if "marital_status" not in master_columns:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE students_master ADD COLUMN marital_status VARCHAR(20)"))
+        if "spouse_name" not in master_columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE students_master ADD COLUMN spouse_name VARCHAR(255)"))
         if "registration_data" not in master_columns:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE students_master ADD COLUMN registration_data JSON"))
@@ -850,6 +1561,25 @@ def sync_schema_columns() -> None:
                 conn.execute(
                     text("ALTER TABLE programs ADD COLUMN program_url VARCHAR(2048)")
                 )
+
+    if snap.has_table("scanx_documents"):
+        scanx_columns = snap.column_names("scanx_documents")
+        if "extracted_fields_json" not in scanx_columns:
+            with engine.begin() as conn:
+                if engine.dialect.name == "postgresql":
+                    conn.execute(
+                        text(
+                            "ALTER TABLE scanx_documents "
+                            "ADD COLUMN extracted_fields_json JSONB"
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE scanx_documents "
+                            "ADD COLUMN extracted_fields_json JSON"
+                        )
+                    )
 
     _ensure_program_major_mapping_sub_uniqueness()
 
@@ -999,30 +1729,78 @@ def migrate_audit_logs_schema() -> None:
             conn.execute(text("ALTER TABLE audit_logs ADD COLUMN sync_mode VARCHAR(20)"))
 
 
-def safe_close_session(db: Session) -> None:
-    """Close a session without surfacing rollback errors on dead connections."""
+def _release_scanx_slot(db: Session | None) -> None:
+    if db is None:
+        return
     try:
-        db.close()
-    except (OperationalError, DBAPIError):
+        held = bool(db.info.pop("_scanx_slot", False))
+        long_gate = bool(db.info.pop("_scanx_long_gate", False))
+    except Exception:
+        held = False
+        long_gate = False
+    if long_gate:
+        _scanx_long_connect_gate.active = False
+    if held:
+        try:
+            _SCANX_DB_SLOTS.release()
+        except ValueError:
+            pass
+
+
+def safe_close_session(db: Session) -> None:
+    """Close a session without surfacing rollback errors on dead connections.
+
+    ``Session.close()`` sends ROLLBACK. When the SSH tunnel has already dropped
+    the socket, that ROLLBACK raises OperationalError and Starlette logs a full
+    traceback on the way out of middleware. Invalidate the connection instead.
+    """
+    try:
+        try:
+            db.close()
+            return
+        except Exception:
+            pass
         try:
             db.invalidate()
         except Exception:
             pass
+        try:
+            db.close()
+        except Exception:
+            pass
+    finally:
+        _release_scanx_slot(db)
 
 
 def ensure_db_connection(db: Session) -> None:
     """Ping and recover pooled connections after long idle periods (e.g. Meta sync)."""
     try:
         db.execute(text("SELECT 1"))
-    except (OperationalError, DBAPIError):
-        db.rollback()
-        db.invalidate()
+        return
+    except (OperationalError, DBAPIError) as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        try:
+            db.invalidate()
+        except Exception:
+            pass
+        if _IS_SSH_TUNNEL_DB and should_dispose_pool_for_error(exc):
+            dispose_db_pool(reason="ensure_db_connection ping failed")
         db.execute(text("SELECT 1"))
 
 
 def get_db():
+    """Yield a DB session. pool_pre_ping recovers dead sockets on checkout."""
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         safe_close_session(db)

@@ -28,7 +28,6 @@ import {
   UserCog,
   Users,
   UserSearch,
-  Zap,
 } from 'lucide-react';
 import {
   ACADEMIA_HUB_SECTIONS,
@@ -120,28 +119,17 @@ function studentPipelineLink(item: (typeof STUDENT_PIPELINE_NAV)[number]): NavMe
   };
 }
 
-const OFFLINE_LEADS_MEGA_GROUP: NavMegaGroup = {
-  title: 'Offline Leads',
-  links: [
-    {
-      path: '/express-leads',
-      label: 'Express Leads',
-      description: 'Quick capture for walk-in and phone leads',
-      icon: Zap,
-    },
-    {
-      path: '/offline-leads',
-      label: 'Offline Leads',
-      description: 'Imported offline leads',
-      icon: Inbox,
-    },
-  ],
-};
-
 const LEADS_NAV_GROUPS: NavMegaGroup[] = [
   {
-    title: 'Online Leads',
+    // Flat list — no "Online Leads" / "All Leads" section headings.
+    title: '',
     links: [
+      {
+        path: '/offline-leads',
+        label: 'All Leads',
+        description: 'Walk-in, phone, and imported leads',
+        icon: Inbox,
+      },
       {
         path: '/ai-active',
         label: 'AI Active',
@@ -195,7 +183,15 @@ export function getAppNavModules(ctx: NavAccessContext): NavMegaModule[] {
     {
       id: 'leads',
       label: 'Leads',
-      activePrefixes: ['/ai-active', '/handoffs', '/prospects', '/archive', '/quarantine'],
+      activePrefixes: [
+        '/ai-active',
+        '/handoffs',
+        '/prospects',
+        '/archive',
+        '/quarantine',
+        '/offline-leads',
+        '/express-leads',
+      ],
       featured: [],
       groups: LEADS_NAV_GROUPS,
       sidebarSections: LEADS_NAV_GROUPS,
@@ -203,21 +199,15 @@ export function getAppNavModules(ctx: NavAccessContext): NavMegaModule[] {
     {
       id: 'students',
       label: 'Students',
-      activePrefixes: [
-        ...STUDENT_PIPELINE_NAV.map(item => item.path),
-        '/express-leads',
-        '/offline-leads',
-      ],
+      activePrefixes: [...STUDENT_PIPELINE_NAV.map(item => item.path)],
       featured: [],
       groups: [
-        OFFLINE_LEADS_MEGA_GROUP,
         ...STUDENT_PIPELINE_NAV_GROUPS.map(group => ({
           title: group.label,
           links: group.items.map(studentPipelineLink),
         })),
       ],
       sidebarSections: [
-        OFFLINE_LEADS_MEGA_GROUP,
         ...STUDENT_PIPELINE_NAV_GROUPS.map(group => ({
           title: group.label,
           links: group.items.map(studentPipelineLink),

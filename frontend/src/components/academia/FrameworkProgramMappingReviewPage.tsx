@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckSquare, Loader2, Square } from 'lucide-react';
-import { apiFetch } from '../../utils/api';
+import { apiFetch, API_MAPPING_APPLY_TIMEOUT_MS } from '../../utils/api';
 import { fetchAcademiaListItems } from '../../utils/academiaList';
+import { notifyPemMappingsChanged } from '../../utils/pemMappingEvents';
 import type { EducationMajorRecord } from '../../types/educationMajor';
 import type { EducationSubMajorRecord } from '../../types/educationSubMajor';
 import SearchableSelect from './SearchableSelect';
@@ -55,7 +56,12 @@ export interface FrameworkProgramMappingReviewConfig {
   description: string;
   embeddedDescription: string;
   suggestionsEndpoint: string;
-  bulkApplyScope: { nz_scope_only?: boolean; ca_scope_only?: boolean };
+  bulkApplyScope: {
+    nz_scope_only?: boolean;
+    ca_scope_only?: boolean;
+    us_scope_only?: boolean;
+    de_scope_only?: boolean;
+  };
   loadingLabel: string;
   loadErrorLabel: string;
 }
@@ -95,6 +101,16 @@ const idsEqual = (a: RowOverride, b: RowOverride): boolean =>
   a.education_major_id === b.education_major_id &&
   a.education_sub_major_id === b.education_sub_major_id;
 
+const mappingWouldChange = (
+  item: ProgramMappingSuggestion,
+  ids: RowOverride
+): boolean => {
+  if (!ids.education_major_id) return false;
+  if (item.current_education_major_id == null) return true;
+  if (item.current_education_major_id !== ids.education_major_id) return true;
+  return (item.current_education_sub_major_id ?? null) !== (ids.education_sub_major_id ?? null);
+};
+
 const FrameworkProgramMappingReviewPage: React.FC<{
   config: FrameworkProgramMappingReviewConfig;
   embedded?: boolean;
@@ -108,7 +124,7 @@ const FrameworkProgramMappingReviewPage: React.FC<{
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [overrides, setOverrides] = useState<Record<string, RowOverride>>({});
   const [institutionFilter, setInstitutionFilter] = useState('');
-  const [showInapplicable, setShowInapplicable] = useState(false);
+  const [hideInapplicable, setHideInapplicable] = useState(false);
   const [catalogMajors, setCatalogMajors] = useState<EducationMajorRecord[]>([]);
   const [catalogSubMajors, setCatalogSubMajors] = useState<EducationSubMajorRecord[]>([]);
 
@@ -188,13 +204,13 @@ const FrameworkProgramMappingReviewPage: React.FC<{
   const institutionOptions = useMemo(() => {
     const seen = new Map<number, string>();
     for (const item of items) {
-      if (!showInapplicable && !item.applicable) continue;
+      if (hideInapplicable && !item.applicable) continue;
       seen.set(item.institution_id, item.institution_name);
     }
     return [...seen.entries()]
       .sort((a, b) => a[1].localeCompare(b[1]))
       .map(([id, name]) => ({ value: String(id), label: name }));
-  }, [items, showInapplicable]);
+  }, [hideInapplicable, items]);
 
   const getBaselineIds = useCallback((item: ProgramMappingSuggestion): RowOverride => {
     return {
@@ -218,9 +234,12 @@ const FrameworkProgramMappingReviewPage: React.FC<{
       const key = rowKey(item);
       const override = overrides[key];
       if (!override) return false;
-      return !idsEqual(override, getBaselineIds(item));
+      if (idsEqual(override, getBaselineIds(item))) return false;
+      const ids = getEffectiveIds(item);
+      if (idsEqual(override, getBaselineIds(item))) return false;
+      return Boolean(ids.education_major_id);
     },
-    [getBaselineIds, overrides]
+    [getBaselineIds, getEffectiveIds, overrides]
   );
 
   const filteredItems = useMemo(() => {
@@ -228,21 +247,16 @@ const FrameworkProgramMappingReviewPage: React.FC<{
       if (institutionFilter && String(item.institution_id) !== institutionFilter) {
         return false;
       }
-      if (!showInapplicable && !item.applicable) {
+      if (hideInapplicable && !item.applicable) {
         return false;
       }
       return true;
     });
-  }, [institutionFilter, items, showInapplicable]);
+  }, [hideInapplicable, institutionFilter, items]);
 
-  const canSelectItem = useCallback(
-    (item: ProgramMappingSuggestion): boolean => {
-      if (!item.program_id) return false;
-      const ids = getEffectiveIds(item);
-      return Boolean(ids.education_major_id);
-    },
-    [getEffectiveIds]
-  );
+  const canSelectItem = useCallback((item: ProgramMappingSuggestion): boolean => {
+    return Boolean(item.program_id);
+  }, []);
 
   const selectableItems = useMemo(
     () => filteredItems.filter(item => canSelectItem(item)),
@@ -254,15 +268,36 @@ const FrameworkProgramMappingReviewPage: React.FC<{
     [canSelectItem, isRowDirty, items]
   );
 
-  const applyReadyCount = useMemo(() => {
-    const keys = new Set<string>();
-    for (const item of items) {
+  const isRowQueuedForApply = useCallback(
+    (item: ProgramMappingSuggestion): boolean => {
       const key = rowKey(item);
+      return selected.has(key) || isRowDirty(item);
+    },
+    [isRowDirty, selected]
+  );
+
+  const canApply = useMemo(() => {
+    for (const item of items) {
       if (!canSelectItem(item)) continue;
-      if (selected.has(key) || isRowDirty(item)) keys.add(key);
+      if (!isRowQueuedForApply(item)) continue;
+      const ids = getEffectiveIds(item);
+      if (ids.education_major_id) return true;
     }
-    return keys.size;
-  }, [canSelectItem, isRowDirty, items, selected]);
+    return false;
+  }, [canSelectItem, getEffectiveIds, isRowQueuedForApply, items]);
+
+  const applyReadyCount = useMemo(() => {
+    let count = 0;
+    for (const item of items) {
+      if (!canSelectItem(item)) continue;
+      if (!isRowQueuedForApply(item)) continue;
+      const ids = getEffectiveIds(item);
+      if (!ids.education_major_id) continue;
+      if (!mappingWouldChange(item, ids)) continue;
+      count += 1;
+    }
+    return count;
+  }, [canSelectItem, getEffectiveIds, isRowQueuedForApply, items]);
 
   const allSelectableChecked =
     selectableItems.length > 0 && selectableItems.every(item => selected.has(rowKey(item)));
@@ -324,13 +359,12 @@ const FrameworkProgramMappingReviewPage: React.FC<{
 
     for (const item of items) {
       if (!item.program_id || !canSelectItem(item)) continue;
-      const key = rowKey(item);
-      const include = selected.has(key) || isRowDirty(item);
-      if (!include) continue;
+      if (!isRowQueuedForApply(item)) continue;
       if (seenPrograms.has(item.program_id)) continue;
       seenPrograms.add(item.program_id);
       const ids = getEffectiveIds(item);
       if (!ids.education_major_id) continue;
+      if (!mappingWouldChange(item, ids)) continue;
       payloadItems.push({
         program_id: item.program_id,
         education_major_id: ids.education_major_id,
@@ -341,7 +375,7 @@ const FrameworkProgramMappingReviewPage: React.FC<{
     if (payloadItems.length === 0) {
       setResultMessage(null);
       setError(
-        'Nothing to apply. Change a major/sub-major dropdown, or check at least one row.'
+        'Nothing to apply. Check row(s) and/or edit major/sub-major so the mapping differs from the live PEM.'
       );
       return;
     }
@@ -352,6 +386,7 @@ const FrameworkProgramMappingReviewPage: React.FC<{
     try {
       const response = await apiFetch<BulkApplyResponse>('academia/program-mappings/bulk-apply', {
         method: 'POST',
+        timeoutMs: API_MAPPING_APPLY_TIMEOUT_MS,
         body: JSON.stringify({
           items: payloadItems,
           ...config.bulkApplyScope,
@@ -372,6 +407,9 @@ const FrameworkProgramMappingReviewPage: React.FC<{
         setError(
           'API returned applied=0 with no skips. Check that major and sub-major belong together.'
         );
+      }
+      if ((response.applied ?? 0) > 0) {
+        notifyPemMappingsChanged();
       }
       await loadSuggestions({ silent: true });
     } catch (err) {
@@ -464,11 +502,11 @@ const FrameworkProgramMappingReviewPage: React.FC<{
         <label className="flex items-center gap-2 pb-2 text-sm text-text-main">
           <input
             type="checkbox"
-            checked={showInapplicable}
-            onChange={event => setShowInapplicable(event.target.checked)}
+            checked={hideInapplicable}
+            onChange={event => setHideInapplicable(event.target.checked)}
             className="rounded border-border-subtle"
           />
-          Show inapplicable / ambiguous rows
+          Hide inapplicable / ambiguous rows
         </label>
       </div>
 
@@ -499,7 +537,7 @@ const FrameworkProgramMappingReviewPage: React.FC<{
                   type="button"
                   onClick={toggleSelectAll}
                   className="inline-flex items-center gap-2 text-text-muted hover:text-text-main"
-                  title={allSelectableChecked ? 'Clear selection' : 'Select all editable rows'}
+                  title={allSelectableChecked ? 'Clear selection' : 'Select all rows in view'}
                 >
                   {allSelectableChecked ? <CheckSquare size={16} /> : <Square size={16} />}
                   Select
@@ -544,11 +582,15 @@ const FrameworkProgramMappingReviewPage: React.FC<{
                       onChange={() => toggleRow(item)}
                       className="rounded border-border-subtle disabled:opacity-40"
                       title={
-                        canSelect
-                          ? dirty
+                        !canSelect
+                          ? 'Program ID missing — cannot apply'
+                          : dirty
                             ? 'Edited — Apply will save this row even if unchecked'
-                            : 'Apply this mapping on submit'
-                          : item.apply_note || 'Not eligible for bulk apply'
+                            : !ids.education_major_id
+                              ? 'Check to queue; pick a major before Apply'
+                              : mappingWouldChange(item, ids)
+                                ? 'Apply this mapping on submit'
+                                : 'Edit dropdowns so the mapping differs from live PEM, then Apply'
                       }
                     />
                     {dirty ? (
@@ -660,19 +702,21 @@ const FrameworkProgramMappingReviewPage: React.FC<{
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="text-sm text-text-muted">
             {selected.size} selected · {dirtyItems.length} edited · {selectableItems.length}{' '}
-            editable in view
+            rows in view
             <span className="ml-1 text-xs opacity-80">
-              (Apply saves edited dropdowns and/or checked rows)
+              (Apply saves checked/edited rows with a major; unchanged live PEM rows are skipped)
             </span>
           </div>
           <button
             type="button"
             onClick={() => void handleSubmit()}
-            disabled={submitting || applyReadyCount === 0}
+            disabled={submitting || !canApply}
             title={
-              applyReadyCount === 0
-                ? 'Change a major/sub-major dropdown, or check at least one row'
-                : `Apply ${applyReadyCount} mapping(s)`
+              !canApply
+                ? 'Check row(s) and/or edit major/sub-major, then pick a major before Apply'
+                : applyReadyCount === 0
+                  ? 'Selected rows match live PEM — Apply will skip unchanged rows'
+                  : `Apply ${applyReadyCount} mapping(s)`
             }
             className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-text-dark-bg disabled:opacity-50"
           >

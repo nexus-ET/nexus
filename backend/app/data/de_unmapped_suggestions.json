@@ -1,0 +1,35 @@
+{
+  "generated_at": "2026-09-08T14:27:19.776532+00:00",
+  "revised_at": "2026-09-08T14:27:19.776532+00:00",
+  "source": "live_db_de_pem_gaps",
+  "scope": {
+    "region": "DE",
+    "institution_ids": [
+      122,
+      123,
+      124,
+      125,
+      126,
+      180,
+      181,
+      182,
+      183,
+      184,
+      185,
+      186,
+      187,
+      188,
+      189
+    ],
+    "institution_count": 15
+  },
+  "total": 0,
+  "unmapped_count": 0,
+  "major_only_count": 0,
+  "upgrade_count": 0,
+  "ambiguous_count": 0,
+  "applicable_count": 0,
+  "queue_by_institution": {},
+  "new_sub_enabled_examples": [],
+  "suggestions": []
+}

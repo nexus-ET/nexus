@@ -786,6 +786,21 @@ class DegreeAdminListResponse(BaseModel):
     total_pages: int
 
 
+class DegreeBulkDeleteRequest(BaseModel):
+    ids: list[int] = Field(..., min_length=1, max_length=100)
+    institution_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="When set, remove this institution's offering only if others remain",
+    )
+
+
+class DegreeBulkDeleteResponse(BaseModel):
+    deleted: int
+    skipped: int = 0
+    ids: list[int] = Field(default_factory=list)
+
+
 class HierarchyCourseNode(BaseModel):
     id: int
     name: str

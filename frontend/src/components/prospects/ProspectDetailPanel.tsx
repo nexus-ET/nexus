@@ -45,6 +45,7 @@ import IntakeSessionWorkspace from '../IntakeSessionWorkspace';
 import CounsellingProcessStrip from './CounsellingProcessStrip';
 import PipelineProcessStrip from './PipelineProcessStrip';
 import AdmissionApplicationsWorkspace from './AdmissionApplicationsWorkspace';
+import DocumentReadinessWorkspace from './DocumentReadinessWorkspace';
 import SubprocessShellWorkspace from './SubprocessShellWorkspace';
 import CounsellingBillingWorkspace from './CounsellingBillingWorkspace';
 import CounsellingCredentialsWorkspace from './CounsellingCredentialsWorkspace';
@@ -57,6 +58,7 @@ import {
 } from '../../utils/counsellingProcessNav';
 import {
   isAdmissionApplicationsSubprocess,
+  isDocumentReadinessPath,
   pipelineProcessConfig,
   readPipelineSubprocess,
   STUDENT_PIPELINE_PROCESS_BY_PATH,
@@ -71,6 +73,7 @@ type ProspectDetailPanelProps = {
   leadId: number | null;
   detail?: ProspectDetail;
   isLoading: boolean;
+  loadError?: boolean;
   pulseLeads?: PulseLead[];
   isPulseLoading?: boolean;
   onSelectPulseLead?: (leadId: number) => void;
@@ -131,6 +134,7 @@ export default function ProspectDetailPanel({
   leadId,
   detail,
   isLoading,
+  loadError = false,
   pulseLeads = [],
   isPulseLoading = false,
   onSelectPulseLead,
@@ -147,6 +151,7 @@ export default function ProspectDetailPanel({
   const { timezone } = useBusinessTimezone();
   const [searchParams] = useSearchParams();
   const pipelineConfig = pipelinePath ? pipelineProcessConfig(pipelinePath) : null;
+  const isDocReadiness = isDocumentReadinessPath(pipelinePath);
   const isPipelineWorkspace = studentProfileTabs || Boolean(pipelineConfig);
   const isCounsellingPipeline = studentProfileTabs || pipelineConfig?.path === '/students/counselling';
   const counsellingSubprocess = readCounsellingSubprocess(searchParams);
@@ -175,16 +180,20 @@ export default function ProspectDetailPanel({
   const statusMutation = useUpdateProspectStatus();
   const notesMutation = useUpdateProspectNotes(leadId);
   const { data: statusDefinitionsData } = useStatusDefinitions();
-  const { data: validTransitions } = useValidTransitions(leadId);
-  const pipelineStatusMutation = useUpdateStudentStatus(leadId);
-  const profileBookingQuery = useLeadProfileBooking(leadId, isPipelineWorkspace);
+  // Document Readiness / ScanX does not need transitions or counselling booking — skip to avoid slow tunnel waits.
+  const { data: validTransitions } = useValidTransitions(isDocReadiness ? null : leadId);
+  const pipelineStatusMutation = useUpdateStudentStatus(isDocReadiness ? null : leadId);
+  const profileBookingQuery = useLeadProfileBooking(
+    leadId,
+    isPipelineWorkspace && !isDocReadiness
+  );
   const candidateProfileQuery = useQuery({
     queryKey: ['bookings', 'candidate-profile-header', profileBookingQuery.data?.id],
     queryFn: () =>
       apiFetch(`bookings/mine/${profileBookingQuery.data!.id}/profile`) as Promise<{
         profile: CandidateProfile;
       }>,
-    enabled: isPipelineWorkspace && Boolean(profileBookingQuery.data?.id),
+    enabled: isPipelineWorkspace && !isDocReadiness && Boolean(profileBookingQuery.data?.id),
     staleTime: 60_000,
   });
 
@@ -192,11 +201,17 @@ export default function ProspectDetailPanel({
     () => formatProfileFullName(candidateProfileQuery.data?.profile),
     [candidateProfileQuery.data?.profile]
   );
+  const listLeadName = useMemo(() => {
+    if (leadId == null) return '';
+    const fromList = pulseLeads.find(item => item.id === leadId);
+    return (fromList?.name || '').trim();
+  }, [leadId, pulseLeads]);
   const metaReceivedName = useMemo(() => {
     if (!detail) return '';
     return (detail.full_name || detail.name || '').trim();
   }, [detail]);
-  const counsellingDisplayName = profileFullName || metaReceivedName || 'Student';
+  const counsellingDisplayName =
+    profileFullName || metaReceivedName || listLeadName || (leadId != null ? `Lead #${leadId}` : 'Student');
 
   const scheduledAppointment = useMemo(() => {
     const booking = profileBookingQuery.data;
@@ -291,6 +306,27 @@ export default function ProspectDetailPanel({
   }, [activeTab, interactionGroups, leadId]);
 
   if (!leadId) {
+    // Document Readiness: show ScanX shell immediately (upload stays disabled until a lead is selected).
+    if (isDocReadiness && pipelineConfig) {
+      return (
+        <section className="prospects-detail-panel">
+          <div className="prospects-detail-panel__process-strip">
+            <PipelineProcessStrip
+              config={pipelineConfig}
+              activeCode={pipelineConfig.defaultSubprocess}
+            />
+          </div>
+          <div className="prospects-detail-panel__workspace">
+            <DocumentReadinessWorkspace
+              code={pipelineConfig.defaultSubprocess}
+              title="Document Readiness · ScanX"
+              leadId={null}
+              candidateName={null}
+            />
+          </div>
+        </section>
+      );
+    }
     return (
       <section className="prospects-detail-panel prospects-detail-panel--pulse">
         <AiActivePulseBoard
@@ -299,6 +335,49 @@ export default function ProspectDetailPanel({
           isLoading={isPulseLoading}
           onSelectLead={leadId => onSelectPulseLead?.(leadId)}
         />
+      </section>
+    );
+  }
+
+  // Document Readiness must not wait on heavy lead-detail (messages/intake) before showing ScanX.
+  if (isDocReadiness && pipelineConfig) {
+    return (
+      <section
+        className={`prospects-detail-panel${isFocusMode ? ' prospects-detail-panel--focus' : ''}`}
+      >
+        <div className="prospects-detail-panel__sticky">
+          <div className="prospects-detail-panel__action-bar">
+            <div className="prospects-detail-panel__identity">
+              {showBackButton ? (
+                <button type="button" className="prospects-back-btn" onClick={onBack}>
+                  <ArrowLeft size={16} />
+                  Back
+                </button>
+              ) : null}
+              <div className="min-w-0 flex-1">
+                <h3 className="text-xl font-bold text-text-main leading-tight">
+                  {counsellingDisplayName}
+                </h3>
+                <p className="mt-0.5 text-xs text-text-muted">
+                  CRM lead #{leadId}
+                  {isLoading && !detail ? ' · loading profile…' : null}
+                  {loadError && !detail ? ' · profile unavailable (ScanX still works)' : null}
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="prospects-detail-panel__process-strip">
+            <PipelineProcessStrip config={pipelineConfig} activeCode={pipelineSubprocess} />
+          </div>
+        </div>
+        <div className="prospects-detail-panel__workspace">
+          <DocumentReadinessWorkspace
+            code={pipelineSubprocess}
+            title={pipelineSubprocessTitle}
+            leadId={leadId}
+            candidateName={counsellingDisplayName}
+          />
+        </div>
       </section>
     );
   }
@@ -314,7 +393,9 @@ export default function ProspectDetailPanel({
   if (!detail) {
     return (
       <section className="prospects-detail-panel prospects-detail-panel--empty">
-        <div className="prospects-empty">Unable to load this lead.</div>
+        <div className="prospects-empty">
+          {loadError ? 'Unable to load this lead.' : 'Unable to load this lead.'}
+        </div>
       </section>
     );
   }
@@ -588,6 +669,13 @@ export default function ProspectDetailPanel({
           <div className="prospects-detail-panel__workspace">
             {isAdmissionApplicationsSubprocess(pipelineSubprocess, pipelineConfig) ? (
               <AdmissionApplicationsWorkspace
+                code={pipelineSubprocess}
+                title={pipelineSubprocessTitle}
+                leadId={leadId}
+                candidateName={counsellingDisplayName}
+              />
+            ) : isDocumentReadinessPath(pipelinePath) ? (
+              <DocumentReadinessWorkspace
                 code={pipelineSubprocess}
                 title={pipelineSubprocessTitle}
                 leadId={leadId}

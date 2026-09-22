@@ -625,3 +625,33 @@ class IntelAiThreadDetailResponse(BaseModel):
     title: str | None = None
     messages: list[IntelAiThreadMessage] = Field(default_factory=list)
     updated_at: str | None = None
+
+
+IntelAiPromptVisibility = Literal["private", "shared"]
+
+
+class IntelAiPromptRead(BaseModel):
+    id: str
+    title: str
+    prompt_text: str
+    owner_user_id: int
+    visibility: IntelAiPromptVisibility
+    is_owner: bool = False
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class IntelAiPromptListResponse(BaseModel):
+    items: list[IntelAiPromptRead] = Field(default_factory=list)
+
+
+class IntelAiPromptCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    prompt_text: str = Field(min_length=2, max_length=4000)
+    visibility: IntelAiPromptVisibility = "private"
+
+
+class IntelAiPromptUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    prompt_text: str | None = Field(default=None, min_length=2, max_length=4000)
+    visibility: IntelAiPromptVisibility | None = None

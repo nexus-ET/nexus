@@ -344,11 +344,56 @@ python scripts/verify_staging_database.py --env dev --migrate
 
 ### Option B — SSH tunnel from Windows (local app + migrate from PC)
 
-Keep Postgres closed to the internet; tunnel through SSH:
+Keep Postgres closed to the internet; tunnel through SSH.
+
+**Preferred (keepalives + Postgres probe + auto-restart):**
 
 ```powershell
-# Terminal 1 — leave running (any free local port; 5433 or 15432 are common)
-ssh -N -L 15432:127.0.0.1:5432 root@187.127.186.63
+# Full stack (single-owner tunnel, SELECT 1 hard gate, then backend\dev.ps1)
+powershell -ExecutionPolicy Bypass -File E:\NEXUS\start-dev.ps1
+
+# Or tunnel only (pgAdmin / scripts) — leave running; use -ForceRestart to replace stale ssh
+powershell -ExecutionPolicy Bypass -File E:\NEXUS\start-hostinger-db-tunnel.ps1
+powershell -ExecutionPolicy Bypass -File E:\NEXUS\start-hostinger-db-tunnel.ps1 -ForceRestart
+```
+
+Expect `[db-tunnel] healthy` before uvicorn starts. Watchdog logs `[db-tunnel] restarting because ...` when the forward flaps (Windows sleep / NAT idle / VPS blip). Health is **SELECT 1**, not merely “ssh process alive” or “port listening”.
+
+Shared helpers live in `scripts/NexusDbTunnel.ps1`; the probe is `backend/scripts/probe_db_tunnel.py`.
+
+Raw `ssh` without keepalives will drop silently and leave a zombie session — prefer the scripts above.
+
+### Cloudflare public tunnel (`[tunnel]` / cloudflared) — separate from SSH DB
+
+`start-dev.ps1` → `backend\dev.ps1` → `scripts/run_dev.py` also starts **cloudflared** for Meta WhatsApp webhooks (`trycloudflare.com` quick tunnel or a named hostname).
+
+That is **not** the Hostinger SSH DB tunnel. Logs look like:
+
+```text
+[tunnel] ERR failed to run the datagram handler ...
+[tunnel] ERR ... control stream encountered a failure while serving
+[tunnel] INF Retrying connection in up to 1m4s ...
+```
+
+On Windows, `run_dev.py` defaults to:
+
+- `--protocol http2` (TCP; avoids fragile QUIC/UDP datagram paths)
+- `--edge-ip-version 4`
+- `--retries 3` plus a **watchdog** that restarts cloudflared if it exits or stays in a control-stream retry loop
+
+Override in `backend/.env` only if needed: `NEXUS_TUNNEL_PROTOCOL`, `NEXUS_TUNNEL_EDGE_IP_VERSION`.
+
+**One-time restart after pulling this SSH DB tunnel fix:** stop the old stack (Ctrl+C), kill any stale `ssh` on `:15432`, then:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File E:\NEXUS\start-dev.ps1
+```
+
+Expect `[db-tunnel] healthy` then the usual Cloudflare lines (`quick tunnel, http2, edge IPv4`). Residual SSH flaps can still happen if the laptop sleeps or the ISP drops idle TCP; the Postgres-probing watchdog reconnects without a manual restart.
+
+```powershell
+# Manual one-shot (no auto-restart) — prefer the scripts above
+ssh -N -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o ExitOnForwardFailure=yes -o TCPKeepAlive=yes -L 15432:127.0.0.1:5432 root@187.127.186.63
 ```
 
 Point local `backend/.env` at the tunnel:

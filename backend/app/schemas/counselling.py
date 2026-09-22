@@ -32,6 +32,8 @@ class StaffBookingCreateRequest(BaseModel):
     session_purpose: str | None = Field(default=None, max_length=120)
     notes: str | None = None
     create_lead: bool = False
+    send_whatsapp_candidate: bool = True
+    send_whatsapp_counsellor: bool = True
 
 
 class BookingAssignRequest(BaseModel):

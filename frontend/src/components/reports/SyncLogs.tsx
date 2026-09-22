@@ -354,6 +354,9 @@ const SyncLogs: React.FC = () => {
         sortBy={queryState.sortBy}
         sortOrder={queryState.sortOrder}
         onSort={handleSort}
+        onRefresh={() => void refetch()}
+        refreshing={isFetching}
+        persistenceKey="sync-logs"
         emptyMessage="No sync logs found for the selected filters. Run a sync from Settings or wait for the next scheduled run."
       />
 

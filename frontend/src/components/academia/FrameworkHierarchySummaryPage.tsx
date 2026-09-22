@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, Loader2, RefreshCw } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { apiFetch } from '../../utils/api';
+import { PEM_MAPPINGS_CHANGED_EVENT } from '../../utils/pemMappingEvents';
 import {
   COURSES_PATH,
   FRAMEWORK_SECTION_PATH,
@@ -575,10 +576,18 @@ const FrameworkHierarchySummaryPage: React.FC<{ embedded?: boolean }> = ({ embed
     }
   }, []);
 
-  // Remount + pathname: re-fetch when returning from NZ Mapping Review (or other tabs).
+  // Remount + pathname / PEM apply: re-fetch when returning from Mapping Review.
   useEffect(() => {
     void loadHierarchy();
   }, [loadHierarchy, location.pathname]);
+
+  useEffect(() => {
+    const onPemChanged = () => {
+      void loadHierarchy();
+    };
+    window.addEventListener(PEM_MAPPINGS_CHANGED_EVENT, onPemChanged);
+    return () => window.removeEventListener(PEM_MAPPINGS_CHANGED_EVENT, onPemChanged);
+  }, [loadHierarchy]);
 
   const content = (
     <>

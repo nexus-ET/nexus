@@ -223,16 +223,21 @@ const UniversityShortlistTab: React.FC<UniversityShortlistTabProps> = ({
 
     (async () => {
       try {
-        await loadLatest();
-      } catch (err) {
+        // Parallelize so a slow latest-run GET cannot block the Generate controls forever
+        // when weight profiles would otherwise already be ready (and vice versa).
+        const [latestResult, profilesResult] = await Promise.allSettled([
+          loadLatest(),
+          loadProfiles(),
+        ]);
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Failed to load university shortlist.');
-      }
-      try {
-        await loadProfiles();
-      } catch {
-        // Profiles are optional for viewing an existing run; generation still works with "default".
-        if (!cancelled) setProfiles([]);
+        if (latestResult.status === 'rejected') {
+          const err = latestResult.reason;
+          setError(err instanceof Error ? err.message : 'Failed to load university shortlist.');
+        }
+        if (profilesResult.status === 'rejected') {
+          // Profiles are optional for viewing an existing run; generation still works with "default".
+          setProfiles([]);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }

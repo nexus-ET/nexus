@@ -155,6 +155,91 @@ def get_webhook_status() -> WhatsAppWebhookStatus:
     )
 
 
+def probe_webhook_challenge(
+    callback_url: str,
+    verify_token: str | None = None,
+    *,
+    timeout: float = 15.0,
+) -> tuple[bool, str]:
+    """
+    Meta-style GET verify against callback_url.
+
+    Returns (ok, detail). ok is True only when status is 200 and the challenge
+    body is echoed. A 403 usually means WEBHOOK_VERIFY_TOKEN mismatch on that host.
+    """
+    verify = (verify_token or resolve_verify_token()).strip()
+    callback = (callback_url or "").strip()
+    if not callback:
+        return False, "callback URL is empty"
+    if not verify:
+        return False, "WEBHOOK_VERIFY_TOKEN is not configured"
+
+    challenge = "nexus-webhook-challenge-probe"
+    headers = {
+        "User-Agent": "facebookexternalua",
+        "ngrok-skip-browser-warning": "true",
+    }
+    params = {
+        "hub.mode": "subscribe",
+        "hub.verify_token": verify,
+        "hub.challenge": challenge,
+    }
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True, headers=headers) as client:
+            response = client.get(callback, params=params)
+    except httpx.HTTPError as exc:
+        return False, f"request failed: {exc}"
+
+    if response.status_code == 200 and response.text.strip() == challenge:
+        return True, "ok"
+    if response.status_code == 403:
+        return (
+            False,
+            "403 Forbidden - verify token rejected by target "
+            "(local WEBHOOK_VERIFY_TOKEN must match that environment)",
+        )
+    return (
+        False,
+        f"status={response.status_code} body={response.text[:120]!r}",
+    )
+
+
+def explain_meta_registration_failure(status_code: int, body: str) -> str:
+    """Human-readable hint for Meta subscribed_apps registration errors."""
+    text = body or ""
+    if status_code >= 400 and (
+        "Callback verification failed" in text or "HTTP Status Code = 403" in text
+    ):
+        return (
+            f"Meta webhook registration failed ({status_code}): {text}\n"
+            "Hint: Meta GETs the callback with your WEBHOOK_VERIFY_TOKEN. "
+            "403 usually means the target host has a different verify token "
+            "(align local and nexus-dev WEBHOOK_VERIFY_TOKEN), or the path is "
+            "blocked. For local-only work set NEXUS_WHATSAPP_AUTO_SYNC=false."
+        )
+    return f"Meta webhook registration failed ({status_code}): {text}"
+
+
+def ensure_handoff_accepts_verify_token() -> None:
+    """
+    Fail fast when NEXUS_WHATSAPP_HANDOFF_URL will reject our verify token.
+
+    Prevents claiming the shared WABA webhook when we cannot hand it back.
+    """
+    handoff_base = _normalize_base_url(settings.NEXUS_WHATSAPP_HANDOFF_URL)
+    if not handoff_base:
+        return
+    callback = f"{handoff_base}/api/webhook"
+    ok, detail = probe_webhook_challenge(callback)
+    if ok:
+        return
+    raise RuntimeError(
+        f"Handoff target {callback} rejected verify challenge ({detail}). "
+        "Copy WEBHOOK_VERIFY_TOKEN from nexus-dev into local backend/.env "
+        "(must match exactly), or set NEXUS_WHATSAPP_AUTO_SYNC=false."
+    )
+
+
 def register_webhook_callback(
     callback_url: str,
     verify_token: str | None = None,
@@ -187,7 +272,7 @@ def register_webhook_callback(
         )
         if response.status_code >= 400:
             raise RuntimeError(
-                f"Meta webhook registration failed ({response.status_code}): {response.text}"
+                explain_meta_registration_failure(response.status_code, response.text)
             )
         return response.json()
 
@@ -199,6 +284,9 @@ def sync_webhook_for_current_environment() -> WhatsAppWebhookStatus:
             "PUBLIC_TUNNEL_BASE is not set. For local dev, start dev.ps1 with a tunnel. "
             "For nexus-dev, set PUBLIC_TUNNEL_BASE=https://nexus-dev.edutrust.in"
         )
+
+    if is_local_development():
+        ensure_handoff_accepts_verify_token()
 
     register_webhook_callback(callback)
     status = get_webhook_status()
@@ -225,6 +313,7 @@ def release_webhook_to_handoff_url() -> WhatsAppWebhookStatus | None:
     handoff_waba = resolve_whatsapp_handoff_waba_id()
     if not handoff_waba:
         raise ValueError("WHATSAPP_BUSINESS_WABA_ID is not configured for webhook handoff.")
+    ensure_handoff_accepts_verify_token()
     register_webhook_callback(callback, waba_id=handoff_waba)
 
     if is_local_development():
@@ -312,7 +401,8 @@ def audit_whatsapp_webhook_routing(*, check_reachability: bool = True) -> None:
 
     if expected and not status.owned_by_this_environment:
         logger.warning(
-            "WhatsApp webhook Meta URL %s does not match PUBLIC_TUNNEL_BASE %s",
+            "WhatsApp webhook Meta URL %s does not match PUBLIC_TUNNEL_BASE %s "
+            "(non-fatal; run_dev / sync_whatsapp_webhook.py will claim after the tunnel is ready)",
             meta_url,
             expected,
         )

@@ -91,8 +91,7 @@ const FrameworkSuperMajorsPage: React.FC<{ embedded?: boolean }> = ({ embedded =
   };
 
   const handleSaved = () => {
-    setPage(1);
-    void loadItems(1);
+    void loadItems(page);
   };
 
   return (
@@ -208,7 +207,7 @@ const FrameworkSuperMajorsPage: React.FC<{ embedded?: boolean }> = ({ embedded =
                       <td className="px-6 py-3 font-semibold text-text-main">{item.name}</td>
                       <td className="px-6 py-3 text-text-muted">{item.code || '—'}</td>
                       <td className="px-6 py-3 text-text-muted">
-                        {item.description?.replace(/\s+/g, ' ').trim() ? (
+                        {item.description?.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() ? (
                           <button
                             type="button"
                             onClick={() =>
@@ -248,20 +247,47 @@ const FrameworkSuperMajorsPage: React.FC<{ embedded?: boolean }> = ({ embedded =
                           <button
                             type="button"
                             onClick={async () => {
+                              const majorCount = item.major_count ?? 0;
+                              if (majorCount > 0) {
+                                await openConfirm({
+                                  title: 'Cannot delete super-major',
+                                  message: `Super-major "${item.name}" still has ${majorCount} major${
+                                    majorCount === 1 ? '' : 's'
+                                  }. Remap or remove those majors (and any sub-majors / program mappings) before deleting.`,
+                                  confirmLabel: 'OK',
+                                  variant: 'warning',
+                                  mode: 'alert',
+                                });
+                                return;
+                              }
                               if (
                                 !(await openConfirm({
                                   title: 'Delete super-major?',
-                                  message: `Delete super-major "${item.name}"? Linked majors will keep their rows with Super-Major cleared.`,
+                                  message: `Delete super-major "${item.name}"? Only empty super-majors (no majors or program mappings) can be deleted.`,
                                   confirmLabel: 'Delete',
                                   variant: 'danger',
                                 }))
                               ) {
                                 return;
                               }
-                              await apiFetch(`academia/education-super-majors/${item.id}`, {
-                                method: 'DELETE',
-                              });
-                              void loadItems();
+                              try {
+                                await apiFetch(`academia/education-super-majors/${item.id}`, {
+                                  method: 'DELETE',
+                                });
+                                void loadItems();
+                              } catch (err) {
+                                const message =
+                                  err instanceof Error
+                                    ? err.message
+                                    : 'Failed to delete super-major';
+                                await openConfirm({
+                                  title: 'Could not delete super-major',
+                                  message,
+                                  confirmLabel: 'OK',
+                                  variant: 'warning',
+                                  mode: 'alert',
+                                });
+                              }
                             }}
                             className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-alert hover:bg-alert/10"
                           >
@@ -302,6 +328,7 @@ const FrameworkSuperMajorsPage: React.FC<{ embedded?: boolean }> = ({ embedded =
         open={Boolean(descriptionView)}
         title={descriptionView?.title || ''}
         description={descriptionView?.description || ''}
+        stripHtml
         onClose={() => setDescriptionView(null)}
       />
     </div>

@@ -206,8 +206,10 @@ export function reportApiFailure(options: {
   if (isExceptionLogsEndpoint(endpoint)) return;
 
   if (options.kind === 'timeout') {
+    // Client AbortError after 60s is usually SSH-tunnel / pool stall noise —
+    // record as OMISSION (no alert email); page_refresh auto-resolve still applies.
     reportClientException({
-      severity: 'ERROR',
+      severity: 'OMISSION',
       source: 'api_client',
       category: 'request_timeout',
       message: `Client request timed out after ${Math.round((options.timeoutMs || 0) / 1000)}s: ${endpoint}`,
@@ -221,7 +223,7 @@ export function reportApiFailure(options: {
 
   if (options.kind === 'network') {
     reportClientException({
-      severity: 'ERROR',
+      severity: 'OMISSION',
       source: 'api_client',
       category: 'network_error',
       message: options.detail || `Network error calling ${endpoint}`,
@@ -239,6 +241,20 @@ export function reportApiFailure(options: {
   // Auth failures must not be logged — reporting them can 401/429 and eject the session.
   if (status === 401) return;
   if (status === 404 && isExpectedMissingResource(endpoint)) return;
+  // Transient DB tunnel / pool pressure — no alert email.
+  if (status === 503) {
+    reportClientException({
+      severity: 'OMISSION',
+      source: 'api_client',
+      category: 'http_error',
+      message: `HTTP 503 from ${normalizeApiEndpoint(endpoint)}${options.detail ? `: ${options.detail}` : ''}`,
+      details: [`endpoint=${endpoint}`, `status=503`, options.detail || ''].filter(Boolean),
+      exception_type: 'HTTP_503',
+      related_resource: 'api',
+      related_id: normalizeApiEndpoint(endpoint).slice(0, 100),
+    });
+    return;
+  }
 
   const severity: ClientExceptionSeverity =
     status >= 500 ? 'EXCEPTION' : status >= 400 ? 'ERROR' : 'WARNING';

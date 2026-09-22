@@ -63,7 +63,7 @@ def _directory_for_lead(lead: Lead) -> tuple[str, str]:
     if bool(getattr(lead, "is_human_locked", False)) or "HANDOFF" in stage_u:
         return "/handoffs", "Handoffs"
     if source in {"OFFLINE", "EXPRESS"}:
-        return "/offline-leads", "Offline Leads"
+        return "/offline-leads", "All Leads"
     return "/ai-active", "AI Active"
 
 

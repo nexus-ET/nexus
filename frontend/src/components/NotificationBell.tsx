@@ -52,6 +52,10 @@ const NotificationBell: React.FC<{ onDarkHeader?: boolean }> = ({ onDarkHeader =
       setLoading(true);
       const data = (await apiFetch('notifications/inbox', {
         authRedirect: false,
+        // Best-effort poll: fail fast and do not spam Exception Report when
+        // ScanX / tunnel pool pressure makes the inbox wait.
+        timeoutMs: 15_000,
+        reportFailures: false,
       })) as NotificationInboxResponse;
       setItems(Array.isArray(data.notifications) ? data.notifications : []);
       setUnreadCount(data.unread_count ?? 0);

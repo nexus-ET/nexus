@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { FRAMEWORK_DESCRIPTION_MAX_LENGTH } from './frameworkDescriptionLimits';
 import { richTextField } from './wizard/shared';
 
 const optionalMajorCodeField = z
@@ -13,7 +14,7 @@ const optionalMajorCodeField = z
 export const majorSchema = z.object({
   label: z.string().trim().min(1, 'Major name is required').max(255),
   code: optionalMajorCodeField,
-  major_description: richTextField(5000, 'Major description'),
+  major_description: richTextField(FRAMEWORK_DESCRIPTION_MAX_LENGTH, 'Major description'),
   sub_majors_key_fields: z
     .string()
     .trim()

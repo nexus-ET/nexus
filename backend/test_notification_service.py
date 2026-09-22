@@ -15,6 +15,7 @@ from app.services.admissions_intake_flow import (
 from app.services.notification_service import (
     NotificationService,
     persist_booking_confirmation_in_chat,
+    run_assignment_notifications,
 )
 
 
@@ -299,3 +300,116 @@ def test_send_whatsapp_admin_assignment_skips_without_phone() -> None:
     assert status == "skipped"
     send_message.assert_not_awaited()
     assert log_attempt.call_args.kwargs["status"] == "skipped"
+
+
+def test_send_booking_assignment_notifications_skips_whatsapp_when_unchecked() -> None:
+    db = MagicMock()
+    service = NotificationService(db)
+    booking = SimpleNamespace(
+        id=99,
+        admin_id=7,
+        scheduled_time=datetime(2026, 7, 24, 11, 0),
+        candidate_name="Ravi",
+        candidate_phone="+911111111111",
+        candidate_email="ravi@example.com",
+        status="SCHEDULED",
+        notes="Purpose: General Counselling",
+        lead_id=12,
+    )
+    admin = SimpleNamespace(
+        id=7,
+        first_name="Counsellor",
+        last_name="One",
+        email="counsellor@example.com",
+        phone_number="+918888888888",
+    )
+    db.query.return_value.filter.return_value.first.side_effect = [booking, admin]
+
+    with (
+        patch.object(
+            service,
+            "send_whatsapp_confirmation",
+            new_callable=AsyncMock,
+            return_value="sent",
+        ) as send_candidate_wa,
+        patch.object(
+            service,
+            "send_whatsapp_admin_assignment",
+            new_callable=AsyncMock,
+            return_value="sent",
+        ) as send_admin_wa,
+        patch.object(
+            service,
+            "send_email_confirmation",
+            new_callable=AsyncMock,
+            return_value="sent",
+        ) as send_candidate_email,
+        patch.object(
+            service,
+            "send_email_admin_assignment",
+            new_callable=AsyncMock,
+            return_value="sent",
+        ) as send_admin_email,
+        patch.object(service, "_log_attempt") as log_attempt,
+        patch(
+            "app.services.notification_service._resolve_lead_for_booking_notification",
+            return_value=None,
+        ),
+    ):
+        result = asyncio.run(
+            service.send_booking_assignment_notifications(
+                booking.id,
+                send_whatsapp_candidate=False,
+                send_whatsapp_counsellor=False,
+            )
+        )
+
+    assert result["whatsapp"] == "not_requested"
+    assert result["whatsapp_admin"] == "not_requested"
+    assert result["email"] == "sent"
+    assert result["email_admin"] == "sent"
+    send_candidate_wa.assert_not_awaited()
+    send_admin_wa.assert_not_awaited()
+    send_candidate_email.assert_awaited_once()
+    send_admin_email.assert_awaited_once()
+    skipped_channels = {
+        call.kwargs["channel"]: call.kwargs["status"]
+        for call in log_attempt.call_args_list
+    }
+    assert skipped_channels["whatsapp"] == "not_requested"
+    assert skipped_channels["whatsapp_admin"] == "not_requested"
+
+
+def test_run_assignment_notifications_returns_sent_statuses() -> None:
+    booking_id = 101
+    db = MagicMock()
+
+    with (
+        patch("app.services.notification_service.SessionLocal", return_value=db),
+        patch.object(
+            NotificationService,
+            "send_booking_assignment_notifications",
+            new_callable=AsyncMock,
+            return_value={
+                "whatsapp": "sent",
+                "email": "sent",
+                "whatsapp_admin": "sent",
+                "email_admin": "sent",
+                "push": "skipped",
+            },
+        ),
+    ):
+        result = run_assignment_notifications(
+            booking_id,
+            send_whatsapp_candidate=True,
+            send_whatsapp_counsellor=True,
+        )
+
+    assert result == {
+        "whatsapp": "sent",
+        "email": "sent",
+        "whatsapp_admin": "sent",
+        "email_admin": "sent",
+        "push": "skipped",
+    }
+    db.close.assert_called_once()

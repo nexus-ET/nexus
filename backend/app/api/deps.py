@@ -13,6 +13,10 @@ from app.schemas.token import TokenPayload
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/login"
 )
+oauth2_scheme_optional = OAuth2PasswordBearer(
+    tokenUrl=f"{settings.API_V1_STR}/login",
+    auto_error=False,
+)
 
 COUNSELLING_ADMIN_ROLE_NAMES = {"Super Admin", "Web Admin"}
 ACADEMIA_ADMIN_ROLE_NAMES = COUNSELLING_ADMIN_ROLE_NAMES
@@ -49,6 +53,29 @@ def get_current_user(
     return user
 
 
+def get_jwt_user_id(token: str = Depends(oauth2_scheme)) -> int:
+    """Validate Bearer JWT and return user id without a DB round-trip.
+
+    Used by best-effort presence heartbeats so SSH-tunnel / pool timeouts do not
+    500 background polls on every page.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+        user_id = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+        return int(user_id)
+    except (JWTError, ValueError, TypeError):
+        raise credentials_exception
+
+
 def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
     if not current_user.is_active:
         raise HTTPException(
@@ -57,6 +84,28 @@ def get_current_active_user(current_user: User = Depends(get_current_user)) -> U
         )
     return current_user
 
+
+def get_optional_current_user(
+    db: Session = Depends(get_db),
+    token: str | None = Depends(oauth2_scheme_optional),
+) -> User | None:
+    """Return the authenticated user when a Bearer token is present; otherwise None."""
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id = payload.get("sub")
+        if user_id is None:
+            return None
+        uid = int(user_id)
+    except (JWTError, ValueError, TypeError):
+        return None
+    return (
+        db.query(User)
+        .options(joinedload(User.admin_role_ref))
+        .filter(User.id == uid)
+        .first()
+    )
 
 def _resolved_role_name(user: User) -> str:
     if user.admin_role_ref and user.admin_role_ref.name:

@@ -8,6 +8,11 @@
 #   .\dev.ps1 -Reload              # uvicorn auto-reload (may leave zombie workers)
 #   .\dev.ps1 -Port 8003           # override backend port for this run
 #
+# Cloudflare tunnel ([tunnel] logs = cloudflared, NOT the Hostinger SSH DB tunnel):
+#   Windows defaults via run_dev.py: --protocol http2, --edge-ip-version 4,
+#   --retries 3, plus a watchdog that restarts on exit or stuck control-stream loops.
+#   Env overrides: NEXUS_TUNNEL_PROTOCOL, NEXUS_TUNNEL_EDGE_IP_VERSION
+#
 # Stable Meta webhook URL (one-time):
 #   .\scripts\setup_cloudflare_tunnel.ps1
 #   then set NEXUS_TUNNEL_MODE=named in .env and run .\dev.ps1

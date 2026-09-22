@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.schemas.rich_text import OptionalRichText5000
+from app.schemas.rich_text import OptionalRichText4000
 
 
 class EducationMajorCreate(BaseModel):
@@ -10,7 +10,7 @@ class EducationMajorCreate(BaseModel):
     )
     code: str | None = Field(default=None, max_length=50)
     label: str = Field(min_length=1, max_length=255)
-    major_description: OptionalRichText5000 = None
+    major_description: OptionalRichText4000 = None
     sub_majors_key_fields: str | None = Field(default=None, max_length=2000)
     super_major_id: int | None = Field(default=None, ge=1)
     is_other: bool = False
@@ -44,7 +44,7 @@ class EducationMajorUpdate(BaseModel):
     )
     code: str | None = Field(default=None, max_length=50)
     label: str | None = Field(default=None, min_length=1, max_length=255)
-    major_description: OptionalRichText5000 = None
+    major_description: OptionalRichText4000 = None
     sub_majors_key_fields: str | None = Field(default=None, max_length=2000)
     super_major_id: int | None = Field(default=None, ge=1)
     is_other: bool | None = None

@@ -29,8 +29,8 @@ const ROUTE_LABELS: Record<string, string> = {
   '/ai-active': 'Manage Leads > AI Active',
   '/handoffs': 'Manage Leads > Handoffs',
   '/prospects': 'Manage Leads > All Prospects',
-  '/express-leads': 'Students > Express Leads',
-  '/offline-leads': 'Students > Offline Leads',
+  '/express-leads': 'Leads > Express Leads',
+  '/offline-leads': 'Leads > All Leads',
   '/archive': 'Manage Leads > Archive',
   '/students/counselling': 'Students > 1 Counselling',
   '/students/college-finding': 'Students > 2 College Finding',
@@ -215,6 +215,10 @@ const sendBatch = async (events: ClientAuditEvent[]): Promise<void> => {
   if (!token) return;
 
   const base = resolveBaseUrl().replace(/\/$/, '');
+  const body = JSON.stringify({ events });
+  // keepalive is unreliable for mid-size JSON on navigation; only use it for tiny
+  // payloads. Aborted keepalives were surfacing as HTTP 400 body-parse noise.
+  const useKeepalive = body.length <= 2048;
   await fetch(`${base}/audit-events`, {
     method: 'POST',
     headers: {
@@ -223,8 +227,8 @@ const sendBatch = async (events: ClientAuditEvent[]): Promise<void> => {
       'ngrok-skip-browser-warning': 'true',
       'X-Nexus-Page': window.location.pathname,
     },
-    body: JSON.stringify({ events }),
-    keepalive: true,
+    body,
+    keepalive: useKeepalive,
   });
 };
 
@@ -465,17 +469,25 @@ if (typeof window !== 'undefined') {
     const token = getStoredToken();
     if (!token) return;
     const base = resolveBaseUrl().replace(/\/$/, '');
-    const batch = queue.splice(0, MAX_BATCH_SIZE);
-    void fetch(`${base}/audit-events`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-        'ngrok-skip-browser-warning': 'true',
-        'X-Nexus-Page': window.location.pathname,
-      },
-      body: JSON.stringify({ events: batch }),
-      keepalive: true,
-    });
+    const batch = queue.splice(0, Math.min(MAX_BATCH_SIZE, 10));
+    const body = JSON.stringify({ events: batch });
+    // Only attempt unload flush for small payloads; larger batches stay dropped
+    // rather than aborting mid-body and raising false HTTP 400s on the API.
+    if (body.length > 1500) return;
+    try {
+      void fetch(`${base}/audit-events`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          'ngrok-skip-browser-warning': 'true',
+          'X-Nexus-Page': window.location.pathname,
+        },
+        body,
+        keepalive: true,
+      });
+    } catch {
+      /* ignore unload flush failures */
+    }
   });
 }

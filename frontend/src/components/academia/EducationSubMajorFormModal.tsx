@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import { apiFetch } from '../../utils/api';
 import { fetchAcademiaListItems } from '../../utils/academiaList';
+import { FRAMEWORK_DESCRIPTION_MAX_LENGTH } from '../../schemas/frameworkDescriptionLimits';
 import {
   emptySubMajorFormValues,
   subMajorSchema,
@@ -51,13 +52,15 @@ const EducationSubMajorFormModal: React.FC<EducationSubMajorFormModalProps> = ({
   const majorId = watch('major_id');
 
   const majorsQuery = useQuery({
-    queryKey: ['academia-majors-for-sub-major-form'],
+    queryKey: ['academia-majors-for-sub-majors-filter'],
     queryFn: () =>
       fetchAcademiaListItems<EducationMajorRecord>('academia/education-majors', {
         active_only: 'false',
         catalog_only: 'true',
+        lite: 'true',
       }),
     enabled: open,
+    staleTime: 60_000,
   });
 
   useEffect(() => {
@@ -155,8 +158,9 @@ const EducationSubMajorFormModal: React.FC<EducationSubMajorFormModalProps> = ({
                 label="Sub-major description"
                 content={field.value || ''}
                 onChange={field.onChange}
-                maxLength={2000}
+                maxLength={FRAMEWORK_DESCRIPTION_MAX_LENGTH}
                 placeholder="Short counselor-facing description of this concentration"
+                hint="Name and description are embedded for taxonomy search when you save."
                 error={fieldState.error?.message}
               />
             )}

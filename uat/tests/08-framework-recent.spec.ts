@@ -65,7 +65,7 @@ test.describe('Framework recent: CA Mapping Review', () => {
     await gotoAppPath(page, '/academia/framework/ca-mapping-review');
     await expect(page).not.toHaveURL(/\/login$/);
     await expect(
-      page.getByText(/CA Program Mapping Review|CA-24|mapping suggestions/i).first()
+      page.getByText(/CA Program Mapping Review|mapping suggestions/i).first()
     ).toBeVisible({ timeout: 45_000 });
   });
 

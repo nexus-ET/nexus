@@ -30,6 +30,8 @@ from app.schemas.program_major_mapping import (
     EducationMajorBulkAssignResponse,
     NzProgramMappingSuggestionsResponse,
     CaProgramMappingSuggestionsResponse,
+    DeProgramMappingSuggestionsResponse,
+    UsProgramMappingSuggestionsResponse,
     ProgramMappingBulkApplyRequest,
     ProgramMappingBulkApplyResponse,
     ProgramMajorMappingListResponse,
@@ -52,6 +54,8 @@ from app.schemas.academia_hub import (
     DegreeAdminListResponse,
     DegreeAdminRead,
     DegreeAdminUpdate,
+    DegreeBulkDeleteRequest,
+    DegreeBulkDeleteResponse,
     AcademicHierarchySummary,
     CourseAdminCreate,
     CourseAdminListResponse,
@@ -1180,6 +1184,32 @@ def list_ca_program_mapping_suggestions_admin(
     return review_service.list_ca_program_mapping_suggestions(db)
 
 
+@router.get(
+    "/academia/us-program-mapping-suggestions",
+    response_model=UsProgramMappingSuggestionsResponse,
+)
+def list_us_program_mapping_suggestions_admin(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from app.services import us_program_mapping_review as review_service
+
+    return review_service.list_us_program_mapping_suggestions(db)
+
+
+@router.get(
+    "/academia/de-program-mapping-suggestions",
+    response_model=DeProgramMappingSuggestionsResponse,
+)
+def list_de_program_mapping_suggestions_admin(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    from app.services import de_program_mapping_review as review_service
+
+    return review_service.list_de_program_mapping_suggestions(db)
+
+
 @router.post(
     "/academia/program-mappings/bulk-apply",
     response_model=ProgramMappingBulkApplyResponse,
@@ -1196,6 +1226,8 @@ def bulk_apply_program_mappings_admin(
         payload.items,
         nz_scope_only=payload.nz_scope_only,
         ca_scope_only=payload.ca_scope_only,
+        us_scope_only=payload.us_scope_only,
+        de_scope_only=payload.de_scope_only,
     )
 
 
@@ -1481,6 +1513,14 @@ def list_degrees(
     ] = None,
     country_id: _SummaryIdList = None,
     institution_id: _SummaryIdList = None,
+    pem_gap: str | None = Query(
+        None,
+        pattern="^(both|major|sub_major)$",
+        description=(
+            "PEM mapping gap: both = unmapped major+sub; "
+            "major = missing major; sub_major = major-only (no sub)"
+        ),
+    ),
     active_only: bool = Query(False),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
@@ -1497,6 +1537,7 @@ def list_degrees(
         sub_major_ids=sub_major_id,
         country_ids=country_id,
         institution_ids=institution_id,
+        pem_gap=pem_gap,
         active_only=active_only,
         page=page,
         page_size=page_size,
@@ -1539,6 +1580,18 @@ def create_degree(
         institution_id=intake_meta["institution_id"],
         intake_ids=intake_meta["intake_ids"],
     )
+
+
+@router.post("/academia/degrees/bulk-delete", response_model=DegreeBulkDeleteResponse)
+def bulk_delete_degrees(
+    payload: DegreeBulkDeleteRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_academia_admin),
+):
+    result = service.delete_degrees_admin_bulk(
+        db, payload.ids, institution_id=payload.institution_id
+    )
+    return DegreeBulkDeleteResponse(**result)
 
 
 @router.get("/academia/degrees/{degree_id}", response_model=DegreeAdminRead)

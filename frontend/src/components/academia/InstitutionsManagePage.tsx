@@ -7,7 +7,6 @@ import {
   Plus,
   Power,
   PowerOff,
-  Settings2,
   Trash2,
   X,
 } from 'lucide-react';
@@ -45,6 +44,7 @@ import FrameworkTablePagination from './FrameworkTablePagination';
 import InstitutionsTableSkeleton from './InstitutionsTableSkeleton';
 import SearchableSelect from './SearchableSelect';
 import InstitutionFilterSelect from './InstitutionFilterSelect';
+import { StandaloneTableOverflowMenu } from '../ui/DataTable';
 import { useConfirmation } from '../../context/ConfirmationContext';
 import {
   applyFilterParamUpdates,
@@ -241,6 +241,65 @@ const defaultVisibleColumns = (): InstitutionSummaryColumnKey[] =>
   INSTITUTION_SUMMARY_COLUMN_DEFS.filter(column => column.defaultVisible).map(column => column.key);
 
 const LOCKED_COLUMN_KEYS = new Set<InstitutionSummaryColumnKey>(['id', 'name']);
+const ALL_INSTITUTION_COLUMN_KEYS = INSTITUTION_SUMMARY_COLUMN_DEFS.filter(
+  column => column.key !== 'created_at'
+).map(column => column.key);
+const INSTITUTION_ORDER_STORAGE_KEY = 'nexus.institutions.columnOrder.v1';
+const INSTITUTION_PIN_STORAGE_KEY = 'nexus.institutions.columnPin.v1';
+const DEFAULT_INSTITUTION_PINS: { left: InstitutionSummaryColumnKey[]; right: InstitutionSummaryColumnKey[] } = {
+  left: ['name'],
+  right: [],
+};
+
+const normalizeColumnOrder = (keys: string[]): InstitutionSummaryColumnKey[] => {
+  const allowed = new Set(ALL_INSTITUTION_COLUMN_KEYS);
+  const seen = new Set<InstitutionSummaryColumnKey>();
+  const ordered: InstitutionSummaryColumnKey[] = [];
+  for (const key of keys) {
+    if (!allowed.has(key as InstitutionSummaryColumnKey)) continue;
+    const typed = key as InstitutionSummaryColumnKey;
+    if (seen.has(typed)) continue;
+    seen.add(typed);
+    ordered.push(typed);
+  }
+  for (const key of ALL_INSTITUTION_COLUMN_KEYS) {
+    if (!seen.has(key)) ordered.push(key);
+  }
+  return ordered;
+};
+
+const readColumnOrder = (): InstitutionSummaryColumnKey[] => {
+  try {
+    const raw = localStorage.getItem(INSTITUTION_ORDER_STORAGE_KEY);
+    if (!raw) return [...ALL_INSTITUTION_COLUMN_KEYS];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [...ALL_INSTITUTION_COLUMN_KEYS];
+    return normalizeColumnOrder(parsed.map(String));
+  } catch {
+    return [...ALL_INSTITUTION_COLUMN_KEYS];
+  }
+};
+
+const readColumnPins = (): {
+  left: InstitutionSummaryColumnKey[];
+  right: InstitutionSummaryColumnKey[];
+} => {
+  try {
+    const raw = localStorage.getItem(INSTITUTION_PIN_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_INSTITUTION_PINS, left: [...DEFAULT_INSTITUTION_PINS.left] };
+    const parsed = JSON.parse(raw) as {
+      left?: InstitutionSummaryColumnKey[];
+      right?: InstitutionSummaryColumnKey[];
+    };
+    const allowed = new Set(ALL_INSTITUTION_COLUMN_KEYS);
+    return {
+      left: (parsed.left ?? DEFAULT_INSTITUTION_PINS.left).filter(key => allowed.has(key)),
+      right: (parsed.right ?? []).filter(key => allowed.has(key)),
+    };
+  } catch {
+    return { left: [...DEFAULT_INSTITUTION_PINS.left], right: [] };
+  }
+};
 
 const normalizeVisibleColumns = (
   columns: Set<InstitutionSummaryColumnKey>
@@ -326,7 +385,8 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
   const [visibleColumns, setVisibleColumns] = useState<Set<InstitutionSummaryColumnKey>>(
     readVisibleColumns
   );
-  const [columnMenuOpen, setColumnMenuOpen] = useState(false);
+  const [columnOrder, setColumnOrder] = useState<InstitutionSummaryColumnKey[]>(readColumnOrder);
+  const [columnPins, setColumnPins] = useState(readColumnPins);
   const [togglingStatusId, setTogglingStatusId] = useState<number | null>(null);
   const [expandedCampusesInstitutionId, setExpandedCampusesInstitutionId] = useState<
     number | null
@@ -336,7 +396,6 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
   >({});
   const [campusesLoadingId, setCampusesLoadingId] = useState<number | null>(null);
   const [campusesError, setCampusesError] = useState<string | null>(null);
-  const columnMenuRef = useRef<HTMLDivElement | null>(null);
 
   const institutionTypeOptions = useMemo(
     () => institutionTypeSelectOptions(institutionTypes),
@@ -659,15 +718,20 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
   }, [visibleColumns]);
 
   useEffect(() => {
-    if (!columnMenuOpen) return;
-    const handleClick = (event: MouseEvent) => {
-      if (!columnMenuRef.current?.contains(event.target as Node)) {
-        setColumnMenuOpen(false);
-      }
-    };
-    window.addEventListener('mousedown', handleClick);
-    return () => window.removeEventListener('mousedown', handleClick);
-  }, [columnMenuOpen]);
+    try {
+      localStorage.setItem(INSTITUTION_ORDER_STORAGE_KEY, JSON.stringify(columnOrder));
+    } catch {
+      /* ignore */
+    }
+  }, [columnOrder]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(INSTITUTION_PIN_STORAGE_KEY, JSON.stringify(columnPins));
+    } catch {
+      /* ignore */
+    }
+  }, [columnPins]);
 
   const toggleSort = (column: InstitutionSummarySortBy) => {
     if (sortBy === column) {
@@ -797,13 +861,72 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
     }
   }, [majorIds, subMajorIds, subMajors, updateFilterParams]);
 
-  const visibleColumnDefs = useMemo(
+  const visibleColumnDefs = useMemo(() => {
+    const byKey = new Map(INSTITUTION_SUMMARY_COLUMN_DEFS.map(column => [column.key, column]));
+    const left = columnPins.left.filter(key => visibleColumns.has(key) && key !== 'created_at');
+    const right = columnPins.right.filter(key => visibleColumns.has(key) && key !== 'created_at');
+    const middle = columnOrder.filter(
+      key => visibleColumns.has(key) && !left.includes(key) && !right.includes(key)
+    );
+    return [...left, ...middle, ...right]
+      .map(key => byKey.get(key))
+      .filter(
+        (column): column is (typeof INSTITUTION_SUMMARY_COLUMN_DEFS)[number] =>
+          Boolean(column) && column!.key !== 'created_at'
+      );
+  }, [visibleColumns, columnOrder, columnPins]);
+
+  const overflowColumns = useMemo(
     () =>
-      INSTITUTION_SUMMARY_COLUMN_DEFS.filter(
-        column => column.key !== 'created_at' && visibleColumns.has(column.key)
-      ),
-    [visibleColumns]
+      columnOrder.map(key => {
+        const def = INSTITUTION_SUMMARY_COLUMN_DEFS.find(column => column.key === key)!;
+        const pinned = columnPins.left.includes(key)
+          ? ('left' as const)
+          : columnPins.right.includes(key)
+            ? ('right' as const)
+            : false;
+        return {
+          id: key,
+          label: def.label,
+          visible: visibleColumns.has(key),
+          required: LOCKED_COLUMN_KEYS.has(key),
+          pinned,
+        };
+      }),
+    [columnOrder, visibleColumns, columnPins]
   );
+
+  const resetInstitutionTableView = () => {
+    setVisibleColumns(normalizeVisibleColumns(new Set(defaultVisibleColumns())));
+    setColumnOrder([...ALL_INSTITUTION_COLUMN_KEYS]);
+    setColumnPins({ left: [...DEFAULT_INSTITUTION_PINS.left], right: [] });
+  };
+
+  const handleMoveInstitutionColumn = (id: string, direction: -1 | 1) => {
+    const key = id as InstitutionSummaryColumnKey;
+    setColumnOrder(prev => {
+      const order = normalizeColumnOrder(prev);
+      const index = order.indexOf(key);
+      if (index < 0) return order;
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= order.length) return order;
+      const next = [...order];
+      const [item] = next.splice(index, 1);
+      next.splice(nextIndex, 0, item);
+      return next;
+    });
+  };
+
+  const handlePinInstitutionColumn = (id: string, side: 'left' | 'right' | false) => {
+    const key = id as InstitutionSummaryColumnKey;
+    setColumnPins(prev => {
+      const left = prev.left.filter(item => item !== key);
+      const right = prev.right.filter(item => item !== key);
+      if (side === 'left') left.push(key);
+      if (side === 'right') right.push(key);
+      return { left, right };
+    });
+  };
 
   const renderCell = (row: InstitutionSummaryRecord, key: InstitutionSummaryColumnKey) => {
     const wizardStep = INSTITUTION_COLUMN_STEP[key];
@@ -949,40 +1072,17 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
           />
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-3">
-          <div className="relative" ref={columnMenuRef}>
-            <button
-              type="button"
-              onClick={() => setColumnMenuOpen(open => !open)}
-              className="inline-flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm font-semibold text-text-main hover:border-accent/40"
-              aria-expanded={columnMenuOpen}
-              aria-haspopup="true"
-            >
-              <Settings2 size={16} />
-              Columns
-            </button>
-            {columnMenuOpen ? (
-              <div className="absolute right-0 z-20 mt-2 w-56 rounded-xl border border-border-subtle bg-card p-3 shadow-lg">
-                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
-                  Visible columns
-                </p>
-                <div className="space-y-2">
-                  {INSTITUTION_SUMMARY_COLUMN_DEFS.filter(column => column.key !== 'created_at').map(
-                    column => (
-                    <label key={column.key} className="flex items-center gap-2 text-sm text-text-main">
-                      <input
-                        type="checkbox"
-                        checked={visibleColumns.has(column.key)}
-                        disabled={LOCKED_COLUMN_KEYS.has(column.key)}
-                        onChange={() => toggleColumn(column.key)}
-                      />
-                      {column.label}
-                    </label>
-                    )
-                  )}
-                </div>
-              </div>
-            ) : null}
-          </div>
+          <StandaloneTableOverflowMenu
+            columns={overflowColumns}
+            onToggleVisibility={id => toggleColumn(id as InstitutionSummaryColumnKey)}
+            onMoveColumn={handleMoveInstitutionColumn}
+            onPinColumn={handlePinInstitutionColumn}
+            onRefresh={() => {
+              void loadSummary();
+            }}
+            refreshing={loading}
+            onResetView={resetInstitutionTableView}
+          />
           <span className="inline-flex items-center gap-1.5 rounded-full bg-text-muted/10 px-3 py-1 text-sm font-semibold text-text-muted">
             {inactiveCount} Inactive
           </span>
@@ -1001,6 +1101,18 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
       </div>
 
       <div className="space-y-4 rounded-2xl border border-border-subtle bg-card shadow-sm">
+        {!loading && !error && total > 0 ? (
+          <FrameworkTablePagination
+            variant="top"
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            totalPages={totalPages}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            onPageChange={nextPage => updateFilterParams({ page: String(nextPage) }, { resetPage: false })}
+            onPageSizeChange={nextSize => updateFilterParams({ page_size: String(nextSize) })}
+          />
+        ) : null}
         <div className="flex flex-wrap items-end gap-1.5 px-6 pt-4">
           <div className={filterFieldClass}>
             <InstitutionFilterSelect
@@ -1267,8 +1379,19 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
               </colgroup>
               <thead className="border-b border-border-subtle bg-surface-bg/60 text-text-muted">
                 <tr>
-                  {visibleColumnDefs.map(column =>
-                    isSortableColumn(column.key) ? (
+                  {visibleColumnDefs.map(column => {
+                    const pinned =
+                      columnPins.left.includes(column.key) || columnPins.right.includes(column.key);
+                    const pinStyle = pinned
+                      ? {
+                          position: 'sticky' as const,
+                          left: columnPins.left.includes(column.key) ? 0 : undefined,
+                          right: columnPins.right.includes(column.key) ? 0 : undefined,
+                          zIndex: 2,
+                          background: 'var(--color-surface-bg, #f8fafc)',
+                        }
+                      : undefined;
+                    return isSortableColumn(column.key) ? (
                       <FrameworkSortableHeader
                         key={column.key}
                         label={column.label}
@@ -1279,13 +1402,18 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
                         className={columnHeaderClass(column.key)}
                         align={CENTER_ALIGNED_COLUMN_KEYS.has(column.key) ? 'center' : 'left'}
                         layout={STACKED_HEADER_COLUMN_KEYS.has(column.key) ? 'stacked' : 'inline'}
+                        style={pinStyle}
                       />
                     ) : (
-                      <th key={column.key} className={columnHeaderClass(column.key)}>
+                      <th
+                        key={column.key}
+                        className={columnHeaderClass(column.key)}
+                        style={pinStyle}
+                      >
                         {column.label}
                       </th>
-                    )
-                  )}
+                    );
+                  })}
                   <th className="px-1.5 py-2 text-center text-xs font-semibold align-top">
                     Actions
                   </th>
@@ -1298,11 +1426,29 @@ const InstitutionsManagePage: React.FC<InstitutionsManagePageProps> = () => {
                   return (
                     <Fragment key={row.id}>
                       <tr className="hover:bg-surface-bg/40">
-                        {visibleColumnDefs.map(column => (
-                          <td key={column.key} className={columnCellClass(column.key)}>
-                            {renderCell(row, column.key)}
-                          </td>
-                        ))}
+                        {visibleColumnDefs.map(column => {
+                          const pinned =
+                            columnPins.left.includes(column.key) ||
+                            columnPins.right.includes(column.key);
+                          const pinStyle = pinned
+                            ? {
+                                position: 'sticky' as const,
+                                left: columnPins.left.includes(column.key) ? 0 : undefined,
+                                right: columnPins.right.includes(column.key) ? 0 : undefined,
+                                zIndex: 1,
+                                background: 'var(--color-card, #fff)',
+                              }
+                            : undefined;
+                          return (
+                            <td
+                              key={column.key}
+                              className={columnCellClass(column.key)}
+                              style={pinStyle}
+                            >
+                              {renderCell(row, column.key)}
+                            </td>
+                          );
+                        })}
                         <td className="px-1.5 py-3 text-center align-top">
                           <div className="flex flex-wrap items-start justify-center gap-1">
                             <button

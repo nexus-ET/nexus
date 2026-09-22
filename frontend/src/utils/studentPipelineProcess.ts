@@ -139,6 +139,10 @@ export function hasPipelineWorkspace(basePath: string): boolean {
   return Boolean(pipelineProcessConfig(basePath));
 }
 
+export function isDocumentReadinessPath(basePath: string | null | undefined): boolean {
+  return basePath === '/students/document-readiness';
+}
+
 export function defaultSubprocessForBasePath(basePath: string): string | null {
   return pipelineProcessConfig(basePath)?.defaultSubprocess ?? null;
 }

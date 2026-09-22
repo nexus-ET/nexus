@@ -1786,6 +1786,7 @@ def workflow_to_detail(db: Session, workflow: FlowxCountryWorkflow) -> dict[str,
     title_by_id: dict[uuid.UUID, str] = {}
     stages_out = []
     unlinked: list[dict[str, Any]] = []
+    is_master = (workflow.country_iso2 or "").upper() == MASTER_WORKFLOW_ISO2
 
     for stage in sorted(workflow.stages or [], key=lambda s: s.position_index):
         tracks_out = []
@@ -1830,11 +1831,21 @@ def workflow_to_detail(db: Session, workflow: FlowxCountryWorkflow) -> dict[str,
             }
         )
 
-    enroll_count = (
-        db.query(FlowxEnrollment).filter(FlowxEnrollment.country_workflow_id == workflow.id).count()
-    )
-    iso = (workflow.country_iso2 or "").strip().upper()
-    counts = _country_catalog_counts(db, [iso]).get(iso, {})
+    # Master is a template board — skip enrollment/catalog fan-out (extra tunnel RTs).
+    if is_master:
+        enroll_count = 0
+        counts: dict[str, Any] = {}
+        country_name = "Master"
+    else:
+        enroll_count = (
+            db.query(FlowxEnrollment)
+            .filter(FlowxEnrollment.country_workflow_id == workflow.id)
+            .count()
+        )
+        iso = (workflow.country_iso2 or "").strip().upper()
+        counts = _country_catalog_counts(db, [iso]).get(iso, {})
+        country_name = _country_name(db, workflow.country_iso2)
+
     links_out = [
         {
             "id": link.id,
@@ -1851,7 +1862,7 @@ def workflow_to_detail(db: Session, workflow: FlowxCountryWorkflow) -> dict[str,
     return {
         "id": workflow.id,
         "country_iso2": workflow.country_iso2,
-        "country_name": _country_name(db, workflow.country_iso2),
+        "country_name": country_name,
         "name": workflow.name,
         "status": workflow.status,
         "stages": stages_out,
@@ -1862,7 +1873,7 @@ def workflow_to_detail(db: Session, workflow: FlowxCountryWorkflow) -> dict[str,
         "college_count": int(counts.get("college_count", 0)),
         "students_processed": int(counts.get("students_processed", 0)),
         "students_in_process": int(counts.get("students_in_process", 0)),
-        "is_master": (workflow.country_iso2 or "").upper() == MASTER_WORKFLOW_ISO2,
+        "is_master": is_master,
         "created_at": workflow.created_at,
         "updated_at": workflow.updated_at,
     }

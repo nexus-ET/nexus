@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import ProspectsToolbar from '../components/prospects/ProspectsToolbar';
 import ProspectsListPanel from '../components/prospects/ProspectsListPanel';
@@ -9,8 +9,17 @@ import {
   useProspectsPage,
 } from '../hooks/useProspects';
 import {
+  pickDocumentReadinessLead,
+  readLastScannedLeadId,
+  readLastSearchedLeadId,
+  readLastSearchedQuery,
+  writeLastSearchedLeadId,
+  writeLastSearchedQuery,
+} from '../utils/documentReadinessPrefs';
+import {
   defaultSubprocessForBasePath,
   hasPipelineWorkspace,
+  isDocumentReadinessPath,
   readPipelineSubprocess,
 } from '../utils/studentPipelineProcess';
 import {
@@ -67,6 +76,9 @@ export default function ProspectsPage({
     ? readPipelineSubprocess(searchParams, defaultPipelineSubprocess)
     : null;
   const selectedLeadId = parseLeadIdParam(leadIdParam);
+  const isDocReadiness = isDocumentReadinessPath(basePath);
+  const suppressDocReadinessAutoSelectRef = useRef(false);
+  const docReadinessAutoSelectKeyRef = useRef<string | null>(null);
 
   const scrollStorageKey = prospectsScrollStorageKey(filters, basePath);
   const focusMode = Boolean(selectedLeadId && (isCompact || manualFocus));
@@ -89,6 +101,121 @@ export default function ProspectsPage({
 
   const listQuery = useProspectsPage(debouncedFilters);
   const detailQuery = useProspectDetail(selectedLeadId);
+
+  useEffect(() => {
+    if (!isDocReadiness) return;
+    const q = filters.q.trim();
+    if (q) writeLastSearchedQuery(q);
+  }, [isDocReadiness, filters.q]);
+
+  useEffect(() => {
+    if (!isDocReadiness || selectedLeadId != null) return;
+    if (suppressDocReadinessAutoSelectRef.current) return;
+    if (filters.q.trim() !== debouncedFilters.q.trim()) return;
+
+    const q = debouncedFilters.q.trim();
+    const lastScanned = readLastScannedLeadId();
+    const lastSearchedLead = readLastSearchedLeadId();
+    const lastSearchedQuery = readLastSearchedQuery();
+
+    if (q) {
+      if (listQuery.isLoading || listQuery.isFetching || !listQuery.isFetched) return;
+      const listItems = listQuery.data?.items ?? [];
+      const pickKey = [
+        'q',
+        q,
+        debouncedFilters.page,
+        debouncedFilters.pageSize,
+        listItems.map(item => item.id).join(','),
+      ].join('|');
+      if (docReadinessAutoSelectKeyRef.current === pickKey) return;
+
+      const pick = pickDocumentReadinessLead({
+        items: listItems,
+        searchQuery: q,
+        lastScannedLeadId: lastScanned,
+        lastSearchedLeadId: lastSearchedLead,
+      });
+      docReadinessAutoSelectKeyRef.current = pickKey;
+      if (pick == null) return;
+      navigate(
+        buildProspectsPath(pick, filters, activeTab, basePath, pipelineSubprocess),
+        { replace: true }
+      );
+      return;
+    }
+
+    if (lastScanned != null) {
+      const key = `scanned:${lastScanned}`;
+      if (docReadinessAutoSelectKeyRef.current === key) return;
+      docReadinessAutoSelectKeyRef.current = key;
+      navigate(
+        buildProspectsPath(lastScanned, filters, activeTab, basePath, pipelineSubprocess),
+        { replace: true }
+      );
+      return;
+    }
+
+    if (lastSearchedLead != null) {
+      const key = `searched:${lastSearchedLead}`;
+      if (docReadinessAutoSelectKeyRef.current === key) return;
+      docReadinessAutoSelectKeyRef.current = key;
+      navigate(
+        buildProspectsPath(lastSearchedLead, filters, activeTab, basePath, pipelineSubprocess),
+        { replace: true }
+      );
+      return;
+    }
+
+    if (lastSearchedQuery) {
+      const key = `restore-q:${lastSearchedQuery}`;
+      if (docReadinessAutoSelectKeyRef.current === key) return;
+      docReadinessAutoSelectKeyRef.current = key;
+      navigate(
+        buildProspectsPath(
+          null,
+          { ...filters, q: lastSearchedQuery, page: 1 },
+          activeTab,
+          basePath,
+          pipelineSubprocess
+        ),
+        { replace: true }
+      );
+      return;
+    }
+
+    if (listQuery.isLoading || listQuery.isFetching || !listQuery.isFetched) return;
+    const listItems = listQuery.data?.items ?? [];
+    const pickKey = [
+      'first',
+      debouncedFilters.page,
+      debouncedFilters.pageSize,
+      listItems.map(item => item.id).join(','),
+    ].join('|');
+    if (docReadinessAutoSelectKeyRef.current === pickKey) return;
+    docReadinessAutoSelectKeyRef.current = pickKey;
+    const first = listItems[0]?.id;
+    if (first == null) return;
+    navigate(
+      buildProspectsPath(first, filters, activeTab, basePath, pipelineSubprocess),
+      { replace: true }
+    );
+  }, [
+    isDocReadiness,
+    selectedLeadId,
+    listQuery.isLoading,
+    listQuery.isFetching,
+    listQuery.isFetched,
+    listQuery.data?.items,
+    filters,
+    debouncedFilters.q,
+    debouncedFilters.page,
+    debouncedFilters.pageSize,
+    activeTab,
+    basePath,
+    pipelineSubprocess,
+    navigate,
+  ]);
 
   const items = listQuery.data?.items ?? [];
   const filteredTotal = listQuery.data?.filtered_total ?? 0;
@@ -154,6 +281,10 @@ export default function ProspectsPage({
   };
 
   const handleSelectLead = (leadId: number) => {
+    if (isDocReadiness) {
+      suppressDocReadinessAutoSelectRef.current = false;
+      writeLastSearchedLeadId(leadId);
+    }
     if (isCompact) setManualFocus(true);
     navigate(
       buildProspectsPath(leadId, filters, activeTab, basePath, pipelineSubprocess),
@@ -162,6 +293,10 @@ export default function ProspectsPage({
   };
 
   const handleBackToList = () => {
+    if (isDocReadiness) {
+      suppressDocReadinessAutoSelectRef.current = true;
+      docReadinessAutoSelectKeyRef.current = null;
+    }
     setManualFocus(false);
     navigate(
       buildProspectsPath(null, filters, activeTab, basePath, pipelineSubprocess),
@@ -225,6 +360,7 @@ export default function ProspectsPage({
           leadId={selectedLeadId}
           detail={detailQuery.data}
           isLoading={detailQuery.isLoading}
+          loadError={detailQuery.isError}
           pulseLeads={pulseLeads}
           isPulseLoading={listQuery.isLoading}
           onSelectPulseLead={handleSelectLead}

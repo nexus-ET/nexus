@@ -1,9 +1,10 @@
 import { useEffect } from 'react';
-import { useForm } from 'react-hook-form';
+import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Loader2, X } from 'lucide-react';
 
 import { apiFetch } from '../../utils/api';
+import { FRAMEWORK_DESCRIPTION_MAX_LENGTH } from '../../schemas/frameworkDescriptionLimits';
 import {
   emptySuperMajorFormValues,
   superMajorSchema,
@@ -11,6 +12,7 @@ import {
 } from '../../schemas/superMajorSchema';
 import type { EducationSuperMajorRecord } from '../../types/educationSuperMajor';
 import { FrameworkIdField } from './FrameworkIdDisplay';
+import RichTextEditor from '../ui/rich-text-editor';
 
 interface EducationSuperMajorFormModalProps {
   open: boolean;
@@ -26,6 +28,7 @@ const EducationSuperMajorFormModal: React.FC<EducationSuperMajorFormModalProps> 
   onSaved,
 }) => {
   const {
+    control,
     register,
     handleSubmit,
     reset,
@@ -117,18 +120,21 @@ const EducationSuperMajorFormModal: React.FC<EducationSuperMajorFormModalProps> 
             {errors.name ? <p className="text-xs text-alert">{errors.name.message}</p> : null}
           </label>
 
-          <label className="block space-y-1 text-sm">
-            <span className="font-medium text-text-main">Description</span>
-            <textarea
-              rows={4}
-              {...register('description')}
-              placeholder="Optional marketing or grouping description"
-              className="w-full rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent"
-            />
-            {errors.description ? (
-              <p className="text-xs text-alert">{errors.description.message}</p>
-            ) : null}
-          </label>
+          <Controller
+            control={control}
+            name="description"
+            render={({ field, fieldState }) => (
+              <RichTextEditor
+                label="Description"
+                content={field.value || ''}
+                onChange={field.onChange}
+                maxLength={FRAMEWORK_DESCRIPTION_MAX_LENGTH}
+                placeholder="Optional marketing or grouping description"
+                hint="Name and description are embedded for taxonomy search when you save."
+                error={fieldState.error?.message}
+              />
+            )}
+          />
 
           <label className="block space-y-1 text-sm">
             <span className="font-medium text-text-main">Code</span>

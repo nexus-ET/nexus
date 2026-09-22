@@ -7,10 +7,11 @@ from typing import Any
 from fastapi import Request
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
-from starlette.requests import Request as StarletteRequest
+from starlette.requests import ClientDisconnect, Request as StarletteRequest
+from starlette.responses import Response
 
 from app.config import settings
-from app.db.database import SessionLocal
+from app.db.database import SessionLocal, safe_close_session
 from app.models.user import User
 from app.services.audit_context import build_audit_details, should_skip_middleware_audit
 from app.services.audit_logger import scrub_sensitive_data, session_id_from_request, write_audit_log
@@ -140,11 +141,23 @@ def _persist_mutation_audit(
             session_id=session_id_from_request(Request(request.scope, request.receive)),
             sync_mode="MANUAL",
         )
-    except Exception:
-        logger.exception("Failed to persist mutation audit log for %s %s", method, path)
-        db.rollback()
+    except Exception as exc:
+        from app.db.database import is_db_tunnel_transient_error
+
+        if is_db_tunnel_transient_error(exc):
+            logger.warning(
+                "Audit log skipped (DB tunnel) for %s %s", method, path
+            )
+        else:
+            logger.exception(
+                "Failed to persist mutation audit log for %s %s", method, path
+            )
+        try:
+            db.rollback()
+        except Exception:
+            pass
     finally:
-        db.close()
+        safe_close_session(db)
 
 
 async def audit_middleware(request: Request, call_next):
@@ -157,7 +170,13 @@ async def audit_middleware(request: Request, call_next):
     if should_skip_middleware_audit(path):
         return await call_next(request)
 
-    body = await request.body()
+    try:
+        body = await request.body()
+    except ClientDisconnect:
+        # Client aborted (timeout / navigation) before the body finished — not an error.
+        logger.debug("Client disconnected before body for %s %s", method, path)
+        return Response(status_code=499)
+
     content_type = request.headers.get("content-type")
     body_details = _parse_request_body(body, content_type)
     user_id = _user_id_from_request(request)
@@ -166,7 +185,11 @@ async def audit_middleware(request: Request, call_next):
         return {"type": "http.request", "body": body, "more_body": False}
 
     wrapped_request = Request(request.scope, receive)
-    response = await call_next(wrapped_request)
+    try:
+        response = await call_next(wrapped_request)
+    except ClientDisconnect:
+        logger.debug("Client disconnected during handler for %s %s", method, path)
+        return Response(status_code=499)
 
     try:
         _persist_mutation_audit(

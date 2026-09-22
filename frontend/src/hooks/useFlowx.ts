@@ -45,7 +45,11 @@ export function useFlowxOpsOverview() {
 export function useFlowxMaster() {
   return useQuery({
     queryKey: ['flowx-master'],
-    queryFn: () => apiFetch<FlowxCountryDetail>('flowx/master'),
+    queryFn: () =>
+      apiFetch<FlowxCountryDetail>('flowx/master', {
+        // Pipeline strip on student pages shares the SSH-tunnel pool with ScanX.
+        timeoutMs: 90_000,
+      }),
     staleTime: 15_000,
   });
 }

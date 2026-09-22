@@ -549,18 +549,23 @@ async def send_messaging_presence(
 @router.post("/chat/messaging/heartbeat")
 @router.post("/chat/messaging/heartbeat/")
 async def messaging_heartbeat(
-    current_user: User = Depends(deps.require_internal_admin),
+    user_id: int = Depends(deps.get_jwt_user_id),
 ):
+    """In-memory presence ping — no DB (JWT-only) so tunnel flaps do not 500."""
     from app.services.presence_service import presence_tracker
     from app.services.websocket_service import broadcast_nexus_event
 
-    presence_tracker.heartbeat(current_user.id)
-    await broadcast_nexus_event(
-        "presence.updated",
-        {"user_id": current_user.id, **presence_tracker.snapshot(current_user.id)},
-        exclude_user_id=current_user.id,
-    )
-    return presence_tracker.snapshot(current_user.id)
+    presence_tracker.heartbeat(user_id)
+    try:
+        await broadcast_nexus_event(
+            "presence.updated",
+            {"user_id": user_id, **presence_tracker.snapshot(user_id)},
+            exclude_user_id=user_id,
+        )
+    except Exception:
+        # Broadcast is best-effort; presence is still updated locally.
+        pass
+    return presence_tracker.snapshot(user_id)
 
 
 @router.get("/chat/search", response_model=ChatSearchResponse)

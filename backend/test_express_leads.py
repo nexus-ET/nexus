@@ -106,7 +106,7 @@ def test_check_express_duplicates_returns_match(monkeypatch):
     assert result["email_match"]["id"] == 42
     assert result["email_match"]["matched_on"] == "email"
     assert result["phone_match"]["page_path"] == "/offline-leads"
-    assert result["phone_match"]["page_label"] == "Offline Leads"
+    assert result["phone_match"]["page_label"] == "All Leads"
     assert result["phone_match"]["prospects_path"] == "/prospects/42"
     assert result["phone_match"]["source_label"] == "Express Lead"
 

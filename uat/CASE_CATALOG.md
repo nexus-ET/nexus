@@ -1,6 +1,6 @@
 # Nexus UAT — Case catalog (save for next run)
 
-**Suite size:** 48 Playwright entries = **1 auth setup** + **47 application cases**.  
+**Suite size:** 56 Playwright entries = **1 auth setup** + **55 application cases** (baseline suite + framework recent + 8 coverage-gap cases).  
 **Command:** `cd E:\NEXUS\uat` → `npm test` → `npm run summary`  
 **Env:** `uat/.env` — `UAT_BASE_URL`, `UAT_EMAIL`, `UAT_PASSWORD`, `UAT_LEAD_ID=27`, `UAT_BOOKING_ID` (session workspace).
 
@@ -145,6 +145,28 @@ cd E:\NEXUS\backend
 
 ---
 
+## Coverage gaps (8) — post–57-case product growth
+
+### ScanX / Document Readiness (2) — `tests/09-scanx-document-readiness.spec.ts`
+
+| # | Case |
+| ---: | --- |
+| 48 | Document Readiness pipeline loads ScanX shell |
+| 49 | UAT lead Document Readiness shows Upload control without crashing |
+
+### All Leads, follow-ups, College Finding (6) — `tests/10-offline-leads-followups.spec.ts`
+
+| # | Case |
+| ---: | --- |
+| 50 | All Leads page loads list shell with search and status filter |
+| 51 | All Leads status filter exposes Active / Offline / Handoff options |
+| 52 | Counselor Notes follow-up drawer opens from All Leads Notes control |
+| 53 | All Leads table exposes Lead Status column |
+| 54 | Add New Lead opens Express Leads capture form |
+| 55 | College Finding pipeline page loads prospect shell |
+
+---
+
 ## Last known good execution (LOCAL, 2026-08-08)
 
 ### Baseline (`npm test` before stack went down) — 32 entries (setup + 31)
@@ -179,5 +201,6 @@ cd E:\NEXUS\backend
 1. Frontend `:5175` and backend `:8002` responding  
 2. `uat/.env` populated (`UAT_PASSWORD`, `UAT_LEAD_ID=27`, `UAT_BOOKING_ID` for session cases)  
 3. `npm test` then `npm run summary`  
-4. Expect **48** Playwright entries (1 setup + 47 cases)  
+4. Expect **56** Playwright entries (1 setup + 55 cases) when including framework-recent + coverage-gap specs  
+
 5. Before staging handoff: `npm run smoke:staging` (or backend `staging_post_deploy_smoke.py`) must be green 

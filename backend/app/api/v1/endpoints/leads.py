@@ -44,12 +44,20 @@ from app.schemas.express_lead import (
     ExpressLeadDuplicateCheckResponse,
 )
 from app.schemas.offline_lead import (
+    OfflineLeadActiveReasonsResponse,
+    OfflineLeadActiveUpdate,
     OfflineLeadCreate,
     OfflineLeadDuplicateCheckResponse,
     OfflineLeadListResponse,
     OfflineLeadUpdate,
     SortDirection,
     SortField,
+)
+from app.schemas.counselor_followup import (
+    CounselorFollowupCreate,
+    CounselorFollowupItem,
+    CounselorFollowupListResponse,
+    CounselorStatusMasterListResponse,
 )
 from app.services.express_leads_service import (
     build_express_lead_response,
@@ -61,7 +69,13 @@ from app.services.offline_leads_service import (
     check_offline_lead_duplicates,
     create_offline_lead,
     list_offline_leads,
+    set_offline_lead_active,
     update_offline_lead,
+)
+from app.services.counselor_followup_service import (
+    create_lead_followup,
+    list_counselor_statuses,
+    list_lead_followups,
 )
 from app.services.messaging import WhatsAppDeliveryError
 from app.services.twilio_ai_conversation import initiate_ai_outreach, reset_whatsapp_conversation
@@ -430,7 +444,15 @@ def build_universal_lead_payload(lead: Lead, db: Session) -> dict:
         "status_stage_name": status_stage_name,
         "status_category": status_category,
         "status_description": status_description,
-        **build_intake_profile_summary(lead, db),
+        # CRM lead detail does not need WhatsApp slot pickers; loading available
+        # consultation dates/times is multi-second over the tunnel and blocked the UI.
+        **build_intake_profile_summary(
+            lead,
+            db,
+            refresh_lead=False,
+            include_booking_options=False,
+            include_session_fields=True,
+        ),
     }
 
 
@@ -1079,6 +1101,19 @@ async def get_prospects_paginated(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as e:
+        from app.db.database import is_db_pool_pressure_error
+
+        if is_db_pool_pressure_error(e):
+            from app.db.database import (
+                DB_TEMPORARILY_BUSY_DETAIL,
+                db_temporarily_busy_headers,
+            )
+
+            raise HTTPException(
+                status_code=503,
+                detail=DB_TEMPORARILY_BUSY_DETAIL,
+                headers=db_temporarily_busy_headers(),
+            ) from e
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
@@ -1183,13 +1218,115 @@ def post_offline_lead(payload: OfflineLeadCreate, db: Session = Depends(get_db))
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+@router.get("/offline/status-reasons", response_model=OfflineLeadActiveReasonsResponse)
+@router.get("/offline/status-reasons/", response_model=OfflineLeadActiveReasonsResponse)
+def get_offline_lead_status_reasons():
+    """Reason lists for active ↔ inactive transitions on All Leads."""
+    from app.constants.lead_status_change import ACTIVE_STATUS_REASONS, INACTIVE_STATUS_REASONS
+
+    return OfflineLeadActiveReasonsResponse(
+        inactive=list(INACTIVE_STATUS_REASONS),
+        active=list(ACTIVE_STATUS_REASONS),
+    )
+
+
+@router.patch("/offline/{lead_id}/active")
+@router.patch("/offline/{lead_id}/active/")
+@router.post("/offline/{lead_id}/status")
+@router.post("/offline/{lead_id}/status/")
+def patch_offline_lead_active(
+    lead_id: int,
+    payload: OfflineLeadActiveUpdate,
+    db: Session = Depends(get_db),
+    current_user: User | None = Depends(deps.get_optional_current_user),
+):
+    """Mark a lead active or inactive (soft; does not delete) and audit the reasons."""
+    try:
+        assert payload.is_active is not None  # resolved by schema validator
+        changed_by = None
+        changed_by_user_id = None
+        if current_user is not None:
+            changed_by_user_id = current_user.id
+            changed_by = getattr(current_user, "email", None) or f"user:{current_user.id}"
+        lead = set_offline_lead_active(
+            db,
+            lead_id,
+            is_active=bool(payload.is_active),
+            reasons=list(payload.reasons),
+            changed_by_user_id=changed_by_user_id,
+            changed_by=str(changed_by) if changed_by else None,
+        )
+        return build_offline_lead_list_item(lead, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
 @router.patch("/offline/{lead_id}")
 @router.patch("/offline/{lead_id}/")
 def patch_offline_lead(lead_id: int, payload: OfflineLeadUpdate, db: Session = Depends(get_db)):
-    """Update a manually entered offline lead."""
+    """Update a lead from the All Leads edit form."""
     try:
         lead = update_offline_lead(db, lead_id, payload)
         return build_offline_lead_list_item(lead, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get(
+    "/counselor-followup-statuses",
+    response_model=CounselorStatusMasterListResponse,
+)
+@router.get(
+    "/counselor-followup-statuses/",
+    response_model=CounselorStatusMasterListResponse,
+)
+def get_counselor_followup_statuses(db: Session = Depends(get_db)):
+    """Active counselor follow-up status master rows (templates for notes)."""
+    return {"items": list_counselor_statuses(db, active_only=True)}
+
+
+@router.get("/{lead_id}/followups", response_model=CounselorFollowupListResponse)
+@router.get("/{lead_id}/followups/", response_model=CounselorFollowupListResponse)
+def get_lead_followups(lead_id: int, db: Session = Depends(get_db)):
+    """Chronological counselor follow-up notes for a lead (newest first)."""
+    try:
+        return list_lead_followups(db, lead_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post(
+    "/{lead_id}/followups",
+    response_model=CounselorFollowupItem,
+    status_code=status.HTTP_201_CREATED,
+)
+@router.post(
+    "/{lead_id}/followups/",
+    response_model=CounselorFollowupItem,
+    status_code=status.HTTP_201_CREATED,
+)
+def post_lead_followup(
+    lead_id: int,
+    payload: CounselorFollowupCreate,
+    db: Session = Depends(get_db),
+    current_user: User | None = Depends(deps.get_optional_current_user),
+):
+    """Persist a counselor follow-up note and return the created timeline item."""
+    counselor_id = None
+    if current_user is not None:
+        counselor_id = str(current_user.id)
+        if getattr(current_user, "email", None):
+            counselor_id = f"{current_user.id}:{current_user.email}"
+    try:
+        return create_lead_followup(db, lead_id, payload, counselor_id=counselor_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -1323,12 +1460,9 @@ def get_lead_digital_presence_links(lead_id: int, db: Session = Depends(get_db))
 @router.get("/{lead_id}")
 @router.get("/{lead_id}/")
 def get_lead_detail(lead_id: int, db: Session = Depends(get_db)):
-    lead = (
-        db.query(Lead)
-        .options(joinedload(Lead.messages))
-        .filter(Lead.id == lead_id)
-        .first()
-    )
+    # Avoid joinedload(Lead.messages) — large histories over the SSH tunnel stall the CRM
+    # detail panel for a full minute (client abort). Payload loads messages in a separate query.
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead profile not found.")
     return build_universal_lead_payload(lead, db)

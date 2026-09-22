@@ -210,6 +210,9 @@ def create_education_sub_major(
             detail="A sub-major with this name already exists for the selected major.",
         ) from None
     db.refresh(record)
+    from app.services.taxonomy_embeddings import schedule_sub_major_embedding
+
+    schedule_sub_major_embedding(record.id)
     loaded = get_education_sub_major(db, record.id)
     return education_sub_major_read(db, loaded or record)
 
@@ -256,6 +259,9 @@ def update_education_sub_major(
             detail="A sub-major with this name already exists for the selected major.",
         ) from None
     db.refresh(record)
+    from app.services.taxonomy_embeddings import schedule_sub_major_embedding
+
+    schedule_sub_major_embedding(record.id)
     loaded = get_education_sub_major(db, record.id)
     return education_sub_major_read(db, loaded or record)
 

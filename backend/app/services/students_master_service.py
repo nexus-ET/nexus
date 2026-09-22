@@ -167,6 +167,7 @@ def students_master_to_profile_dict(db: Session, record: StudentsMaster) -> dict
         "date_of_birth": record.date_of_birth.isoformat() if record.date_of_birth else None,
         "gender": record.gender,
         "marital_status": record.marital_status,
+        "spouse_name": record.spouse_name,
         "email": record.email,
         "phone_country_iso2": record.phone_country_iso2,
         "phone_local": record.phone_local,
@@ -321,6 +322,7 @@ def upsert_students_master(
         record.date_of_birth = payload.date_of_birth
         record.gender = payload.gender
         record.marital_status = payload.marital_status
+        record.spouse_name = (payload.spouse_name or "").strip() or None
         record.email = _normalize_email(payload.email)
 
         record.phone_country_iso2 = _normalize_iso2(payload.phone_country_iso2)

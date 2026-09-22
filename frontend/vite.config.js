@@ -37,6 +37,7 @@ export default defineConfig({
     'import.meta.env.VITE_NEXUS_BIND_HOST': JSON.stringify(bindHost),
   },
   server: {
+    host: bindHost,
     port: frontendPort,
     proxy: {
       '/api': {
@@ -44,11 +45,17 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
         ws: true,
+        // ScanX OCR / multi-upload can keep the API busy for minutes; keep the
+        // proxy socket open past the SPA AbortController budget (5–10 min).
+        timeout: 10 * 60 * 1000,
+        proxyTimeout: 10 * 60 * 1000,
       },
       '/uploads': {
         target: `http://${bindHost}:${backendPort}`,
         changeOrigin: true,
         secure: false,
+        timeout: 10 * 60 * 1000,
+        proxyTimeout: 10 * 60 * 1000,
       },
     },
   },

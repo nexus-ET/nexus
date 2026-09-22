@@ -7,6 +7,7 @@ import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../../utils/api';
 import { fetchAcademiaListItems } from '../../utils/academiaList';
 import { assignMajorColor } from '../../utils/majorColors';
+import { FRAMEWORK_DESCRIPTION_MAX_LENGTH } from '../../schemas/frameworkDescriptionLimits';
 import {
   emptyMajorFormValues,
   majorSchema,
@@ -230,7 +231,8 @@ const EducationMajorFormModal: React.FC<EducationMajorFormModalProps> = ({
                 label="Major description"
                 content={field.value || ''}
                 onChange={field.onChange}
-                maxLength={5000}
+                maxLength={FRAMEWORK_DESCRIPTION_MAX_LENGTH}
+                hint="Name and description are embedded for taxonomy search when you save."
                 error={fieldState.error?.message}
               />
             )}

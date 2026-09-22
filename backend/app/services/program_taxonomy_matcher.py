@@ -249,7 +249,7 @@ AWARD_SUBJECT_MAJOR: dict[str, str] = {
     "art therapy": "Health Sciences",
     "juris doctor": "Law & Legal",
     "construction law": "Law & Legal",
-    "agricultural science": "Agriculture & Food Sciences",
+    "agricultural science": "Agricultural Sciences",
     "criminology": "Law & Legal",
     "crime prevention": "Law & Legal",
     "countering violent extremism": "Law & Legal",
@@ -599,9 +599,9 @@ TITLE_SUB_MAJOR_HINTS: list[tuple[str, tuple[str, ...]]] = [
     (r"\baeromedical\b", ("Paramedicine",)),
     (
         r"\bfood\s+technology\b|\bfood\s+safety\b|\bfood\s+science\b",
-        ("Agriculture & Food Sciences",),
+        ("Food Science and Technology", "Food Sciences"),
     ),
-    (r"\bprecision\s+agriculture\b", ("Agriculture & Food Sciences",)),
+    (r"\bprecision\s+agriculture\b", ("Precision Agriculture",)),
     (r"\bproduct\s+design\b", ("Industrial Design", "General Design")),
     (
         r"\bmedical\s+engineering\b|\bmedical\s+technology\b",
@@ -700,8 +700,8 @@ TITLE_SUB_MAJOR_HINTS: list[tuple[str, tuple[str, ...]]] = [
     ),
     (r"\bjuris\s+doctor\b|\b\(jd\)\b", ("Law",)),
     (r"\bconstruction\s+law\b", ("Legal Studies",)),
-    (r"\bagricultural\s+science\b", ("Agriculture & Food Sciences",)),
-    (r"\bfood\s+science\b", ("Agriculture & Food Sciences",)),
+    (r"\bagricultural\s+science\b", ("Agriculture Science",)),
+    (r"\bfood\s+science\b", ("Food Science and Technology", "Food Sciences")),
     (r"\banimal\s+science\b|\bzoology\b", ("Biology & Life Sciences",)),
     (r"\bscience\s+\(\s*biology\s*\)|\(biology\)", ("Biology & Life Sciences",)),
     (r"\bphysical\s+education\b", ("Teacher Education",)),
@@ -977,7 +977,7 @@ MAJOR_KEYWORD_HINTS: list[tuple[tuple[str, ...], str]] = [
         "Architecture & Planning",
     ),
     (("public policy", "social work", "justice", "criminology", "humanitarian"), "Public Policy & Social Work"),
-    (("agricultur", "veterinary", "vet "), "Agriculture & Food Sciences"),
+    (("agricultur", "veterinary", "vet "), "Agricultural Sciences"),
     (
         (
             "health science",
@@ -1253,10 +1253,35 @@ def _whole_phrase_match(query: str, candidate: str) -> bool:
 
 
 def _phrase_in_haystack(needle: str, haystack: str) -> bool:
-    """Whole-phrase containment (avoids ``certificate i`` ⊂ ``certificate in``)."""
+    """Whole-phrase containment (avoids ``certificate i`` ⊂ ``certificate in``).
+
+    Also allows catalog stopwords (``and``/``of``/…) between needle tokens so
+    ``book media studies`` matches ``book and media studies``.
+    """
     if not needle or not haystack:
         return False
-    return bool(re.search(rf"(?:^| ){re.escape(needle)}(?: |$)", haystack))
+    if re.search(rf"(?:^| ){re.escape(needle)}(?: |$)", haystack):
+        return True
+    ntoks = [t for t in needle.split() if t not in _MATCH_STOPWORDS]
+    if len(ntoks) < 2:
+        return False
+    htoks = haystack.split()
+    for start in range(len(htoks)):
+        if htoks[start] != ntoks[0]:
+            continue
+        ti = 1
+        hi = start + 1
+        while ti < len(ntoks) and hi < len(htoks):
+            if htoks[hi] == ntoks[ti]:
+                ti += 1
+                hi += 1
+            elif htoks[hi] in _MATCH_STOPWORDS:
+                hi += 1
+            else:
+                break
+        if ti == len(ntoks):
+            return True
+    return False
 
 
 def match_sub_from_live_catalog(raw: str, catalog: list[SubMajor]) -> SubMajor | None:
@@ -1481,9 +1506,10 @@ _MAJOR_FOLD_ALIASES = {
     # PHI merged into Health
     "public health informatics": "health sciences",
     "phi": "health sciences",
-    # Agriculture / Vet split
-    "agriculture and veterinary sciences": "agriculture and food sciences",
-    "agriculture and food sciences": "agriculture and veterinary sciences",
+    # Agriculture rename + legacy vet/food labels
+    "agriculture and veterinary sciences": "agricultural sciences",
+    "agriculture and food sciences": "agricultural sciences",
+    "agricultural sciences": "agriculture and food sciences",
     # Aviation rename
     "aviation studies": "aviation",
     "aviation": "aviation studies",

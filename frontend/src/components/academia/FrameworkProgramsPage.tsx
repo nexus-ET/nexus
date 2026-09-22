@@ -31,7 +31,7 @@ const FrameworkProgramsPage: React.FC<{ embedded?: boolean }> = ({ embedded = fa
   const [search, setSearch] = useState('');
   const [filterSuperMajorId, setFilterSuperMajorId] = useState('');
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(20);
+  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(50);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
   const [sortBy, setSortBy] = useState<SortBy>('name');
@@ -102,8 +102,39 @@ const FrameworkProgramsPage: React.FC<{ embedded?: boolean }> = ({ embedded = fa
   };
 
   const handleSaved = () => {
-    setPage(1);
-    void loadMajors(1);
+    void loadMajors(page);
+  };
+
+  const handleDelete = async (major: EducationMajorRecord) => {
+    const subCount = major.sub_major_count ?? 0;
+    if (
+      !(await openConfirm({
+        title: 'Delete major?',
+        message:
+          subCount > 0
+            ? `Delete major "${major.label}"? It still has ${subCount} sub-major${
+                subCount === 1 ? '' : 's'
+              }; remove or reassign them first.`
+            : `Delete major "${major.label}"?`,
+        confirmLabel: 'Delete',
+        variant: 'danger',
+      }))
+    ) {
+      return;
+    }
+    try {
+      await apiFetch(`academia/education-majors/${major.id}`, { method: 'DELETE' });
+      void loadMajors(page);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to delete major';
+      await openConfirm({
+        title: 'Could not delete major',
+        message,
+        confirmLabel: 'OK',
+        variant: 'warning',
+        mode: 'alert',
+      });
+    }
   };
 
   return (
@@ -296,18 +327,7 @@ const FrameworkProgramsPage: React.FC<{ embedded?: boolean }> = ({ embedded = fa
                           <button
                             type="button"
                             disabled={major.is_other}
-                            onClick={async () => {
-                              if (!(await openConfirm({
-                                title: 'Delete major?',
-                                message: `Delete major "${major.label}"?`,
-                                confirmLabel: 'Delete',
-                                variant: 'danger',
-                              }))) return;
-                              await apiFetch(`academia/education-majors/${major.id}`, {
-                                method: 'DELETE',
-                              });
-                              void loadMajors();
-                            }}
+                            onClick={() => void handleDelete(major)}
                             className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-alert hover:bg-alert/10 disabled:opacity-40"
                           >
                             <Trash2 size={14} />
