@@ -21,6 +21,10 @@ def register_all_models() -> None:
     from app.models.conversation_participant import ConversationParticipant  # noqa: F401
     from app.models.counselling_booking import CounsellingBooking  # noqa: F401
     from app.models.counselling_note import CounsellingNote  # noqa: F401
+    from app.models.counselor_followup import (  # noqa: F401
+        CounselorFollowupLog,
+        CounselorStatusMaster,
+    )
     from app.models.country import Country  # noqa: F401
     from app.models.course_education_major_mapping import CourseEducationMajorMapping  # noqa: F401
     from app.models.digital_presence_link import DigitalPresenceLink  # noqa: F401
@@ -31,11 +35,17 @@ def register_all_models() -> None:
     from app.models.education_major_level import EducationMajorLevel  # noqa: F401
     from app.models.education_sub_major import EducationSubMajor  # noqa: F401
     from app.models.education_super_major import EducationSuperMajor  # noqa: F401
+    from app.models.education_taxonomy_embedding import (  # noqa: F401
+        EducationMajorEmbedding,
+        EducationSubMajorEmbedding,
+        EducationSuperMajorEmbedding,
+    )
     from app.models.gpa_cgpa_score import GpaCgpaScore  # noqa: F401
     from app.models.full_time_study_year import FullTimeStudyYear  # noqa: F401
     from app.models.internal_message import InternalMessage  # noqa: F401
     from app.models.lead import Lead  # noqa: F401
     from app.models.lead_quarantine import LeadQuarantine  # noqa: F401
+    from app.models.lead_status_change_log import LeadStatusChangeLog  # noqa: F401
     from app.models.level import Level  # noqa: F401
     from app.models.message import Message  # noqa: F401
     from app.models.message_history import MessageHistory  # noqa: F401
@@ -92,6 +102,7 @@ def register_all_models() -> None:
     from app.models.nexus_intel import (  # noqa: F401
         IntelAcademyModule,
         IntelAiChatLog,
+        IntelAiPrompt,
         IntelGlossary,
         IntelInquiryFaq,
         IntelScrapeReview,
@@ -112,4 +123,10 @@ def register_all_models() -> None:
         FlowxTaskTemplate,
         FlowxTrack,
         FlowxWorkflowRule,
+    )
+    from app.models.scanx import ScanxDocument, ScanxDocumentChunk  # noqa: F401
+    from app.models.document_extraction import (  # noqa: F401
+        Document,
+        DocumentType,
+        ExtractedDocumentData,
     )

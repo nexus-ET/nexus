@@ -23,6 +23,12 @@ import {
   useCounsellors,
 } from '../hooks/useCounsellorAvailability';
 import { apiFetch } from '../utils/api';
+import { bookAppointmentReturnTo } from '../utils/bookAppointmentHref';
+import {
+  bookingNotificationLabel,
+  bookingWhatsAppOutcomeClassName,
+  describeBookingWhatsAppOutcome,
+} from '../utils/bookingNotificationStatus';
 
 /** Original Book Appointment purpose list (labels + short helper copy). */
 const DEFAULT_SESSION_PURPOSES: SessionPurpose[] = [
@@ -86,6 +92,8 @@ export type BookAppointmentModalProps = {
   onClose?: () => void;
   onBooked?: (bookingId: number) => void;
   initialLead?: BookAppointmentPrefillLead | null;
+  /** Preferred destination for post-booking / embedded back navigation. */
+  returnTo?: string | null;
 };
 
 type CandidateMode = 'existing' | 'new';
@@ -147,6 +155,7 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
   onClose,
   onBooked,
   initialLead = null,
+  returnTo = null,
 }) => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -171,6 +180,8 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
   const [candidateEmail, setCandidateEmail] = useState('');
   const [candidatePhone, setCandidatePhone] = useState('');
   const [notes, setNotes] = useState('');
+  const [sendWhatsappCandidate, setSendWhatsappCandidate] = useState(true);
+  const [sendWhatsappCounsellor, setSendWhatsappCounsellor] = useState(true);
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -389,19 +400,28 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
     setCandidateEmail('');
     setCandidatePhone('');
     setNotes('');
+    setSendWhatsappCandidate(true);
+    setSendWhatsappCounsellor(true);
     setError(null);
     setSuccessId(null);
     setNotificationStatus(null);
   };
 
-  const notificationLabel = (value?: string | null) => {
-    if (!value) return 'n/a';
-    if (value === 'sent') return 'Sent';
-    if (value === 'skipped') return 'Skipped (missing contact)';
-    if (value === 'disabled') return 'Disabled in settings';
-    if (value === 'failed') return 'Failed';
-    return value;
-  };
+  const whatsappOutcome = useMemo(
+    () =>
+      successId != null
+        ? describeBookingWhatsAppOutcome(notificationStatus, {
+            candidateRequested: sendWhatsappCandidate,
+            counsellorRequested: sendWhatsappCounsellor,
+          })
+        : null,
+    [
+      successId,
+      notificationStatus,
+      sendWhatsappCandidate,
+      sendWhatsappCounsellor,
+    ]
+  );
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -419,6 +439,8 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
         session_purpose: purpose || null,
         notes: notes.trim() || null,
         create_lead: candidateMode === 'new',
+        send_whatsapp_candidate: sendWhatsappCandidate,
+        send_whatsapp_counsellor: sendWhatsappCounsellor,
       });
       setSuccessId(booking.id);
       setNotificationStatus(booking.notifications || null);
@@ -639,24 +661,32 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
           ) : null}
         </label>
 
-        <div className="grid gap-3 md:grid-cols-2">
-          <PhoneWithCountryCodeInput
-            label="Contact number"
-            value={candidatePhone}
-            onChange={setCandidatePhone}
-            countries={countries}
-            defaultCountryIso2="IN"
-            required={candidateMode === 'new'}
-            className="space-y-1 text-sm"
-            hint={undefined}
-          />
-          <label className="block space-y-1 text-sm">
+        <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+          <div className="min-w-0 space-y-1 text-sm">
+            <label htmlFor="book-candidate-phone" className="font-semibold text-text-muted">
+              Contact number
+              {candidateMode === 'new' ? ' *' : ''}
+            </label>
+            <PhoneWithCountryCodeInput
+              id="book-candidate-phone"
+              label="Contact number"
+              hideLabel
+              value={candidatePhone}
+              onChange={setCandidatePhone}
+              countries={countries}
+              defaultCountryIso2="IN"
+              required={candidateMode === 'new'}
+              className="min-w-0"
+              hint=""
+            />
+          </div>
+          <label className="block min-w-0 space-y-1 text-sm">
             <span className="font-semibold text-text-muted">Email</span>
             <input
               type="email"
               value={candidateEmail}
               onChange={e => setCandidateEmail(e.target.value)}
-              className={fieldClass}
+              className={`${fieldClass} h-10`}
               required={candidateMode === 'new'}
               readOnly={candidateMode === 'existing' && leadId != null}
             />
@@ -686,11 +716,7 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
                 </button>
               ) : null}
             </div>
-          ) : (
-            <p className="text-xs text-text-muted">
-              Select a matching lead from the name suggestions to autofill phone and email.
-            </p>
-          )
+          ) : null
         ) : (
           <div className="space-y-1">
             <p className="text-xs text-text-muted">
@@ -938,6 +964,44 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
         />
       </label>
 
+      <fieldset className="space-y-2 rounded-xl border border-border-subtle bg-surface-bg/60 px-3 py-3 text-sm">
+        <legend className="px-1 text-xs font-semibold uppercase tracking-wide text-text-muted">
+          WhatsApp notifications
+        </legend>
+        <label className="flex cursor-pointer items-start gap-2.5">
+          <input
+            type="checkbox"
+            checked={sendWhatsappCandidate}
+            onChange={event => setSendWhatsappCandidate(event.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-border-subtle text-primary focus:ring-primary"
+          />
+          <span className="text-text-main">
+            <span className="font-semibold">Candidate</span>
+            <span className="block text-xs text-text-muted">
+              Send WhatsApp session confirmation (date, counsellor, reschedule/cancel buttons).
+            </span>
+          </span>
+        </label>
+        <label className="flex cursor-pointer items-start gap-2.5">
+          <input
+            type="checkbox"
+            checked={sendWhatsappCounsellor}
+            onChange={event => setSendWhatsappCounsellor(event.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-border-subtle text-primary focus:ring-primary"
+          />
+          <span className="text-text-main">
+            <span className="font-semibold">Counsellor</span>
+            <span className="block text-xs text-text-muted">
+              Send WhatsApp assignment alert to the selected counsellor.
+            </span>
+          </span>
+        </label>
+        <p className="text-[11px] text-text-muted">
+          Email confirmations are always sent when contact details are available. Uncheck to skip
+          WhatsApp for that recipient only.
+        </p>
+      </fieldset>
+
       {error ? (
         <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
           {error}
@@ -950,12 +1014,23 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
           <p className="mt-1 text-xs">
             Candidate and counsellor communications were attempted separately by email and WhatsApp.
           </p>
+          {whatsappOutcome ? (
+            <p
+              className={`mt-2 text-xs font-medium ${bookingWhatsAppOutcomeClassName(
+                whatsappOutcome.tone
+              )}`}
+            >
+              {whatsappOutcome.message}
+            </p>
+          ) : null}
           {notificationStatus ? (
             <ul className="mt-2 space-y-0.5 text-xs text-emerald-950/90">
-              <li>Candidate WhatsApp: {notificationLabel(notificationStatus.whatsapp)}</li>
-              <li>Candidate email: {notificationLabel(notificationStatus.email)}</li>
-              <li>Counsellor WhatsApp: {notificationLabel(notificationStatus.whatsapp_admin)}</li>
-              <li>Counsellor email: {notificationLabel(notificationStatus.email_admin)}</li>
+              <li>Candidate WhatsApp: {bookingNotificationLabel(notificationStatus.whatsapp)}</li>
+              <li>Candidate email: {bookingNotificationLabel(notificationStatus.email)}</li>
+              <li>
+                Counsellor WhatsApp: {bookingNotificationLabel(notificationStatus.whatsapp_admin)}
+              </li>
+              <li>Counsellor email: {bookingNotificationLabel(notificationStatus.email_admin)}</li>
             </ul>
           ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
@@ -986,10 +1061,10 @@ const BookAppointmentModal: React.FC<BookAppointmentModalProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => navigate(-1)}
+              onClick={() => navigate(bookAppointmentReturnTo(returnTo))}
               className="inline-flex items-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:brightness-95"
             >
-              Back to Page
+              Back to All Leads
             </button>
           </div>
         </div>

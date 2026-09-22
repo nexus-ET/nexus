@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import HTTPException
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from app.models.education_major import EducationMajor
 from app.models.education_sub_major import EducationSubMajor
@@ -40,12 +40,18 @@ def is_valid_major_label(label: str) -> bool:
 
 def sub_major_is_major_only(label: str) -> bool:
     normalized = label.strip().lower()
-    return normalized in {"major-only", "major only", "—", "-", "–", ""}
+    if normalized in {"major-only", "major only", "—", "-", "–", ""}:
+        return True
+    # Matcher/heuristic often emit "major-only ambiguous" when the major is
+    # known but no confident sub exists — treat as major-only, not blocked.
+    return normalized.startswith("major-only")
 
 
 def sub_major_is_ambiguous(label: str) -> bool:
     normalized = label.strip().lower()
     if not normalized:
+        return False
+    if sub_major_is_major_only(normalized):
         return False
     return any(fragment in normalized for fragment in _AMBIGUOUS_SUB_FRAGMENTS)
 
@@ -111,21 +117,41 @@ def resolve_suggestion_ids(
     if major_id is None:
         return None, None, False, f"Major not found in catalog: {suggested_major}"
 
-    if sub_major_is_ambiguous(suggested_sub_major):
-        return major_id, None, False, "Sub-major suggestion is ambiguous."
-
+    # Major-only before ambiguous: "major-only ambiguous" must remain applyable.
     if sub_major_is_major_only(suggested_sub_major):
-        return major_id, None, True, None
-
-    sub_id = sub_by_parent_name.get((major_id, suggested_sub_major.strip()))
-    if sub_id is None:
         return (
             major_id,
             None,
-            False,
-            f"Sub-major not found under {suggested_major}: {suggested_sub_major}",
+            True,
+            "Major suggested without a confident sub-major — apply major-only or pick a sub.",
+        )
+
+    if sub_major_is_ambiguous(suggested_sub_major):
+        return major_id, None, False, "Sub-major suggestion is ambiguous."
+
+    sub_id = sub_by_parent_name.get((major_id, suggested_sub_major.strip()))
+    if sub_id is None:
+        # Keep major applicable so reviewers can still save major-only / pick a sub.
+        return (
+            major_id,
+            None,
+            True,
+            f"Sub-major not in catalog under {suggested_major}: {suggested_sub_major}. "
+            "Apply major-only or pick a sub from the dropdown.",
         )
     return major_id, sub_id, True, None
+
+
+def active_program_id_set(db: Session, program_ids: list[int]) -> set[int]:
+    """Return ids that still exist and are active (exclude hard-deleted / inactive)."""
+    if not program_ids:
+        return set()
+    rows = (
+        db.query(Program.id)
+        .filter(Program.id.in_(program_ids), Program.is_active.is_(True))
+        .all()
+    )
+    return {int(program_id) for (program_id,) in rows}
 
 
 def existing_mapping_keys(
@@ -291,13 +317,20 @@ def list_program_mapping_suggestions(
             }
         )
 
-    existing_keys = existing_mapping_keys(db, program_ids)
-    mappings_by_program = existing_mappings_by_program(db, program_ids)
+    # Drop hard-deleted / inactive programs even if stale suggestion JSON still lists them.
+    active_program_ids = active_program_id_set(db, program_ids)
+    live_program_ids = [
+        pid for pid in program_ids if pid in active_program_ids
+    ]
+    existing_keys = existing_mapping_keys(db, live_program_ids)
+    mappings_by_program = existing_mappings_by_program(db, live_program_ids)
 
     items: list[ProgramMappingSuggestionRead] = []
     for row in resolved:
         raw = row["raw"]
         program_id = row["program_id"]
+        if program_id is not None and int(program_id) not in active_program_ids:
+            continue
         major_id = row["major_id"]
         sub_id = row["sub_id"]
         applicable = row["applicable"]
@@ -338,15 +371,23 @@ def list_program_mapping_suggestions(
                     current_label = f"{major_name} / (major only)"
 
             if exact_exists:
-                already_mapped = True
-                applicable = False
-                apply_note = (
-                    "Already mapped — edit major/sub-major and re-apply to replace."
-                )
-                if display_mapping is not None:
-                    display_major_id, display_sub_id = display_mapping
-                if status in {"unmapped", "upgrade", "major_only"}:
-                    status = "mapped"
+                if status == "major_only" and major_only_live and sub_id is None:
+                    already_mapped = False
+                    applicable = False
+                    apply_note = (
+                        apply_note
+                        or f"Currently {current_label}. Pick a sub-major from dropdown."
+                    )
+                else:
+                    already_mapped = True
+                    applicable = False
+                    apply_note = (
+                        "Already mapped — edit major/sub-major and re-apply to replace."
+                    )
+                    if display_mapping is not None:
+                        display_major_id, display_sub_id = display_mapping
+                    if status in {"unmapped", "upgrade", "major_only"}:
+                        status = "mapped"
             elif applicable and major_id is not None and sub_id is not None:
                 suggested_label = (
                     f"{major_label_by_id.get(major_id) or raw.get('suggested_major') or major_id}"
@@ -360,18 +401,33 @@ def list_program_mapping_suggestions(
                     if status == "unmapped":
                         status = "major_only"
                 elif has_any_sub:
-                    already_mapped = True
-                    applicable = False
-                    if display_mapping is not None:
-                        display_major_id, display_sub_id = display_mapping
-                    apply_note = (
-                        f"Mapped as {current_label}. Catalog suggestion differs: "
-                        f"{suggested_label} — edit dropdowns and re-apply to change."
-                    )
-                    if status in {"unmapped", "upgrade", "major_only"}:
-                        status = "mapped"
+                    if status == "upgrade":
+                        # Keep new-sub upgrade candidates visible for checkbox review.
+                        already_mapped = False
+                        apply_note = (
+                            f"Currently {current_label}. Suggested upgrade: "
+                            f"{suggested_label} (replaces existing PEM)."
+                        )
+                    else:
+                        already_mapped = True
+                        applicable = False
+                        if display_mapping is not None:
+                            display_major_id, display_sub_id = display_mapping
+                        apply_note = (
+                            f"Mapped as {current_label}. Catalog suggestion differs: "
+                            f"{suggested_label} — edit dropdowns and re-apply to change."
+                        )
+                        if status in {"unmapped", "major_only"}:
+                            status = "mapped"
             elif live_mappings and not applicable:
-                already_mapped = has_any_sub or major_only_live
+                if status == "major_only" and major_only_live:
+                    already_mapped = False
+                    if not apply_note:
+                        apply_note = (
+                            f"Currently {current_label}. Pick a sub-major from dropdown."
+                        )
+                else:
+                    already_mapped = has_any_sub
                 if display_mapping is not None:
                     display_major_id, display_sub_id = display_mapping
                 if already_mapped and not apply_note:
@@ -381,15 +437,59 @@ def list_program_mapping_suggestions(
                 if status == "unmapped" and already_mapped:
                     status = "mapped"
             elif live_mappings and applicable and sub_id is None:
-                already_mapped = True
-                applicable = False
-                apply_note = (
-                    "Already mapped — edit major/sub-major and re-apply to replace."
+                # Suggestion is major-only but does not exactly match live PEM
+                # (exact match is handled above). Keep replaceable majors applyable.
+                suggested_major_label = (
+                    major_label_by_id.get(major_id)
+                    or str(raw.get("suggested_major") or major_id)
                 )
-                if display_mapping is not None:
-                    display_major_id, display_sub_id = display_mapping
-                if status == "unmapped":
-                    status = "mapped"
+                if major_only_live and current_major_id == major_id:
+                    already_mapped = False
+                    applicable = False
+                    apply_note = (
+                        apply_note
+                        or f"Currently {current_label}. Pick a sub-major from dropdown."
+                    )
+                    if display_mapping is not None:
+                        display_major_id, display_sub_id = display_mapping
+                else:
+                    apply_note = (
+                        apply_note
+                        or (
+                            f"Currently {current_label}. Applying will set "
+                            f"{suggested_major_label} (major only; replaces existing PEM)."
+                        )
+                    )
+                    if display_mapping is not None:
+                        # Live PEM differs (e.g. already has a sub or another major).
+                        # Dropdowns must start from committed state so edits compare
+                        # against current_education_* and Apply is not blocked.
+                        display_major_id, display_sub_id = display_mapping
+                    if status == "unmapped":
+                        status = "major_only" if major_only_live else status
+
+            # Queue includes unmapped and major-only PEM; exclude full major+sub
+            # mappings. Upgrade candidates stay visible even when a sub exists.
+            # Force already_mapped for non-upgrade full PEMs — earlier branches
+            # (e.g. applicable major-only suggestion vs live major+sub) can leave
+            # already_mapped=False and would otherwise keep completed rows in queue.
+            if live_mappings:
+                has_full_pem = any(sid is not None for _mid, sid in live_mappings)
+                if not has_full_pem:
+                    already_mapped = False
+                elif status == "upgrade":
+                    already_mapped = False
+                else:
+                    already_mapped = True
+                    applicable = False
+                    if display_mapping is not None:
+                        display_major_id, display_sub_id = display_mapping
+                    if not apply_note:
+                        apply_note = (
+                            "Already mapped — edit major/sub-major and re-apply to replace."
+                        )
+                    if status in {"unmapped", "major_only"}:
+                        status = "mapped"
 
         items.append(
             ProgramMappingSuggestionRead(
@@ -437,26 +537,89 @@ def bulk_apply_program_mappings(
     *,
     scope_validator: Callable[[Session, int], str | None] | None = None,
 ) -> ProgramMappingBulkApplyResponse:
-    """Apply mappings. scope_validator returns an error detail when out of scope."""
+    """Apply mappings. scope_validator returns an error detail when out of scope.
+
+    Prefetches programs, majors, sub-majors, and existing PEM rows so large
+    CA/NZ review batches stay within client timeouts (remote DB via tunnel).
+    """
     applied = 0
     skipped_existing = 0
     skipped_duplicate_in_request = 0
     errors: list[ProgramMappingBulkApplyRowError] = []
     seen: set[tuple[int, int, int | None]] = set()
 
+    ordered: list[ProgramMappingBulkApplyItem] = []
     for item in items:
         key = (item.program_id, item.education_major_id, item.education_sub_major_id)
         if key in seen:
             skipped_duplicate_in_request += 1
             continue
         seen.add(key)
+        ordered.append(item)
 
-        program = (
-            db.query(Program)
-            .options(joinedload(Program.level))
-            .filter(Program.id == item.program_id)
-            .first()
+    if not ordered:
+        return ProgramMappingBulkApplyResponse(
+            applied=0,
+            skipped=skipped_duplicate_in_request,
+            skipped_existing=0,
+            skipped_duplicate_in_request=skipped_duplicate_in_request,
+            errors=[],
         )
+
+    program_ids = {item.program_id for item in ordered}
+    major_ids = {item.education_major_id for item in ordered}
+    sub_major_ids = {
+        item.education_sub_major_id
+        for item in ordered
+        if item.education_sub_major_id is not None
+    }
+
+    programs_by_id = {
+        int(prog.id): prog
+        for prog in (
+            db.query(Program)
+            .filter(Program.id.in_(program_ids), Program.is_active.is_(True))
+            .all()
+        )
+    }
+    majors_by_id = {
+        int(maj.id): maj
+        for maj in (
+            db.query(EducationMajor)
+            .filter(
+                EducationMajor.id.in_(major_ids),
+                EducationMajor.program_id.is_(None),
+                EducationMajor.is_active.is_(True),
+            )
+            .all()
+        )
+    }
+    sub_majors_by_id = {
+        int(sub.id): sub
+        for sub in (
+            db.query(EducationSubMajor)
+            .filter(EducationSubMajor.id.in_(sub_major_ids))
+            .all()
+            if sub_major_ids
+            else []
+        )
+    }
+
+    existing_by_program: dict[int, list[ProgramEducationMajorMapping]] = {
+        pid: [] for pid in program_ids
+    }
+    for row in (
+        db.query(ProgramEducationMajorMapping)
+        .filter(ProgramEducationMajorMapping.program_id.in_(program_ids))
+        .order_by(ProgramEducationMajorMapping.id.asc())
+        .all()
+    ):
+        existing_by_program.setdefault(int(row.program_id), []).append(row)
+
+    scope_cache: dict[int, str | None] = {}
+
+    for item in ordered:
+        program = programs_by_id.get(int(item.program_id))
         if not program:
             errors.append(
                 ProgramMappingBulkApplyRowError(
@@ -476,7 +639,9 @@ def bulk_apply_program_mappings(
                     )
                 )
                 continue
-            scope_error = scope_validator(db, institution_id)
+            if institution_id not in scope_cache:
+                scope_cache[institution_id] = scope_validator(db, institution_id)
+            scope_error = scope_cache[institution_id]
             if scope_error:
                 errors.append(
                     ProgramMappingBulkApplyRowError(
@@ -486,15 +651,7 @@ def bulk_apply_program_mappings(
                 )
                 continue
 
-        major = (
-            db.query(EducationMajor)
-            .filter(
-                EducationMajor.id == item.education_major_id,
-                EducationMajor.program_id.is_(None),
-                EducationMajor.is_active.is_(True),
-            )
-            .first()
-        )
+        major = majors_by_id.get(int(item.education_major_id))
         if not major:
             errors.append(
                 ProgramMappingBulkApplyRowError(
@@ -506,11 +663,7 @@ def bulk_apply_program_mappings(
 
         sub_major_id = item.education_sub_major_id
         if sub_major_id is not None:
-            sub_major = (
-                db.query(EducationSubMajor)
-                .filter(EducationSubMajor.id == sub_major_id)
-                .first()
-            )
+            sub_major = sub_majors_by_id.get(int(sub_major_id))
             if not sub_major:
                 errors.append(
                     ProgramMappingBulkApplyRowError(
@@ -528,12 +681,8 @@ def bulk_apply_program_mappings(
                 )
                 continue
 
-        existing_rows = (
-            db.query(ProgramEducationMajorMapping)
-            .filter(ProgramEducationMajorMapping.program_id == item.program_id)
-            .order_by(ProgramEducationMajorMapping.id.asc())
-            .all()
-        )
+        existing_rows = existing_by_program.get(int(item.program_id), [])
+        target_sub = int(sub_major_id) if sub_major_id is not None else None
 
         def _row_matches(row: ProgramEducationMajorMapping) -> bool:
             if int(row.education_major_id) != int(item.education_major_id):
@@ -543,9 +692,7 @@ def bulk_apply_program_mappings(
                 if row.education_sub_major_id is not None
                 else None
             )
-            return row_sub == (
-                int(sub_major_id) if sub_major_id is not None else None
-            )
+            return row_sub == target_sub
 
         if any(_row_matches(row) for row in existing_rows):
             skipped_existing += 1
@@ -555,23 +702,15 @@ def bulk_apply_program_mappings(
             for row in existing_rows:
                 db.delete(row)
             db.flush()
-            db.add(
-                ProgramEducationMajorMapping(
-                    program_id=item.program_id,
-                    education_major_id=item.education_major_id,
-                    education_sub_major_id=sub_major_id,
-                )
-            )
-            applied += 1
-            continue
+            existing_by_program[int(item.program_id)] = []
 
-        db.add(
-            ProgramEducationMajorMapping(
-                program_id=item.program_id,
-                education_major_id=item.education_major_id,
-                education_sub_major_id=sub_major_id,
-            )
+        new_row = ProgramEducationMajorMapping(
+            program_id=item.program_id,
+            education_major_id=item.education_major_id,
+            education_sub_major_id=sub_major_id,
         )
+        db.add(new_row)
+        existing_by_program.setdefault(int(item.program_id), []).append(new_row)
         applied += 1
 
     if applied:
@@ -587,3 +726,4 @@ def bulk_apply_program_mappings(
         skipped_duplicate_in_request=skipped_duplicate_in_request,
         errors=errors,
     )
+

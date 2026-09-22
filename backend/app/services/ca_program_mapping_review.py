@@ -13,6 +13,8 @@ from app.schemas.program_major_mapping import (
 )
 from app.services import program_mapping_review_shared as shared
 
+# Historical CA-24 harvest/import institution set. Kept for offline audit/harvest
+# scripts. CA Mapping Review + ca_scope_only bulk-apply use all iso2=CA institutions.
 CA24_INSTITUTION_IDS = frozenset(
     {
         58,
@@ -23,6 +25,7 @@ CA24_INSTITUTION_IDS = frozenset(
         66,
         72,
         79,
+        81,  # Université Laval
         91,
         92,
         94,
@@ -48,9 +51,7 @@ _SUGGESTIONS_PATHS = (
 )
 
 
-def _is_ca24_institution(db: Session, institution_id: int) -> bool:
-    if institution_id not in CA24_INSTITUTION_IDS:
-        return False
+def _is_ca_institution(db: Session, institution_id: int) -> bool:
     row = (
         db.query(Country.iso2)
         .join(Institution, Institution.country_id == Country.id)
@@ -60,11 +61,9 @@ def _is_ca24_institution(db: Session, institution_id: int) -> bool:
     return bool(row and row[0] == "CA")
 
 
-def _ca24_scope_error(db: Session, institution_id: int) -> str | None:
-    if institution_id not in CA24_INSTITUTION_IDS:
-        return "Program institution is outside CA-24 scope."
-    if not _is_ca24_institution(db, institution_id):
-        return "Program institution is not a Canadian CA-24 institution."
+def _ca_scope_error(db: Session, institution_id: int) -> str | None:
+    if not _is_ca_institution(db, institution_id):
+        return "Program institution is outside Canada scope."
     return None
 
 
@@ -83,7 +82,7 @@ def bulk_apply_program_mappings(
     *,
     ca_scope_only: bool = True,
 ) -> ProgramMappingBulkApplyResponse:
-    scope_validator = _ca24_scope_error if ca_scope_only else None
+    scope_validator = _ca_scope_error if ca_scope_only else None
     return shared.bulk_apply_program_mappings(
         db,
         items,

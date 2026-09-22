@@ -18,9 +18,11 @@ export function usePresence(enabled: boolean): void {
         method: 'POST',
         body: JSON.stringify({}),
         authRedirect: false,
+        reportFailures: false,
+        timeoutMs: 12_000,
       }).catch(
         () => {
-          // Messaging hub may be disabled for this role.
+          // Messaging hub may be disabled for this role / tunnel briefly down.
         }
       );
       socketRef.current?.send({ type: 'ping' });

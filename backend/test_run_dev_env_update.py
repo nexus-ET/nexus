@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -89,3 +90,137 @@ def test_compact_env_file_removes_runaway_blank_lines(tmp_path: Path):
 )
 def test_normalize_env_newlines(raw: str, expected: str):
     assert run_dev._normalize_env_newlines(raw) == expected
+
+
+def test_reload_excludes_env_file():
+    cmd = run_dev.build_uvicorn_cmd(
+        run_dev.DevConfig(
+            host="127.0.0.1",
+            backend_port=8002,
+            frontend_port=5175,
+            tunnel_enabled=True,
+            tunnel_mode="quick",
+            tunnel_name="nexus-dev",
+            tunnel_config_path=None,
+            public_tunnel_base=None,
+            tunnel_edge_ip_version="4",
+            tunnel_protocol="http2",
+        ),
+        reload=True,
+    )
+    assert "--reload" in cmd
+    # Pair form: --reload-exclude <pattern>
+    excludes = [cmd[i + 1] for i, part in enumerate(cmd) if part == "--reload-exclude"]
+    assert "**/.env" in excludes
+    assert "**/.env.*" in excludes
+
+
+def test_build_tunnel_cmd_puts_protocol_before_url(monkeypatch):
+    monkeypatch.setattr(run_dev, "_find_cloudflared", lambda: "cloudflared")
+    cmd = run_dev.build_tunnel_cmd(
+        run_dev.DevConfig(
+            host="127.0.0.1",
+            backend_port=8002,
+            frontend_port=5175,
+            tunnel_enabled=True,
+            tunnel_mode="quick",
+            tunnel_name="nexus-dev",
+            tunnel_config_path=None,
+            public_tunnel_base=None,
+            tunnel_edge_ip_version="4",
+            tunnel_protocol="http2",
+        )
+    )
+    assert cmd[:6] == [
+        "cloudflared",
+        "tunnel",
+        "--protocol",
+        "http2",
+        "--edge-ip-version",
+        "4",
+    ]
+    assert "--retries" in cmd
+    assert "--url" in cmd
+    assert cmd[cmd.index("--url") + 1] == "http://127.0.0.1:8002"
+
+
+def test_tunnel_supervisor_detects_edge_failure_unhealthy():
+    supervisor = run_dev.TunnelSupervisor(
+        run_dev.DevConfig(
+            host="127.0.0.1",
+            backend_port=8002,
+            frontend_port=5175,
+            tunnel_enabled=True,
+            tunnel_mode="quick",
+            tunnel_name="nexus-dev",
+            tunnel_config_path=None,
+            public_tunnel_base=None,
+            tunnel_edge_ip_version="4",
+            tunnel_protocol="http2",
+        ),
+        unhealthy_after_sec=1.0,
+    )
+    supervisor._started_at = time.monotonic() - 5.0
+    supervisor._last_edge_fail_at = time.monotonic()
+
+    class _Alive:
+        def poll(self):
+            return None
+
+    assert supervisor._should_force_restart(_Alive()) is True
+
+
+def test_tunnel_supervisor_healthy_after_register():
+    supervisor = run_dev.TunnelSupervisor(
+        run_dev.DevConfig(
+            host="127.0.0.1",
+            backend_port=8002,
+            frontend_port=5175,
+            tunnel_enabled=True,
+            tunnel_mode="quick",
+            tunnel_name="nexus-dev",
+            tunnel_config_path=None,
+            public_tunnel_base=None,
+            tunnel_edge_ip_version="4",
+            tunnel_protocol="http2",
+        ),
+        unhealthy_after_sec=1.0,
+    )
+    now = time.monotonic()
+    supervisor._started_at = now - 10.0
+    supervisor._saw_registered = True
+    supervisor._last_registered_at = now
+    supervisor._last_edge_fail_at = now - 0.5  # fail before last register
+
+    class _Alive:
+        def poll(self):
+            return None
+
+    assert supervisor._should_force_restart(_Alive()) is False
+
+
+def test_handoff_preflight_ok_skips_when_no_handoff(monkeypatch):
+    monkeypatch.delenv("NEXUS_WHATSAPP_HANDOFF_URL", raising=False)
+    assert run_dev._handoff_preflight_ok({}) is True
+
+
+def test_handoff_preflight_detects_403(monkeypatch):
+    class _Resp:
+        status_code = 403
+        text = "Forbidden"
+
+    def _fake_get(*args, **kwargs):
+        return _Resp()
+
+    import httpx as httpx_mod
+
+    monkeypatch.setattr(httpx_mod, "get", _fake_get)
+    assert (
+        run_dev._handoff_preflight_ok(
+            {
+                "NEXUS_WHATSAPP_HANDOFF_URL": "https://nexus-dev.edutrust.in",
+                "WEBHOOK_VERIFY_TOKEN": "local-token",
+            }
+        )
+        is False
+    )

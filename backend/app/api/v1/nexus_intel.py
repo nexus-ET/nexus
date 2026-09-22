@@ -19,6 +19,10 @@ from app.schemas.nexus_intel import (
     IntelAiChatHistoryResponse,
     IntelAiChatRequest,
     IntelAiChatResponse,
+    IntelAiPromptCreate,
+    IntelAiPromptListResponse,
+    IntelAiPromptRead,
+    IntelAiPromptUpdate,
     IntelAiSource,
     IntelAiThreadDetailResponse,
     IntelAiThreadsResponse,
@@ -573,3 +577,73 @@ def intel_ai_thread_detail(
             for msg in detail.get("messages") or []
         ],
     )
+
+
+@router.get("/ai/prompts", response_model=IntelAiPromptListResponse)
+def list_ai_prompts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_user),
+):
+    items = intel_ai.list_saved_prompts(db, user_id=current_user.id)
+    return IntelAiPromptListResponse(items=[IntelAiPromptRead(**item) for item in items])
+
+
+@router.post("/ai/prompts", response_model=IntelAiPromptRead, status_code=201)
+def create_ai_prompt(
+    body: IntelAiPromptCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_user),
+):
+    try:
+        item = intel_ai.create_saved_prompt(
+            db,
+            user_id=current_user.id,
+            title=body.title,
+            prompt_text=body.prompt_text,
+            visibility=body.visibility,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return IntelAiPromptRead(**item)
+
+
+@router.patch("/ai/prompts/{prompt_id}", response_model=IntelAiPromptRead)
+def update_ai_prompt(
+    prompt_id: UUID,
+    body: IntelAiPromptUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_user),
+):
+    payload = body.model_dump(exclude_unset=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        item = intel_ai.update_saved_prompt(
+            db,
+            user_id=current_user.id,
+            prompt_id=str(prompt_id),
+            title=payload.get("title"),
+            prompt_text=payload.get("prompt_text"),
+            visibility=payload.get("visibility"),
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status = 404 if "not found" in detail.lower() else 403 if "owner" in detail.lower() else 400
+        raise HTTPException(status_code=status, detail=detail) from exc
+    return IntelAiPromptRead(**item)
+
+
+@router.delete("/ai/prompts/{prompt_id}", status_code=204)
+def delete_ai_prompt(
+    prompt_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_user),
+):
+    try:
+        intel_ai.delete_saved_prompt(db, user_id=current_user.id, prompt_id=str(prompt_id))
+    except ValueError as exc:
+        detail = str(exc)
+        status = 404 if "not found" in detail.lower() else 403 if "owner" in detail.lower() else 400
+        raise HTTPException(status_code=status, detail=detail) from exc
+    return None
+

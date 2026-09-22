@@ -1,5 +1,10 @@
 # Copy to config.yml after running scripts/setup_cloudflare_tunnel.ps1
 # (or create manually). Do not commit config.yml or *.json credentials.
+#
+# On Windows, run_dev.py also passes --protocol http2 and --edge-ip-version 4
+# (override via NEXUS_TUNNEL_PROTOCOL / NEXUS_TUNNEL_EDGE_IP_VERSION). You can
+# mirror protocol here for standalone `cloudflared tunnel run` usage:
+# protocol: http2
 
 tunnel: nexus-dev
 credentials-file: credentials/nexus-dev.json

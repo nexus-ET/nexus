@@ -679,33 +679,83 @@ def _repair_intake_if_booking_already_active(db: Session, lead: Lead) -> bool:
 
 
 def ensure_consultation_slots(db: Session, days_ahead: int = 21) -> None:
-    """Keep ConsultationSlot rows aligned with counselling schedule availability."""
-    from app.services.counselling_service import get_bookable_slot_starts, list_whatsapp_bookable_dates
+    """Keep ConsultationSlot rows aligned with counselling schedule availability.
 
-    dedupe_consultation_slots(db)
-    bookable_dates = list_whatsapp_bookable_dates(db, limit=days_ahead)
+    Prefetches holidays, settings, and existing slot keys so startup stays within
+    a handful of queries (SSH-tunnel safe).
+    """
+    from datetime import time as time_cls
+
+    from app.services.counselling_service import (
+        _get_office_end,
+        _get_office_start,
+        _get_slot_minutes,
+    )
+    from app.services.public_holiday_service import get_public_holidays
+    from app.services.settings_service import get_working_weekdays
+    from app.utils.timezone import office_now
+
+    # Scope dedupe to the window we are seeding — full-table scans hold the
+    # tunnel open long enough for Hostinger to drop the socket.
+    holidays = get_public_holidays(db)
+    weekdays = get_working_weekdays(db)
+    now = office_now(db)
+    today = now.date()
+    day_start = _get_office_start(db)
+    day_end = _get_office_end(db)
+    slot_minutes = max(5, int(_get_slot_minutes(db) or 30))
+
+    bookable_dates: list[date] = []
+    for offset in range(1, days_ahead + 1):
+        slot_day = today + timedelta(days=offset)
+        if slot_day.weekday() not in weekdays:
+            continue
+        if slot_day in holidays:
+            continue
+        bookable_dates.append(slot_day)
     if not bookable_dates:
-        today = date.today()
-        bookable_dates = [
-            today + timedelta(days=offset)
-            for offset in range(1, days_ahead + 1)
-            if is_bookable_day(db, today + timedelta(days=offset))
-        ]
+        return
 
-    for slot_day in bookable_dates:
-        slot_starts = get_bookable_slot_starts(db, slot_day)
-        slot_times = [_normalize_slot_time(start.strftime("%H:%M")) for start in slot_starts]
-        for normalized_time in slot_times:
-            exists = (
-                db.query(ConsultationSlot.id)
-                .filter(
-                    ConsultationSlot.slot_date == slot_day,
-                    ConsultationSlot.slot_time == normalized_time,
-                )
-                .first()
+    range_start = bookable_dates[0]
+    range_end = bookable_dates[-1]
+    dedupe_consultation_slots(db, slot_date_from=range_start, slot_date_to=range_end)
+
+    existing_keys = {
+        (row.slot_date, str(row.slot_time))
+        for row in (
+            db.query(ConsultationSlot.slot_date, ConsultationSlot.slot_time)
+            .filter(
+                ConsultationSlot.slot_date >= range_start,
+                ConsultationSlot.slot_date <= range_end,
             )
-            if not exists:
-                db.add(ConsultationSlot(slot_date=slot_day, slot_time=normalized_time))
+            .all()
+        )
+    }
+
+    def _office_starts(slot_day: date) -> list[datetime]:
+        slots: list[datetime] = []
+        cursor = datetime.combine(slot_day, day_start)
+        end = datetime.combine(slot_day, day_end)
+        if not isinstance(day_start, time_cls) or not isinstance(day_end, time_cls):
+            return slots
+        while cursor < end:
+            slots.append(cursor)
+            cursor += timedelta(minutes=slot_minutes)
+        return slots
+
+    to_add: list[ConsultationSlot] = []
+    for slot_day in bookable_dates:
+        for start in _office_starts(slot_day):
+            normalized_time = _normalize_slot_time(start.strftime("%H:%M"))
+            key = (slot_day, normalized_time)
+            if key in existing_keys:
+                continue
+            to_add.append(
+                ConsultationSlot(slot_date=slot_day, slot_time=normalized_time)
+            )
+            existing_keys.add(key)
+    if to_add:
+        db.add_all(to_add)
     db.commit()
 
 
@@ -740,17 +790,23 @@ def _ensure_slots_for_dates(db: Session, slot_days: list[date]) -> None:
         _ensure_slots_for_day(db, slot_day)
 
 
-def dedupe_consultation_slots(db: Session) -> None:
-    rows = (
-        db.query(ConsultationSlot)
-        .order_by(
-            ConsultationSlot.slot_date.asc(),
-            ConsultationSlot.slot_time.asc(),
-            ConsultationSlot.lead_id.desc().nullslast(),
-            ConsultationSlot.id.asc(),
-        )
-        .all()
-    )
+def dedupe_consultation_slots(
+    db: Session,
+    *,
+    slot_date_from: date | None = None,
+    slot_date_to: date | None = None,
+) -> None:
+    query = db.query(ConsultationSlot)
+    if slot_date_from is not None:
+        query = query.filter(ConsultationSlot.slot_date >= slot_date_from)
+    if slot_date_to is not None:
+        query = query.filter(ConsultationSlot.slot_date <= slot_date_to)
+    rows = query.order_by(
+        ConsultationSlot.slot_date.asc(),
+        ConsultationSlot.slot_time.asc(),
+        ConsultationSlot.lead_id.desc().nullslast(),
+        ConsultationSlot.id.asc(),
+    ).all()
     keepers: dict[tuple[date, str], ConsultationSlot] = {}
     delete_ids: list[int] = []
 
@@ -858,13 +914,15 @@ def _build_consultation_session_profile_fields(
     step: str,
     context: dict[str, Any],
     booking: Any | None = None,
+    counsellor_name: str | None = None,
+    skip_booking_lookup: bool = False,
 ) -> dict[str, Any | None]:
     from app.models.user import User
     from app.services.counselling_service import _format_admin_name
 
     session_date: str | None = None
     session_time: str | None = None
-    counsellor_name: str | None = None
+    resolved_counsellor_name: str | None = counsellor_name
 
     selected_raw = context.get("selected_date")
     pending_date = str(context.get("pending_session_date_label") or "").strip() or None
@@ -873,7 +931,7 @@ def _build_consultation_session_profile_fields(
     reschedule_in_progress = bool(context.get("reschedule_in_progress"))
 
     resolved_booking = booking
-    if resolved_booking is None and db is not None:
+    if resolved_booking is None and db is not None and not skip_booking_lookup:
         resolved_booking = _get_active_consultation_booking(db, lead)
 
     original_booking_id = context.get("reschedule_original_booking_id")
@@ -915,10 +973,10 @@ def _build_consultation_session_profile_fields(
     elif resolved_booking and getattr(resolved_booking, "scheduled_time", None):
         session_date = _format_slot_date(resolved_booking.scheduled_time.date())
         session_time = _format_slot_time(resolved_booking.scheduled_time.strftime("%H:%M"))
-        if resolved_booking.admin_id and db is not None:
+        if resolved_counsellor_name is None and resolved_booking.admin_id and db is not None:
             admin = db.query(User).filter(User.id == resolved_booking.admin_id).first()
             if admin:
-                counsellor_name = _format_admin_name(admin)
+                resolved_counsellor_name = _format_admin_name(admin)
     else:
         scheduled_at = getattr(lead, "consultation_scheduled_at", None)
         if scheduled_at and (reschedule_in_progress or not (pending_date or pending_time)):
@@ -940,7 +998,7 @@ def _build_consultation_session_profile_fields(
     return {
         "consultation_session_date": session_date,
         "consultation_session_time": session_time,
-        "assigned_counsellor_name": counsellor_name,
+        "assigned_counsellor_name": resolved_counsellor_name,
         "appointment_status": appointment_status,
     }
 
@@ -2902,6 +2960,8 @@ def build_intake_profile_summary(
     include_booking_options: bool = True,
     include_session_fields: bool = True,
     active_booking: Any | None = None,
+    counsellor_name: str | None = None,
+    skip_booking_lookup: bool = False,
 ) -> dict[str, Any]:
     from app.services.lead_study_interest import study_interest_profile_fields
 
@@ -2997,7 +3057,7 @@ def build_intake_profile_summary(
 
     if include_session_fields:
         resolved_booking = active_booking
-        if resolved_booking is None and db is not None:
+        if resolved_booking is None and db is not None and not skip_booking_lookup:
             resolved_booking = _get_active_consultation_booking(db, lead)
         summary.update(
             _build_consultation_session_profile_fields(
@@ -3006,6 +3066,8 @@ def build_intake_profile_summary(
                 step=step,
                 context=context,
                 booking=resolved_booking,
+                counsellor_name=counsellor_name,
+                skip_booking_lookup=skip_booking_lookup,
             )
         )
         # Prefer booking timestamp when lead.consultation_scheduled_at drifted null.

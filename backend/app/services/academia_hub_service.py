@@ -2072,6 +2072,51 @@ def _program_offering_match_exists(
     return exists(stmt.where(*conditions))
 
 
+def _program_has_major_pem():
+    """True when the program has at least one PEM major row."""
+    return exists(
+        select(literal(1))
+        .select_from(ProgramEducationMajorMapping)
+        .where(ProgramEducationMajorMapping.program_id == Program.id)
+    )
+
+
+def _program_has_sub_major_pem():
+    """True when the program has at least one PEM row with a sub-major."""
+    return exists(
+        select(literal(1))
+        .select_from(ProgramEducationMajorMapping)
+        .where(
+            ProgramEducationMajorMapping.program_id == Program.id,
+            ProgramEducationMajorMapping.education_sub_major_id.isnot(None),
+        )
+    )
+
+
+def _program_pem_gap_filter(pem_gap: str | None):
+    """Filter programs by PEM mapping gaps.
+
+    - both: no major and no sub-major (completely unmapped)
+    - major: missing major mapping (no major PEM; may also lack sub)
+    - sub_major: has major PEM but no sub-major (classic major-only)
+    """
+    if pem_gap is None:
+        return None
+    gap = pem_gap.strip().lower()
+    if not gap:
+        return None
+    if gap == "both":
+        return and_(~_program_has_major_pem(), ~_program_has_sub_major_pem())
+    if gap == "major":
+        return ~_program_has_major_pem()
+    if gap == "sub_major":
+        return and_(_program_has_major_pem(), ~_program_has_sub_major_pem())
+    raise HTTPException(
+        status_code=422,
+        detail="pem_gap must be one of: both, major, sub_major",
+    )
+
+
 def program_offering_institution_payloads(
     db: Session, program_ids: Sequence[int]
 ) -> dict[int, dict]:
@@ -2338,6 +2383,7 @@ def list_degrees_admin(
     sub_major_ids: list[int] | None = None,
     country_ids: list[int] | None = None,
     institution_ids: list[int] | None = None,
+    pem_gap: str | None = None,
     active_only: bool = False,
     page: int = 1,
     page_size: int = 25,
@@ -2382,6 +2428,9 @@ def list_degrees_admin(
                 institution_ids=cleaned_institution_ids or None,
             )
         )
+    pem_gap_clause = _program_pem_gap_filter(pem_gap)
+    if pem_gap_clause is not None:
+        q = q.filter(pem_gap_clause)
     if query:
         pattern = _search_pattern(query)
         q = q.filter(
@@ -2427,6 +2476,7 @@ def list_degrees_admin_all(
     sub_major_ids: list[int] | None = None,
     country_ids: list[int] | None = None,
     institution_ids: list[int] | None = None,
+    pem_gap: str | None = None,
     active_only: bool = False,
 ) -> list[Program]:
     rows, _ = list_degrees_admin(
@@ -2437,6 +2487,7 @@ def list_degrees_admin_all(
         sub_major_ids=sub_major_ids,
         country_ids=country_ids,
         institution_ids=institution_ids,
+        pem_gap=pem_gap,
         active_only=active_only,
         page=1,
         page_size=10_000,
@@ -2821,10 +2872,13 @@ def update_degree_admin(db: Session, program_id: int, payload: DegreeAdminUpdate
     return get_degree_admin(db, program_id)
 
 
-def delete_degree_admin(
+def _delete_degree_admin_uncommitted(
     db: Session, program_id: int, *, institution_id: int | None = None
 ) -> None:
-    get_degree_admin(db, program_id)
+    """Remove a program (or one institution offering) without committing.
+
+    Same PEM / cascade cleanup as full delete; callers own the transaction.
+    """
     if institution_id is not None:
         other_institutions = [
             iid
@@ -2835,12 +2889,20 @@ def delete_degree_admin(
             _deactivate_program_offerings_for_institution(
                 db, program_id, int(institution_id)
             )
-            db.commit()
             return
 
     _delete_program_dependents(db, program_id)
     db.query(Program).filter(Program.id == program_id).delete(synchronize_session=False)
+
+
+def delete_degree_admin(
+    db: Session, program_id: int, *, institution_id: int | None = None
+) -> None:
+    get_degree_admin(db, program_id)
     try:
+        _delete_degree_admin_uncommitted(
+            db, program_id, institution_id=institution_id
+        )
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -2850,6 +2912,52 @@ def delete_degree_admin(
                 "Cannot delete this program because other records still reference it."
             ),
         ) from None
+
+
+def delete_degrees_admin_bulk(
+    db: Session,
+    program_ids: list[int],
+    *,
+    institution_id: int | None = None,
+) -> dict[str, Any]:
+    """Delete many programs in one transaction (same cascade rules as single delete)."""
+    unique_ids = list(
+        dict.fromkeys(int(pid) for pid in program_ids if int(pid) > 0)
+    )
+    if not unique_ids:
+        return {"deleted": 0, "skipped": 0, "ids": []}
+
+    existing = {
+        int(row.id)
+        for row in db.query(Program.id).filter(Program.id.in_(unique_ids)).all()
+    }
+    deleted_ids: list[int] = []
+    skipped = 0
+    try:
+        for program_id in unique_ids:
+            if program_id not in existing:
+                skipped += 1
+                continue
+            _delete_degree_admin_uncommitted(
+                db, program_id, institution_id=institution_id
+            )
+            deleted_ids.append(program_id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot delete one or more programs because other records still "
+                "reference them."
+            ),
+        ) from None
+
+    return {
+        "deleted": len(deleted_ids),
+        "skipped": skipped,
+        "ids": deleted_ids,
+    }
 
 
 _INSTITUTION_COVERAGE_LIMIT = 40

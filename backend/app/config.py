@@ -58,12 +58,16 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 8 days
 
     SMTP_HOST: str | None = None
+    # 465 = implicit SSL (SMTP_SSL); 587 = plain SMTP + STARTTLS when SMTP_USE_TLS.
     SMTP_PORT: int = 587
     SMTP_USER: str | None = None
     SMTP_PASSWORD: str | None = None
     SMTP_FROM_EMAIL: str | None = None
     SMTP_FROM_NAME: str = "Nexus Counselling"
+    # STARTTLS on non-SSL ports (587). Ignored when implicit SSL is used (465).
     SMTP_USE_TLS: bool = True
+    # None = auto from port (465 → True). Set explicitly only to override.
+    SMTP_USE_SSL: bool | None = None
 
     WHATSAPP_ACCESS_TOKEN: str | None = None
     # Optional explicit override; otherwise chosen from test/business IDs below.
@@ -135,6 +139,16 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str | None = None
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434/v1"
     OLLAMA_TIMEOUT_SECONDS: int = 120
+    # Taxonomy embeddings: openai (default when key set) or ollama (native /api/embed).
+    EMBEDDING_PROVIDER: str = "openai"
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    # text-embedding-3-small default output size; override if you pass dimensions to the API.
+    OPENAI_EMBEDDING_DIMENSIONS: int = 1536
+    OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
+    # Expected length for Ollama embedding models (nomic-embed-text = 768).
+    OLLAMA_EMBEDDING_DIMENSIONS: int = 768
+    # When true, create/update taxonomy rows refresh embeddings in-process (failures are logged).
+    TAXONOMY_EMBEDDINGS_ENABLED: bool = True
     # When true: WhatsApp AI Active uses fixed intake templates + appointment booking only (no LLM/Ollama/API keys).
     NEXUS_APPOINTMENTS_ONLY: bool = True
 
@@ -205,6 +219,51 @@ class Settings(BaseSettings):
     # Public CDN/custom domain base, e.g. https://assets.example.com (no trailing slash)
     R2_PUBLIC_BASE_URL: str | None = None
     R2_ENDPOINT_URL: str | None = None
+
+    # ScanX CRM document ingest (env-only limits; no admin UI in v1)
+    # Defaults suit local/dev; production must set explicitly in .env.
+    SCANX_MAX_FILE_SIZE_BYTES: int = 10 * 1024 * 1024
+    SCANX_MAX_PAGES: int = 10
+    SCANX_R2_KEY_ROOT: str = "STUDENTS"
+    SCANX_WORKER_QUEUE: str = "scanx"
+    # Wall-clock budget for post-extract embeddings (leave Parsing before this).
+    SCANX_EMBED_BUDGET_SECONDS: float = 12.0
+    # Wall-clock budget for image OCR (all engines); leave Parsing if exceeded.
+    # Rapid is the fast primary; 240s still gives CPU Paddle fallback a fair chance.
+    SCANX_OCR_BUDGET_SECONDS: float = 240.0
+    # Primary image OCR engine: rapid | paddle (default rapid; Paddle used on failure).
+    SCANX_OCR_ENGINE: str = "rapid"
+    # Fallback when primary ImportError / runtime fail / empty / timeout.
+    # Set to none/off/disabled to disable fallback. Default: paddle.
+    SCANX_OCR_FALLBACK: str = "paddle"
+    # Optional Ollama LLM assist for marksheet subject+marks when heuristics are thin.
+    # Embeddings still use nomic-embed-text via EMBEDDING_PROVIDER — this is chat only.
+    SCANX_LLM_SUBJECTS_ENABLED: bool = True
+    SCANX_LLM_MODEL: str = "ollama:llama3.2"
+    SCANX_LLM_SUBJECTS_TIMEOUT_SECONDS: float = 45.0
+    # Call LLM when heuristic quality subjects are below this count and text looks
+    # like a marksheet / grade sheet.
+    SCANX_LLM_SUBJECTS_MIN_HEURISTIC: int = 2
+    # Optional Ollama assist for transcript key-value fields (DOB, Roll, Group Code, …)
+    # when heuristics miss key labels on marksheet-like OCR.
+    SCANX_LLM_FIELDS_ENABLED: bool = True
+    SCANX_LLM_FIELDS_TIMEOUT_SECONDS: float = 45.0
+    # Passport / identity: Ollama fills blank schema fields after heuristic MRZ+labels.
+    SCANX_LLM_PASSPORT_ENABLED: bool = True
+    SCANX_LLM_PASSPORT_TIMEOUT_SECONDS: float = 60.0
+    # Counsellor-facing passport dates (date_of_birth / issue / expiry).
+    # Tokens: DD, MM, YYYY, YY with - / . separators. Default Indian DMY.
+    SCANX_DATE_FORMAT: str = "DD-MM-YYYY"
+    # Post-OCR Ollama cleanup (noise / obvious misreads). Runs after spatial sort;
+    # failures fall back to raw (or light regex) and never fail the OCR job.
+    SCANX_OCR_CLEANER_ENABLED: bool = True
+    # Defaults to SCANX_LLM_MODEL when unset at call time; this override wins when set.
+    SCANX_OCR_CLEANER_MODEL: str = "ollama:llama3.2"
+    SCANX_OCR_CLEANER_TIMEOUT_SECONDS: float = 30.0
+    # RapidOCR detection sensitivity for dense identity docs (passports).
+    SCANX_RAPID_BOX_THRESH: float = 0.35
+    SCANX_RAPID_UNCLIP_RATIO: float = 1.8
+    SCANX_RAPID_TEXT_SCORE: float = 0.4
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 

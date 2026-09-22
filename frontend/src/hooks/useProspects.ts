@@ -8,28 +8,41 @@ import type {
 } from '../types/prospect';
 import type { BookingRowForProfile } from '../utils/candidateProfileLoader';
 
-function buildProspectsQuery(filters: ProspectsFilters): string {
+/** Build `leads/prospects` query string. Exported for unit checks. */
+export function buildProspectsQuery(filters: ProspectsFilters): string {
   const params = new URLSearchParams();
   const pageSize = filters.pageSize || 50;
   const page = Math.max(1, filters.page || 1);
   const offset = (page - 1) * pageSize;
+  const q = filters.q.trim();
   params.set('limit', String(pageSize));
   params.set('offset', String(offset));
-  if (filters.q.trim()) params.set('q', filters.q.trim());
+  if (q) params.set('q', q);
   if (filters.source && filters.source !== 'ALL') params.set('source', filters.source);
   if (filters.dateFrom) params.set('date_from', filters.dateFrom);
   if (filters.dateTo) params.set('date_to', filters.dateTo);
-  if (filters.category.trim()) params.set('category', filters.category.trim());
-  if (filters.contactStatus) {
+  // Stage category is for browsing the queue. Name/email/phone search must not be
+  // constrained to the current pipeline stage (e.g. Document Readiness has
+  // category=Documentation, but "Hey" may still be Counselling).
+  // Backend also ignores category when q is set (defense in depth).
+  if (filters.category.trim() && !q) {
+    params.set('category', filters.category.trim());
+  }
+  if (filters.contactStatus && filters.contactStatus !== 'all') {
     params.set('contact_status', filters.contactStatus);
   }
   return `leads/prospects?${params.toString()}`;
 }
 
+/** Tunnel-bound list/search: prefer a firm 30s budget over the default 60s. */
+const PROSPECTS_LIST_TIMEOUT_MS = 30_000;
+/** Detail fetch: fail into empty/error UI before UAT tab waits expire (~45s). */
+const PROSPECTS_DETAIL_TIMEOUT_MS = 25_000;
+
 export function useProspectsSummary() {
   return useQuery<ProspectsSummary>({
     queryKey: ['prospects', 'summary'],
-    queryFn: () => apiFetch('leads/prospects/summary'),
+    queryFn: () => apiFetch('leads/prospects/summary', { timeoutMs: PROSPECTS_LIST_TIMEOUT_MS }),
     staleTime: 60_000,
   });
 }
@@ -37,7 +50,8 @@ export function useProspectsSummary() {
 export function useProspectsPage(filters: ProspectsFilters) {
   return useQuery<ProspectsListResponse>({
     queryKey: ['prospects', 'list', filters],
-    queryFn: () => apiFetch(buildProspectsQuery(filters)),
+    queryFn: () =>
+      apiFetch(buildProspectsQuery(filters), { timeoutMs: PROSPECTS_LIST_TIMEOUT_MS }),
     placeholderData: previous => previous,
   });
 }
@@ -45,19 +59,26 @@ export function useProspectsPage(filters: ProspectsFilters) {
 export function useProspectDetail(leadId: number | null) {
   return useQuery<ProspectDetail>({
     queryKey: ['prospects', 'detail', leadId],
-    queryFn: () => apiFetch(`leads/${leadId}`),
+    queryFn: ({ signal }) =>
+      apiFetch(`leads/${leadId}`, { signal, timeoutMs: PROSPECTS_DETAIL_TIMEOUT_MS }),
     enabled: leadId != null && !Number.isNaN(leadId),
     staleTime: 5 * 60_000,
     gcTime: 10 * 60_000,
+    // Avoid indefinite "Loading lead details..." when the tunnel/API stalls.
+    retry: 1,
+    retryDelay: 1500,
   });
 }
 
 export function useLeadProfileBooking(leadId: number | null, enabled = true) {
   return useQuery<BookingRowForProfile>({
     queryKey: ['leads', 'profile-booking', leadId],
-    queryFn: () => apiFetch(`leads/${leadId}/profile-booking`),
+    queryFn: () =>
+      apiFetch(`leads/${leadId}/profile-booking`, { timeoutMs: PROSPECTS_DETAIL_TIMEOUT_MS }),
     enabled: enabled && leadId != null && !Number.isNaN(leadId),
     staleTime: 60_000,
+    retry: 1,
+    retryDelay: 1500,
   });
 }
 

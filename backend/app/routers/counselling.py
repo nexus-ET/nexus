@@ -1051,7 +1051,11 @@ def create_staff_booking(
     _, admin = counselling_service.get_booking_with_admin(db, booking.id)
     # Run synchronously so candidate + counsellor email/WhatsApp complete before response
     # and the UI can surface per-channel delivery status.
-    notification_status = run_assignment_notifications(booking.id)
+    notification_status = run_assignment_notifications(
+        booking.id,
+        send_whatsapp_candidate=payload.send_whatsapp_candidate,
+        send_whatsapp_counsellor=payload.send_whatsapp_counsellor,
+    )
     return _serialize_booking_out(booking, admin, notifications=notification_status)
 
 

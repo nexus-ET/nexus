@@ -1,4 +1,5 @@
 import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react';
+import type { CSSProperties } from 'react';
 
 interface FrameworkSortableHeaderProps<T extends string> {
   label: string;
@@ -9,6 +10,7 @@ interface FrameworkSortableHeaderProps<T extends string> {
   className?: string;
   align?: 'left' | 'center';
   layout?: 'inline' | 'stacked';
+  style?: CSSProperties;
 }
 
 function FrameworkSortableHeader<T extends string>({
@@ -20,6 +22,7 @@ function FrameworkSortableHeader<T extends string>({
   className = 'px-6 py-3 font-semibold',
   align = 'left',
   layout = 'inline',
+  style,
 }: FrameworkSortableHeaderProps<T>) {
   const icon =
     sortBy !== column ? (
@@ -39,7 +42,7 @@ function FrameworkSortableHeader<T extends string>({
       : 'flex w-full items-start gap-1 text-left hover:text-text-main';
 
   return (
-    <th className={className}>
+    <th className={className} style={style}>
       <button type="button" onClick={() => onSort(column)} className={buttonClass}>
         <span
           className={

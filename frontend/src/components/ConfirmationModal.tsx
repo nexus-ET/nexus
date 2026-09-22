@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, HelpCircle, Trash2, X } from 'lucide-react';
+import { AlertTriangle, HelpCircle, Loader2, Trash2, X } from 'lucide-react';
 
 export interface ConfirmationModalOptions {
   title: string;
@@ -16,6 +16,8 @@ interface ConfirmationModalProps extends ConfirmationModalOptions {
   open: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+  /** When true, disable actions and show a spinner on the confirm button. */
+  confirming?: boolean;
 }
 
 const variantStyles = {
@@ -46,6 +48,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   mode = 'confirm',
   onConfirm,
   onCancel,
+  confirming = false,
 }) => {
   const dialogRef = useRef<HTMLDivElement>(null);
   const primaryButtonRef = useRef<HTMLButtonElement>(null);
@@ -62,12 +65,14 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
       : null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    window.requestAnimationFrame(() => primaryButtonRef.current?.focus());
+    if (!confirming) {
+      window.requestAnimationFrame(() => primaryButtonRef.current?.focus());
+    }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onCancel();
+        if (!confirming) onCancel();
         return;
       }
       if (event.key !== 'Tab' || !dialogRef.current) return;
@@ -100,7 +105,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
       document.body.style.overflow = previousOverflow;
       previouslyFocused?.focus();
     };
-  }, [open, onCancel]);
+  }, [open, onCancel, confirming]);
 
   if (!open) return null;
 
@@ -109,7 +114,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
     <div
       className="fixed inset-0 z-[400] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm"
       onMouseDown={event => {
-        if (event.target === event.currentTarget) onCancel();
+        if (event.target === event.currentTarget && !confirming) onCancel();
       }}
     >
       <div
@@ -118,6 +123,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={descriptionId}
+        aria-busy={confirming || undefined}
         tabIndex={-1}
         className="w-full max-w-md rounded-2xl border border-border-subtle bg-card shadow-2xl"
       >
@@ -140,7 +146,8 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-lg p-1.5 text-text-muted transition hover:bg-surface-bg hover:text-text-main focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            disabled={confirming}
+            className="rounded-lg p-1.5 text-text-muted transition hover:bg-surface-bg hover:text-text-main focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
             aria-label="Close dialog"
           >
             <X size={18} />
@@ -151,7 +158,8 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
             <button
               type="button"
               onClick={onCancel}
-              className="rounded-xl border border-border-subtle bg-card px-4 py-2 text-sm font-semibold text-text-main transition hover:bg-surface-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              disabled={confirming}
+              className="rounded-xl border border-border-subtle bg-card px-4 py-2 text-sm font-semibold text-text-main transition hover:bg-surface-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
             >
               {cancelLabel}
             </button>
@@ -160,8 +168,11 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
             ref={primaryButtonRef}
             type="button"
             onClick={onConfirm}
-            className={`rounded-xl px-4 py-2 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 ${styles.buttonClass}`}
+            disabled={confirming}
+            aria-busy={confirming || undefined}
+            className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-70 ${styles.buttonClass}`}
           >
+            {confirming ? <Loader2 size={16} className="animate-spin" aria-hidden /> : null}
             {resolvedConfirmLabel}
           </button>
         </div>

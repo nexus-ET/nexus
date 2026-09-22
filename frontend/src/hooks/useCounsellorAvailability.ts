@@ -64,6 +64,8 @@ export type StaffBookingPayload = {
   session_purpose?: string | null;
   notes?: string | null;
   create_lead?: boolean;
+  send_whatsapp_candidate?: boolean;
+  send_whatsapp_counsellor?: boolean;
 };
 
 export type StaffBookingNotifications = {

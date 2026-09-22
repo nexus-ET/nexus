@@ -343,6 +343,35 @@ export interface IntelAiThreadDetailResponse {
   updated_at?: string | null;
 }
 
+export type IntelAiPromptVisibility = 'private' | 'shared';
+
+export interface IntelAiPrompt {
+  id: string;
+  title: string;
+  prompt_text: string;
+  owner_user_id: number;
+  visibility: IntelAiPromptVisibility;
+  is_owner: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface IntelAiPromptListResponse {
+  items: IntelAiPrompt[];
+}
+
+export interface IntelAiPromptCreate {
+  title: string;
+  prompt_text: string;
+  visibility?: IntelAiPromptVisibility;
+}
+
+export interface IntelAiPromptUpdate {
+  title?: string;
+  prompt_text?: string;
+  visibility?: IntelAiPromptVisibility;
+}
+
 export const INTEL_COUNTRIES = [
   'UK',
   'CA',

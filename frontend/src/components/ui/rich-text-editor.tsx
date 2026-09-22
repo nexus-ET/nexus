@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { CharacterCount } from '@tiptap/extension-character-count';
 import Link from '@tiptap/extension-link';
+import { TableKit } from '@tiptap/extension-table';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import {
@@ -10,12 +11,22 @@ import {
   Link2,
   List,
   Pilcrow,
+  Table2,
 } from 'lucide-react';
 
 import { stripHtml } from '../../schemas/wizard/shared';
 
 const toolbarButtonClass =
   'inline-flex items-center justify-center rounded-lg border border-border-subtle bg-card px-2 py-1.5 text-text-muted transition-colors hover:border-accent/40 hover:text-accent disabled:opacity-40';
+
+/** TipTap editor surface: lists + tables stay visible (prose alone is not enough without typography plugin). */
+const editorSurfaceClass =
+  'min-h-[160px] w-full rounded-b-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent prose prose-sm max-w-none ' +
+  '[&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_li]:my-0.5 ' +
+  '[&_table]:my-3 [&_table]:w-full [&_table]:border-collapse [&_table]:overflow-hidden [&_table]:rounded-md [&_table]:border [&_table]:border-border-subtle ' +
+  '[&_th]:border [&_th]:border-border-subtle [&_th]:bg-surface-bg/80 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold ' +
+  '[&_td]:border [&_td]:border-border-subtle [&_td]:px-2 [&_td]:py-1.5 ' +
+  '[&_.tableWrapper]:my-3 [&_.tableWrapper]:overflow-x-auto';
 
 export interface RichTextEditorProps {
   content: string;
@@ -46,13 +57,22 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
           target: '_blank',
         },
       }),
+      // Without TableKit, TipTap schema drops <table>/<tr>/<td>/<th> on load and paste.
+      TableKit.configure({
+        table: {
+          resizable: false,
+          renderWrapper: true,
+          HTMLAttributes: {
+            class: 'nexus-rte-table',
+          },
+        },
+      }),
       CharacterCount.configure({ limit: maxLength }),
     ],
     content: content || '',
     editorProps: {
       attributes: {
-        class:
-          'min-h-[160px] w-full rounded-b-xl border border-border-subtle bg-surface-bg px-3 py-2 text-sm outline-none focus:border-accent prose prose-sm max-w-none [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_li]:my-0.5',
+        class: editorSurfaceClass,
       },
     },
     onUpdate: ({ editor: currentEditor }) => {
@@ -103,6 +123,13 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
       label: 'Bullet list',
       active: editor.isActive('bulletList'),
       action: () => editor.chain().focus().toggleBulletList().run(),
+    },
+    {
+      icon: Table2,
+      label: 'Insert table',
+      active: editor.isActive('table'),
+      action: () =>
+        editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(),
     },
     {
       icon: Link2,

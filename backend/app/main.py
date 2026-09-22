@@ -1,13 +1,25 @@
 import os
+import sys
+import re
 import logging
 import asyncio
 import mimetypes
+import time
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from app.db.database import Base, engine, sync_schema_columns
+from app.db.database import (
+    Base,
+    engine,
+    install_quiet_tunnel_logging,
+    is_ssh_tunnel_database_url,
+    safe_close_session,
+    sync_schema_columns,
+    wait_for_database,
+)
+from app.config import settings
 
 # 🛠️ CRITICAL DATABASE SCHEMATIC REGISTRATION
 from app.models.lead import Lead
@@ -90,7 +102,9 @@ from app.routers import (
     reports,
     admin,
     audit_events,
+    scanx,
 )
+from app.models.scanx import ScanxDocument, ScanxDocumentChunk  # noqa: F401
 from app.db.database import SessionLocal
 from app.services.agent_runtime import get_or_create_agent_config
 from app.services.admissions_intake_flow import ensure_consultation_slots, dedupe_consultation_slots
@@ -135,6 +149,44 @@ logging.basicConfig(
     format="%(levelname)s [%(name)s] %(message)s",
 )
 
+install_quiet_tunnel_logging()
+
+
+class _RedactQuerySecretsFilter(logging.Filter):
+    """Keep JWTs out of uvicorn access lines for /ws/nexus?token=..."""
+
+    _TOKEN_RE = re.compile(r"([?&]token=)([^&\s\"]+)", re.I)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if isinstance(record.msg, str) and "token=" in record.msg.lower():
+                record.msg = self._TOKEN_RE.sub(r"\1[redacted]", record.msg)
+            if record.args:
+                if isinstance(record.args, dict):
+                    record.args = {
+                        k: (
+                            self._TOKEN_RE.sub(r"\1[redacted]", v)
+                            if isinstance(v, str) and "token=" in v.lower()
+                            else v
+                        )
+                        for k, v in record.args.items()
+                    }
+                elif isinstance(record.args, tuple):
+                    record.args = tuple(
+                        self._TOKEN_RE.sub(r"\1[redacted]", a)
+                        if isinstance(a, str) and "token=" in a.lower()
+                        else a
+                        for a in record.args
+                    )
+        except Exception:
+            pass
+        return True
+
+
+_secret_filter = _RedactQuerySecretsFilter()
+for _logger_name in ("uvicorn.access", "uvicorn", "uvicorn.error"):
+    logging.getLogger(_logger_name).addFilter(_secret_filter)
+
 bootstrap_logger = logging.getLogger(__name__)
 
 
@@ -157,23 +209,65 @@ def bootstrap_application(*, include_deferred: bool = True) -> None:
             bootstrap_logger.info("Nexus database synchronization: tables initialized successfully.")
         bootstrap_db = SessionLocal()
         try:
-            get_or_create_agent_config(bootstrap_db)
-            bootstrap_logger.info("Agent runtime configuration initialized.")
-            recovered = recover_stale_sync_logs(bootstrap_db)
-            if recovered:
-                bootstrap_logger.info("Recovered %s stale in-progress sync log(s).", recovered)
-            ensure_default_business(bootstrap_db)
+            from sqlalchemy.exc import DBAPIError, OperationalError
+
+            from app.db.database import dispose_db_pool, ensure_db_connection
             from app.services.navigation_rbac import ensure_navigation_rbac
 
-            ensure_navigation_rbac(bootstrap_db)
-            bootstrap_logger.info("Navigation pages and role access catalog synchronized.")
+            seed_attempts = 4
+            last_seed_exc: BaseException | None = None
+            for seed_attempt in range(seed_attempts):
+                try:
+                    if seed_attempt:
+                        try:
+                            bootstrap_db.rollback()
+                        except Exception:
+                            pass
+                        dispose_db_pool(
+                            reason=f"bootstrap seed retry {seed_attempt}"
+                        )
+                        try:
+                            safe_close_session(bootstrap_db)
+                        except Exception:
+                            pass
+                        wait_for_database(
+                            attempts=8, delay_sec=1.0, dispose_between=True
+                        )
+                        bootstrap_db = SessionLocal()
+                        ensure_db_connection(bootstrap_db)
+                        time.sleep(min(1.0 * seed_attempt, 3.0))
+                    get_or_create_agent_config(bootstrap_db)
+                    bootstrap_logger.info("Agent runtime configuration initialized.")
+                    recovered = recover_stale_sync_logs(bootstrap_db)
+                    if recovered:
+                        bootstrap_logger.info(
+                            "Recovered %s stale in-progress sync log(s).", recovered
+                        )
+                    ensure_default_business(bootstrap_db)
+                    ensure_navigation_rbac(bootstrap_db)
+                    bootstrap_logger.info(
+                        "Navigation pages and role access catalog synchronized."
+                    )
+                    last_seed_exc = None
+                    break
+                except (OperationalError, DBAPIError) as exc:
+                    last_seed_exc = exc
+                    bootstrap_logger.warning(
+                        "Bootstrap seed failed attempt=%s/%s: %s",
+                        seed_attempt + 1,
+                        seed_attempts,
+                        exc,
+                    )
+                    continue
+            if last_seed_exc is not None:
+                raise last_seed_exc
             bootstrap_logger.info("Startup catalog/reference seeds are disabled (manage data via Admin UI).")
             bootstrap_logger.info("Dynamic settings initialized.")
             if include_deferred:
                 _bootstrap_deferred_services(bootstrap_db)
             bootstrap_logger.info("Application bootstrap complete.")
         finally:
-            bootstrap_db.close()
+            safe_close_session(bootstrap_db)
     except Exception:
         bootstrap_logger.exception(
             "Critical error during database sync lifecycle initialization"
@@ -183,7 +277,6 @@ def bootstrap_application(*, include_deferred: bool = True) -> None:
 
 def _bootstrap_deferred_services(bootstrap_db) -> None:
     """Slow startup work (consultation slots can take 30–60s on cold Neon)."""
-    dedupe_consultation_slots(bootstrap_db)
     ensure_consultation_slots(bootstrap_db)
     ensure_flow_keypair()
     bootstrap_logger.info("Consultation slots initialized.")
@@ -198,24 +291,137 @@ def _bootstrap_deferred_services(bootstrap_db) -> None:
     audit_whatsapp_webhook_routing(check_reachability=False)
 
 
+def _run_deferred_step(name: str, fn) -> None:
+    """Run one deferred step on a fresh session; never abort sibling steps."""
+    from sqlalchemy.exc import DBAPIError, OperationalError
+
+    from app.db.database import dispose_db_pool, ensure_db_connection, wait_for_database
+
+    for attempt in range(2):
+        db = SessionLocal()
+        try:
+            if attempt:
+                dispose_db_pool(reason=f"deferred step {name} retry")
+                wait_for_database(attempts=6, delay_sec=1.0, dispose_between=True)
+                ensure_db_connection(db)
+            fn(db)
+            bootstrap_logger.info("Deferred step ok: %s", name)
+            return
+        except (OperationalError, DBAPIError) as exc:
+            bootstrap_logger.warning(
+                "Deferred step %s failed attempt=%s/2: %s",
+                name,
+                attempt + 1,
+                type(exc).__name__,
+            )
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        except Exception:
+            bootstrap_logger.exception("Deferred step %s failed", name)
+            return
+        finally:
+            try:
+                safe_close_session(db)
+            except Exception:
+                pass
+    bootstrap_logger.error("Deferred step skipped after retries: %s", name)
+
+
 def bootstrap_deferred_application() -> None:
-    """Run after the HTTP server is accepting connections."""
-    bootstrap_db = SessionLocal()
+    """Run after the HTTP server is accepting connections.
+
+    Each step uses its own short-lived session so a tunnel drop during consultation
+    slot seeding cannot block flow-key / webhook audit initialization.
+    """
+    def _slots(db) -> None:
+        ensure_consultation_slots(db)
+
+    def _flow(_db) -> None:
+        ensure_flow_keypair()
+
+    def _whatsapp_audit(_db) -> None:
+        if os.getenv("WHATSAPP_FLOW_ID"):
+            bootstrap_logger.info("WhatsApp Flow booking enabled.")
+            bootstrap_logger.info(
+                "Flow public key ready for Meta upload "
+                "(GET /api/v1/webhooks/whatsapp-flow/public-key)"
+            )
+        from app.services.whatsapp_webhook_env import audit_whatsapp_webhook_routing
+
+        audit_whatsapp_webhook_routing(check_reachability=False)
+
+    _run_deferred_step("consultation_slots", _slots)
+    _run_deferred_step("flow_keypair", _flow)
+    _run_deferred_step("whatsapp_webhook_audit", _whatsapp_audit)
+    bootstrap_logger.info("Deferred application bootstrap complete.")
+
+
+def _silence_windows_proactor_disconnects() -> None:
+    """Drop known-benign Proactor ERROR logs on abrupt client disconnects.
+
+    Windows ProactorEventLoop raises ConnectionResetError / ConnectionAbortedError
+    inside ``_ProactorBasePipeTransport._call_connection_lost`` when the peer
+    already closed the TCP socket (browser refresh, Vite HMR, cloudflared, etc.).
+    asyncio then logs ERROR even though the app and request handlers are fine.
+    Only that callback pattern is suppressed; all other loop exceptions still
+    use the default handler.
+    """
+    if sys.platform != "win32":
+        return
     try:
-        _bootstrap_deferred_services(bootstrap_db)
-        bootstrap_logger.info("Deferred application bootstrap complete.")
-    except Exception:
-        bootstrap_logger.exception("Deferred bootstrap failed")
-    finally:
-        bootstrap_db.close()
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    def _handler(event_loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        exc = context.get("exception")
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)):
+            message = context.get("message") or ""
+            if "_call_connection_lost" in message:
+                return
+        event_loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    _silence_windows_proactor_disconnects()
+
+    # Hard gate for Hostinger SSH tunnel: do not run DB bootstrap (or look "ready")
+    # until TCP + SELECT 1 succeed. start-dev.ps1 / run_dev.py also gate earlier.
+    tunnel_db = is_ssh_tunnel_database_url(settings.DATABASE_URL)
+    try:
+        if tunnel_db:
+            bootstrap_logger.info(
+                "[db-tunnel] waiting for SELECT 1 before bootstrap "
+                "(start tunnel: .\\start-hostinger-db-tunnel.ps1)"
+            )
+            await asyncio.to_thread(wait_for_database)
+        else:
+            await asyncio.to_thread(wait_for_database, attempts=10, delay_sec=1.0)
+    except Exception:
+        if tunnel_db:
+            bootstrap_logger.exception(
+                "[db-tunnel] database unreachable — refusing degraded start. "
+                "Restart: powershell -ExecutionPolicy Bypass -File .\\start-dev.ps1"
+            )
+            raise
+        bootstrap_logger.exception(
+            "Database not ready at startup — continuing; requests may fail until DB is up"
+        )
+
     # Fast path only — do not block uvicorn bind on consultation-slot generation.
     try:
         await asyncio.to_thread(bootstrap_application, include_deferred=False)
     except Exception:
+        if tunnel_db:
+            bootstrap_logger.exception(
+                "[db-tunnel] bootstrap failed after healthy SELECT 1 — refusing degraded start"
+            )
+            raise
         bootstrap_logger.exception("Bootstrap failed — server starting with degraded initialization")
 
     try:
@@ -232,6 +438,20 @@ async def lifespan(_: FastAPI):
         bootstrap_logger.exception("Raw lead processor scheduler failed to start")
 
     deferred = asyncio.create_task(asyncio.to_thread(bootstrap_deferred_application))
+
+    # Pre-warm ScanX OCR off the critical path: Rapid (primary) first, then
+    # Paddle (fallback) so first mark-sheet parse is inference-only.
+    def _prewarm_scanx_ocr() -> None:
+        try:
+            from app.services.scanx_ocr import prewarm_ocr_engines
+
+            bootstrap_logger.info("ScanX OCR pre-warm starting…")
+            prewarm_ocr_engines(include_fallback=True)
+            bootstrap_logger.info("ScanX OCR pre-warm finished")
+        except Exception:
+            bootstrap_logger.exception("ScanX OCR pre-warm failed (cold start on first doc)")
+
+    asyncio.create_task(asyncio.to_thread(_prewarm_scanx_ocr))
 
     yield
 
@@ -269,7 +489,7 @@ except OSError:
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-from app.middleware.exception_capture import register_exception_handlers
+from app.middleware.exception_capture import QuietDbTunnelMiddleware, register_exception_handlers
 
 register_exception_handlers(app)
 
@@ -336,16 +556,66 @@ async def absolute_cors_and_ngrok_bypass(request: Request, call_next):
 
 app.add_middleware(NavigationRBACMiddleware)
 
+# Outermost user middleware: inside ServerErrorMiddleware, so tunnel drops
+# become a 503 instead of a re-raised traceback in the uvicorn log.
+app.add_middleware(QuietDbTunnelMiddleware)
+
 @app.get("/")
+@app.get("/health")
 @app.get("/api/health")
 @app.get("/api/v1")
 @app.get("/api/v1/health")
 async def read_nexus_root_health_check():
+    from sqlalchemy import text
+
+    from app.db.database import dispose_db_pool, is_ssh_tunnel_database_url
+
+    # SSH-tunnel SELECT 1 often takes 5–15s under load; a 5s wait_for + pool dispose
+    # on every miss thrashed connections and produced systemic API 500s.
+    tunnel_db = is_ssh_tunnel_database_url(settings.DATABASE_URL)
+    ping_timeout = 25.0 if tunnel_db else 5.0
+    db_status = "unavailable"
+    try:
+        def _ping_db() -> None:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+
+        await asyncio.wait_for(asyncio.to_thread(_ping_db), timeout=ping_timeout)
+        db_status = "active"
+    except Exception as exc:
+        db_status = "unavailable"
+        # Only dispose on hard connectivity failures, and at most once per 60s,
+        # so slow pings do not wipe a healthy pool.
+        if tunnel_db:
+            msg = f"{type(exc).__name__}: {exc}".lower()
+            hard_fail = any(
+                token in msg
+                for token in (
+                    "connection refused",
+                    "connectionreset",
+                    "connection reset",
+                    "server closed",
+                    "could not connect",
+                    "no route to host",
+                    "network is unreachable",
+                    "connectiontimeout",
+                    "timeout expired",
+                )
+            )
+            now = asyncio.get_running_loop().time()
+            last = getattr(read_nexus_root_health_check, "_last_pool_dispose_at", 0.0)
+            if hard_fail and (now - last) >= 60.0:
+                try:
+                    dispose_db_pool(reason="health check SELECT 1 failed")
+                    read_nexus_root_health_check._last_pool_dispose_at = now  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
     return {
-        "status": "online",
+        "status": "online" if db_status == "active" else "degraded",
         "system": "NEXUS Core Data Pipeline",
         "engine_version": "0.1.0",
-        "database_connectivity": "active"
+        "database_connectivity": db_status,
     }
 
 # 🔌 ROUTER ENDPOINT INJECTION
@@ -373,6 +643,7 @@ app.include_router(login.router, prefix="/api/v1", tags=["Auth"])
 app.include_router(counselling.router, prefix="/api/v1", tags=["Counselling"])
 app.include_router(students_master.router, prefix="/api/v1", tags=["Students Master"])
 app.include_router(invoices.router, prefix="/api/v1", tags=["Invoices"])
+app.include_router(scanx.router, prefix="/api/v1", tags=["ScanX"])
 app.include_router(command_center.router, prefix="/api/v1", tags=["Command Center"])
 app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
 app.include_router(nexus_ws.router, prefix="/api/v1", tags=["WebSocket"])

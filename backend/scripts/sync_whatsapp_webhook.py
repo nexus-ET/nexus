@@ -124,6 +124,11 @@ def main() -> int:
         if args.dry_run:
             print(f"Would register callback -> {callback}")
             return 0
+        from app.services.whatsapp_webhook_env import ensure_handoff_accepts_verify_token
+        from app.services.whatsapp_config import is_local_development
+
+        if is_local_development():
+            ensure_handoff_accepts_verify_token()
         verify_callback_reachable(callback, resolve_verify_token())
         register_webhook_callback(callback, resolve_verify_token())
     else:

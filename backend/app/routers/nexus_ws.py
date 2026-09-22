@@ -37,7 +37,9 @@ def _authenticate_ws(token: str | None) -> User | None:
             return user
         return None
     finally:
-        db.close()
+        from app.db.database import safe_close_session
+
+        safe_close_session(db)
 
 
 @router.websocket("/ws/nexus")
@@ -84,7 +86,9 @@ async def nexus_command_center_socket(
     except Exception:
         logger.debug("Nexus websocket disconnected for user %s", user.id, exc_info=True)
     finally:
-        nexus_ws_manager.disconnect(user.id)
+        went_offline = nexus_ws_manager.disconnect(user.id, websocket)
+        if not went_offline:
+            return
         await broadcast_nexus_event(
             "presence.updated",
             {"user_id": user.id, **presence_tracker.snapshot(user.id)},

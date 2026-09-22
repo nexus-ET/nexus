@@ -178,8 +178,16 @@ def schedule_exception_resolved_email(
     *,
     resolved_by: str,
 ) -> None:
-    """Email ALERT_EMAIL when an exception is auto-resolved."""
-    snapshot = _exception_row_snapshot(row, resolved_by=resolved_by)
+    """Email ALERT_EMAIL when an exception is auto-resolved (except silent resolvers)."""
+    resolver = (resolved_by or "").strip().lower()
+    if _resolution_email_suppressed(resolver):
+        logger.info(
+            "Skipping resolution email for exception_log_id=%s (resolved_by=%s).",
+            getattr(row, "id", None),
+            resolver,
+        )
+        return
+    snapshot = _exception_row_snapshot(row, resolved_by=resolver)
     thread = threading.Thread(
         target=_send_exception_resolved_email,
         args=(snapshot,),
@@ -194,6 +202,13 @@ def _send_exception_resolved_email(row: Any) -> None:
     try:
         exception_id = getattr(row, "id", None)
         resolved_by = str(getattr(row, "resolved_by", "") or RESOLVER_SYSTEM).strip().lower()
+        if _resolution_email_suppressed(resolved_by):
+            logger.info(
+                "Skipping resolution email for exception_log_id=%s (resolved_by=%s).",
+                exception_id,
+                resolved_by,
+            )
+            return
         fingerprint = f"resolved|{exception_id}|{resolved_by}"
         if not _should_send_exception_alert(fingerprint):
             logger.info(
@@ -474,6 +489,15 @@ RESOLVER_SERVER_RECOVERY = "server_recovery"
 RESOLVER_PAGE_REFRESH = "page_refresh"
 RESOLVER_SUCCESSFUL_SYNC = "successful_sync"
 RESOLVER_SYSTEM = "system"
+
+# Page-refresh auto-resolve can close dozens of transient UI/timeout rows at once.
+# OPEN alerts already notify; do not also email on auto-close-by-refresh.
+RESOLUTION_EMAIL_SILENT_RESOLVERS = frozenset({RESOLVER_PAGE_REFRESH})
+
+
+def _resolution_email_suppressed(resolved_by: str | None) -> bool:
+    return (resolved_by or "").strip().lower() in RESOLUTION_EMAIL_SILENT_RESOLVERS
+
 
 AUTO_RESOLUTION_COMMENTS: dict[str, str] = {
     RESOLVER_CURSOR: (

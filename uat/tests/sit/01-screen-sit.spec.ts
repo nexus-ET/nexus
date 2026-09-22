@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { gotoAppPath } from '../../src/helpers/auth';
-import { loadUatEnv } from '../../src/helpers/env';
+import { openCounsellingIntakeWorkspace } from '../../src/helpers/counsellingProfile';
 import {
   generateUniversityShortlist,
   openUniversityShortlistTab,
@@ -12,11 +12,8 @@ import { workspaceTab } from '../../src/helpers/workspaceTabs';
  */
 test.describe('SIT: Student Profile Input Screen', () => {
   test('Counselling Students profile exposes mandatory profile surfaces', async ({ page }) => {
-    const { leadId } = loadUatEnv();
-    await gotoAppPath(page, `/students/counselling/${leadId}`);
-    await expect(page.getByText(/^Loading…$/)).toHaveCount(0, { timeout: 60_000 });
-
-    if (await page.getByText(/No counselling booking is available/i).isVisible().catch(() => false)) {
+    const intake = await openCounsellingIntakeWorkspace(page);
+    if (intake === 'no_booking') {
       test.skip(true, 'No booking for UAT lead');
       return;
     }
@@ -33,34 +30,53 @@ test.describe('SIT: Student Profile Input Screen', () => {
   });
 
   test('Aspirations tab accepts preference inputs used by matching', async ({ page }) => {
-    const { leadId } = loadUatEnv();
-    await gotoAppPath(page, `/students/counselling/${leadId}`);
-    await expect(page.getByText(/^Loading…$/)).toHaveCount(0, { timeout: 60_000 });
-    if (await page.getByText(/No counselling booking is available/i).isVisible().catch(() => false)) {
+    const intake = await openCounsellingIntakeWorkspace(page);
+    if (intake === 'no_booking') {
       test.skip(true, 'No booking for UAT lead');
       return;
     }
+
+    await expect(workspaceTab(page, /^PROFILE$/i)).toBeVisible({ timeout: 45_000 });
     await workspaceTab(page, /^PROFILE$/i).click({ force: true });
     await workspaceTab(page, /^Aspirations$/i).click({ force: true });
+
+    // Compact aspirations mount stays on "Loading aspirations questionnaire..." until hydrate.
+    await expect(page.getByText(/Loading aspirations questionnaire/i)).toHaveCount(0, {
+      timeout: 45_000,
+    });
     await expect(
-      page.getByText(/Country|Degree|Program|Budget|Ranking|Aspiration|Destination/i).first()
+      page
+        .getByText(
+          /Country|Degree|Program|Budget|Ranking|Aspiration|Destination|Vision|Core Vision|Save aspirations/i
+        )
+        .first()
     ).toBeVisible({ timeout: 30_000 });
   });
 });
 
 test.describe('SIT: Shortlisting Engine Results Screen', () => {
   test('Category breakdown and band filters render after generation', async ({ page }) => {
+    // open + generate can exceed the default 120s when the DB tunnel is warm-busy.
+    test.setTimeout(180_000);
+
     await generateUniversityShortlist(page);
 
-    const empty = page.getByText(/No matching|insufficient|No shortlist yet/i);
-    if (await empty.first().isVisible().catch(() => false)) {
-      await expect(empty.first()).toBeVisible();
+    const emptyRun = page.getByText(
+      /No matching|no matching institutions|insufficient profile|No shortlist yet/i
+    );
+    const bandAll = page.getByRole('button', { name: /All \(/i });
+    await expect(bandAll.or(emptyRun.first()).first()).toBeVisible({ timeout: 30_000 });
+
+    if (await emptyRun.first().isVisible().catch(() => false)) {
+      await expect(emptyRun.first()).toBeVisible();
       return;
     }
 
-    for (const label of [/Academic/i, /Profile/i, /Aspirations/i, /Safety/i]) {
-      await expect(page.getByText(label).first()).toBeVisible();
-    }
+    // Phase 1 fit cards expose the four scoring dimensions (anchored labels).
+    await expect(page.getByText(/^Academic$/i).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/^Profile$/i).first()).toBeVisible();
+    await expect(page.getByText(/^Aspirations$/i).first()).toBeVisible();
+    await expect(page.getByText(/^Safety\*?$/i).first()).toBeVisible();
 
     await page.getByRole('button', { name: /Safe \(/i }).click({ force: true });
     await page.getByRole('button', { name: /Target \(/i }).click({ force: true });

@@ -57,6 +57,7 @@ class StudentMasterSaveRequest(BaseModel):
     date_of_birth: date | None = None
     gender: GenderOption | None = None
     marital_status: MaritalStatusOption | None = None
+    spouse_name: str | None = Field(default=None, max_length=255)
     email: str | None = Field(default=None, max_length=PROFILE_EMAIL_MAX_LENGTH)
     phone_country_iso2: str | None = None
     phone_local: str | None = None

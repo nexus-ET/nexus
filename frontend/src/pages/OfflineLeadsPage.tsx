@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowUp, ArrowUpDown, Map as MapIcon, Pencil, Plus, Search, X } from 'lucide-react';
-import { useCreateOfflineLead, useOfflineLeadDuplicateCheck, useOfflineLeads, useUpdateOfflineLead } from '../hooks/useOfflineLeads';
+import { ArrowDown, ArrowUp, ArrowUpDown, Ban, CheckCircle2, Map as MapIcon, MessageSquareText, Pencil, Plus, Search, X } from 'lucide-react';
+import { useCreateOfflineLead, useOfflineLeadDuplicateCheck, useOfflineLeads, useSetOfflineLeadActive, useUpdateOfflineLead } from '../hooks/useOfflineLeads';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useCountries } from '../hooks/useCountries';
 import { useLevels } from '../hooks/useLevels';
@@ -15,7 +15,9 @@ import {
 } from '../hooks/useQualificationPrograms';
 import { useEducationMajors } from '../hooks/useEducationMajors';
 import SearchableMultiSelect from '../components/academia/SearchableMultiSelect';
+import { StandaloneTableOverflowMenu } from '../components/ui/DataTable';
 import CounsellingSessionDrawer from '../components/CounsellingSessionDrawer';
+import CounselorFollowupDrawer from '../components/CounselorFollowupDrawer';
 import LeadBookingsModal from '../components/LeadBookingsModal';
 import StudentJourneyPanel from '../components/StudentJourneyPanel';
 import { useConfirmation } from '../context/ConfirmationContext';
@@ -60,11 +62,55 @@ import {
   TABLE_PAGE_SIZE_OPTIONS,
   type TablePageSize,
 } from '../utils/tablePageSize';
+import {
+  OFFLINE_LEAD_ACTIVE_REASONS,
+  OFFLINE_LEAD_INACTIVE_REASONS,
+} from '../constants/offlineLeadStatusReasons';
 import './OfflineLeadsPage.css';
 
 const OFFLINE_LEADS_PAGE_SIZE_KEY = 'nexus.offlineLeads.pageSize';
-const OFFLINE_LEADS_COLUMNS_KEY = 'nexus.offlineLeads.visibleColumns.v7';
+const OFFLINE_LEADS_COLUMNS_KEY = 'nexus.offlineLeads.visibleColumns.v8';
+const OFFLINE_LEADS_ORDER_KEY = 'nexus.offlineLeads.columnOrder.v1';
+const OFFLINE_LEADS_PIN_KEY = 'nexus.offlineLeads.columnPin.v1';
+const OFFLINE_LEADS_WIDTH_KEY = 'nexus.offlineLeads.columnWidths.v1';
 const PAGE_SIZE_OPTIONS = TABLE_PAGE_SIZE_OPTIONS;
+
+type OfflineLeadsPageToken = number | 'ellipsis';
+
+function offlineLeadsPageRange(from: number, to: number): number[] {
+  const items: number[] = [];
+  for (let i = from; i <= to; i += 1) items.push(i);
+  return items;
+}
+
+/** Compact window: 1 … 8 9 10 … 42 */
+function offlineLeadsPageTokens(current: number, pageCount: number, siblingCount = 1): OfflineLeadsPageToken[] {
+  if (pageCount <= 1) return pageCount === 1 ? [1] : [];
+
+  const totalSlots = siblingCount * 2 + 5;
+  if (pageCount <= totalSlots) return offlineLeadsPageRange(1, pageCount);
+
+  const leftSibling = Math.max(current - siblingCount, 1);
+  const rightSibling = Math.min(current + siblingCount, pageCount);
+  const showLeftEllipsis = leftSibling > 2;
+  const showRightEllipsis = rightSibling < pageCount - 1;
+
+  if (!showLeftEllipsis && showRightEllipsis) {
+    const leftCount = 3 + 2 * siblingCount;
+    return [...offlineLeadsPageRange(1, leftCount), 'ellipsis', pageCount];
+  }
+  if (showLeftEllipsis && !showRightEllipsis) {
+    const rightCount = 3 + 2 * siblingCount;
+    return [1, 'ellipsis', ...offlineLeadsPageRange(pageCount - rightCount + 1, pageCount)];
+  }
+  return [
+    1,
+    'ellipsis',
+    ...offlineLeadsPageRange(leftSibling, rightSibling),
+    'ellipsis',
+    pageCount,
+  ];
+}
 
 type OfflineLeadColumnKey =
   | 'full_name'
@@ -84,6 +130,7 @@ type OfflineLeadColumnKey =
   | 'country'
   | 'booking'
   | 'new_booking'
+  | 'counselor_notes'
   | 'lead_status'
   | 'status'
   | 'created_at';
@@ -111,15 +158,14 @@ const OFFLINE_LEAD_COLUMN_DEFS: Array<{
   { key: 'country', label: 'Country', defaultVisible: false },
   { key: 'booking', label: 'Booking', defaultVisible: true },
   { key: 'new_booking', label: 'New Booking', defaultVisible: true },
+  { key: 'counselor_notes', label: 'Counselor Notes', defaultVisible: true },
   { key: 'lead_status', label: 'Lead Status', defaultVisible: true },
   { key: 'status', label: 'Chat Status', defaultVisible: true },
   { key: 'created_at', label: 'Date Added', defaultVisible: true },
 ];
 
-const OFFLINE_LEAD_COLUMN_OPTIONS = OFFLINE_LEAD_COLUMN_DEFS.map(column => ({
-  value: column.key,
-  label: column.label,
-}));
+const DEFAULT_PINNED_LEFT: OfflineLeadColumnKey[] = ['full_name'];
+const ALL_OFFLINE_LEAD_KEYS = OFFLINE_LEAD_COLUMN_DEFS.map(column => column.key);
 
 const REQUIRED_OFFLINE_LEAD_COLUMNS = OFFLINE_LEAD_COLUMN_DEFS.filter(column => column.required).map(
   column => column.key
@@ -161,6 +207,71 @@ function storeOfflineLeadColumns(columns: OfflineLeadColumnKey[]) {
   }
 }
 
+function normalizeOfflineLeadOrder(keys: string[]): OfflineLeadColumnKey[] {
+  const allowed = new Set(ALL_OFFLINE_LEAD_KEYS);
+  const seen = new Set<OfflineLeadColumnKey>();
+  const ordered: OfflineLeadColumnKey[] = [];
+  for (const key of keys) {
+    if (!allowed.has(key as OfflineLeadColumnKey)) continue;
+    const typed = key as OfflineLeadColumnKey;
+    if (seen.has(typed)) continue;
+    seen.add(typed);
+    ordered.push(typed);
+  }
+  for (const key of ALL_OFFLINE_LEAD_KEYS) {
+    if (!seen.has(key)) ordered.push(key);
+  }
+  return ordered;
+}
+
+function readStoredOfflineLeadOrder(): OfflineLeadColumnKey[] {
+  try {
+    const raw = localStorage.getItem(OFFLINE_LEADS_ORDER_KEY);
+    if (!raw) return [...ALL_OFFLINE_LEAD_KEYS];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [...ALL_OFFLINE_LEAD_KEYS];
+    return normalizeOfflineLeadOrder(parsed.map(String));
+  } catch {
+    return [...ALL_OFFLINE_LEAD_KEYS];
+  }
+}
+
+type OfflineLeadPinState = { left: OfflineLeadColumnKey[]; right: OfflineLeadColumnKey[] };
+
+function readStoredOfflineLeadPins(): OfflineLeadPinState {
+  try {
+    const raw = localStorage.getItem(OFFLINE_LEADS_PIN_KEY);
+    if (!raw) return { left: [...DEFAULT_PINNED_LEFT], right: [] };
+    const parsed = JSON.parse(raw) as Partial<OfflineLeadPinState>;
+    const allowed = new Set(ALL_OFFLINE_LEAD_KEYS);
+    const left = (parsed.left ?? DEFAULT_PINNED_LEFT).filter(
+      (k): k is OfflineLeadColumnKey => allowed.has(k as OfflineLeadColumnKey)
+    );
+    const right = (parsed.right ?? []).filter(
+      (k): k is OfflineLeadColumnKey => allowed.has(k as OfflineLeadColumnKey)
+    );
+    return { left, right };
+  } catch {
+    return { left: [...DEFAULT_PINNED_LEFT], right: [] };
+  }
+}
+
+function readStoredOfflineLeadWidths(): Partial<Record<OfflineLeadColumnKey, number>> {
+  try {
+    const raw = localStorage.getItem(OFFLINE_LEADS_WIDTH_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, number>;
+    const next: Partial<Record<OfflineLeadColumnKey, number>> = {};
+    for (const key of ALL_OFFLINE_LEAD_KEYS) {
+      const value = parsed[key];
+      if (typeof value === 'number' && value >= 72 && value <= 640) next[key] = value;
+    }
+    return next;
+  } catch {
+    return {};
+  }
+}
+
 const EMPTY_FORM: OfflineLeadCreatePayload = {
   first_name: '',
   middle_name: '',
@@ -182,7 +293,14 @@ const EMPTY_FORM: OfflineLeadCreatePayload = {
     university: '',
     graduation_year: undefined,
   },
-  location: { city: '', state: '', country_iso2: '', zip_code: '' },
+  location: {
+    address_line_1: '',
+    address_line_2: '',
+    city: '',
+    state: '',
+    country_iso2: '',
+    zip_code: '',
+  },
 };
 
 function serializeOfflineLeadForm(form: OfflineLeadCreatePayload): string {
@@ -191,32 +309,6 @@ function serializeOfflineLeadForm(form: OfflineLeadCreatePayload): string {
 
 const UNSAVED_CLOSE_MESSAGE =
   'You have unsaved changes. Discard them and close this form?';
-
-async function detectLocationFromIp(): Promise<{
-  city: string;
-  state: string;
-  country_iso2: string;
-  zip_code: string;
-}> {
-  try {
-    const response = await fetch('https://ipapi.co/json/', { signal: AbortSignal.timeout(5000) });
-    if (!response.ok) throw new Error('geo failed');
-    const data = (await response.json()) as {
-      city?: string;
-      region?: string;
-      country_code?: string;
-      postal?: string;
-    };
-    return {
-      city: data.city || '',
-      state: data.region || '',
-      country_iso2: (data.country_code || '').toUpperCase(),
-      zip_code: data.postal || '',
-    };
-  } catch {
-    return { city: '', state: '', country_iso2: '', zip_code: '' };
-  }
-}
 
 function leadToForm(
   lead: OfflineLeadItem,
@@ -269,6 +361,8 @@ function leadToForm(
       graduation_year: lead.graduation_year ?? undefined,
     },
     location: {
+      address_line_1: lead.address_line_1 || '',
+      address_line_2: lead.address_line_2 || '',
       city: lead.city || '',
       state: lead.state || '',
       country_iso2: lead.country_iso2 || '',
@@ -328,12 +422,79 @@ function formatStudyInterestCell(lead: OfflineLeadItem): string {
 }
 
 function formatLeadSourceLabel(source?: string | null): string {
-  return String(source || '').toUpperCase() === 'EXPRESS' ? 'Express Lead' : 'Offline Lead';
+  const s = String(source || '').toUpperCase();
+  if (s === 'EXPRESS') return 'Express Lead';
+  if (s === 'FACEBOOK_LEAD' || s === 'INSTAGRAM_LEAD') return 'Meta Lead';
+  return 'Offline Lead';
+}
+
+function isManualOfflineLead(lead: Pick<OfflineLeadItem, 'source'>): boolean {
+  const s = String(lead.source || '').toUpperCase();
+  return s === 'OFFLINE' || s === 'EXPRESS' || s === '';
 }
 
 function columnHeaderClass(key: OfflineLeadColumnKey): string | undefined {
   if (key === 'date_of_birth') return 'offline-leads-table__dob';
   return undefined;
+}
+
+function offlineLeadColumnFilterText(lead: OfflineLeadItem, key: OfflineLeadColumnKey): string {
+  switch (key) {
+    case 'full_name':
+      return lead.full_name || '';
+    case 'student_id':
+      return String(lead.id);
+    case 'source':
+      return formatLeadSourceLabel(lead.source);
+    case 'email':
+      return lead.email || '';
+    case 'phone_number':
+      return lead.phone_number || '';
+    case 'date_of_birth':
+      return lead.date_of_birth || '';
+    case 'program':
+      return lead.program || lead.degree || '';
+    case 'major':
+      return lead.major || '';
+    case 'university':
+      return lead.university || '';
+    case 'graduation_year':
+      return String(lead.graduation_year ?? '');
+    case 'gpa_cgpa':
+      return lead.gpa_cgpa || '';
+    case 'study_interest':
+      return [
+        ...(lead.target_destinations ?? []),
+        lead.target_destination,
+        lead.target_level_name,
+        ...(lead.target_majors ?? []),
+        ...(lead.target_programs ?? []),
+        lead.target_program,
+        lead.target_course,
+      ]
+        .filter(Boolean)
+        .join(' ');
+    case 'city':
+      return lead.city || '';
+    case 'state':
+      return lead.state || '';
+    case 'country':
+      return lead.country || '';
+    case 'booking':
+      return String(lead.booking_count ?? 0);
+    case 'new_booking':
+      return 'book';
+    case 'counselor_notes':
+      return String(lead.followup_count ?? 0);
+    case 'lead_status':
+      return 'journey';
+    case 'status':
+      return lead.status_label || '';
+    case 'created_at':
+      return lead.created_at || '';
+    default:
+      return '';
+  }
 }
 
 function renderOfflineLeadCell(
@@ -342,22 +503,37 @@ function renderOfflineLeadCell(
   handlers?: {
     onViewJourney?: (lead: OfflineLeadItem) => void;
     onOpenBookings?: (lead: OfflineLeadItem) => void;
+    onOpenCounselorNotes?: (lead: OfflineLeadItem) => void;
     onEditLead?: (lead: OfflineLeadItem) => void;
+    bookAppointmentReturnTo?: string;
   }
 ): ReactNode {
   switch (key) {
     case 'full_name':
-      return lead.full_name || '—';
-    case 'student_id':
-      return (
+      return handlers?.onEditLead ? (
         <button
           type="button"
           className="offline-leads-journey-link"
-          onClick={() => handlers?.onEditLead?.(lead)}
+          onClick={() => handlers.onEditLead?.(lead)}
+          title={`Edit ${lead.full_name || `lead #${lead.id}`}`}
+        >
+          {lead.full_name || '—'}
+        </button>
+      ) : (
+        lead.full_name || '—'
+      );
+    case 'student_id':
+      return handlers?.onEditLead ? (
+        <button
+          type="button"
+          className="offline-leads-journey-link"
+          onClick={() => handlers.onEditLead?.(lead)}
           title={`Edit ${lead.full_name || `lead #${lead.id}`}`}
         >
           {lead.id}
         </button>
+      ) : (
+        lead.id
       );
     case 'source':
       return formatLeadSourceLabel(lead.source);
@@ -404,18 +580,36 @@ function renderOfflineLeadCell(
     case 'new_booking':
       return (
         <Link
-          to={bookAppointmentHref({
-            id: lead.id,
-            full_name: lead.full_name || '',
-            email: lead.email,
-            phone_number: lead.phone_number,
-          })}
+          to={bookAppointmentHref(
+            {
+              id: lead.id,
+              full_name: lead.full_name || '',
+              email: lead.email,
+              phone_number: lead.phone_number,
+            },
+            { returnTo: handlers?.bookAppointmentReturnTo }
+          )}
           className="offline-leads-journey-link"
           title={`Book appointment for ${lead.full_name || `lead #${lead.id}`}`}
         >
           Book Now
         </Link>
       );
+    case 'counselor_notes': {
+      const count = lead.followup_count ?? 0;
+      return (
+        <button
+          type="button"
+          className="offline-leads-notes-btn"
+          onClick={() => handlers?.onOpenCounselorNotes?.(lead)}
+          title="Open counselor notes"
+        >
+          <MessageSquareText size={13} />
+          Notes
+          <span className="offline-leads-notes-badge">{count}</span>
+        </button>
+      );
+    }
     case 'lead_status':
       return (
         <button
@@ -439,7 +633,7 @@ function renderOfflineLeadCell(
 
 function statusClass(label: string): string {
   if (label === 'Handoff') return 'offline-leads-status offline-leads-status--handoff';
-  if (label === 'Archive') return 'offline-leads-status offline-leads-status--archive';
+  if (label === 'Archive' || label === 'Inactive') return 'offline-leads-status offline-leads-status--archive';
   return 'offline-leads-status offline-leads-status--ai';
 }
 
@@ -458,9 +652,15 @@ function SortIcon({
 
 export default function OfflineLeadsPage() {
   const openConfirm = useConfirmation();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const consumedEditRef = useRef<string | null>(null);
-  const [page, setPage] = useState(1);
+  const skipPageResetRef = useRef(true);
+  const [page, setPage] = useState(() => {
+    const raw = Number(searchParams.get('page'));
+    return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 1;
+  });
   const [pageSize, setPageSize] = useState<TablePageSize>(() =>
     readStoredTablePageSize(OFFLINE_LEADS_PAGE_SIZE_KEY)
   );
@@ -469,11 +669,22 @@ export default function OfflineLeadsPage() {
   const [sortBy, setSortBy] = useState<OfflineLeadSortField>('created_at');
   const [sortDir, setSortDir] = useState<OfflineLeadSortDirection>('desc');
   const [visibleColumns, setVisibleColumns] = useState<OfflineLeadColumnKey[]>(readStoredOfflineLeadColumns);
+  const [columnOrder, setColumnOrder] = useState<OfflineLeadColumnKey[]>(readStoredOfflineLeadOrder);
+  const [columnPins, setColumnPins] = useState<OfflineLeadPinState>(readStoredOfflineLeadPins);
+  const [columnWidths, setColumnWidths] = useState<Partial<Record<OfflineLeadColumnKey, number>>>(
+    readStoredOfflineLeadWidths
+  );
+  const [selectedRowIds, setSelectedRowIds] = useState<Set<number>>(() => new Set());
+  const [columnFilters, setColumnFilters] = useState<Partial<Record<OfflineLeadColumnKey, string>>>({});
   const [journeyModal, setJourneyModal] = useState<{
     studentId: number;
     studentName: string;
   } | null>(null);
   const [bookingsModal, setBookingsModal] = useState<{
+    leadId: number;
+    leadName: string;
+  } | null>(null);
+  const [followupDrawer, setFollowupDrawer] = useState<{
     leadId: number;
     leadName: string;
   } | null>(null);
@@ -484,6 +695,12 @@ export default function OfflineLeadsPage() {
     dateLabel?: string | null;
     timeLabel?: string | null;
   } | null>(null);
+  const [statusModal, setStatusModal] = useState<{
+    lead: OfflineLeadItem;
+    nextActive: boolean;
+  } | null>(null);
+  const [statusReasons, setStatusReasons] = useState<string[]>([]);
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingLead, setEditingLead] = useState<OfflineLeadItem | null>(null);
   const [form, setForm] = useState<OfflineLeadCreatePayload>(EMPTY_FORM);
@@ -513,14 +730,29 @@ export default function OfflineLeadsPage() {
   const listQuery = useOfflineLeads(query);
   const createMutation = useCreateOfflineLead();
   const updateMutation = useUpdateOfflineLead();
+  const setActiveMutation = useSetOfflineLeadActive();
   const { countries } = useCountries();
   const { programs: qualificationPrograms } = useQualificationPrograms();
   const { levels } = useLevels();
+  const sortedCountries = useMemo(
+    () =>
+      [...countries].sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      ),
+    [countries]
+  );
+  const sortedLevelOptions = useMemo(
+    () =>
+      levelSelectOptions(levels).sort((a, b) =>
+        a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+      ),
+    [levels]
+  );
   const filteredPrograms = useMemo(() => {
     if (!educationLevelId) return [];
-    return qualificationPrograms.filter(
-      program => program.level_id === Number(educationLevelId)
-    );
+    return qualificationPrograms
+      .filter(program => program.level_id === Number(educationLevelId))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
   }, [qualificationPrograms, educationLevelId]);
   const { majors } = useEducationMajors();
   const selectedEducationProgram = useMemo(
@@ -546,17 +778,19 @@ export default function OfflineLeadsPage() {
         (labels.has(major.label.trim().toLowerCase()) ||
           Boolean(major.code && codes.has(major.code.trim().toUpperCase())))
     );
-    if (matched.length) {
-      return matched;
-    }
-    return mappedProgramMajors.map(major => ({
-      id: major.id,
-      code: major.code,
-      label: major.label,
-      is_other: false,
-      sort_order: 0,
-      is_active: true,
-    }));
+    const list = matched.length
+      ? matched
+      : mappedProgramMajors.map(major => ({
+          id: major.id,
+          code: major.code,
+          label: major.label,
+          is_other: false,
+          sort_order: 0,
+          is_active: true,
+        }));
+    return [...list].sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+    );
   }, [form.education?.program_code, majors, mappedProgramMajors]);
   const majorSelectValue = useMemo(() => {
     const current = form.education?.major || '';
@@ -567,7 +801,10 @@ export default function OfflineLeadsPage() {
   const { scores: gpaCgpaScores } = useGpaCgpaScores();
   const { options: studyYearOptions } = useFullTimeStudyYears();
   const filteredStudyYears = useMemo(
-    () => filterFullTimeStudyYearsByLevel(studyYearOptions, educationLevelId),
+    () =>
+      [...filterFullTimeStudyYearsByLevel(studyYearOptions, educationLevelId)].sort((a, b) =>
+        a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+      ),
     [studyYearOptions, educationLevelId]
   );
   const targetLevelId = form.target_level_id ? String(form.target_level_id) : '';
@@ -580,19 +817,34 @@ export default function OfflineLeadsPage() {
         byId.set(major.id, major);
       }
     }
-    return Array.from(byId.values()).sort((a, b) => a.label.localeCompare(b.label));
+    return Array.from(byId.values()).sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+    );
   }, [form.target_level_id, qualificationPrograms]);
   const studyInterestPrograms = useMemo(() => {
     if (!form.target_level_id || !form.target_major_ids?.length) return [];
     const majorIds = new Set(form.target_major_ids);
-    return qualificationPrograms.filter(
-      program =>
-        program.level_id === form.target_level_id &&
-        (program.majors ?? []).some(major => majorIds.has(major.id))
-    );
+    return qualificationPrograms
+      .filter(
+        program =>
+          program.level_id === form.target_level_id &&
+          (program.majors ?? []).some(major => majorIds.has(major.id))
+      )
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
   }, [form.target_level_id, form.target_major_ids, qualificationPrograms]);
+  const targetDestinationOptions = useMemo(
+    () =>
+      sortedCountries.map(country => ({
+        value: country.iso2,
+        label: country.name,
+      })),
+    [sortedCountries]
+  );
   const computedAge = useMemo(() => computeAgeFromDob(form.date_of_birth), [form.date_of_birth]);
-  const dobError = useMemo(() => validateDateOfBirth(form.date_of_birth), [form.date_of_birth]);
+  const dobError = useMemo(() => {
+    if (!form.date_of_birth) return null;
+    return validateDateOfBirth(form.date_of_birth);
+  }, [form.date_of_birth]);
   const maxDateOfBirth = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const isSaving = createMutation.isPending || updateMutation.isPending;
   const selectedGpaCgpa = useMemo(
@@ -615,18 +867,169 @@ export default function OfflineLeadsPage() {
     storeOfflineLeadColumns(visibleColumns);
   }, [visibleColumns]);
 
-  const visibleColumnDefs = useMemo(
-    () => OFFLINE_LEAD_COLUMN_DEFS.filter(column => visibleColumns.includes(column.key)),
-    [visibleColumns]
+  useEffect(() => {
+    try {
+      localStorage.setItem(OFFLINE_LEADS_ORDER_KEY, JSON.stringify(columnOrder));
+    } catch {
+      /* ignore */
+    }
+  }, [columnOrder]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(OFFLINE_LEADS_PIN_KEY, JSON.stringify(columnPins));
+    } catch {
+      /* ignore */
+    }
+  }, [columnPins]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(OFFLINE_LEADS_WIDTH_KEY, JSON.stringify(columnWidths));
+    } catch {
+      /* ignore */
+    }
+  }, [columnWidths]);
+
+  const visibleColumnDefs = useMemo(() => {
+    const byKey = new Map(OFFLINE_LEAD_COLUMN_DEFS.map(column => [column.key, column]));
+    const order = columnOrder.length ? columnOrder : ALL_OFFLINE_LEAD_KEYS;
+    const left = columnPins.left.filter(key => visibleColumns.includes(key));
+    const right = columnPins.right.filter(key => visibleColumns.includes(key));
+    const middle = order.filter(
+      key =>
+        visibleColumns.includes(key) && !left.includes(key) && !right.includes(key)
+    );
+    return [...left, ...middle, ...right]
+      .map(key => byKey.get(key))
+      .filter((column): column is (typeof OFFLINE_LEAD_COLUMN_DEFS)[number] => Boolean(column));
+  }, [visibleColumns, columnOrder, columnPins]);
+
+  const overflowColumns = useMemo(
+    () =>
+      columnOrder.map(key => {
+        const def = OFFLINE_LEAD_COLUMN_DEFS.find(column => column.key === key)!;
+        const pinned = columnPins.left.includes(key)
+          ? ('left' as const)
+          : columnPins.right.includes(key)
+            ? ('right' as const)
+            : false;
+        return {
+          id: key,
+          label: def.label,
+          visible: visibleColumns.includes(key),
+          required: Boolean(def.required),
+          pinned,
+        };
+      }),
+    [columnOrder, visibleColumns, columnPins]
   );
 
-  const handleVisibleColumnsChange = (values: string[]) => {
-    setVisibleColumns(normalizeOfflineLeadColumns(values));
+  const handleToggleColumnVisibility = (id: string) => {
+    const key = id as OfflineLeadColumnKey;
+    setVisibleColumns(prev => {
+      if (prev.includes(key)) {
+        if (REQUIRED_OFFLINE_LEAD_COLUMNS.includes(key)) return prev;
+        return prev.filter(item => item !== key);
+      }
+      return normalizeOfflineLeadColumns([...prev, key]);
+    });
+  };
+
+  const handleMoveColumn = (id: string, direction: -1 | 1) => {
+    const key = id as OfflineLeadColumnKey;
+    setColumnOrder(prev => {
+      const order = normalizeOfflineLeadOrder(prev);
+      const index = order.indexOf(key);
+      if (index < 0) return order;
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= order.length) return order;
+      const next = [...order];
+      const [item] = next.splice(index, 1);
+      next.splice(nextIndex, 0, item);
+      return next;
+    });
+  };
+
+  const handlePinColumn = (id: string, side: 'left' | 'right' | false) => {
+    const key = id as OfflineLeadColumnKey;
+    setColumnPins(prev => {
+      const left = prev.left.filter(item => item !== key);
+      const right = prev.right.filter(item => item !== key);
+      if (side === 'left') left.push(key);
+      if (side === 'right') right.push(key);
+      return { left, right };
+    });
+  };
+
+  const resetTableView = () => {
+    setVisibleColumns(defaultOfflineLeadColumns());
+    setColumnOrder([...ALL_OFFLINE_LEAD_KEYS]);
+    setColumnPins({ left: [...DEFAULT_PINNED_LEFT], right: [] });
+    setColumnWidths({});
+    setColumnFilters({});
+    setSelectedRowIds(new Set());
+  };
+
+  const startColumnResize = (key: OfflineLeadColumnKey, startX: number, startWidth: number) => {
+    const onMove = (event: MouseEvent) => {
+      const next = Math.min(640, Math.max(72, startWidth + (event.clientX - startX)));
+      setColumnWidths(prev => ({ ...prev, [key]: next }));
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  const pinOffsetLeft = (key: OfflineLeadColumnKey): number | undefined => {
+    const index = columnPins.left.indexOf(key);
+    if (index < 0) return undefined;
+    let offset = 40; // selection column
+    for (let i = 0; i < index; i += 1) {
+      const prevKey = columnPins.left[i];
+      if (!visibleColumns.includes(prevKey)) continue;
+      offset += columnWidths[prevKey] ?? 140;
+    }
+    return offset;
+  };
+
+  const pinOffsetRight = (key: OfflineLeadColumnKey): number | undefined => {
+    const index = columnPins.right.indexOf(key);
+    if (index < 0) return undefined;
+    let offset = 72; // actions
+    for (let i = columnPins.right.length - 1; i > index; i -= 1) {
+      const nextKey = columnPins.right[i];
+      if (!visibleColumns.includes(nextKey)) continue;
+      offset += columnWidths[nextKey] ?? 140;
+    }
+    return offset;
   };
 
   useEffect(() => {
+    if (skipPageResetRef.current) {
+      skipPageResetRef.current = false;
+      return;
+    }
     setPage(1);
   }, [debouncedSearch, status, pageSize, sortBy, sortDir]);
+
+  useEffect(() => {
+    setSearchParams(
+      prev => {
+        const current = prev.get('page');
+        const desired = page <= 1 ? null : String(page);
+        if ((current || null) === desired) return prev;
+        const next = new URLSearchParams(prev);
+        if (desired === null) next.delete('page');
+        else next.set('page', desired);
+        return next;
+      },
+      { replace: true }
+    );
+  }, [page, setSearchParams]);
 
   const toggleSort = (field: OfflineLeadSortField) => {
     if (sortBy === field) {
@@ -635,29 +1038,6 @@ export default function OfflineLeadsPage() {
       setSortBy(field);
       setSortDir(field === 'created_at' ? 'desc' : 'asc');
     }
-  };
-
-  const openCreateModal = async () => {
-    setEditingLead(null);
-    setEducationLevelId('');
-    setForm(EMPTY_FORM);
-    setFormError(null);
-    setFormBaseline(serializeOfflineLeadForm(EMPTY_FORM));
-    setModalOpen(true);
-    setGeoLoading(true);
-    const detected = await detectLocationFromIp();
-    const withLocation: OfflineLeadCreatePayload = {
-      ...EMPTY_FORM,
-      location: {
-        city: detected.city,
-        state: detected.state,
-        country_iso2: detected.country_iso2,
-        zip_code: detected.zip_code,
-      },
-    };
-    setForm(withLocation);
-    setFormBaseline(serializeOfflineLeadForm(withLocation));
-    setGeoLoading(false);
   };
 
   const openEditModal = (lead: OfflineLeadItem) => {
@@ -739,25 +1119,58 @@ export default function OfflineLeadsPage() {
     }));
   };
 
+  const handleToggleActive = (lead: OfflineLeadItem) => {
+    const currentlyActive = lead.is_active !== false;
+    setStatusError(null);
+    setStatusReasons([]);
+    setStatusModal({
+      lead,
+      nextActive: !currentlyActive,
+    });
+  };
+
+  const closeStatusModal = () => {
+    if (setActiveMutation.isPending) return;
+    setStatusModal(null);
+    setStatusReasons([]);
+    setStatusError(null);
+  };
+
+  const toggleStatusReason = (reason: string) => {
+    setStatusReasons(prev =>
+      prev.includes(reason) ? prev.filter(item => item !== reason) : [...prev, reason]
+    );
+    setStatusError(null);
+  };
+
+  const confirmStatusChange = async () => {
+    if (!statusModal) return;
+    if (!statusReasons.length) {
+      setStatusError('Select at least one reason.');
+      return;
+    }
+    try {
+      await setActiveMutation.mutateAsync({
+        id: statusModal.lead.id,
+        isActive: statusModal.nextActive,
+        reasons: statusReasons,
+      });
+      setStatusModal(null);
+      setStatusReasons([]);
+      setStatusError(null);
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to update lead active status.';
+      setStatusError(message);
+    }
+  };
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setFormError(null);
 
     if (!form.first_name.trim()) {
       setFormError('First name is required.');
-      return;
-    }
-    if (!form.last_name.trim()) {
-      setFormError('Last name is required.');
-      return;
-    }
-    if (!form.date_of_birth) {
-      setFormError('Date of birth is required.');
-      return;
-    }
-    const dobValidationError = validateDateOfBirth(form.date_of_birth);
-    if (dobValidationError) {
-      setFormError(dobValidationError);
       return;
     }
     if (!form.email?.trim()) {
@@ -783,6 +1196,14 @@ export default function OfflineLeadsPage() {
       return;
     }
 
+    if (form.date_of_birth) {
+      const dobValidationError = validateDateOfBirth(form.date_of_birth);
+      if (dobValidationError) {
+        setFormError(dobValidationError);
+        return;
+      }
+    }
+
     const educationError = validateEducationFields(
       form.education?.program_code,
       form.education?.major,
@@ -796,19 +1217,29 @@ export default function OfflineLeadsPage() {
       return;
     }
 
-    if (!educationLevelId) {
-      setFormError('Level is required.');
+    const hasEducationInput = Boolean(
+      form.education?.program_code ||
+        form.education?.major ||
+        form.education?.university ||
+        form.education?.graduation_year ||
+        form.education?.full_time_study_years ||
+        form.education?.gpa_cgpa_code
+    );
+    if (hasEducationInput && !educationLevelId) {
+      setFormError('Level is required when education is provided.');
       return;
     }
 
-    const gpaError = validateGpaCgpaScore(
-      form.education?.gpa_cgpa_code,
-      form.education?.gpa_cgpa_other,
-      gpaCgpaScores
-    );
-    if (gpaError) {
-      setFormError(gpaError);
-      return;
+    if (hasEducationInput) {
+      const gpaError = validateGpaCgpaScore(
+        form.education?.gpa_cgpa_code,
+        form.education?.gpa_cgpa_other,
+        gpaCgpaScores
+      );
+      if (gpaError) {
+        setFormError(gpaError);
+        return;
+      }
     }
 
     const locationError = validateLocationFields(form.location);
@@ -846,16 +1277,18 @@ export default function OfflineLeadsPage() {
     const payload: OfflineLeadCreatePayload = {
       first_name: form.first_name.trim(),
       middle_name: form.middle_name?.trim() || undefined,
-      last_name: form.last_name.trim(),
+      last_name: form.last_name?.trim() || "",
       phone_country_iso2: form.phone_country_iso2,
       phone_local: phoneLocalToDigits(form.phone_local),
       email: form.email.trim(),
-      date_of_birth: form.date_of_birth,
+      date_of_birth: form.date_of_birth?.trim() || undefined,
       target_destination_iso2s: form.target_destination_iso2s,
       target_level_id: form.target_level_id,
       target_major_ids: form.target_major_ids,
       target_program_codes: form.target_program_codes,
       location: {
+        address_line_1: form.location?.address_line_1?.trim() || '',
+        address_line_2: form.location?.address_line_2?.trim() || '',
         city: form.location?.city?.trim() || '',
         state: form.location?.state?.trim() || '',
         country_iso2: form.location?.country_iso2 || '',
@@ -883,9 +1316,87 @@ export default function OfflineLeadsPage() {
   };
 
   const items = listQuery.data?.items ?? [];
+  const filteredItems = useMemo(() => {
+    const active = (Object.entries(columnFilters) as Array<[OfflineLeadColumnKey, string]>).filter(
+      ([, value]) => value?.trim()
+    );
+    if (!active.length) return items;
+    return items.filter(lead =>
+      active.every(([key, value]) => {
+        const needle = value.trim().toLowerCase();
+        const text = offlineLeadColumnFilterText(lead, key);
+        return text.toLowerCase().includes(needle);
+      })
+    );
+  }, [items, columnFilters]);
   const total = listQuery.data?.total ?? 0;
   const totalPages = listQuery.data?.total_pages ?? 1;
   const currentPage = listQuery.data?.page ?? page;
+  const pageTokens = useMemo(
+    () => offlineLeadsPageTokens(currentPage, Math.max(1, totalPages)),
+    [currentPage, totalPages]
+  );
+  const paginationBusy = listQuery.isFetching;
+  const renderPaginationControls = () => (
+    <div className="offline-leads-pagination__controls">
+      <div className="offline-leads-toolbar__field">
+        <select
+          value={pageSize}
+          aria-label="Rows per page"
+          onChange={e => setPageSize(Number(e.target.value) as (typeof PAGE_SIZE_OPTIONS)[number])}
+        >
+          {PAGE_SIZE_OPTIONS.map(size => (
+            <option key={size} value={size}>
+              {size}
+            </option>
+          ))}
+        </select>
+      </div>
+      <button
+        type="button"
+        className="offline-leads-btn offline-leads-btn--ghost"
+        disabled={currentPage <= 1 || paginationBusy}
+        onClick={() => setPage(p => Math.max(1, p - 1))}
+      >
+        Previous
+      </button>
+      <div className="offline-leads-pagination__pages" role="navigation" aria-label="Pagination">
+        {pageTokens.map((token, index) =>
+          token === 'ellipsis' ? (
+            <span key={`ellipsis-${index}`} className="offline-leads-pagination__ellipsis" aria-hidden>
+              …
+            </span>
+          ) : (
+            <button
+              key={token}
+              type="button"
+              className={`offline-leads-pagination__page${
+                token === currentPage ? ' offline-leads-pagination__page--active' : ''
+              }`}
+              aria-current={token === currentPage ? 'page' : undefined}
+              aria-label={`Page ${token}`}
+              disabled={paginationBusy}
+              onClick={() => setPage(token)}
+            >
+              {token}
+            </button>
+          )
+        )}
+      </div>
+      <button
+        type="button"
+        className="offline-leads-btn offline-leads-btn--ghost"
+        disabled={currentPage >= totalPages || paginationBusy}
+        onClick={() => setPage(p => p + 1)}
+      >
+        Next
+      </button>
+    </div>
+  );
+  const allFilteredSelected =
+    filteredItems.length > 0 && filteredItems.every(lead => selectedRowIds.has(lead.id));
+  const someFilteredSelected =
+    filteredItems.some(lead => selectedRowIds.has(lead.id)) && !allFilteredSelected;
 
   useEffect(() => {
     const editRaw = searchParams.get('edit');
@@ -911,9 +1422,9 @@ export default function OfflineLeadsPage() {
     <div className="offline-leads-page">
       <div className="offline-leads-toolbar">
         <div className="offline-leads-toolbar__title">
-          <h2>Offline Leads</h2>
+          <h2>All Leads</h2>
           <p className="offline-leads-toolbar__subtitle">
-            Manually entered walk-in and event leads · source defaults to Offline · status AI Active
+            Offline, Express, and Meta leads · Source shows Offline Lead, Express Lead, or Meta Lead
           </p>
         </div>
 
@@ -929,36 +1440,62 @@ export default function OfflineLeadsPage() {
             />
           </div>
 
-          <div className="offline-leads-toolbar__field offline-leads-toolbar__columns">
-            <span>Columns</span>
-            <SearchableMultiSelect
-              id="offline-leads-columns"
-              values={visibleColumns}
-              options={OFFLINE_LEAD_COLUMN_OPTIONS}
-              onChange={handleVisibleColumnsChange}
-              placeholder="Choose columns…"
-              selectedDisplay={`${visibleColumns.length} columns`}
-              compact
-              className="offline-leads-columns-select"
-            />
-          </div>
-
           <div className="offline-leads-toolbar__field">
-            <span>Status</span>
             <select
               value={status}
+              aria-label="Status"
               onChange={e => setStatus(e.target.value as OfflineLeadStatusFilter)}
             >
               <option value="ALL">All Prospects</option>
+              <option value="ACTIVE_LEAD">Active Lead</option>
+              <option value="OFFLINE">Offline Leads</option>
               <option value="AI_ACTIVE">AI Active</option>
               <option value="HANDOFF">Handoff</option>
             </select>
           </div>
 
-          <button type="button" className="offline-leads-btn offline-leads-btn--primary" onClick={openCreateModal}>
+          <button
+            type="button"
+            className="offline-leads-btn offline-leads-btn--ghost offline-leads-btn--icon"
+            onClick={() =>
+              setSortDir(prev => (prev === 'asc' ? 'desc' : 'asc'))
+            }
+            title={`Sort ${sortDir === 'asc' ? 'descending' : 'ascending'}`}
+            aria-label="Toggle sort direction"
+          >
+            {sortDir === 'asc' ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
+          </button>
+
+          <StandaloneTableOverflowMenu
+            columns={overflowColumns}
+            onToggleVisibility={handleToggleColumnVisibility}
+            onMoveColumn={handleMoveColumn}
+            onPinColumn={handlePinColumn}
+            onRefresh={() => {
+              void listQuery.refetch();
+            }}
+            refreshing={listQuery.isFetching}
+            onResetView={resetTableView}
+            className="offline-leads-table-overflow"
+          />
+
+          <button
+            type="button"
+            className="offline-leads-btn offline-leads-btn--primary"
+            onClick={() => {
+              const params = new URLSearchParams(location.search);
+              if (page > 1) params.set('page', String(page));
+              else params.delete('page');
+              const qs = params.toString();
+              const returnTo = `${location.pathname}${qs ? `?${qs}` : ''}`;
+              navigate(`/express-leads?returnTo=${encodeURIComponent(returnTo)}`);
+            }}
+          >
             <Plus size={16} />
             Add New Lead
           </button>
+
+          {renderPaginationControls()}
         </div>
       </div>
 
@@ -973,28 +1510,92 @@ export default function OfflineLeadsPage() {
           <table className="offline-leads-table">
             <thead>
               <tr>
+                <th className="offline-leads-table__select" style={{ width: 40 }}>
+                  <input
+                    type="checkbox"
+                    aria-label="Select all visible rows"
+                    checked={allFilteredSelected}
+                    ref={el => {
+                      if (el) el.indeterminate = someFilteredSelected;
+                    }}
+                    onChange={() => {
+                      setSelectedRowIds(prev => {
+                        const next = new Set(prev);
+                        if (allFilteredSelected) {
+                          filteredItems.forEach(lead => next.delete(lead.id));
+                        } else {
+                          filteredItems.forEach(lead => next.add(lead.id));
+                        }
+                        return next;
+                      });
+                    }}
+                  />
+                </th>
                 {visibleColumnDefs.map(column => {
                   const sortable =
                     column.key === 'full_name' ||
                     column.key === 'email' ||
                     column.key === 'phone_number' ||
                     column.key === 'created_at';
+                  const pinnedLeft = columnPins.left.includes(column.key);
+                  const pinnedRight = columnPins.right.includes(column.key);
+                  const width = columnWidths[column.key];
+                  const style: CSSProperties = {
+                    width: width ?? undefined,
+                    minWidth: width ?? undefined,
+                    position: pinnedLeft || pinnedRight ? 'sticky' : undefined,
+                    left: pinnedLeft ? pinOffsetLeft(column.key) : undefined,
+                    right: pinnedRight ? pinOffsetRight(column.key) : undefined,
+                    zIndex: pinnedLeft || pinnedRight ? 3 : undefined,
+                    background: pinnedLeft || pinnedRight ? '#f8fafc' : undefined,
+                  };
+                  const filterInput = (
+                    <input
+                      type="search"
+                      className="offline-leads-th__filter"
+                      placeholder="Filter…"
+                      value={columnFilters[column.key] ?? ''}
+                      onClick={e => e.stopPropagation()}
+                      onChange={e =>
+                        setColumnFilters(prev => ({ ...prev, [column.key]: e.target.value }))
+                      }
+                      aria-label={`Filter ${column.label}`}
+                    />
+                  );
+                  const resizeHandle = (
+                    <span
+                      className="offline-leads-th__resize"
+                      onMouseDown={e => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const th = (e.target as HTMLElement).parentElement;
+                        startColumnResize(column.key, e.clientX, th?.offsetWidth ?? 140);
+                      }}
+                    />
+                  );
                   if (sortable) {
                     const sortField = column.key as OfflineLeadSortField;
                     return (
                       <th
                         key={column.key}
                         className={`sortable ${columnHeaderClass(column.key) || ''}`.trim()}
+                        style={style}
                         onClick={() => toggleSort(sortField)}
                       >
-                        {column.label}{' '}
-                        <SortIcon field={sortField} sortBy={sortBy} sortDir={sortDir} />
+                        <span className="offline-leads-th__label">
+                          {column.label}{' '}
+                          <SortIcon field={sortField} sortBy={sortBy} sortDir={sortDir} />
+                        </span>
+                        {filterInput}
+                        {resizeHandle}
                       </th>
                     );
                   }
                   return (
-                    <th key={column.key} className={columnHeaderClass(column.key)}>
-                      {column.label}
+                    <th key={column.key} className={columnHeaderClass(column.key)} style={style}>
+                      <span className="offline-leads-th__label">{column.label}</span>
+                      {filterInput}
+                      {resizeHandle}
                     </th>
                   );
                 })}
@@ -1002,35 +1603,104 @@ export default function OfflineLeadsPage() {
               </tr>
             </thead>
             <tbody>
-              {items.map((lead: OfflineLeadItem) => (
-                <tr key={lead.id}>
-                  {visibleColumnDefs.map(column => (
-                    <td key={column.key} className={columnHeaderClass(column.key)}>
-                      {renderOfflineLeadCell(lead, column.key, {
-                        onViewJourney: next =>
-                          setJourneyModal({
-                            studentId: next.id,
-                            studentName: next.full_name,
-                          }),
-                        onOpenBookings: next =>
-                          setBookingsModal({
-                            leadId: next.id,
-                            leadName: next.full_name,
-                          }),
-                        onEditLead: openEditModal,
-                      })}
-                    </td>
-                  ))}
+              {filteredItems.map((lead: OfflineLeadItem) => (
+                <tr
+                  key={lead.id}
+                  className={[
+                    selectedRowIds.has(lead.id) ? 'is-selected' : '',
+                    lead.is_active === false ? 'offline-leads-table__row--inactive' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ') || undefined}
+                >
+                  <td className="offline-leads-table__select">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${lead.full_name}`}
+                      checked={selectedRowIds.has(lead.id)}
+                      onChange={() => {
+                        setSelectedRowIds(prev => {
+                          const next = new Set(prev);
+                          if (next.has(lead.id)) next.delete(lead.id);
+                          else next.add(lead.id);
+                          return next;
+                        });
+                      }}
+                    />
+                  </td>
+                  {visibleColumnDefs.map(column => {
+                    const pinnedLeft = columnPins.left.includes(column.key);
+                    const pinnedRight = columnPins.right.includes(column.key);
+                    const width = columnWidths[column.key];
+                    const style: CSSProperties = {
+                      width: width ?? undefined,
+                      minWidth: width ?? undefined,
+                      position: pinnedLeft || pinnedRight ? 'sticky' : undefined,
+                      left: pinnedLeft ? pinOffsetLeft(column.key) : undefined,
+                      right: pinnedRight ? pinOffsetRight(column.key) : undefined,
+                      zIndex: pinnedLeft || pinnedRight ? 2 : undefined,
+                      background: pinnedLeft || pinnedRight ? '#fff' : undefined,
+                    };
+                    return (
+                      <td key={column.key} className={columnHeaderClass(column.key)} style={style}>
+                        {renderOfflineLeadCell(lead, column.key, {
+                          onViewJourney: next =>
+                            setJourneyModal({
+                              studentId: next.id,
+                              studentName: next.full_name,
+                            }),
+                          onOpenBookings: next =>
+                            setBookingsModal({
+                              leadId: next.id,
+                              leadName: next.full_name,
+                            }),
+                          onOpenCounselorNotes: next =>
+                            setFollowupDrawer({
+                              leadId: next.id,
+                              leadName: next.full_name,
+                            }),
+                          onEditLead: openEditModal,
+                          bookAppointmentReturnTo: (() => {
+                            const params = new URLSearchParams(location.search);
+                            if (page > 1) params.set('page', String(page));
+                            else params.delete('page');
+                            const qs = params.toString();
+                            return `${location.pathname}${qs ? `?${qs}` : ''}`;
+                          })(),
+                        })}
+                      </td>
+                    );
+                  })}
                   <td className="offline-leads-table__actions">
-                    <button
-                      type="button"
-                      className="offline-leads-btn offline-leads-btn--ghost offline-leads-btn--icon"
-                      onClick={() => openEditModal(lead)}
-                      aria-label={`Edit ${lead.full_name}`}
-                      title="Edit lead"
-                    >
-                      <Pencil size={14} />
-                    </button>
+                    <div className="offline-leads-actions">
+                      <button
+                        type="button"
+                        className="offline-leads-btn offline-leads-btn--ghost offline-leads-btn--icon"
+                        onClick={() => openEditModal(lead)}
+                        aria-label={`Edit ${lead.full_name}`}
+                        title="Edit lead"
+                      >
+                        <Pencil size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        className="offline-leads-btn offline-leads-btn--ghost offline-leads-btn--icon"
+                        onClick={() => handleToggleActive(lead)}
+                        disabled={setActiveMutation.isPending}
+                        aria-label={
+                          lead.is_active === false
+                            ? `Activate ${lead.full_name}`
+                            : `Deactivate ${lead.full_name}`
+                        }
+                        title={lead.is_active === false ? 'Set Active' : 'Set Inactive'}
+                      >
+                        {lead.is_active === false ? (
+                          <CheckCircle2 size={14} />
+                        ) : (
+                          <Ban size={14} />
+                        )}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -1041,42 +1711,9 @@ export default function OfflineLeadsPage() {
 
       <div className="offline-leads-pagination">
         <div className="offline-leads-pagination__info">
-          Showing {items.length} of {total} offline leads
+          Showing {items.length} of {total} leads
         </div>
-        <div className="offline-leads-pagination__controls">
-          <div className="offline-leads-toolbar__field">
-            <span>Rows</span>
-            <select
-              value={pageSize}
-              onChange={e => setPageSize(Number(e.target.value) as (typeof PAGE_SIZE_OPTIONS)[number])}
-            >
-              {PAGE_SIZE_OPTIONS.map(size => (
-                <option key={size} value={size}>
-                  {size}
-                </option>
-              ))}
-            </select>
-          </div>
-          <button
-            type="button"
-            className="offline-leads-btn offline-leads-btn--ghost"
-            disabled={currentPage <= 1 || listQuery.isFetching}
-            onClick={() => setPage(p => Math.max(1, p - 1))}
-          >
-            Previous
-          </button>
-          <span className="offline-leads-pagination__info">
-            Page {currentPage} of {totalPages}
-          </span>
-          <button
-            type="button"
-            className="offline-leads-btn offline-leads-btn--ghost"
-            disabled={currentPage >= totalPages || listQuery.isFetching}
-            onClick={() => setPage(p => p + 1)}
-          >
-            Next
-          </button>
-        </div>
+        {renderPaginationControls()}
       </div>
 
       {modalOpen &&
@@ -1089,7 +1726,7 @@ export default function OfflineLeadsPage() {
             aria-labelledby="offline-lead-modal-title"
           >
             <div className="offline-leads-modal__header">
-              <h3 id="offline-lead-modal-title">{editingLead ? 'Edit Offline Lead' : 'Add Offline Lead'}</h3>
+              <h3 id="offline-lead-modal-title">{editingLead ? 'Edit Lead' : 'Add Offline Lead'}</h3>
               <button type="button" className="offline-leads-btn offline-leads-btn--ghost" onClick={requestCloseModal}>
                 <X size={16} />
               </button>
@@ -1126,26 +1763,24 @@ export default function OfflineLeadsPage() {
                       />
                     </div>
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-last-name">Last Name *</label>
+                      <label htmlFor="ol-last-name">Last Name</label>
                       <input
                         id="ol-last-name"
                         value={form.last_name}
                         onChange={e => updateForm({ last_name: e.target.value })}
-                        required
                       />
                     </div>
                   </div>
 
                   <div className="offline-leads-form-grid offline-leads-form-grid--4">
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-dob">Date of Birth *</label>
+                      <label htmlFor="ol-dob">Date of Birth</label>
                       <input
                         id="ol-dob"
                         type="date"
                         value={form.date_of_birth || ''}
                         onChange={e => updateForm({ date_of_birth: e.target.value })}
                         max={maxDateOfBirth}
-                        required
                       />
                       {dobError ? (
                         <span className="offline-leads-field-warning">{dobError}</span>
@@ -1179,7 +1814,7 @@ export default function OfflineLeadsPage() {
                         required
                       >
                         <option value="">Country code</option>
-                        {countries.map(country => (
+                        {sortedCountries.map(country => (
                           <option key={country.iso2} value={country.iso2}>
                             {formatPhoneCountryLabel(country)}
                           </option>
@@ -1215,17 +1850,38 @@ export default function OfflineLeadsPage() {
                   <h4 className="offline-leads-panel__title">
                     Current Location{geoLoading && !editingLead ? ' (detecting…)' : ''}
                   </h4>
+                  <div className="offline-leads-form-grid offline-leads-form-grid--2">
+                    <div className="offline-leads-field">
+                      <label htmlFor="ol-address-1">Address Line 1</label>
+                      <input
+                        id="ol-address-1"
+                        value={form.location?.address_line_1 || ''}
+                        onChange={e => updateLocation({ address_line_1: e.target.value })}
+                        placeholder="Street address, P.O. box, company name"
+                        autoComplete="address-line1"
+                      />
+                    </div>
+                    <div className="offline-leads-field">
+                      <label htmlFor="ol-address-2">Address Line 2</label>
+                      <input
+                        id="ol-address-2"
+                        value={form.location?.address_line_2 || ''}
+                        onChange={e => updateLocation({ address_line_2: e.target.value })}
+                        placeholder="Apartment, suite, unit, building, floor"
+                        autoComplete="address-line2"
+                      />
+                    </div>
+                  </div>
                   <div className="offline-leads-form-grid offline-leads-form-grid--4">
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-country">Country *</label>
+                      <label htmlFor="ol-country">Country</label>
                       <select
                         id="ol-country"
                         value={form.location?.country_iso2 || ''}
                         onChange={e => updateLocation({ country_iso2: e.target.value })}
-                        required
                       >
                         <option value="">Select country</option>
-                        {countries.map(country => (
+                        {sortedCountries.map(country => (
                           <option key={country.iso2} value={country.iso2}>
                             {country.name}
                           </option>
@@ -1233,21 +1889,19 @@ export default function OfflineLeadsPage() {
                       </select>
                     </div>
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-state">State *</label>
+                      <label htmlFor="ol-state">State</label>
                       <input
                         id="ol-state"
                         value={form.location?.state || ''}
                         onChange={e => updateLocation({ state: e.target.value })}
-                        required
                       />
                     </div>
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-city">City *</label>
+                      <label htmlFor="ol-city">City</label>
                       <input
                         id="ol-city"
                         value={form.location?.city || ''}
                         onChange={e => updateLocation({ city: e.target.value })}
-                        required
                       />
                     </div>
                     <div className="offline-leads-field">
@@ -1266,7 +1920,7 @@ export default function OfflineLeadsPage() {
                   <h4 className="offline-leads-panel__title">Education</h4>
                   <div className="offline-leads-form-grid offline-leads-form-grid--4">
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-course-level">Levels *</label>
+                      <label htmlFor="ol-course-level">Levels</label>
                       <select
                         id="ol-course-level"
                         value={educationLevelId}
@@ -1279,10 +1933,9 @@ export default function OfflineLeadsPage() {
                             major: '',
                           });
                         }}
-                        required
                       >
                         <option value="">Select level</option>
-                        {levelSelectOptions(levels).map(option => (
+                        {sortedLevelOptions.map(option => (
                           <option key={option.value} value={option.value}>
                             {option.label}
                           </option>
@@ -1290,7 +1943,7 @@ export default function OfflineLeadsPage() {
                       </select>
                     </div>
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-study-years">Full-Time Study Years *</label>
+                      <label htmlFor="ol-study-years">Full-Time Study Years</label>
                       <select
                         id="ol-study-years"
                         value={form.education?.full_time_study_years || ''}
@@ -1298,7 +1951,6 @@ export default function OfflineLeadsPage() {
                         onChange={e =>
                           updateEducation({ full_time_study_years: e.target.value })
                         }
-                        required
                       >
                         <option value="">
                           {educationLevelId
@@ -1315,7 +1967,7 @@ export default function OfflineLeadsPage() {
                       </select>
                     </div>
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-program">Programs *</label>
+                      <label htmlFor="ol-program">Programs</label>
                       <select
                         id="ol-program"
                         value={form.education?.program_code || ''}
@@ -1333,7 +1985,6 @@ export default function OfflineLeadsPage() {
                             major: autoMajor,
                           });
                         }}
-                        required
                       >
                         <option value="">
                           {educationLevelId
@@ -1350,7 +2001,7 @@ export default function OfflineLeadsPage() {
                       </select>
                     </div>
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-major">Major *</label>
+                      <label htmlFor="ol-major">Major</label>
                       <select
                         id="ol-major"
                         value={
@@ -1360,7 +2011,6 @@ export default function OfflineLeadsPage() {
                         }
                         disabled={!form.education?.program_code}
                         onChange={e => updateEducation({ major: e.target.value })}
-                        required={Boolean(form.education?.program_code)}
                       >
                         <option value="">
                           {form.education?.program_code
@@ -1379,16 +2029,15 @@ export default function OfflineLeadsPage() {
                   </div>
                   <div className="offline-leads-form-grid offline-leads-form-grid--3">
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-university">University *</label>
+                      <label htmlFor="ol-university">University</label>
                       <input
                         id="ol-university"
                         value={form.education?.university || ''}
                         onChange={e => updateEducation({ university: e.target.value })}
-                        required
                       />
                     </div>
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-grad-year">Graduation Year *</label>
+                      <label htmlFor="ol-grad-year">Graduation Year</label>
                       <input
                         id="ol-grad-year"
                         type="number"
@@ -1400,11 +2049,10 @@ export default function OfflineLeadsPage() {
                             graduation_year: e.target.value ? Number(e.target.value) : undefined,
                           })
                         }
-                        required
                       />
                     </div>
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-gpa-cgpa">GPA / CGPA *</label>
+                      <label htmlFor="ol-gpa-cgpa">GPA / CGPA</label>
                       <select
                         id="ol-gpa-cgpa"
                         value={form.education?.gpa_cgpa_code || ''}
@@ -1418,7 +2066,6 @@ export default function OfflineLeadsPage() {
                               : '',
                           });
                         }}
-                        required
                       >
                         <option value="">Select GPA / CGPA</option>
                         {gpaCgpaScores.map(score => (
@@ -1434,7 +2081,6 @@ export default function OfflineLeadsPage() {
                           value={form.education?.gpa_cgpa_other || ''}
                           onChange={e => updateEducation({ gpa_cgpa_other: e.target.value })}
                           placeholder="Enter GPA / CGPA"
-                          required
                         />
                       )}
                     </div>
@@ -1445,16 +2091,13 @@ export default function OfflineLeadsPage() {
                   <h4 className="offline-leads-panel__title">Study Interest</h4>
                   <div className="offline-leads-form-grid offline-leads-form-grid--4">
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-target-destination">Target Destination *</label>
+                      <label htmlFor="ol-target-destination">Target Destination</label>
                       <SearchableMultiSelect
                         id="ol-target-destination"
                         compact
                         preferDropUp
                         values={form.target_destination_iso2s || []}
-                        options={countries.map(country => ({
-                          value: country.iso2,
-                          label: country.name,
-                        }))}
+                        options={targetDestinationOptions}
                         onChange={values =>
                           updateForm({
                             target_destination_iso2s: values.slice(0, 6),
@@ -1470,11 +2113,10 @@ export default function OfflineLeadsPage() {
                         maxSelections={6}
                         placeholder="Select up to 6 countries"
                         hint="Max 6 countries"
-                        required
                       />
                     </div>
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-target-level">Target Levels *</label>
+                      <label htmlFor="ol-target-level">Target Levels</label>
                       <select
                         id="ol-target-level"
                         value={targetLevelId}
@@ -1489,14 +2131,13 @@ export default function OfflineLeadsPage() {
                             target_program_codes: [],
                           });
                         }}
-                        required
                       >
                         <option value="">
                           {form.target_destination_iso2s?.length
                             ? 'Select level'
                             : 'Select destination first'}
                         </option>
-                        {levelSelectOptions(levels).map(option => (
+                        {sortedLevelOptions.map(option => (
                           <option key={option.value} value={option.value}>
                             {option.label}
                           </option>
@@ -1504,7 +2145,7 @@ export default function OfflineLeadsPage() {
                       </select>
                     </div>
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-target-majors">Target Majors *</label>
+                      <label htmlFor="ol-target-majors">Target Majors</label>
                       <SearchableMultiSelect
                         id="ol-target-majors"
                         compact
@@ -1547,11 +2188,10 @@ export default function OfflineLeadsPage() {
                         }
                         hint="Max 3 majors"
                         emptyMessage="No majors for this level"
-                        required
                       />
                     </div>
                     <div className="offline-leads-field">
-                      <label htmlFor="ol-target-programs">Target Programs *</label>
+                      <label htmlFor="ol-target-programs">Target Programs</label>
                       <SearchableMultiSelect
                         id="ol-target-programs"
                         compact
@@ -1575,7 +2215,6 @@ export default function OfflineLeadsPage() {
                             : 'Select majors first'
                         }
                         emptyMessage="No programs for selected majors"
-                        required
                       />
                     </div>
                   </div>
@@ -1602,11 +2241,98 @@ export default function OfflineLeadsPage() {
         document.body
       )}
     </div>
+    {statusModal &&
+      createPortal(
+        <div className="offline-leads-modal-backdrop" onMouseDown={closeStatusModal}>
+          <div
+            className="offline-leads-status-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="offline-lead-status-title"
+            onMouseDown={event => event.stopPropagation()}
+          >
+            <div className="offline-leads-modal__header">
+              <h3 id="offline-lead-status-title">
+                {statusModal.nextActive ? 'Set lead Active' : 'Set lead Inactive'}
+              </h3>
+              <button
+                type="button"
+                className="offline-leads-btn offline-leads-btn--ghost"
+                onClick={closeStatusModal}
+                aria-label="Close status change dialog"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="offline-leads-status-modal__body">
+              <p className="offline-leads-status-modal__intro">
+                You are about to mark{' '}
+                <strong>
+                  {statusModal.lead.full_name || `lead #${statusModal.lead.id}`}
+                </strong>{' '}
+                as <strong>{statusModal.nextActive ? 'Active' : 'Inactive'}</strong>. Select at
+                least one reason. The lead is not deleted.
+              </p>
+              <fieldset className="offline-leads-status-reasons">
+                <legend>Reasons</legend>
+                {(statusModal.nextActive
+                  ? OFFLINE_LEAD_ACTIVE_REASONS
+                  : OFFLINE_LEAD_INACTIVE_REASONS
+                ).map(reason => {
+                  const checked = statusReasons.includes(reason);
+                  const inputId = `status-reason-${reason.replace(/[^a-zA-Z0-9]+/g, '-')}`;
+                  return (
+                    <label key={reason} htmlFor={inputId} className="offline-leads-status-reason">
+                      <input
+                        id={inputId}
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleStatusReason(reason)}
+                      />
+                      <span>{reason}</span>
+                    </label>
+                  );
+                })}
+              </fieldset>
+              {statusError ? (
+                <p className="offline-leads-field-warning" role="alert">
+                  {statusError}
+                </p>
+              ) : null}
+            </div>
+            <div className="offline-leads-modal__footer">
+              <button
+                type="button"
+                className="offline-leads-btn offline-leads-btn--ghost"
+                onClick={closeStatusModal}
+                disabled={setActiveMutation.isPending}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="offline-leads-btn offline-leads-btn--primary"
+                onClick={() => void confirmStatusChange()}
+                disabled={setActiveMutation.isPending || statusReasons.length === 0}
+              >
+                {setActiveMutation.isPending ? 'Saving…' : 'Confirm Status Change'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     <StudentJourneyPanel
       open={journeyModal !== null}
       studentId={journeyModal?.studentId ?? null}
       studentName={journeyModal?.studentName}
       onClose={() => setJourneyModal(null)}
+    />
+    <CounselorFollowupDrawer
+      open={followupDrawer !== null}
+      leadId={followupDrawer?.leadId ?? null}
+      leadName={followupDrawer?.leadName}
+      onClose={() => setFollowupDrawer(null)}
     />
     <LeadBookingsModal
       open={bookingsModal !== null}

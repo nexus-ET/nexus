@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { isAllowedRoute, isNavLinkActive, isRouteActive, normalizePath } from '../utils/routeAccess';
 import {
-  OFFLINE_LEADS_NAV_GROUP,
   STUDENT_PIPELINE_NAV_GROUPS,
   STUDENT_PIPELINE_PATHS,
 } from '../config/studentPipelineNav';
@@ -97,9 +96,10 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const leadNavGroups = [
     {
-      key: 'online-leads',
-      label: 'Online Leads',
+      key: 'leads-list',
+      label: '',
       items: [
+        { path: '/offline-leads', label: 'All Leads' },
         { path: '/ai-active', label: 'AI Active' },
         { path: '/handoffs', label: 'Handoffs' },
         { path: '/prospects', label: 'All Prospects' },
@@ -132,11 +132,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   ];
 
   const studentNavGroups = [
-    {
-      key: OFFLINE_LEADS_NAV_GROUP.key,
-      label: OFFLINE_LEADS_NAV_GROUP.label,
-      items: OFFLINE_LEADS_NAV_GROUP.items.filter(item => isRouteAllowed(item.path)),
-    },
     ...STUDENT_PIPELINE_NAV_GROUPS.map(group => ({
       ...group,
       items: group.items.filter(item => isRouteAllowed(item.path)),
@@ -178,19 +173,22 @@ const Sidebar: React.FC<SidebarProps> = ({
   }, [location.pathname, unreadMessageCount, setMessagingHubPulse]);
 
   useEffect(() => {
-    if (
-      STUDENT_PIPELINE_PATHS.some(path => isRouteActive(currentPath, path)) ||
-      ['/express-leads', '/offline-leads'].some(path => isRouteActive(currentPath, path))
-    ) {
+    if (STUDENT_PIPELINE_PATHS.some(path => isRouteActive(currentPath, path))) {
       setIsStudentsOpen(true);
     }
     if (['/book-appointment', '/my-bookings', '/counselling'].some(path => isRouteActive(currentPath, path))) {
       setIsAppointmentsOpen(true);
     }
     if (
-      ['/ai-active', '/handoffs', '/prospects', '/archive', '/quarantine'].some(path =>
-        isRouteActive(currentPath, path)
-      )
+      [
+        '/ai-active',
+        '/handoffs',
+        '/prospects',
+        '/archive',
+        '/quarantine',
+        '/offline-leads',
+        '/express-leads',
+      ].some(path => isRouteActive(currentPath, path))
     ) {
       setIsLeadsOpen(true);
     }
@@ -411,9 +409,11 @@ const Sidebar: React.FC<SidebarProps> = ({
                   <div className="mt-1 ml-4 pl-4 border-l border-border-subtle space-y-3">
                     {visibleLeadNavGroups.map(group => (
                       <div key={group.key} className="space-y-1">
-                        <p className="px-3 pt-1 text-xs font-bold uppercase tracking-wider text-text-muted">
-                          {group.label}
-                        </p>
+                        {group.label ? (
+                          <p className="px-3 pt-1 text-xs font-bold uppercase tracking-wider text-text-muted">
+                            {group.label}
+                          </p>
+                        ) : null}
                         {group.items.map(item => (
                           <Link
                             key={item.path}

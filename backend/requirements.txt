@@ -25,3 +25,31 @@ apscheduler>=3.10.4
 reportlab>=4.0.0
 pytest>=8.0.0
 boto3>=1.35.0
+pypdf>=5.0.0
+pdfplumber>=0.11.0
+pypdfium2>=4.30.0
+python-docx>=1.1.0
+rq>=1.16.0
+Pillow>=10.0.0
+numpy>=1.24.0
+opencv-python-headless>=4.8.0
+# ScanX OCR — RapidOCR is the always-installed primary (and works when Paddle is missing).
+rapidocr>=3.0.0
+rapidocr-onnxruntime>=1.2.0
+onnxruntime>=1.24.1
+# ScanX OCR label anchors — fuzzy match garbled Field labels (Spouse/Father/File…).
+rapidfuzz>=3.0.0
+# Official Ollama Python client (ScanX OCR post-cleanup + optional LLM assists).
+ollama>=0.4.0
+# Optional PaddleOCR fallback (requires paddlepaddle CPU wheel; Python 3.9–3.13 only).
+# Python 3.14+: no paddlepaddle wheel — pip fails with "No matching distribution".
+# Use a 3.10–3.13 venv. Install paddlepaddle from the official CPU index (not PyPI):
+#   pip install paddlepaddle==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+#   pip install "paddleocr>=2.7.0,<4"
+# Pins (install paddlepaddle via the CPU index above; paddleocr from PyPI):
+# paddlepaddle==3.3.0
+paddleocr>=2.7.0,<4
+# Default SCANX_OCR_ENGINE=rapid; if Rapid fails, Paddle runs and metrics record
+# ocr_engine_used=paddle + ocr_fallback_reason=... (logs ERROR, not silent).
+# Enhanced scanned pages prefer RapidOCR (prefer_engine=rapid); Paddle remains fallback.
+# On paddlepaddle 3.3.x CPU, ScanX sets enable_mkldnn=False (oneDNN/PIR crash workaround).

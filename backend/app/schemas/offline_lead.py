@@ -3,22 +3,21 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 
 class OfflineLeadLocation(BaseModel):
-    city: str = Field(..., min_length=1, max_length=100)
-    state: str = Field(..., min_length=1, max_length=100)
-    country_iso2: str = Field(..., min_length=2, max_length=2)
+    address_line_1: str = Field(default="", max_length=255)
+    address_line_2: str = Field(default="", max_length=255)
+    city: str = Field(default="", max_length=100)
+    state: str = Field(default="", max_length=100)
+    country_iso2: str = Field(default="", max_length=2)
     zip_code: str | None = Field(default=None, max_length=20)
 
-    @field_validator("city", "state")
+    @field_validator("address_line_1", "address_line_2", "city", "state")
     @classmethod
-    def normalize_required_text(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("This field is required.")
-        return normalized
+    def normalize_optional_text(cls, value: str | None) -> str:
+        return (value or "").strip()
 
     @field_validator("zip_code")
     @classmethod
@@ -30,12 +29,18 @@ class OfflineLeadLocation(BaseModel):
 
     @field_validator("country_iso2")
     @classmethod
-    def normalize_country_iso2(cls, value: str) -> str:
-        normalized = value.strip().upper()
-        if not normalized:
-            raise ValueError("Country is required.")
-        return normalized
+    def normalize_country_iso2(cls, value: str | None) -> str:
+        return (value or "").strip().upper()
 
+    def has_content(self) -> bool:
+        return bool(
+            self.address_line_1
+            or self.address_line_2
+            or self.city
+            or self.state
+            or self.country_iso2
+            or self.zip_code
+        )
 
 class OfflineLeadEducation(BaseModel):
     degree_code: str | None = Field(default=None, max_length=50)
@@ -70,24 +75,46 @@ class OfflineLeadEducation(BaseModel):
 class OfflineLeadCreate(BaseModel):
     first_name: str = Field(..., min_length=1, max_length=100)
     middle_name: str | None = Field(default=None, max_length=100)
-    last_name: str = Field(..., min_length=1, max_length=100)
+    last_name: str = Field(default="", max_length=100)
     email: EmailStr
     phone_country_iso2: str = Field(..., min_length=2, max_length=2)
     phone_local: str = Field(..., min_length=10, max_length=10)
-    date_of_birth: date
+    date_of_birth: date | None = None
     education: OfflineLeadEducation | None = None
-    target_destination_iso2s: list[str] = Field(..., min_length=1, max_length=6)
-    target_level_id: int = Field(..., ge=1)
-    target_major_ids: list[int] = Field(..., min_length=1, max_length=3)
-    target_program_codes: list[str] = Field(..., min_length=1)
-    location: OfflineLeadLocation
+    target_destination_iso2s: list[str] = Field(default_factory=list, max_length=6)
+    target_level_id: int | None = Field(default=None, ge=1)
+    target_major_ids: list[int] = Field(default_factory=list, max_length=3)
+    target_program_codes: list[str] = Field(default_factory=list)
+    location: OfflineLeadLocation = Field(default_factory=OfflineLeadLocation)
+
+    @field_validator("first_name")
+    @classmethod
+    def normalize_first_name(cls, value: str) -> str:
+        normalized = (value or "").strip()
+        if not normalized:
+            raise ValueError("First name is required.")
+        return normalized
+
+    @field_validator("last_name")
+    @classmethod
+    def normalize_last_name(cls, value: str | None) -> str:
+        return (value or "").strip()
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError("Email is required.")
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
 
     @field_validator("target_destination_iso2s")
     @classmethod
-    def normalize_target_destination_iso2s(cls, value: list[str]) -> list[str]:
+    def normalize_target_destination_iso2s(cls, value: list[str] | None) -> list[str]:
         normalized: list[str] = []
         seen: set[str] = set()
-        for item in value:
+        for item in value or []:
             iso2 = (item or "").strip().upper()
             if not iso2 or iso2 in seen:
                 continue
@@ -95,42 +122,36 @@ class OfflineLeadCreate(BaseModel):
                 raise ValueError("Each target destination must be a 2-letter country code.")
             seen.add(iso2)
             normalized.append(iso2)
-        if not normalized:
-            raise ValueError("Select at least one target destination.")
         if len(normalized) > 6:
             raise ValueError("Select up to 6 target destinations.")
         return normalized
 
     @field_validator("target_major_ids")
     @classmethod
-    def normalize_target_major_ids(cls, value: list[int]) -> list[int]:
+    def normalize_target_major_ids(cls, value: list[int] | None) -> list[int]:
         normalized: list[int] = []
         seen: set[int] = set()
-        for item in value:
+        for item in value or []:
             major_id = int(item)
             if major_id < 1 or major_id in seen:
                 continue
             seen.add(major_id)
             normalized.append(major_id)
-        if not normalized:
-            raise ValueError("Select at least one target major.")
         if len(normalized) > 3:
             raise ValueError("Select up to 3 target majors.")
         return normalized
 
     @field_validator("target_program_codes")
     @classmethod
-    def normalize_target_program_codes(cls, value: list[str]) -> list[str]:
+    def normalize_target_program_codes(cls, value: list[str] | None) -> list[str]:
         normalized: list[str] = []
         seen: set[str] = set()
-        for item in value:
+        for item in value or []:
             code = (item or "").strip().upper()
             if not code or code in seen:
                 continue
             seen.add(code)
             normalized.append(code)
-        if not normalized:
-            raise ValueError("Select at least one target program.")
         return normalized
 
     @field_validator("phone_country_iso2")
@@ -146,9 +167,20 @@ class OfflineLeadCreate(BaseModel):
             raise ValueError("Phone number must be exactly 10 digits.")
         return digits
 
+    @field_validator("date_of_birth", mode="before")
+    @classmethod
+    def empty_date_of_birth_to_none(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("date_of_birth")
     @classmethod
-    def validate_date_of_birth(cls, value: date) -> date:
+    def validate_date_of_birth(cls, value: date | None) -> date | None:
+        if value is None:
+            return None
         today = date.today()
         if value > today:
             raise ValueError("Date of birth cannot be in the future.")
@@ -163,6 +195,50 @@ class OfflineLeadCreate(BaseModel):
 OfflineLeadUpdate = OfflineLeadCreate
 
 
+class OfflineLeadActiveUpdate(BaseModel):
+    """Toggle All Leads active/inactive. Prefer is_active; new_status is accepted as an alias."""
+
+    is_active: bool | None = None
+    new_status: Literal["active", "inactive"] | None = None
+    reasons: list[str] = Field(default_factory=list)
+
+    @field_validator("reasons", mode="before")
+    @classmethod
+    def coerce_reasons(cls, value: object) -> object:
+        if value is None:
+            return []
+        return value
+
+    @field_validator("reasons")
+    @classmethod
+    def normalize_reasons(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value or []:
+            label = (item or "").strip()
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            normalized.append(label)
+            if len(normalized) >= 5:
+                break
+        return normalized
+
+    @model_validator(mode="after")
+    def resolve_status_and_reasons(self) -> "OfflineLeadActiveUpdate":
+        if self.is_active is None and self.new_status is not None:
+            self.is_active = self.new_status == "active"
+        if self.is_active is None:
+            raise ValueError("Provide is_active or new_status.")
+        if not self.reasons:
+            raise ValueError("Select at least one reason.")
+        return self
+
+
+class OfflineLeadActiveReasonsResponse(BaseModel):
+    inactive: list[str]
+    active: list[str]
+
 class OfflineLeadListItem(BaseModel):
     id: int
     full_name: str
@@ -175,6 +251,7 @@ class OfflineLeadListItem(BaseModel):
     stage: str
     status_label: str
     source: str
+    is_active: bool = True
     target_destination: str | None = None
     target_destination_iso2: str | None = None
     target_destination_iso2s: list[str] = Field(default_factory=list)
@@ -192,6 +269,8 @@ class OfflineLeadListItem(BaseModel):
     city: str | None = None
     state: str | None = None
     zip_code: str | None = None
+    address_line_1: str | None = None
+    address_line_2: str | None = None
     country: str | None = None
     country_iso2: str | None = None
     degree: str | None = None
@@ -209,6 +288,7 @@ class OfflineLeadListItem(BaseModel):
     age: int | None = None
     created_at: datetime | None = None
     booking_count: int = 0
+    followup_count: int = 0
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -24,6 +24,11 @@ def _run_processor_worker() -> None:
         return
 
     def _worker() -> None:
+        from sqlalchemy.exc import DBAPIError, OperationalError
+
+        from app.db.database import dispose_db_pool, is_ssh_tunnel_database_url
+        from app.config import settings
+
         db = SessionLocal()
         try:
             stats = process_raw_leads(db, batch_size=BATCH_SIZE)
@@ -35,7 +40,28 @@ def _run_processor_worker() -> None:
                     stats["quarantined"],
                     stats["failed"],
                 )
+        except (OperationalError, DBAPIError) as exc:
+            # SSH-tunnel flaps are expected noise — recycle pool and wait for next tick.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            dispose_db_pool(reason=f"raw lead processor: {type(exc).__name__}")
+            if is_ssh_tunnel_database_url(settings.DATABASE_URL):
+                logger.warning(
+                    "Raw lead processor skipped this tick — DB tunnel dropped (%s).",
+                    type(exc).__name__,
+                )
+            else:
+                logger.warning(
+                    "Raw lead processor skipped this tick — DB connectivity error (%s).",
+                    type(exc).__name__,
+                )
         except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
             logger.exception("Raw lead processor batch failed.")
         finally:
             safe_close_session(db)

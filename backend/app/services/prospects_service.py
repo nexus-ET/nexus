@@ -57,8 +57,12 @@ def _apply_prospect_filters(
     category: str | None = None,
     contact_status: str | None = None,
 ):
-    if q:
-        term = q.strip()
+    term = (q or "").strip()
+    # Name/email/phone search must work across pipeline stages. Stage category is
+    # only for empty-browse queues (e.g. Document Readiness → Documentation).
+    # Ignore category when q is set so older clients that still send both still match.
+    searching = bool(term)
+    if searching:
         pattern = f"%{term}%"
         filters = [
             Lead.full_name.ilike(pattern),
@@ -104,7 +108,11 @@ def _apply_prospect_filters(
         query = query.filter(cast(Lead.stage, String).ilike(f"%{stage.upper()}%"))
 
     normalized_category = (category or "").strip()
-    if normalized_category and normalized_category.upper() != "ALL":
+    if (
+        not searching
+        and normalized_category
+        and normalized_category.upper() != "ALL"
+    ):
         categories = [part.strip() for part in normalized_category.split(",") if part.strip()]
         query = query.join(
             StatusDefinition,
@@ -173,6 +181,8 @@ def build_prospect_list_item(
     *,
     active_booking=None,
     message_stats: dict | None = None,
+    counsellor_name: str | None = None,
+    skip_booking_lookup: bool = False,
 ) -> dict:
     from app.services.admissions_intake_flow import build_intake_profile_summary
 
@@ -189,6 +199,8 @@ def build_prospect_list_item(
             include_booking_options=False,
             include_session_fields=True,
             active_booking=active_booking,
+            counsellor_name=counsellor_name,
+            skip_booking_lookup=skip_booking_lookup,
         ).items()
         if key
         not in {
@@ -237,6 +249,7 @@ def list_prospects_keyset(
 ) -> dict:
     safe_limit = max(1, min(limit, 100))
     safe_offset = max(0, offset)
+    searching = bool((q or "").strip())
     query = db.query(Lead)
     query = _apply_prospect_filters(
         query,
@@ -249,27 +262,41 @@ def list_prospects_keyset(
         contact_status=contact_status,
     )
 
-    filtered_total = int(query.order_by(None).count())
+    # Cheap COUNT(id) — avoid SQLAlchemy's default count(*) over a full-column subquery.
+    filtered_total = int(query.with_entities(func.count(Lead.id)).order_by(None).scalar() or 0)
 
-    has_message = exists().where(Message.lead_id == Lead.id)
-    contacted_rank = case((has_message, 0), else_=1)
-    latest_msg_at = (
-        select(func.max(Message.created_at))
-        .where(Message.lead_id == Lead.id)
-        .correlate(Lead)
-        .scalar_subquery()
-    )
-    query = query.order_by(
-        contacted_rank.asc(),
-        latest_msg_at.desc().nulls_last(),
-        Lead.updated_at.desc(),
-        Lead.created_at.desc(),
-        Lead.id.desc(),
-    )
+    if searching:
+        # Name search: skip message ranking; lead recency is enough and index-friendly.
+        ordered = query.order_by(
+            Lead.updated_at.desc(),
+            Lead.created_at.desc(),
+            Lead.id.desc(),
+        )
+    else:
+        # One aggregated join instead of per-row EXISTS / MAX(messages) subqueries.
+        msg_stats = (
+            select(
+                Message.lead_id.label("lead_id"),
+                func.max(Message.created_at).label("latest_msg_at"),
+            )
+            .group_by(Message.lead_id)
+            .subquery()
+        )
+        contacted_rank = case((msg_stats.c.lead_id.isnot(None), 0), else_=1)
+        ordered = (
+            query.outerjoin(msg_stats, msg_stats.c.lead_id == Lead.id)
+            .order_by(
+                contacted_rank.asc(),
+                msg_stats.c.latest_msg_at.desc().nulls_last(),
+                Lead.updated_at.desc(),
+                Lead.created_at.desc(),
+                Lead.id.desc(),
+            )
+        )
 
     # Offset pagination takes precedence for page-based UI; cursor remains for legacy callers.
     if safe_offset > 0 or not cursor:
-        page_rows = query.offset(safe_offset).limit(safe_limit).all()
+        page_rows = ordered.offset(safe_offset).limit(safe_limit).all()
         has_more = (safe_offset + len(page_rows)) < filtered_total
         next_cursor = None
         if has_more and page_rows:
@@ -278,13 +305,13 @@ def list_prospects_keyset(
             next_cursor = encode_prospect_cursor(anchor_time, last.id)
     else:
         cursor_ts, cursor_id = decode_prospect_cursor(cursor)
-        query = query.filter(
+        cursor_q = ordered.filter(
             or_(
                 Lead.created_at < cursor_ts,
                 and_(Lead.created_at == cursor_ts, Lead.id < cursor_id),
             )
         )
-        rows = query.limit(safe_limit + 1).all()
+        rows = cursor_q.limit(safe_limit + 1).all()
         has_more = len(rows) > safe_limit
         page_rows = rows[:safe_limit]
         next_cursor = None
@@ -293,11 +320,23 @@ def list_prospects_keyset(
             anchor_time = last.created_at or utc_now()
             next_cursor = encode_prospect_cursor(anchor_time, last.id)
 
+    from app.models.user import User
     from app.services.admissions_intake_flow import _load_active_consultation_bookings_map
+    from app.services.counselling_service import _format_admin_name
 
     page_ids = [row.id for row in page_rows]
     bookings_by_lead = _load_active_consultation_bookings_map(db, page_ids)
     message_stats_by_id = _load_prospect_message_stats(db, page_ids)
+
+    admin_ids = {
+        int(booking.admin_id)
+        for booking in bookings_by_lead.values()
+        if getattr(booking, "admin_id", None) is not None
+    }
+    counsellor_by_admin_id: dict[int, str] = {}
+    if admin_ids:
+        for admin in db.query(User).filter(User.id.in_(admin_ids)).all():
+            counsellor_by_admin_id[int(admin.id)] = _format_admin_name(admin)
 
     return {
         "items": [
@@ -306,6 +345,13 @@ def list_prospects_keyset(
                 db,
                 active_booking=bookings_by_lead.get(row.id),
                 message_stats=message_stats_by_id.get(row.id),
+                counsellor_name=(
+                    counsellor_by_admin_id.get(int(bookings_by_lead[row.id].admin_id))
+                    if row.id in bookings_by_lead
+                    and getattr(bookings_by_lead[row.id], "admin_id", None) is not None
+                    else None
+                ),
+                skip_booking_lookup=True,
             )
             for row in page_rows
         ],

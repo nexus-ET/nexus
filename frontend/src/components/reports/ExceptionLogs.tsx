@@ -661,6 +661,9 @@ const ExceptionLogs: React.FC<{
         sortBy={queryState.sortBy}
         sortOrder={queryState.sortOrder}
         onSort={handleSort}
+        onRefresh={() => void refetch()}
+        refreshing={isFetching}
+        persistenceKey="exception-logs"
         emptyMessage="No exceptions found for the selected filters. Failures from Meta sync, API timeouts, and backend errors will appear here."
       />
 

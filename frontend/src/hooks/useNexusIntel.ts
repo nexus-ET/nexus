@@ -6,6 +6,10 @@ import type {
   IntelAcademyModule,
   IntelAiChatHistoryResponse,
   IntelAiChatResponse,
+  IntelAiPrompt,
+  IntelAiPromptCreate,
+  IntelAiPromptListResponse,
+  IntelAiPromptUpdate,
   IntelAiThreadDetailResponse,
   IntelAiThreadsResponse,
   IntelGlossaryListResponse,
@@ -487,6 +491,56 @@ export function useIntelAiChat() {
       void queryClient.invalidateQueries({ queryKey: ['intel-ai-thread', data.thread_id] });
       void queryClient.invalidateQueries({ queryKey: ['intel-ai-history', data.thread_id] });
       void queryClient.invalidateQueries({ queryKey: ['intel-ai-history', 'all'] });
+    },
+  });
+}
+
+export function useIntelAiPrompts(enabled = true) {
+  return useQuery({
+    queryKey: ['intel-ai-prompts'],
+    queryFn: () => apiFetch<IntelAiPromptListResponse>('intel/ai/prompts'),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+export function useCreateIntelAiPrompt() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: IntelAiPromptCreate) =>
+      apiFetch<IntelAiPrompt>('intel/ai/prompts', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['intel-ai-prompts'] });
+    },
+  });
+}
+
+export function useUpdateIntelAiPrompt() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: IntelAiPromptUpdate & { id: string }) =>
+      apiFetch<IntelAiPrompt>(`intel/ai/prompts/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['intel-ai-prompts'] });
+    },
+  });
+}
+
+export function useDeleteIntelAiPrompt() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<void>(`intel/ai/prompts/${id}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['intel-ai-prompts'] });
     },
   });
 }

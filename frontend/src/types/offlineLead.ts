@@ -1,8 +1,10 @@
 export type OfflineLeadSortField = 'full_name' | 'created_at' | 'email' | 'phone_number';
 export type OfflineLeadSortDirection = 'asc' | 'desc';
-export type OfflineLeadStatusFilter = 'ALL' | 'AI_ACTIVE' | 'HANDOFF';
+export type OfflineLeadStatusFilter = 'ALL' | 'ACTIVE_LEAD' | 'AI_ACTIVE' | 'HANDOFF' | 'OFFLINE';
 
 export interface OfflineLeadLocation {
+  address_line_1?: string;
+  address_line_2?: string;
   city: string;
   state: string;
   country_iso2: string;
@@ -37,6 +39,7 @@ export interface OfflineLeadItem {
   stage: string;
   status_label: string;
   source: string;
+  is_active?: boolean;
   target_destination?: string | null;
   target_destination_iso2?: string | null;
   target_destination_iso2s?: string[];
@@ -54,6 +57,8 @@ export interface OfflineLeadItem {
   city?: string | null;
   state?: string | null;
   zip_code?: string | null;
+  address_line_1?: string | null;
+  address_line_2?: string | null;
   country?: string | null;
   country_iso2?: string | null;
   degree?: string | null;
@@ -71,6 +76,7 @@ export interface OfflineLeadItem {
   age?: number | null;
   created_at?: string | null;
   booking_count?: number;
+  followup_count?: number;
 }
 
 export interface OfflineLeadListResponse {
@@ -84,7 +90,7 @@ export interface OfflineLeadListResponse {
 export interface OfflineLeadCreatePayload {
   first_name: string;
   middle_name?: string;
-  last_name: string;
+  last_name?: string;
   email?: string;
   phone_country_iso2: string;
   phone_local: string;

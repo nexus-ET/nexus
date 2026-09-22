@@ -46,15 +46,15 @@ export const STUDENT_PIPELINE_NAV = [
   },
 ] as const;
 
-/** Walk-in / phone capture — first Students heading, before the pipeline. */
-export const OFFLINE_LEADS_NAV_GROUP = {
-  key: 'offline-leads',
-  label: 'Offline Leads',
-  items: [
-    { path: '/express-leads', label: 'Express Leads' },
-    { path: '/offline-leads', label: 'Offline Leads' },
-  ],
+/** Manual / walk-in leads — under Leads main menu (not Students). */
+export const ALL_LEADS_NAV_GROUP = {
+  key: 'all-leads',
+  label: 'All Leads',
+  items: [{ path: '/offline-leads', label: 'All Leads' }],
 } as const;
+
+/** @deprecated Use ALL_LEADS_NAV_GROUP */
+export const OFFLINE_LEADS_NAV_GROUP = ALL_LEADS_NAV_GROUP;
 
 /** Students mega-menu / sidebar group headings (pipeline stages). */
 export const STUDENT_PIPELINE_NAV_GROUPS = [

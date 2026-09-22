@@ -9,6 +9,7 @@ import os
 import re
 import uuid
 from typing import Any
+from urllib.parse import quote_plus
 
 import httpx
 from sqlalchemy import String, cast, or_
@@ -18,7 +19,7 @@ from app.config import settings
 from app.models.academia_institution import Institution
 from app.models.country import Country
 from app.models.level import Level
-from app.models.nexus_intel import IntelAiChatLog, IntelGlossary
+from app.models.nexus_intel import IntelAiChatLog, IntelAiPrompt, IntelGlossary
 from app.models.program import Program
 from app.services.ai_providers import parse_model_ref
 from app.services.lead_study_interest import resolve_lead_study_interest
@@ -253,8 +254,18 @@ LIVE_HINTS = re.compile(
 )
 
 HTML_TAG_RE = re.compile(r"<[^>]+>", re.I)
+HTML_ANCHOR_RE = re.compile(
+    r'<a\b[^>]*\bhref\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+    re.I | re.S,
+)
 HTML_ENTITY_RE = re.compile(
     r"&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;|&#(\d+);|&#x([0-9a-fA-F]+);",
+    re.I,
+)
+_UNSAFE_URL_SCHEME_RE = re.compile(r"^(javascript|data|vbscript|file):", re.I)
+_NEXUS_APP_PATH_RE = re.compile(
+    r"^/(academia|nexus-intel|prospects|express-leads|offline-leads|"
+    r"my-bookings|book-appointment|students|flowx)(/|\?|$)",
     re.I,
 )
 
@@ -297,11 +308,136 @@ def _strip_html(text: str | None) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def _clean_url(value: Any) -> str | None:
+    """Normalize a URL-ish value to http(s), a Nexus app path, or None."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return _clean_url(value.get("value") or value.get("url") or value.get("href"))
+    text = str(value).strip().strip("<>").strip(" \t\"'")
+    if not text:
+        return None
+    lower = text.lower()
+    if lower in {"none", "null", "n/a", "-"}:
+        return None
+    if _UNSAFE_URL_SCHEME_RE.match(text):
+        return None
+    if re.match(r"^https?://", text, re.I):
+        return text
+    if text.startswith("//") and len(text) > 2:
+        return f"https:{text}"
+    if text.startswith("/") and not text.startswith("//"):
+        # Keep in-app routes; drop site-relative uni paths like /courses/foo
+        # which would otherwise open on the Vite origin.
+        return text if _NEXUS_APP_PATH_RE.match(text) else None
+    if " " in text:
+        return None
+    host = text.split("/", 1)[0].split("?", 1)[0]
+    if "." in host and not host.startswith(".") and ":" not in host:
+        return f"https://{text.lstrip('/')}"
+    return None
+
+
+def _nexus_app_path(
+    kind: Any,
+    sid: Any,
+    *,
+    title: Any = None,
+    slug: Any = None,
+    lead_id: Any = None,
+) -> str | None:
+    """In-app record URL when no official website is stored."""
+    kind_s = str(kind or "").strip().lower()
+    sid_s = str(sid).strip() if sid not in (None, "") else ""
+    title_s = str(title or "").strip()
+    lead_s = str(lead_id).strip() if lead_id not in (None, "") else ""
+    if sid_s.lower().startswith("target-"):
+        # Target-course awards live in the programs catalog, not /courses/:id.
+        if kind_s == "course" and title_s:
+            return f"/academia/framework/programs?q={quote_plus(title_s)}"
+        sid_s = ""
+
+    if kind_s == "university" and sid_s.isdigit():
+        return f"/academia/institutions/edit/{sid_s}"
+    if kind_s == "country" and sid_s.isdigit():
+        return f"/academia/geography/countries/{sid_s}"
+    if kind_s == "state" and sid_s.isdigit():
+        return f"/academia/geography/states/{sid_s}"
+    if kind_s == "city" and sid_s.isdigit():
+        return f"/academia/geography/cities/{sid_s}"
+    if kind_s == "program":
+        if title_s:
+            return f"/academia/framework/programs?q={quote_plus(title_s)}"
+        return "/academia/framework/programs"
+    if kind_s == "major":
+        return "/academia/framework/majors"
+    if kind_s == "sub_major":
+        return "/academia/framework/sub-majors"
+    if kind_s == "super_major":
+        return "/academia/framework/super-majors"
+    if kind_s == "course":
+        return "/academia/framework/courses"
+    if kind_s == "level":
+        return "/academia/framework/levels"
+    if kind_s == "lead" and sid_s.isdigit():
+        return f"/prospects/{sid_s}"
+    if kind_s in {"booking", "appointment"} and lead_s.isdigit():
+        return f"/prospects/{lead_s}"
+    if kind_s == "glossary":
+        return "/nexus-intel/knowledge"
+    return None
+
+
+def _resolve_item_url(item: dict[str, Any] | None) -> str | None:
+    if not isinstance(item, dict):
+        return None
+    return _clean_url(item.get("url")) or _nexus_app_path(
+        item.get("type"),
+        item.get("id"),
+        title=item.get("title") or item.get("name") or item.get("term_name"),
+        slug=item.get("slug"),
+        lead_id=item.get("lead_id") or _lead_id_from_summary(item.get("summary")),
+    )
+
+
+def _lead_id_from_summary(summary: Any) -> str | None:
+    if not summary:
+        return None
+    match = re.search(r"Lead\s*#(\d+)", str(summary), re.I)
+    return match.group(1) if match else None
+
+
+def _first_url(*candidates: Any) -> str | None:
+    """Return the first usable URL from scalars or contact-entry lists."""
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if isinstance(candidate, (list, tuple)):
+            for item in candidate:
+                url = _clean_url(item)
+                if url:
+                    return url
+            continue
+        url = _clean_url(candidate)
+        if url:
+            return url
+    return None
+
+
 def _sanitize_assistant_text(text: str | None) -> str:
     """Remove HTML from model output while preserving Markdown line breaks."""
     if not text:
         return ""
-    cleaned = HTML_TAG_RE.sub("", str(text))
+
+    def _anchor_to_markdown(match: re.Match[str]) -> str:
+        href = _clean_url(match.group(1))
+        label = _strip_html(match.group(2)) or (href or match.group(1).strip())
+        if not href:
+            return label
+        return f"[{label}]({href})"
+
+    cleaned = HTML_ANCHOR_RE.sub(_anchor_to_markdown, str(text))
+    cleaned = HTML_TAG_RE.sub("", cleaned)
     cleaned = _decode_html_entities(cleaned)
     cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
@@ -311,7 +447,7 @@ def _sanitize_assistant_text(text: str | None) -> str:
 
 SYSTEM_PROMPT = """You are Nexus Intel AI, an expert compliance and institutional knowledge assistant. You must answer questions *only* using the provided context chunks from the Nexus database, glossary, and verified records.
 
-Answer using ONLY the provided Nexus context JSON buckets and the verified sources list (leads, courses, programs, majors, levels, institutions, countries, states, cities, bookings, appointments, glossary, web).
+Answer using ONLY the provided Nexus context JSON buckets and the verified sources list (leads, courses, programs, majors, sub_majors, super_majors, levels, institutions, countries, states, cities, bookings, appointments, glossary, web).
 
 Rules:
 1. Factual constraint: every claim must be supported by the provided context. Prefer quoting or paraphrasing retrieved fields (definitions, counts, names, codes, dates) over free-form prose.
@@ -329,7 +465,7 @@ Respond with a single JSON object only:
 {
   "response_text": "<markdown answer>",
   "sources": [
-    {"type": "glossary|country|state|city|level|program|major|course|university|lead|booking|appointment|web", "title": "<short title>", "url": "<optional url or null>", "id": "<optional id or null>"}
+    {"type": "glossary|country|state|city|level|program|major|sub_major|super_major|course|university|lead|booking|appointment|web", "title": "<short title>", "url": "<optional url or null>", "id": "<optional id or null>"}
   ]
 }
 Only include sources you actually used (max 12).
@@ -629,7 +765,7 @@ def retrieve_glossary(db: Session, prompt: str, *, limit: int = 8) -> list[dict[
                 "short_definition": _strip_html(row.short_definition),
                 "full_explanation": _truncate(row.full_explanation, 1200),
                 "key_metrics": row.key_metrics,
-                "url": row.official_source_url,
+                "url": _first_url(row.official_source_url),
             }
         )
     return sources
@@ -1362,6 +1498,8 @@ def retrieve_leads(
 def retrieve_academia(db: Session, prompt: str, *, limit: int = 16) -> list[dict[str, Any]]:
     from app.models.education_course import EducationCourse
     from app.models.education_major import EducationMajor
+    from app.models.education_sub_major import EducationSubMajor
+    from app.models.education_super_major import EducationSuperMajor
     from app.models.target_course import TargetCourse
 
     terms = _subject_terms(prompt)
@@ -1379,21 +1517,62 @@ def retrieve_academia(db: Session, prompt: str, *, limit: int = 16) -> list[dict
             return
         scored.append((score, item))
 
+    # --- Super-majors (marketing clusters) ---
+    super_clauses = [
+        or_(
+            EducationSuperMajor.name.ilike(p),
+            EducationSuperMajor.code.ilike(p),
+            EducationSuperMajor.description.ilike(p),
+        )
+        for p in patterns
+    ]
+    if super_clauses:
+        super_majors = (
+            db.query(EducationSuperMajor)
+            .filter(EducationSuperMajor.is_active.is_(True), or_(*super_clauses))
+            .order_by(EducationSuperMajor.sort_order.asc(), EducationSuperMajor.name.asc())
+            .limit(8)
+            .all()
+        )
+        for row in super_majors:
+            blob = f"{row.name} {row.code or ''} {row.description or ''}"
+            add(
+                _score_text(blob, search_terms) + 5,
+                {
+                    "type": "super_major",
+                    "id": str(row.id),
+                    "title": row.name,
+                    "code": row.code,
+                    "summary": _truncate(row.description, 400)
+                    or f"Super-major / marketing cluster ({row.code})",
+                    "url": None,
+                },
+            )
+
     # --- Majors ---
     major_clauses = [
-        or_(EducationMajor.label.ilike(p), EducationMajor.code.ilike(p), EducationMajor.description.ilike(p))
+        or_(
+            EducationMajor.label.ilike(p),
+            EducationMajor.code.ilike(p),
+            EducationMajor.major_description.ilike(p),
+        )
         for p in patterns
     ]
     if major_clauses:
         majors = (
             db.query(EducationMajor)
+            .options(
+                joinedload(EducationMajor.program),
+                joinedload(EducationMajor.super_major),
+            )
             .filter(EducationMajor.is_active.is_(True), or_(*major_clauses))
             .order_by(EducationMajor.label.asc())
             .limit(10)
             .all()
         )
         for row in majors:
-            blob = f"{row.label} {row.code or ''} {row.description or ''}"
+            sm_name = row.super_major.name if row.super_major else None
+            blob = f"{row.label} {row.code or ''} {row.major_description or ''} {sm_name or ''}"
             add(
                 _score_text(blob, search_terms) + 4,
                 {
@@ -1401,12 +1580,58 @@ def retrieve_academia(db: Session, prompt: str, *, limit: int = 16) -> list[dict
                     "id": str(row.id),
                     "title": row.label,
                     "code": row.code,
-                    "summary": _truncate(row.description, 400) or f"Education major ({row.code})",
-                    "url": None,
+                    "super_major": sm_name,
+                    "summary": _truncate(row.major_description, 400)
+                    or f"Education major ({row.code})",
+                    "url": _first_url(
+                        getattr(row.program, "program_url", None) if row.program else None
+                    ),
                 },
             )
 
     major_ids = [int(s[1]["id"]) for s in scored if s[1].get("type") == "major"]
+
+    # --- Sub-majors ---
+    sub_clauses = [
+        or_(
+            EducationSubMajor.name.ilike(p),
+            EducationSubMajor.sub_major_description.ilike(p),
+        )
+        for p in patterns
+    ]
+    sub_query = db.query(EducationSubMajor).options(joinedload(EducationSubMajor.major))
+    if sub_clauses and major_ids:
+        sub_query = sub_query.filter(
+            or_(or_(*sub_clauses), EducationSubMajor.major_id.in_(major_ids))
+        )
+    elif sub_clauses:
+        sub_query = sub_query.filter(or_(*sub_clauses))
+    elif major_ids:
+        sub_query = sub_query.filter(EducationSubMajor.major_id.in_(major_ids))
+    else:
+        sub_query = None
+
+    if sub_query is not None:
+        sub_majors = sub_query.order_by(EducationSubMajor.name.asc()).limit(12).all()
+        for row in sub_majors:
+            major_label = row.major.label if row.major else None
+            blob = f"{row.name} {row.sub_major_description or ''} {major_label or ''}"
+            bonus = 4 if major_ids and row.major_id in major_ids else 0
+            add(
+                _score_text(blob, search_terms) + bonus + 3,
+                {
+                    "type": "sub_major",
+                    "id": str(row.id),
+                    "title": row.name,
+                    "major": major_label,
+                    "summary": _truncate(
+                        row.sub_major_description
+                        or (f"Sub-major under {major_label}" if major_label else None),
+                        400,
+                    ),
+                    "url": None,
+                },
+            )
 
     # --- Education courses ---
     course_clauses = [
@@ -1453,7 +1678,9 @@ def retrieve_academia(db: Session, prompt: str, *, limit: int = 16) -> list[dict
                         row.description or (f"Course under {major_label}" if major_label else None),
                         400,
                     ),
-                    "url": None,
+                    "url": _first_url(
+                        getattr(row.program, "program_url", None) if row.program else None
+                    ),
                 },
             )
 
@@ -1489,7 +1716,11 @@ def retrieve_academia(db: Session, prompt: str, *, limit: int = 16) -> list[dict
                         " · ".join(x for x in [row.level, major_label, prog_name] if x),
                         400,
                     ),
-                    "url": None,
+                    "url": _first_url(
+                        getattr(row.qualification_program, "program_url", None)
+                        if row.qualification_program
+                        else None
+                    ),
                 },
             )
 
@@ -1517,7 +1748,7 @@ def retrieve_academia(db: Session, prompt: str, *, limit: int = 16) -> list[dict
                     "code": row.code,
                     "level": row.level.name if row.level else None,
                     "summary": _truncate(row.description, 400),
-                    "url": None,
+                    "url": _first_url(row.program_url),
                 },
             )
 
@@ -1591,7 +1822,7 @@ def retrieve_academia(db: Session, prompt: str, *, limit: int = 16) -> list[dict
                     "country": country_name,
                     "country_code": country_iso,
                     "summary": _truncate(row.short_description or row.long_description, 500),
-                    "url": row.institution_web_url,
+                    "url": _first_url(row.institution_web_url, row.web_links),
                 },
             )
 
@@ -1669,7 +1900,7 @@ async def retrieve_web(prompt: str, *, limit: int = 3) -> list[dict[str, Any]]:
                 "id": None,
                 "title": heading,
                 "summary": _truncate(abstract, 800),
-                "url": abstract_url,
+                "url": _first_url(abstract_url),
             }
         )
 
@@ -1688,7 +1919,7 @@ async def retrieve_web(prompt: str, *, limit: int = 3) -> list[dict[str, Any]]:
                 "id": None,
                 "title": _truncate(text.split(" - ")[0], 120),
                 "summary": _truncate(text, 500),
-                "url": first_url,
+                "url": _first_url(first_url),
             }
         )
     return sources
@@ -1705,7 +1936,7 @@ def _compact_item(item: dict[str, Any], *, kind: str) -> dict[str, Any]:
             "country_code": item.get("country_code"),
             "short_definition": _truncate(item.get("short_definition"), 220),
             "key_metrics": metrics if isinstance(metrics, dict) else None,
-            "url": item.get("url"),
+            "url": _resolve_item_url({**item, "type": "glossary"}),
         }
     if kind == "lead":
         return {
@@ -1717,8 +1948,20 @@ def _compact_item(item: dict[str, Any], *, kind: str) -> dict[str, Any]:
             "target_course": item.get("target_course") or item.get("course"),
             "stage": item.get("stage"),
             "channel": item.get("channel"),
+            "url": _resolve_item_url({**item, "type": item.get("type") or "lead"}),
         }
-    if kind in {"course", "program", "major", "level", "university", "country", "state", "city"}:
+    if kind in {
+        "course",
+        "program",
+        "major",
+        "sub_major",
+        "super_major",
+        "level",
+        "university",
+        "country",
+        "state",
+        "city",
+    }:
         return {
             "type": item.get("type") or kind,
             "id": item.get("id"),
@@ -1726,7 +1969,7 @@ def _compact_item(item: dict[str, Any], *, kind: str) -> dict[str, Any]:
             "code": item.get("code") or item.get("country_code"),
             "summary": _truncate(item.get("summary") or item.get("short_definition"), 180),
             "country_code": item.get("country_code"),
-            "url": item.get("url"),
+            "url": _resolve_item_url({**item, "type": item.get("type") or kind}),
         }
     if kind in {"booking", "appointment"}:
         return {
@@ -1736,19 +1979,21 @@ def _compact_item(item: dict[str, Any], *, kind: str) -> dict[str, Any]:
             "summary": _truncate(item.get("summary"), 160),
             "scheduled_time": item.get("scheduled_time"),
             "status": item.get("status"),
+            "url": _resolve_item_url({**item, "type": item.get("type") or kind}),
         }
     if kind == "web":
         return {
             "type": "web",
             "title": item.get("title"),
             "summary": _truncate(item.get("summary"), 160),
-            "url": item.get("url"),
+            "url": _clean_url(item.get("url")),
         }
     return {
         "type": item.get("type") or kind,
         "id": item.get("id"),
         "title": item.get("title"),
         "summary": _truncate(item.get("summary"), 160),
+        "url": _resolve_item_url({**item, "type": item.get("type") or kind}),
     }
 
 
@@ -1767,6 +2012,8 @@ def _compact_context_for_llm(
         "courses": 10,
         "programs": 10,
         "majors": 8,
+        "sub_majors": 8,
+        "super_majors": 6,
         "levels": 6,
         "institutions": 8,
         "countries": 6,
@@ -1797,6 +2044,10 @@ def _compact_context_for_llm(
             kind = "web"
         if key == "majors":
             kind = "major"
+        if key == "sub_majors":
+            kind = "sub_major"
+        if key == "super_majors":
+            kind = "super_major"
         if key == "levels":
             kind = "level"
         if key == "programs":
@@ -1815,6 +2066,8 @@ def _compact_context_for_llm(
             "courses",
             "programs",
             "majors",
+            "sub_majors",
+            "super_majors",
             "institutions",
             "states",
             "cities",
@@ -1832,6 +2085,8 @@ def _compact_context_for_llm(
             "courses",
             "programs",
             "majors",
+            "sub_majors",
+            "super_majors",
             "institutions",
             "states",
             "cities",
@@ -1877,6 +2132,8 @@ def _build_context_payload(
 ) -> dict[str, Any]:
     programs = [x for x in academia if x.get("type") == "program"]
     majors = [x for x in academia if x.get("type") == "major"]
+    sub_majors = [x for x in academia if x.get("type") == "sub_major"]
+    super_majors = [x for x in academia if x.get("type") == "super_major"]
     courses = [x for x in academia if x.get("type") == "course"]
     institutions = [x for x in academia if x.get("type") == "university"]
     return {
@@ -1887,6 +2144,8 @@ def _build_context_payload(
         "levels": levels,
         "programs": programs,
         "majors": majors,
+        "sub_majors": sub_majors,
+        "super_majors": super_majors,
         "courses": courses,
         "institutions": institutions,
         "leads": leads,
@@ -1904,6 +2163,8 @@ def _flatten_context(context: dict[str, Any]) -> list[dict[str, Any]]:
         "courses",
         "programs",
         "majors",
+        "sub_majors",
+        "super_majors",
         "levels",
         "institutions",
         "cities",
@@ -1921,11 +2182,13 @@ def _flatten_context(context: dict[str, Any]) -> list[dict[str, Any]]:
 def _citation_view(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for item in sources:
+        if not isinstance(item, dict):
+            continue
         out.append(
             {
                 "type": item.get("type"),
                 "title": _strip_html(item.get("title")),
-                "url": item.get("url"),
+                "url": _resolve_item_url(item),
                 "id": item.get("id"),
                 "slug": item.get("slug"),
                 "summary": _strip_html(item.get("short_definition") or item.get("summary")),
@@ -1933,6 +2196,62 @@ def _citation_view(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "category": item.get("category"),
             }
         )
+    return out
+
+
+def _enrich_sources_from_retrieved(
+    sources: list[dict[str, Any]],
+    retrieved: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Fill missing citation URLs/metadata from the retrieved evidence set."""
+    by_id: dict[tuple[str, str], dict[str, Any]] = {}
+    by_title: dict[tuple[str, str], dict[str, Any]] = {}
+    title_only: dict[str, dict[str, Any]] = {}
+    for item in retrieved:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "").strip().lower()
+        sid = item.get("id")
+        title = str(item.get("title") or item.get("name") or "").strip().lower()
+        if sid not in (None, ""):
+            by_id[(kind, str(sid))] = item
+        if title:
+            by_title[(kind, title)] = item
+            title_only.setdefault(title, item)
+
+    out: list[dict[str, Any]] = []
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        enriched = dict(src)
+        if not _clean_url(enriched.get("url")):
+            kind = str(enriched.get("type") or "").strip().lower()
+            sid = enriched.get("id")
+            title = str(enriched.get("title") or enriched.get("name") or "").strip().lower()
+            match: dict[str, Any] | None = None
+            if sid not in (None, ""):
+                match = by_id.get((kind, str(sid))) or by_id.get(("", str(sid)))
+                if match is None:
+                    for (k, i), item in by_id.items():
+                        if i == str(sid) and (not kind or not k or k == kind):
+                            match = item
+                            break
+            if match is None and title:
+                match = by_title.get((kind, title)) or title_only.get(title)
+            if match:
+                for field in ("url", "id", "slug", "summary", "country_code", "category"):
+                    if enriched.get(field) in (None, "") and match.get(field) not in (None, ""):
+                        enriched[field] = match.get(field)
+                if not enriched.get("type") and match.get("type"):
+                    enriched["type"] = match.get("type")
+                if enriched.get("lead_id") in (None, "") and match.get("lead_id") not in (None, ""):
+                    enriched["lead_id"] = match.get("lead_id")
+        enriched["url"] = _resolve_item_url(enriched)
+        if enriched.get("title"):
+            enriched["title"] = _strip_html(enriched.get("title"))
+        if enriched.get("summary"):
+            enriched["summary"] = _strip_html(enriched.get("summary"))
+        out.append(enriched)
     return out
 
 
@@ -2253,6 +2572,8 @@ def _fallback_response(
         ("courses", "Courses"),
         ("programs", "Programs"),
         ("majors", "Majors"),
+        ("sub_majors", "Sub-majors"),
+        ("super_majors", "Super-majors"),
         ("levels", "Levels"),
         ("institutions", "Institutions"),
         ("cities", "Cities"),
@@ -2411,7 +2732,9 @@ def _verified_sources_manifest(compact_context: dict[str, Any], *, max_items: in
             sid = row.get("id")
             kind = row.get("type") or bucket.rstrip("s")
             suffix = f", id={sid}" if sid not in (None, "") else ""
-            lines.append(f"- [{kind}] {title}{suffix}")
+            url = _resolve_item_url({**row, "type": kind})
+            url_suffix = f" | {url}" if url else ""
+            lines.append(f"- [{kind}] {title}{suffix}{url_suffix}")
             if len(lines) >= max_items:
                 return "\n".join(lines)
     return "\n".join(lines) if lines else "- (no verified Nexus records retrieved)"
@@ -2681,6 +3004,7 @@ async def run_intel_ai_chat(
     # Never ask the LLM to "perform" bookings/WhatsApp — it will invent success.
     if _is_mutating_action_request(cleaned):
         response_text, sources = _action_request_fallback(context)
+        sources = _enrich_sources_from_retrieved(sources, retrieved_all)
         log = IntelAiChatLog(
             id=uuid.uuid4(),
             user_id=user_id,
@@ -2749,7 +3073,7 @@ async def run_intel_ai_chat(
                 {
                     "type": item.get("type") or "glossary",
                     "title": _strip_html(item.get("title") or item.get("name") or "Source"),
-                    "url": item.get("url"),
+                    "url": _clean_url(item.get("url")),
                     "id": item.get("id"),
                     "slug": item.get("slug"),
                     "summary": _strip_html(item.get("summary")),
@@ -2765,6 +3089,9 @@ async def run_intel_ai_chat(
             response_text, sources = _schedule_status_fallback(context)
         elif action_request and _claims_action_taken(response_text):
             response_text, sources = _action_request_fallback(context)
+
+    # Prefer stored official URLs from retrieval when the model omits them.
+    sources = _enrich_sources_from_retrieved(sources, retrieved_all)
 
     log = IntelAiChatLog(
         id=uuid.uuid4(),
@@ -2834,8 +3161,8 @@ def list_chat_history(
                 "thread_id": str(row.thread_id) if row.thread_id else None,
                 "prompt": row.prompt,
                 "response_text": row.response_text,
-                "sources": payload.get("sources") or [],
-                "retrieved_sources": payload.get("retrieved") or [],
+                "sources": _citation_view(payload.get("sources") or []),
+                "retrieved_sources": _citation_view(payload.get("retrieved") or []),
                 "created_at": row.created_at.isoformat() if row.created_at else None,
             }
         )
@@ -2987,8 +3314,8 @@ def get_chat_thread(
                 "id": str(row.id),
                 "role": "assistant",
                 "content": row.response_text,
-                "sources": payload.get("sources") or [],
-                "retrieved_sources": payload.get("retrieved") or [],
+                "sources": _citation_view(payload.get("sources") or []),
+                "retrieved_sources": _citation_view(payload.get("retrieved") or []),
                 "created_at": created,
             }
         )
@@ -2999,3 +3326,122 @@ def get_chat_thread(
         "messages": messages,
         "updated_at": rows[-1].created_at.isoformat() if rows[-1].created_at else None,
     }
+
+
+_PROMPT_VISIBILITIES = frozenset({"private", "shared"})
+
+
+def _prompt_to_dict(row: IntelAiPrompt, *, viewer_user_id: int) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "title": row.title,
+        "prompt_text": row.prompt_text,
+        "owner_user_id": row.owner_user_id,
+        "visibility": row.visibility,
+        "is_owner": row.owner_user_id == viewer_user_id,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def list_saved_prompts(db: Session, *, user_id: int) -> list[dict[str, Any]]:
+    """Own private prompts + all shared prompts (any owner)."""
+    rows = (
+        db.query(IntelAiPrompt)
+        .filter(
+            or_(
+                IntelAiPrompt.owner_user_id == user_id,
+                IntelAiPrompt.visibility == "shared",
+            )
+        )
+        .order_by(
+            IntelAiPrompt.visibility.asc(),
+            IntelAiPrompt.title.asc(),
+            IntelAiPrompt.updated_at.desc(),
+        )
+        .all()
+    )
+    return [_prompt_to_dict(row, viewer_user_id=user_id) for row in rows]
+
+
+def create_saved_prompt(
+    db: Session,
+    *,
+    user_id: int,
+    title: str,
+    prompt_text: str,
+    visibility: str = "private",
+) -> dict[str, Any]:
+    vis = (visibility or "private").strip().lower()
+    if vis not in _PROMPT_VISIBILITIES:
+        raise ValueError("visibility must be 'private' or 'shared'")
+    cleaned_title = (title or "").strip()
+    cleaned_text = (prompt_text or "").strip()
+    if not cleaned_title:
+        raise ValueError("title is required")
+    if len(cleaned_text) < 2:
+        raise ValueError("prompt_text is too short")
+    row = IntelAiPrompt(
+        title=cleaned_title[:200],
+        prompt_text=cleaned_text[:4000],
+        owner_user_id=user_id,
+        visibility=vis,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _prompt_to_dict(row, viewer_user_id=user_id)
+
+
+def update_saved_prompt(
+    db: Session,
+    *,
+    user_id: int,
+    prompt_id: str,
+    title: str | None = None,
+    prompt_text: str | None = None,
+    visibility: str | None = None,
+) -> dict[str, Any]:
+    try:
+        parsed = uuid.UUID(str(prompt_id).strip())
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("prompt id must be a valid UUID") from exc
+    row = db.query(IntelAiPrompt).filter(IntelAiPrompt.id == parsed).first()
+    if not row:
+        raise ValueError("saved prompt not found")
+    if row.owner_user_id != user_id:
+        raise ValueError("only the owner can update this prompt")
+    if title is not None:
+        cleaned = title.strip()
+        if not cleaned:
+            raise ValueError("title is required")
+        row.title = cleaned[:200]
+    if prompt_text is not None:
+        cleaned = prompt_text.strip()
+        if len(cleaned) < 2:
+            raise ValueError("prompt_text is too short")
+        row.prompt_text = cleaned[:4000]
+    if visibility is not None:
+        vis = visibility.strip().lower()
+        if vis not in _PROMPT_VISIBILITIES:
+            raise ValueError("visibility must be 'private' or 'shared'")
+        row.visibility = vis
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _prompt_to_dict(row, viewer_user_id=user_id)
+
+
+def delete_saved_prompt(db: Session, *, user_id: int, prompt_id: str) -> None:
+    try:
+        parsed = uuid.UUID(str(prompt_id).strip())
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("prompt id must be a valid UUID") from exc
+    row = db.query(IntelAiPrompt).filter(IntelAiPrompt.id == parsed).first()
+    if not row:
+        raise ValueError("saved prompt not found")
+    if row.owner_user_id != user_id:
+        raise ValueError("only the owner can delete this prompt")
+    db.delete(row)
+    db.commit()
+

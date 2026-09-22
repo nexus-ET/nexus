@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, Request, Response
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
+from starlette.requests import ClientDisconnect
 
 from app.api import deps
 from app.core.rate_limit import limiter
@@ -53,16 +55,49 @@ def _dedupe_batch_events(events):
     return unique
 
 
+async def _parse_audit_batch(request: Request) -> ClientAuditEventsBatchIn | None:
+    """Parse JSON body; treat client disconnect / empty body as a no-op.
+
+    Browser ``keepalive`` / ``beforeunload`` audit flushes often abort mid-body.
+    FastAPI would otherwise convert ``ClientDisconnect`` into HTTP 400
+    \"There was an error parsing the body\" and spam Exception Report.
+    """
+    import json
+
+    try:
+        raw = await request.body()
+    except ClientDisconnect:
+        logger.debug("audit-events client disconnected before body finished")
+        return None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        # Truncated keepalive payload — not actionable.
+        logger.debug("audit-events body not valid JSON (likely aborted flush)")
+        return None
+    try:
+        return ClientAuditEventsBatchIn.model_validate(data)
+    except ValidationError:
+        logger.debug("audit-events payload failed validation", exc_info=True)
+        return None
+
+
 @router.post("/audit-events", status_code=204)
 @router.post("/audit-events/", status_code=204)
 @limiter.limit("120/minute")
-def ingest_client_audit_events(
+async def ingest_client_audit_events(
     request: Request,
-    payload: ClientAuditEventsBatchIn,
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_user),
 ) -> Response:
     """Accept batched UI activity events from the authenticated frontend client."""
+    payload = await _parse_audit_batch(request)
+    if payload is None or not payload.events:
+        # Aborted keepalive / empty body — acknowledge quietly.
+        return Response(status_code=204)
+
     for event in _dedupe_batch_events(payload.events):
         try:
             write_audit_log(

@@ -30,7 +30,9 @@ export type AcademiaEntityKey =
   | 'courses'
   | 'summary'
   | 'nz-mapping-review'
-  | 'ca-mapping-review';
+  | 'ca-mapping-review'
+  | 'us-mapping-review'
+  | 'de-mapping-review';
 
 export interface AcademiaNavItem {
   key: AcademiaEntityKey;
@@ -93,6 +95,16 @@ export const FRAMEWORK_TABS: AcademiaSectionTab[] = [
     key: 'ca-mapping-review',
     label: 'CA Mapping Review',
     path: `${FRAMEWORK_SECTION_PATH}/ca-mapping-review`,
+  },
+  {
+    key: 'us-mapping-review',
+    label: 'US Mapping Review',
+    path: `${FRAMEWORK_SECTION_PATH}/us-mapping-review`,
+  },
+  {
+    key: 'de-mapping-review',
+    label: 'DE Mapping Review',
+    path: `${FRAMEWORK_SECTION_PATH}/de-mapping-review`,
   },
 ];
 
@@ -182,6 +194,20 @@ export const ACADEMIA_HUB_SECTIONS: AcademiaNavSection[] = [
         singular: 'CA Mapping Review',
         path: `${FRAMEWORK_SECTION_PATH}/ca-mapping-review`,
         apiPath: 'academia/ca-program-mapping-suggestions',
+      },
+      {
+        key: 'us-mapping-review',
+        label: 'US Mapping Review',
+        singular: 'US Mapping Review',
+        path: `${FRAMEWORK_SECTION_PATH}/us-mapping-review`,
+        apiPath: 'academia/us-program-mapping-suggestions',
+      },
+      {
+        key: 'de-mapping-review',
+        label: 'DE Mapping Review',
+        singular: 'DE Mapping Review',
+        path: `${FRAMEWORK_SECTION_PATH}/de-mapping-review`,
+        apiPath: 'academia/de-program-mapping-suggestions',
       },
     ],
   },

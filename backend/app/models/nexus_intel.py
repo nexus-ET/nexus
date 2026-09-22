@@ -151,6 +151,25 @@ class IntelAiChatLog(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
 
 
+class IntelAiPrompt(Base):
+    """User-saved prompts for the Intel AI Assistant (private or shared)."""
+
+    __tablename__ = "intel_ai_prompts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title = Column(String(200), nullable=False)
+    prompt_text = Column(Text, nullable=False)
+    owner_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # private = owner only; shared = visible to all authenticated users
+    visibility = Column(String(20), nullable=False, default="private", index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class IntelInquiryFaq(Base):
     """Editable process-aligned guidance stored in the Inquiry Hub."""
 

@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { AlertTriangle, CheckCircle2, Loader2, Zap } from 'lucide-react';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, Zap } from 'lucide-react';
 import PhoneWithCountryCodeInput from '../components/academia/form/PhoneWithCountryCodeInput';
 import SearchableMultiSelect from '../components/academia/SearchableMultiSelect';
 import { useConfirmation } from '../context/ConfirmationContext';
@@ -23,7 +23,7 @@ import {
   type ExpressLeadMatchedOn,
 } from '../types/expressLead';
 import { EMAIL_FORMAT_HINT, parseStoredPhone, phoneLocalToDigits } from '../utils/phoneCountry';
-import { bookAppointmentHref } from '../utils/bookAppointmentHref';
+import { bookAppointmentHref, bookAppointmentReturnTo } from '../utils/bookAppointmentHref';
 
 const EMPTY_FORM = {
   first_name: '',
@@ -86,6 +86,8 @@ function formatCreatedAt(value?: string | null): string | null {
 
 const ExpressLeadsPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
   const openConfirm = useConfirmation();
   const { countries } = useCountries();
   const { majors } = useEducationMajors();
@@ -95,6 +97,15 @@ const ExpressLeadsPage: React.FC = () => {
   const [success, setSuccess] = useState<string | null>(null);
   const [savedLead, setSavedLead] = useState<ExpressLeadCreated | null>(null);
   const [saveMatches, setSaveMatches] = useState<ExpressLeadMatch[]>([]);
+
+  const returnTo = useMemo(
+    () => bookAppointmentReturnTo(searchParams.get('returnTo')),
+    [searchParams]
+  );
+  const expressSelfPath = `${location.pathname}${location.search}`;
+  const backLabel = returnTo.startsWith('/offline-leads')
+    ? 'Back to All Leads'
+    : 'Back';
 
   const parsedPhone = useMemo(
     () => parseStoredPhone(form.phone, countries),
@@ -127,8 +138,8 @@ const ExpressLeadsPage: React.FC = () => {
 
     const first = form.first_name.trim();
     const last = form.last_name.trim();
-    if (!first || !last) {
-      setError('Enter first name and last name.');
+    if (!first) {
+      setError('Enter a first name.');
       return;
     }
     if (!phoneReady) {
@@ -181,7 +192,11 @@ const ExpressLeadsPage: React.FC = () => {
         ),
       });
       if (bookNow) {
-        navigate(bookAppointmentHref(created));
+        navigate(
+          bookAppointmentHref(created, {
+            returnTo: expressSelfPath,
+          })
+        );
       }
     } catch (err) {
       const raw = err instanceof Error ? err.message : '';
@@ -198,13 +213,21 @@ const ExpressLeadsPage: React.FC = () => {
   return (
     <div className="w-full max-w-4xl space-y-4 p-6 md:p-8 pb-16">
       <div>
+        <button
+          type="button"
+          onClick={() => navigate(returnTo)}
+          className="mb-3 inline-flex items-center gap-2 rounded-xl border border-border-subtle bg-card px-3 py-2 text-sm font-semibold text-text-main hover:bg-surface-bg"
+        >
+          <ArrowLeft size={16} />
+          {backLabel}
+        </button>
         <h1 className="flex items-center gap-2 text-lg font-semibold text-text-main">
           <Zap size={20} />
           Express Leads
         </h1>
         <p className="mt-1 text-sm text-text-muted">
-          Quickly capture a walk-in or phone enquiry. Required: first name, last name, phone, and
-          email. Saved leads appear on Offline Leads for further updates.
+          Quickly capture a walk-in or phone enquiry. Required: first name, phone, and
+          email. Last name is optional. Saved leads appear on All Leads for further updates.
         </p>
       </div>
 
@@ -214,7 +237,7 @@ const ExpressLeadsPage: React.FC = () => {
           <div>
             <p className="font-semibold">Express lead saved</p>
             <p className="mt-1">
-              {success} They now appear on Offline Leads so you can add date of birth, location,
+              {success} They now appear on All Leads so you can add date of birth, location,
               education, and other details.
             </p>
             <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
@@ -226,11 +249,11 @@ const ExpressLeadsPage: React.FC = () => {
                 }
                 className="font-semibold underline underline-offset-2"
               >
-                Update on Offline Leads
+                Update on All Leads
               </Link>
               {savedLead ? (
                 <Link
-                  to={bookAppointmentHref(savedLead)}
+                  to={bookAppointmentHref(savedLead, { returnTo: expressSelfPath })}
                   className="font-semibold underline underline-offset-2"
                 >
                   Book counselling appointment
@@ -374,7 +397,7 @@ const ExpressLeadsPage: React.FC = () => {
           </div>
           <div>
             <label className={studentInfoLabelClass} htmlFor="express-last-name">
-              Last Name *
+              Last Name
             </label>
             <input
               id="express-last-name"
@@ -382,18 +405,19 @@ const ExpressLeadsPage: React.FC = () => {
               value={form.last_name}
               onChange={e => updateForm({ last_name: e.target.value })}
               autoComplete="family-name"
-              required
             />
           </div>
           <div className="sm:col-span-2">
             <PhoneWithCountryCodeInput
               id="express-phone"
-              label="Phone number *"
+              label="Phone number"
               required
               value={form.phone}
               onChange={value => updateForm({ phone: value })}
               countries={countries}
               defaultCountryIso2="IN"
+              placeholder="e.g. 8754545454"
+              hint=""
             />
             {phoneMatch ? (
               <p className={studentInfoFieldErrorClass}>
@@ -439,10 +463,12 @@ const ExpressLeadsPage: React.FC = () => {
               id="express-target-countries"
               label="Target countries"
               values={form.target_destination_iso2s}
-              options={countries.map(country => ({
-                value: country.iso2,
-                label: country.name,
-              }))}
+              options={[...countries]
+                .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+                .map(country => ({
+                  value: country.iso2,
+                  label: country.name,
+                }))}
               onChange={values =>
                 updateForm({ target_destination_iso2s: values.slice(0, 6) })
               }
@@ -458,9 +484,8 @@ const ExpressLeadsPage: React.FC = () => {
               values={form.target_major_ids}
               options={[...majors]
                 .filter(major => major.is_active)
-                .sort(
-                  (a, b) =>
-                    a.sort_order - b.sort_order || a.label.localeCompare(b.label)
+                .sort((a, b) =>
+                  a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
                 )
                 .map(major => ({
                   value: String(major.id),

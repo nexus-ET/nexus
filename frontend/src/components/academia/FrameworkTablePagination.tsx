@@ -1,3 +1,5 @@
+import { useEffect, useState, type FC } from 'react';
+
 export const FRAMEWORK_PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
 interface FrameworkTablePaginationProps {
@@ -46,7 +48,7 @@ function pageNumberSequence(current: number, pageCount: number, siblingCount = 1
 const pageButtonClass =
   'min-w-8 rounded-lg border px-2 py-1 font-semibold disabled:opacity-40';
 
-const FrameworkTablePagination: React.FC<FrameworkTablePaginationProps> = ({
+const FrameworkTablePagination: FC<FrameworkTablePaginationProps> = ({
   page,
   pageSize,
   total,
@@ -61,6 +63,27 @@ const FrameworkTablePagination: React.FC<FrameworkTablePaginationProps> = ({
   const pageCount = Math.max(totalPages, Math.ceil(total / pageSize) || 0, total === 0 ? 0 : 1);
   const tokens = pageNumberSequence(page, pageCount);
   const borderClass = variant === 'top' ? 'border-b' : 'border-t';
+
+  const [pageDraft, setPageDraft] = useState(String(page));
+
+  useEffect(() => {
+    setPageDraft(String(page));
+  }, [page]);
+
+  const commitPageJump = () => {
+    if (pageCount < 1) {
+      setPageDraft(String(page));
+      return;
+    }
+    const parsed = Number.parseInt(pageDraft.trim(), 10);
+    if (!Number.isFinite(parsed)) {
+      setPageDraft(String(page));
+      return;
+    }
+    const next = Math.min(pageCount, Math.max(1, parsed));
+    setPageDraft(String(next));
+    if (next !== page) onPageChange(next);
+  };
 
   return (
     <div
@@ -123,6 +146,26 @@ const FrameworkTablePagination: React.FC<FrameworkTablePaginationProps> = ({
           >
             Next
           </button>
+          <label className="flex items-center gap-1.5 text-text-muted">
+            Go to
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              aria-label="Go to page"
+              disabled={pageCount < 1}
+              value={pageDraft}
+              onChange={event => setPageDraft(event.target.value)}
+              onBlur={commitPageJump}
+              onKeyDown={event => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  commitPageJump();
+                }
+              }}
+              className="w-12 rounded-lg border border-border-subtle bg-surface-bg px-1.5 py-1 text-center text-text-main disabled:opacity-40"
+            />
+          </label>
         </div>
       </div>
     </div>

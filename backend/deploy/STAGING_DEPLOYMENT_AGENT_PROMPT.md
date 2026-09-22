@@ -81,8 +81,9 @@ Staging `/var/www/nexus/backend/.env` must include (values from develop SMTP; do
 | Variable | Required |
 |----------|----------|
 | `SMTP_HOST` | yes (e.g. GoDaddy SMTP host) |
-| `SMTP_PORT` | yes (`465` SSL or `587` STARTTLS) |
-| `SMTP_USE_TLS` | yes |
+| `SMTP_PORT` | yes (`465` SSL or `587` STARTTLS — do not mix modes) |
+| `SMTP_USE_TLS` | yes for 587 STARTTLS; ignored on 465 SSL |
+| `SMTP_USE_SSL` | optional override (`true`/`false`); default auto from port |
 | `SMTP_USER` | yes |
 | `SMTP_PASSWORD` | yes |
 | `SMTP_FROM_EMAIL` | yes |
@@ -192,7 +193,8 @@ NEXUS_TUNNEL_ENABLED=false
 NEXUS_PORT=8002
 NEXUS_BIND_HOST=127.0.0.1
 
-# SMTP (downtime alerts)
+# SMTP (downtime / Exception Report alerts)
+# 465 = implicit SSL; 587 = STARTTLS (SMTP_USE_TLS=true). Do not mix.
 SMTP_HOST=…
 SMTP_PORT=465
 SMTP_USE_TLS=true

@@ -52,7 +52,15 @@ class ProgramMappingBulkApplyRequest(BaseModel):
     )
     ca_scope_only: bool = Field(
         default=False,
-        description="When true, reject programs whose institution is not in the CA-24 set.",
+        description="When true, reject programs whose institution is not in Canada (iso2=CA).",
+    )
+    us_scope_only: bool = Field(
+        default=False,
+        description="When true, reject programs whose institution is not in the United States.",
+    )
+    de_scope_only: bool = Field(
+        default=False,
+        description="When true, reject programs whose institution is not in Germany (iso2=DE).",
     )
 
 
@@ -155,8 +163,24 @@ class NzProgramMappingSuggestionsResponse(ProgramMappingSuggestionsResponse):
 
 
 class CaProgramMappingSuggestionRead(ProgramMappingSuggestionRead):
-    """CA-24 mapping review row (same shape as ProgramMappingSuggestionRead)."""
+    """Canada mapping review row (same shape as ProgramMappingSuggestionRead)."""
 
 
 class CaProgramMappingSuggestionsResponse(ProgramMappingSuggestionsResponse):
-    """CA-24 mapping review list response."""
+    """Canada mapping review list response."""
+
+
+class UsProgramMappingSuggestionRead(ProgramMappingSuggestionRead):
+    """US mapping review row (same shape as ProgramMappingSuggestionRead)."""
+
+
+class UsProgramMappingSuggestionsResponse(ProgramMappingSuggestionsResponse):
+    """US mapping review list response."""
+
+
+class DeProgramMappingSuggestionRead(ProgramMappingSuggestionRead):
+    """Germany mapping review row (same shape as ProgramMappingSuggestionRead)."""
+
+
+class DeProgramMappingSuggestionsResponse(ProgramMappingSuggestionsResponse):
+    """Germany mapping review list response."""

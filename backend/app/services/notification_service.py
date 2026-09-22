@@ -333,10 +333,27 @@ def ensure_in_app_booking_notifications(db: Session, user_id: int) -> int:
         .order_by(CounsellingBooking.scheduled_time.asc())
         .all()
     )
+    if not upcoming_bookings:
+        return 0
+
+    booking_ids = [int(b.id) for b in upcoming_bookings if b.id is not None]
+    existing_ids = {
+        int(row[0])
+        for row in (
+            db.query(NotificationLog.booking_id)
+            .filter(
+                NotificationLog.user_id == user_id,
+                NotificationLog.booking_id.in_(booking_ids),
+                NotificationLog.status != "resolved",
+            )
+            .all()
+        )
+        if row[0] is not None
+    }
 
     created = 0
     for booking in upcoming_bookings:
-        if _booking_has_active_notification(db, user_id, booking.id):
+        if int(booking.id) in existing_ids:
             continue
         title, body = _upcoming_appointment_content(booking.candidate_name, booking.scheduled_time)
         db.add(
@@ -803,7 +820,13 @@ class NotificationService:
             )
         return status
 
-    async def send_booking_assignment_notifications(self, booking_id: int) -> dict[str, str]:
+    async def send_booking_assignment_notifications(
+        self,
+        booking_id: int,
+        *,
+        send_whatsapp_candidate: bool = True,
+        send_whatsapp_counsellor: bool = True,
+    ) -> dict[str, str]:
         booking = self.db.query(CounsellingBooking).filter(CounsellingBooking.id == booking_id).first()
         if not booking or not booking.admin_id:
             raise ValueError("Assigned booking is missing an admin.")
@@ -835,18 +858,30 @@ class NotificationService:
         # Keep sequential: NotificationService shares one Session and channel
         # helpers commit notification_logs. SMTP fail-fast keeps this under
         # the Book Appointment client budget.
-        whatsapp_status = await _safe(
-            "whatsapp",
-            self.send_whatsapp_confirmation(
+        if send_whatsapp_candidate:
+            whatsapp_status = await _safe(
+                "whatsapp",
+                self.send_whatsapp_confirmation(
+                    booking_id=booking.id,
+                    candidate_name=booking.candidate_name,
+                    admin_name=admin_name,
+                    scheduled_time=booking.scheduled_time,
+                    candidate_phone=booking.candidate_phone,
+                    lead_id=booking.lead_id,
+                    session_purpose=session_purpose,
+                ),
+            )
+        else:
+            self._log_attempt(
                 booking_id=booking.id,
-                candidate_name=booking.candidate_name,
-                admin_name=admin_name,
-                scheduled_time=booking.scheduled_time,
-                candidate_phone=booking.candidate_phone,
-                lead_id=booking.lead_id,
-                session_purpose=session_purpose,
-            ),
-        )
+                user_id=None,
+                channel="whatsapp",
+                status="not_requested",
+                title="WhatsApp confirmation",
+                message="Skipped — staff unchecked candidate WhatsApp on booking.",
+                priority="normal",
+            )
+            whatsapp_status = "not_requested"
         email_status = await _safe(
             "email",
             self.send_email_confirmation(
@@ -858,15 +893,27 @@ class NotificationService:
                 session_purpose=session_purpose,
             ),
         )
-        admin_whatsapp_status = await _safe(
-            "whatsapp_admin",
-            self.send_whatsapp_admin_assignment(
-                booking=booking,
-                admin=admin,
-                admin_name=admin_name,
-                lead=lead,
-            ),
-        )
+        if send_whatsapp_counsellor:
+            admin_whatsapp_status = await _safe(
+                "whatsapp_admin",
+                self.send_whatsapp_admin_assignment(
+                    booking=booking,
+                    admin=admin,
+                    admin_name=admin_name,
+                    lead=lead,
+                ),
+            )
+        else:
+            self._log_attempt(
+                booking_id=booking.id,
+                user_id=admin.id,
+                channel="whatsapp_admin",
+                status="not_requested",
+                title="Counsellor WhatsApp assignment",
+                message="Skipped — staff unchecked counsellor WhatsApp on booking.",
+                priority="important",
+            )
+            admin_whatsapp_status = "not_requested"
         admin_email_status = await _safe(
             "email_admin",
             self.send_email_admin_assignment(
@@ -1016,7 +1063,12 @@ class NotificationService:
 _ASSIGNMENT_NOTIFICATION_BUDGET_SECONDS = 35.0
 
 
-def run_assignment_notifications(booking_id: int) -> dict[str, str]:
+def run_assignment_notifications(
+    booking_id: int,
+    *,
+    send_whatsapp_candidate: bool = True,
+    send_whatsapp_counsellor: bool = True,
+) -> dict[str, str]:
     """Send candidate/counsellor email + WhatsApp. Safe to call from BackgroundTasks."""
     failed = {
         "whatsapp": "failed",
@@ -1025,21 +1077,32 @@ def run_assignment_notifications(booking_id: int) -> dict[str, str]:
         "email_admin": "failed",
         "push": "failed",
     }
-    db = SessionLocal()
+
+    def _execute() -> dict[str, str]:
+        db = SessionLocal()
+        try:
+            service = NotificationService(db)
+
+            async def _run() -> dict[str, str]:
+                return await asyncio.wait_for(
+                    service.send_booking_assignment_notifications(
+                        booking_id,
+                        send_whatsapp_candidate=send_whatsapp_candidate,
+                        send_whatsapp_counsellor=send_whatsapp_counsellor,
+                    ),
+                    timeout=_ASSIGNMENT_NOTIFICATION_BUDGET_SECONDS,
+                )
+
+            return asyncio.run(_run())
+        finally:
+            db.close()
+
     try:
-        service = NotificationService(db)
-
-        async def _run() -> dict[str, str]:
-            return await asyncio.wait_for(
-                service.send_booking_assignment_notifications(booking_id),
-                timeout=_ASSIGNMENT_NOTIFICATION_BUDGET_SECONDS,
-            )
-
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             try:
-                return asyncio.run(_run())
+                return _execute()
             except TimeoutError:
                 logger.error(
                     "Assignment notifications timed out after %.0fs for booking %s",
@@ -1053,7 +1116,7 @@ def run_assignment_notifications(booking_id: int) -> dict[str, str]:
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             try:
-                return executor.submit(asyncio.run, _run()).result(
+                return executor.submit(_execute).result(
                     timeout=_ASSIGNMENT_NOTIFICATION_BUDGET_SECONDS + 5
                 )
             except TimeoutError:
@@ -1066,8 +1129,6 @@ def run_assignment_notifications(booking_id: int) -> dict[str, str]:
     except Exception:
         logger.exception("Failed to send assignment notifications for booking %s", booking_id)
         return failed
-    finally:
-        db.close()
 
 
 def register_push_token(db: Session, user: User, token: str) -> None:

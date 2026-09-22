@@ -186,6 +186,7 @@ def test_academia_routes_register_ca_and_nz_mapping_review():
     paths = {getattr(route, "path", "") for route in academia_router.routes}
     assert "/academia/nz-program-mapping-suggestions" in paths
     assert "/academia/ca-program-mapping-suggestions" in paths
+    assert "/academia/us-program-mapping-suggestions" in paths
     assert "/academia/program-mappings/bulk-apply" in paths
 
 
@@ -286,7 +287,7 @@ def test_ca_mapping_review_loads_suggestions_from_fixture(tmp_path, monkeypatch)
         engine.dispose()
 
 
-def test_ca24_scope_rejects_non_canadian_institution():
+def test_ca_scope_rejects_non_canadian_institution():
     engine = create_engine("sqlite:///:memory:")
     Country.__table__.create(bind=engine, checkfirst=True)
     Institution.__table__.create(bind=engine, checkfirst=True)
@@ -295,8 +296,8 @@ def test_ca24_scope_rejects_non_canadian_institution():
         db.add(Country(id=6, iso2="AU", name="Australia", dial_code="+61", is_active=True))
         db.add(Institution(id=58, name="AU Uni", country_id=6, is_active=True))
         db.commit()
-        assert ca_review._ca24_scope_error(db, 58) == (
-            "Program institution is not a Canadian CA-24 institution."
+        assert ca_review._ca_scope_error(db, 58) == (
+            "Program institution is outside Canada scope."
         )
     finally:
         db.close()

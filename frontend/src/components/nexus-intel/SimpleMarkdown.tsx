@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { sourceHref } from '../../utils/intelSourceHref';
 
 /** Strip HTML tags/entities that may leak from rich-text catalog fields. */
 export function stripHtml(text: string | null | undefined): string {
@@ -149,7 +150,7 @@ function splitBlocks(content: string): Block[] {
 function renderInline(text: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const pattern =
-    /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|\[[^\]]+\]\((https?:\/\/[^)\s]+)\))/g;
+    /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|https?:\/\/[^\s)]+)/g;
   let last = 0;
   let match: RegExpExecArray | null;
   let key = 0;
@@ -180,19 +181,23 @@ function renderInline(text: string): ReactNode[] {
         </code>
       );
     } else {
-      const linkMatch = token.match(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/);
-      if (linkMatch) {
+      const mdLink = token.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
+      const rawHref = mdLink ? mdLink[2] : token;
+      const href = sourceHref(rawHref);
+      if (href) {
         nodes.push(
           <a
             key={key++}
-            href={linkMatch[2]}
+            href={href}
             target="_blank"
-            rel="noreferrer"
+            rel="noopener noreferrer"
             className="text-accent hover:underline"
           >
-            {linkMatch[1]}
+            {mdLink ? mdLink[1] : token}
           </a>
         );
+      } else {
+        nodes.push(token);
       }
     }
     last = match.index + token.length;

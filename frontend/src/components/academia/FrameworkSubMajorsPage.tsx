@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { apiFetch } from '../../utils/api';
 import { fetchAcademiaListItems } from '../../utils/academiaList';
-import { SUB_MAJORS_PATH } from '../../types/academicFramework';
+import { PROGRAMS_PATH, SUB_MAJORS_PATH } from '../../types/academicFramework';
 import {
   educationMajorOptionLabel,
   type EducationMajorRecord,
@@ -27,16 +29,24 @@ type SortDir = 'asc' | 'desc';
 
 const PAGE_SIZE_OPTIONS = FRAMEWORK_PAGE_SIZE_OPTIONS;
 
+/** Shareable Programs list URL filtered by PEM sub-major + program level. */
+function programsByLevelPath(subMajorId: number, levelId: number, majorId?: number): string {
+  const params = new URLSearchParams();
+  if (majorId) params.set('major_id', String(majorId));
+  params.set('sub_major_id', String(subMajorId));
+  params.set('level_id', String(levelId));
+  return `${PROGRAMS_PATH}?${params.toString()}`;
+}
+
 const FrameworkSubMajorsPage: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const openConfirm = useConfirmation();
   const [subMajors, setSubMajors] = useState<EducationSubMajorRecord[]>([]);
-  const [majors, setMajors] = useState<EducationMajorRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [filterMajorId, setFilterMajorId] = useState('');
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(20);
+  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(50);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
   const [sortBy, setSortBy] = useState<SortBy>('name');
@@ -47,6 +57,18 @@ const FrameworkSubMajorsPage: React.FC<{ embedded?: boolean }> = ({ embedded = f
     title: string;
     description: string;
   } | null>(null);
+
+  const majorsQuery = useQuery({
+    queryKey: ['academia-majors-for-sub-majors-filter'],
+    queryFn: () =>
+      fetchAcademiaListItems<EducationMajorRecord>('academia/education-majors', {
+        catalog_only: 'true',
+        active_only: 'false',
+        lite: 'true',
+      }),
+    staleTime: 60_000,
+  });
+  const majors = majorsQuery.data ?? [];
 
   const loadSubMajors = useCallback(
     async (activePage = page) => {
@@ -80,15 +102,6 @@ const FrameworkSubMajorsPage: React.FC<{ embedded?: boolean }> = ({ embedded = f
   );
 
   useEffect(() => {
-    void fetchAcademiaListItems<EducationMajorRecord>('academia/education-majors', {
-      catalog_only: 'true',
-      active_only: 'false',
-    })
-      .then(setMajors)
-      .catch(() => setMajors([]));
-  }, []);
-
-  useEffect(() => {
     setPage(1);
   }, [search, pageSize, sortBy, sortDir, filterMajorId]);
 
@@ -107,8 +120,7 @@ const FrameworkSubMajorsPage: React.FC<{ embedded?: boolean }> = ({ embedded = f
   };
 
   const handleSaved = () => {
-    setPage(1);
-    void loadSubMajors(1);
+    void loadSubMajors(page);
   };
 
   return (
@@ -261,20 +273,40 @@ const FrameworkSubMajorsPage: React.FC<{ embedded?: boolean }> = ({ embedded = f
                       <td className="px-6 py-3">
                         {item.programs_by_level && item.programs_by_level.length > 0 ? (
                           <div className="flex flex-wrap gap-1.5">
-                            {item.programs_by_level.map(levelCount => (
-                              <span
-                                key={`${item.id}-${levelCount.level_id}`}
-                                className="inline-flex items-center gap-1 rounded-full border border-border-subtle/70 bg-surface-bg/60 px-2 py-0.5 text-[11px] text-text-main"
-                                title={`${levelCount.count} program${
-                                  levelCount.count === 1 ? '' : 's'
-                                } mapped at ${levelCount.level_name}`}
-                              >
-                                <span className="font-medium">{levelCount.level_name}</span>
-                                <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-bold text-accent">
-                                  {levelCount.count}
+                            {item.programs_by_level.map(levelCount => {
+                              const countLabel = `${levelCount.count} program${
+                                levelCount.count === 1 ? '' : 's'
+                              } mapped at ${levelCount.level_name}`;
+                              const countClassName =
+                                'rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-bold text-accent';
+                              return (
+                                <span
+                                  key={`${item.id}-${levelCount.level_id}`}
+                                  className="inline-flex items-center gap-1 rounded-full border border-border-subtle/70 bg-surface-bg/60 px-2 py-0.5 text-[11px] text-text-main"
+                                  title={countLabel}
+                                >
+                                  <span className="font-medium">{levelCount.level_name}</span>
+                                  {levelCount.count > 0 ? (
+                                    <Link
+                                      to={programsByLevelPath(
+                                        item.id,
+                                        levelCount.level_id,
+                                        item.major_id
+                                      )}
+                                      className={`${countClassName} hover:underline`}
+                                      title={`View ${countLabel}`}
+                                      aria-label={`View ${countLabel}`}
+                                    >
+                                      {levelCount.count}
+                                    </Link>
+                                  ) : (
+                                    <span className={`${countClassName} opacity-60`}>
+                                      {levelCount.count}
+                                    </span>
+                                  )}
                                 </span>
-                              </span>
-                            ))}
+                              );
+                            })}
                           </div>
                         ) : (
                           <span className="text-text-muted">—</span>

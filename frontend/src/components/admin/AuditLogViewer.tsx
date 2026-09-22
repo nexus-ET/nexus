@@ -482,6 +482,9 @@ const AuditLogViewer: React.FC = () => {
         sortOrder={sortOrder}
         onSort={handleSort}
         getRowKey={row => row.id}
+        onRefresh={() => void loadLogs()}
+        refreshing={loading}
+        persistenceKey="audit-logs"
         emptyMessage="No audit log entries match the current filters."
       />
 

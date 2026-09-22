@@ -25,7 +25,7 @@ DEFAULT_NAVIGATION_PAGES: list[dict[str, str | int | bool]] = [
     {"name": "Handoffs", "route": "/handoffs", "icon": "Users", "sort_order": 14},
     {"name": "All Prospects", "route": "/prospects", "icon": "Users", "sort_order": 15},
     {"name": "Express Leads", "route": "/express-leads", "icon": "Zap", "sort_order": 16},
-    {"name": "Offline Leads", "route": "/offline-leads", "icon": "UserPlus", "sort_order": 17},
+    {"name": "All Leads", "route": "/offline-leads", "icon": "UserPlus", "sort_order": 17},
     {"name": "Archive", "route": "/archive", "icon": "Archive", "sort_order": 18},
     {"name": "AI Agent Brain", "route": "/agents", "icon": "Bot", "sort_order": 18},
     {"name": "Mission Control", "route": "/command-center", "icon": "Radio", "sort_order": 19},
@@ -170,6 +170,7 @@ API_ROUTE_TO_PAGE: list[tuple[str, str]] = [
     ("/api/v1/academia", "/academia"),
     ("/api/v1/intel", "/nexus-intel"),
     ("/api/v1/flowx", "/flowx"),
+    ("/api/v1/scanx", "/students/document-readiness"),
 ]
 
 LEAD_MUTATION_PAGE_ROUTES = [
@@ -185,6 +186,8 @@ LEAD_MUTATION_PAGE_ROUTES = [
 RBAC_EXEMPT_PREFIXES = (
     "/api/v1/login",
     "/api/v1/logout",
+    "/api/v1/health",
+    "/api/health",
     "/api/v1/webhooks",
     "/api/v1/leads/webhook",
     "/api/v1/ws",
@@ -219,45 +222,39 @@ RBAC_PUBLIC_AUTH_PREFIXES = (
 
 def seed_navigation_pages(db: Session) -> None:
     """Upsert catalog pages from DEFAULT_NAVIGATION_PAGES (safe for empty/staging DBs)."""
+    # Single fetch — per-route SELECTs were stretching the SSH-tunnel window and
+    # aborting startup mid-catalog (often around later routes like /archive).
+    by_route = {
+        str(page.route): page
+        for page in db.query(NavigationPage).all()
+    }
     for item in DEFAULT_NAVIGATION_PAGES:
-        existing = (
-            db.query(NavigationPage)
-            .filter(NavigationPage.route == item["route"])
-            .first()
-        )
+        route = str(item["route"])
+        existing = by_route.get(route)
         if existing:
             existing.name = str(item["name"])
             existing.icon = str(item["icon"])
             existing.sort_order = int(item["sort_order"])
             existing.is_active = True
             continue
-
-        db.add(
-            NavigationPage(
-                name=str(item["name"]),
-                route=str(item["route"]),
-                icon=str(item["icon"]),
-                sort_order=int(item["sort_order"]),
-                is_active=True,
-            )
+        page = NavigationPage(
+            name=str(item["name"]),
+            route=route,
+            icon=str(item["icon"]),
+            sort_order=int(item["sort_order"]),
+            is_active=True,
         )
-    old_roster_page = (
-        db.query(NavigationPage)
-        .filter(NavigationPage.route == "/counselling-roster")
-        .first()
-    )
-    if old_roster_page:
-        old_roster_page.is_active = False
-    for legacy_route in (
+        db.add(page)
+        by_route[route] = page
+
+    legacy_routes = (
+        "/counselling-roster",
         "/reports",
         "/audit-logs",
         *_LEGACY_STUDENT_PIPELINE_ROUTES,
-    ):
-        legacy_page = (
-            db.query(NavigationPage)
-            .filter(NavigationPage.route == legacy_route)
-            .first()
-        )
+    )
+    for legacy_route in legacy_routes:
+        legacy_page = by_route.get(legacy_route)
         if legacy_page:
             legacy_page.is_active = False
     db.commit()
@@ -273,36 +270,90 @@ def seed_role_page_permissions(db: Session) -> None:
     if not pages:
         return
     roles = db.query(AdminRole).filter(AdminRole.is_active.is_(True)).all()
+    if not roles:
+        return
 
+    # One round-trip for existing pairs — avoids N×M queries that stretch the
+    # SSH-tunnel window and amplify mid-seed disconnects at startup.
+    existing_pairs = {
+        (int(admin_role_id), int(navigation_page_id))
+        for admin_role_id, navigation_page_id in (
+            db.query(
+                RolePagePermission.admin_role_id,
+                RolePagePermission.navigation_page_id,
+            ).all()
+        )
+    }
+
+    to_add: list[RolePagePermission] = []
     for role in roles:
         allowed_routes = DEFAULT_ROLE_PAGE_ACCESS.get(role.name, ["/"])
         if role.is_superuser:
             allowed_routes = [str(page["route"]) for page in DEFAULT_NAVIGATION_PAGES]
         for page in pages:
-            permission = (
-                db.query(RolePagePermission)
-                .filter(
-                    RolePagePermission.admin_role_id == role.id,
-                    RolePagePermission.navigation_page_id == page.id,
-                )
-                .first()
-            )
-            if permission:
+            key = (int(role.id), int(page.id))
+            if key in existing_pairs:
                 continue
-            db.add(
+            to_add.append(
                 RolePagePermission(
                     admin_role_id=role.id,
                     navigation_page_id=page.id,
                     can_access=page.route in allowed_routes,
                 )
             )
+            existing_pairs.add(key)
+    if to_add:
+        db.add_all(to_add)
     db.commit()
 
 
 def ensure_navigation_rbac(db: Session) -> None:
-    """Seed navigation pages + missing role permissions (idempotent)."""
-    seed_navigation_pages(db)
-    seed_role_page_permissions(db)
+    """Seed navigation pages + missing role permissions (idempotent).
+
+    Retries on transient disconnects (SSH tunnel flap / server closed connection)
+    so a dropped socket mid-seed does not abort application startup.
+    """
+    import logging
+    import time
+
+    from sqlalchemy.exc import DBAPIError, OperationalError
+
+    from app.db.database import dispose_db_pool, ensure_db_connection, wait_for_database
+
+    log = logging.getLogger(__name__)
+    last_exc: BaseException | None = None
+    for attempt in range(4):
+        try:
+            if attempt:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                dispose_db_pool(
+                    reason=f"navigation rbac retry {attempt}: {type(last_exc).__name__ if last_exc else 'unknown'}"
+                )
+                # Re-gate on SELECT 1 — tunnel often needs a few seconds after a drop.
+                wait_for_database(attempts=8, delay_sec=1.0, dispose_between=True)
+                ensure_db_connection(db)
+                time.sleep(min(1.0 * attempt, 3.0))
+            seed_navigation_pages(db)
+            seed_role_page_permissions(db)
+            return
+        except (OperationalError, DBAPIError) as exc:
+            last_exc = exc
+            log.warning(
+                "Navigation RBAC seed failed attempt=%s/%s: %s",
+                attempt + 1,
+                4,
+                exc,
+            )
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            continue
+    if last_exc:
+        raise last_exc
 
 
 def get_admin_role_by_name(db: Session, role_name: str) -> AdminRole | None:
@@ -462,25 +513,35 @@ def resolve_page_routes_for_api_path(path: str) -> list[str]:
 
 
 def check_page_access(db: Session, user: User, page_route: str) -> bool:
+    return check_any_page_access(db, user, [page_route])
+
+
+def check_any_page_access(db: Session, user: User, page_routes: list[str]) -> bool:
+    """OR-access across routes in two DB round-trips (critical over SSH tunnel RTT)."""
     if user.is_superuser:
         return True
 
-    page = (
+    routes = [r for r in page_routes if r]
+    if not routes:
+        return False
+
+    pages = (
         db.query(NavigationPage)
-        .filter(NavigationPage.route == page_route, NavigationPage.is_active.is_(True))
-        .first()
+        .filter(NavigationPage.route.in_(routes), NavigationPage.is_active.is_(True))
+        .all()
     )
-    if not page:
+    if not pages:
         return False
 
     if not user.admin_role_id:
-        return page_route == "/"
+        return any(page.route == "/" for page in pages)
 
+    page_ids = [page.id for page in pages]
     permission = (
-        db.query(RolePagePermission)
+        db.query(RolePagePermission.id)
         .filter(
             RolePagePermission.admin_role_id == user.admin_role_id,
-            RolePagePermission.navigation_page_id == page.id,
+            RolePagePermission.navigation_page_id.in_(page_ids),
             RolePagePermission.can_access.is_(True),
         )
         .first()

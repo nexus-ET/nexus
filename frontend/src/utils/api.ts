@@ -195,21 +195,133 @@ export function formatApiUiError(
  */
 const API_FETCH_TIMEOUT_MS = 60_000;
 export const API_SYNC_TIMEOUT_MS = 10 * 60_000;
+/** Bulk PEM apply from NZ/CA mapping review (remote DB can be slow). */
+export const API_MAPPING_APPLY_TIMEOUT_MS = 5 * 60_000;
+/** ScanX bulk-delete: DB commit is fast; allow tunnel/R2 jitter without AbortError. */
+export const API_SCANX_BULK_DELETE_TIMEOUT_MS = 3 * 60_000;
+/** Legacy 5-minute ScanX budget — do not use for POST ingest (OCR is async). */
+export const API_SCANX_TIMEOUT_MS = 5 * 60_000;
+/** POST upload / group / reprocess: store bytes + 202. OCR continues in the background. */
+export const API_SCANX_UPLOAD_TIMEOUT_MS = 90_000;
+/** ScanX document list (non-silent). Silent polls pass a shorter explicit budget. */
+export const API_SCANX_LIST_TIMEOUT_MS = 2 * 60_000;
+/** Review GET may backfill passport fields from OCR blocks (can exceed 60s). */
+export const API_SCANX_REVIEW_TIMEOUT_MS = 5 * 60_000;
 
-function buildClientTimeoutMessage(): string {
-  const host = typeof window !== 'undefined' ? window.location.hostname : '';
-  const isLocalDev = /^(localhost|127\.0\.0\.1)$/i.test(host);
-  if (isLocalDev) {
-    return 'Request timed out. Confirm the NEXUS backend is running (dev proxy: port 8002 in vite.config.js).';
-  }
+function isScanxEndpoint(endpoint?: string): boolean {
+  return /^scanx\//i.test((endpoint || '').replace(/^\//, ''));
+}
+
+function isScanxDocumentListPath(path: string): boolean {
+  return /^scanx\/documents(\?|$)/i.test(path);
+}
+
+function isScanxReviewPath(path: string): boolean {
+  return /^scanx\/documents\/\d+\/review(\?|$)/i.test(path);
+}
+
+function isScanxIngestPost(path: string, verb: string): boolean {
+  if (verb !== 'POST') return false;
   return (
-    'Request timed out. The server took too long to respond. ' +
-    'If this was Meta lead sync, open Reports → Meta Leads — the sync may still have completed in the background.'
+    /^scanx\/documents(\/group)?(\?|$)/i.test(path) ||
+    /^scanx\/documents\/\d+\/reprocess(\?|$)/i.test(path)
   );
 }
 
+function defaultTimeoutForEndpoint(
+  endpoint: string,
+  override?: number,
+  method: string = 'GET'
+): number {
+  if (override != null) return override;
+  const path = endpoint.replace(/^\//, '');
+  const verb = (method || 'GET').toUpperCase();
+  if (/^scanx\/documents\/bulk-delete/i.test(path)) {
+    return API_SCANX_BULK_DELETE_TIMEOUT_MS;
+  }
+  // Upload / reprocess must not wait for OCR — server returns 202 then processes.
+  if (isScanxIngestPost(path, verb)) {
+    return API_SCANX_UPLOAD_TIMEOUT_MS;
+  }
+  // List GET only.
+  if ((verb === 'GET' || verb === 'HEAD') && isScanxDocumentListPath(path)) {
+    return API_SCANX_LIST_TIMEOUT_MS;
+  }
+  // Review may run passport field backfill when extracted_fields_json is missing.
+  if ((verb === 'GET' || verb === 'HEAD') && isScanxReviewPath(path)) {
+    return API_SCANX_REVIEW_TIMEOUT_MS;
+  }
+  if (isScanxEndpoint(path)) {
+    return API_FETCH_TIMEOUT_MS;
+  }
+  return API_FETCH_TIMEOUT_MS;
+}
+
+/** True when the SPA aborted a ScanX request (job may still be running). */
+export function isScanxClientTimeoutError(error: unknown): boolean {
+  return error instanceof Error && /^ScanX timed out after \d+s/i.test(error.message);
+}
+
+function buildClientTimeoutMessage(
+  timeoutMs: number = API_FETCH_TIMEOUT_MS,
+  endpoint?: string
+): string {
+  const host = typeof window !== 'undefined' ? window.location.hostname : '';
+  const isLocalDev = /^(localhost|127\.0\.0\.1)$/i.test(host);
+  const backendPort =
+    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_NEXUS_BACKEND_PORT) || '8002';
+  const secs = Math.round(timeoutMs / 1000);
+  const path = (endpoint || '').replace(/^\//, '');
+  const isLeadSearch = /^leads\/prospects(\?|$)/i.test(path);
+
+  // ScanX ingest is 202 + poll. A long abort is not "backend down".
+  if (isScanxEndpoint(path)) {
+    return (
+      `ScanX timed out after ${secs}s while the backend was busy (OCR / uploads / DB tunnel). ` +
+      `Document processing usually continues in the background — wait and refresh the list. ` +
+      (isLocalDev ? `If nothing updates for several minutes, check port ${backendPort}.` : '')
+    ).trim();
+  }
+
+  if (isLocalDev) {
+    if (isLeadSearch) {
+      return (
+        `Lead search timed out after ${secs}s. Confirm the NEXUS backend is running on port ${backendPort} ` +
+        '(try: powershell -ExecutionPolicy Bypass -File .\\start-dev.ps1). ' +
+        'Also confirm the SSH DB tunnel on 127.0.0.1:15432 is up — a hung or missing tunnel makes prospects search stall.'
+      );
+    }
+    let msg =
+      `Request timed out after ${secs}s on port ${backendPort} ` +
+      '(Vite proxies /api — see vite.config.js).';
+    if (timeoutMs >= API_MAPPING_APPLY_TIMEOUT_MS) {
+      msg +=
+        ' Bulk PEM apply allows up to 5 minutes; if this appears sooner, the proxy/backend is likely down.';
+    } else {
+      msg +=
+        ' If the backend is busy with ScanX OCR, wait and retry — otherwise confirm it is running.';
+    }
+    return msg;
+  }
+  if (isLeadSearch) {
+    return (
+      `Lead search timed out after ${secs}s. The API took too long to respond — ` +
+      'check staging/backend health and database connectivity, then retry.'
+    );
+  }
+  let msg =
+    'Request timed out on this hosted environment. The API took too long to respond. ' +
+    'This is not a local Vite/8002 proxy issue - check staging/backend health, then retry.';
+  if (timeoutMs >= API_SYNC_TIMEOUT_MS) {
+    msg +=
+      ' For Meta lead sync, open Reports -> Meta Leads (the job may still finish in the background).';
+  }
+  return msg;
+}
+
+
 export type ApiFetchOptions = RequestInit & {
-  /** Override the default 60s client timeout (e.g. long-running Meta sync). */
+  /** Override default client timeout (60s; ScanX paths use longer budgets automatically). */
   timeoutMs?: number;
   /** Optional label for audit log when this request loads data (control + value). */
   auditContext?: { label: string; value?: string };
@@ -219,6 +331,12 @@ export type ApiFetchOptions = RequestInit & {
    * so a flaky auth blip does not eject the user mid-interaction.
    */
   authRedirect?: boolean;
+  /**
+   * When false, skip Exception Report for timeout/http/network failures.
+   * Use for best-effort background polls so DB pool pressure during ScanX
+   * does not spam ERROR rows for notifications/inbox.
+   */
+  reportFailures?: boolean;
 };
 
 function mergeAbortSignals(...signals: AbortSignal[]): AbortSignal {
@@ -236,9 +354,189 @@ function mergeAbortSignals(...signals: AbortSignal[]): AbortSignal {
   return controller.signal;
 }
 
+function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const id = window.setTimeout(resolve, ms);
+    const onAbort = () => {
+      window.clearTimeout(id);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function isTransientUnavailableStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
+function retryAfterDelayMs(response: Response, attempt: number): number {
+  const raw = response.headers.get('Retry-After');
+  if (raw) {
+    const secs = Number(raw);
+    if (Number.isFinite(secs) && secs >= 0) {
+      return Math.min(Math.max(secs, 0.2) * 1000, 8_000);
+    }
+  }
+  return Math.min(400 * attempt, 2_000);
+}
+
 export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
   const {
-    timeoutMs = API_FETCH_TIMEOUT_MS,
+    timeoutMs: timeoutMsOverride,
+    auditContext,
+    authRedirect = true,
+    reportFailures = true,
+    ...requestInit
+  } = options ?? {};
+  const token = getStoredToken();
+
+  if (token && isTokenExpired(token)) {
+    if (authRedirect) redirectToLogin();
+    throw new Error('Session expired. Please log in again.');
+  }
+
+  const cleanBase = BASE_URL.replace(/\/$/, '');
+  const cleanEndpoint = endpoint.replace(/^\//, '');
+  const method = (requestInit.method || 'GET').toUpperCase();
+  const timeoutMs = defaultTimeoutForEndpoint(cleanEndpoint, timeoutMsOverride, method);
+  const isIdempotent = method === 'GET' || method === 'HEAD';
+  // GET/HEAD: retry 502/503/504 (SSH-tunnel pool / busy). Do not retry
+  // AbortError — a 120s–5min abort retried 3x holds sockets and starves OCR.
+  // Never retry POST/PUT/PATCH/DELETE (uploads).
+  const maxAttempts = isIdempotent ? 3 : 1;
+
+  const headers: Record<string, string> = {
+    ...(requestInit.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+    'ngrok-skip-browser-warning': 'true',
+    'X-Nexus-Page': window.location.pathname,
+    ...((options?.headers as Record<string, string>) || {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+
+  const callerSignal = requestInit.signal;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const timeoutController = new AbortController();
+    const timeoutId = window.setTimeout(() => timeoutController.abort(), timeoutMs);
+    const signal = callerSignal
+      ? mergeAbortSignals(callerSignal, timeoutController.signal)
+      : timeoutController.signal;
+
+    let response: Response;
+    try {
+      response = await fetch(`${cleanBase}/${cleanEndpoint}`, {
+        ...requestInit,
+        method: requestInit.method || 'GET',
+        headers,
+        signal,
+      });
+    } catch (error) {
+      window.clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === 'AbortError') {
+        if (callerSignal?.aborted) {
+          throw error;
+        }
+        lastError = error;
+        if (reportFailures) {
+          reportApiFailure({
+            endpoint: cleanEndpoint,
+            kind: 'timeout',
+            timeoutMs,
+          });
+        }
+        throw new Error(buildClientTimeoutMessage(timeoutMs, cleanEndpoint));
+      }
+      if (reportFailures) {
+        reportApiFailure({
+          endpoint: cleanEndpoint,
+          kind: 'network',
+          detail: error instanceof Error ? error.message : 'Network request failed',
+        });
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+
+    // If the server returns any error status (404, 500, 403, etc.), throw it cleanly
+    if (!response.ok) {
+      const errorText = await response.text();
+      let detail = response.statusText;
+      try {
+        const body = errorText ? JSON.parse(errorText) : null;
+        if (body?.detail) {
+          detail = formatApiErrorDetail(body.detail);
+        }
+      } catch {
+        if (errorText) detail = errorText;
+      }
+
+      if (
+        isIdempotent &&
+        isTransientUnavailableStatus(response.status) &&
+        attempt < maxAttempts
+      ) {
+        try {
+          await sleepMs(retryAfterDelayMs(response, attempt), callerSignal);
+        } catch (sleepErr) {
+          if (sleepErr instanceof Error && sleepErr.name === 'AbortError' && callerSignal?.aborted) {
+            throw sleepErr;
+          }
+        }
+        continue;
+      }
+
+      if (reportFailures && response.status !== 401 && response.status !== 429) {
+        reportApiFailure({
+          endpoint: cleanEndpoint,
+          kind: 'http',
+          status: response.status,
+          detail: typeof detail === 'string' ? detail.slice(0, 500) : undefined,
+        });
+      }
+
+      if (shouldRedirectOnAuthFailure(cleanEndpoint, response.status, authRedirect)) {
+        redirectToLogin();
+      }
+
+      throw new Error(detail);
+    }
+
+    // Handle empty or 204 No Content text tracks safely before parsing JSON payload frames
+    const text = await response.text();
+    const json = text ? JSON.parse(text) : {};
+
+    if ((requestInit.method || 'GET').toUpperCase() === 'GET') {
+      void import('./auditTracker').then(({ trackApiRead }) => {
+        trackApiRead(cleanEndpoint, requestInit.method || 'GET', response.status, { auditContext });
+      });
+    }
+
+    // Handle dynamic shape normalization for dictionary-wrapped array responses
+    if (json && !Array.isArray(json)) {
+      const keys = Object.keys(json);
+      if (Array.isArray(json.data) && keys.length === 1) return json.data;
+      if (Array.isArray(json.leads) && keys.length === 1) return json.leads;
+      if (Array.isArray(json.results) && keys.length === 1) return json.results;
+    }
+
+    return json;
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(buildClientTimeoutMessage(timeoutMs, cleanEndpoint));
+}
+
+/** Fetch a binary response (e.g. PDF export) with the same auth/session handling as apiFetch. */
+export async function apiFetchBlob(endpoint: string, options?: ApiFetchOptions): Promise<Blob> {
+  const {
+    timeoutMs: timeoutMsOverride,
     auditContext,
     authRedirect = true,
     ...requestInit
@@ -250,115 +548,10 @@ export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
     throw new Error('Session expired. Please log in again.');
   }
 
-  const timeoutController = new AbortController();
-  const timeoutId = window.setTimeout(() => timeoutController.abort(), timeoutMs);
-  const callerSignal = requestInit.signal;
-  const signal = callerSignal
-    ? mergeAbortSignals(callerSignal, timeoutController.signal)
-    : timeoutController.signal;
-
-  // Combine native objects cleanly while ensuring absolute cross-origin headers
-  const headers: Record<string, string> = {
-    ...(requestInit.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
-    'ngrok-skip-browser-warning': 'true',
-    'X-Nexus-Page': window.location.pathname,
-    ...((options?.headers as Record<string, string>) || {}),
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-
   const cleanBase = BASE_URL.replace(/\/$/, '');
   const cleanEndpoint = endpoint.replace(/^\//, '');
-
-  let response: Response;
-  try {
-    response = await fetch(`${cleanBase}/${cleanEndpoint}`, {
-      ...requestInit,
-      method: requestInit.method || 'GET',
-      headers,
-      signal,
-    });
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      if (callerSignal?.aborted) {
-        throw error;
-      }
-      reportApiFailure({
-        endpoint: cleanEndpoint,
-        kind: 'timeout',
-        timeoutMs,
-      });
-      throw new Error(buildClientTimeoutMessage());
-    }
-    reportApiFailure({
-      endpoint: cleanEndpoint,
-      kind: 'network',
-      detail: error instanceof Error ? error.message : 'Network request failed',
-    });
-    throw error;
-  } finally {
-    window.clearTimeout(timeoutId);
-  }
-
-  // If the server returns any error status (404, 500, 403, etc.), throw it cleanly
-  if (!response.ok) {
-    const errorText = await response.text();
-    let detail = response.statusText;
-    try {
-      const body = errorText ? JSON.parse(errorText) : null;
-      if (body?.detail) {
-        detail = formatApiErrorDetail(body.detail);
-      }
-    } catch {
-      if (errorText) detail = errorText;
-    }
-
-    if (response.status !== 401 && response.status !== 429) {
-      reportApiFailure({
-        endpoint: cleanEndpoint,
-        kind: 'http',
-        status: response.status,
-        detail: typeof detail === 'string' ? detail.slice(0, 500) : undefined,
-      });
-    }
-
-    if (shouldRedirectOnAuthFailure(cleanEndpoint, response.status, authRedirect)) {
-      redirectToLogin();
-    }
-
-    throw new Error(detail);
-  }
-
-  // Handle empty or 204 No Content text tracks safely before parsing JSON payload frames
-  const text = await response.text();
-  const json = text ? JSON.parse(text) : {};
-
-  if ((requestInit.method || 'GET').toUpperCase() === 'GET') {
-    void import('./auditTracker').then(({ trackApiRead }) => {
-      trackApiRead(cleanEndpoint, requestInit.method || 'GET', response.status, { auditContext });
-    });
-  }
-
-  // Handle dynamic shape normalization for dictionary-wrapped array responses
-  if (json && !Array.isArray(json)) {
-    const keys = Object.keys(json);
-    if (Array.isArray(json.data) && keys.length === 1) return json.data;
-    if (Array.isArray(json.leads) && keys.length === 1) return json.leads;
-    if (Array.isArray(json.results) && keys.length === 1) return json.results;
-  }
-
-  return json;
-}
-
-/** Fetch a binary response (e.g. PDF export) with the same auth/session handling as apiFetch. */
-export async function apiFetchBlob(endpoint: string, options?: ApiFetchOptions): Promise<Blob> {
-  const { timeoutMs = API_FETCH_TIMEOUT_MS, auditContext, authRedirect = true, ...requestInit } =
-    options ?? {};
-  const token = getStoredToken();
-
-  if (token && isTokenExpired(token)) {
-    if (authRedirect) redirectToLogin();
-    throw new Error('Session expired. Please log in again.');
-  }
+  const method = (requestInit.method || 'GET').toUpperCase();
+  const timeoutMs = defaultTimeoutForEndpoint(cleanEndpoint, timeoutMsOverride, method);
 
   const timeoutController = new AbortController();
   const timeoutId = window.setTimeout(() => timeoutController.abort(), timeoutMs);
@@ -373,9 +566,6 @@ export async function apiFetchBlob(endpoint: string, options?: ApiFetchOptions):
     ...((options?.headers as Record<string, string>) || {}),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
-
-  const cleanBase = BASE_URL.replace(/\/$/, '');
-  const cleanEndpoint = endpoint.replace(/^\//, '');
 
   let response: Response;
   try {
@@ -396,7 +586,9 @@ export async function apiFetchBlob(endpoint: string, options?: ApiFetchOptions):
         timeoutMs,
       });
       throw new Error(
-        'PDF export timed out. Try narrowing the date range or ask an admin to run a background export.'
+        isScanxEndpoint(cleanEndpoint)
+          ? buildClientTimeoutMessage(timeoutMs, cleanEndpoint)
+          : 'PDF export timed out. Try narrowing the date range or ask an admin to run a background export.'
       );
     }
     reportApiFailure({
@@ -446,7 +638,11 @@ export async function apiFetchBlob(endpoint: string, options?: ApiFetchOptions):
   return response.blob();
 }
 
-export async function apiUpload(endpoint: string, formData: FormData) {
+export async function apiUpload(
+  endpoint: string,
+  formData: FormData,
+  options?: { timeoutMs?: number }
+) {
   const token = getStoredToken();
 
   if (token && isTokenExpired(token)) {
@@ -454,20 +650,47 @@ export async function apiUpload(endpoint: string, formData: FormData) {
     throw new Error('Session expired. Please log in again.');
   }
 
+  const cleanBase = BASE_URL.replace(/\/$/, '');
+  const cleanEndpoint = endpoint.replace(/^\//, '');
+  // ScanX ingest POST: store + 202. Never retry — a timed-out POST may
+  // already have created the document on the server.
+  const timeoutMs = defaultTimeoutForEndpoint(cleanEndpoint, options?.timeoutMs, 'POST');
+
   const headers: Record<string, string> = {
     'ngrok-skip-browser-warning': 'true',
     'X-Nexus-Page': window.location.pathname,
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 
-  const cleanBase = BASE_URL.replace(/\/$/, '');
-  const cleanEndpoint = endpoint.replace(/^\//, '');
+  const timeoutController = new AbortController();
+  const timeoutId = window.setTimeout(() => timeoutController.abort(), timeoutMs);
 
-  const response = await fetch(`${cleanBase}/${cleanEndpoint}`, {
-    method: 'POST',
-    headers,
-    body: formData,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${cleanBase}/${cleanEndpoint}`, {
+      method: 'POST',
+      headers,
+      body: formData,
+      signal: timeoutController.signal,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      reportApiFailure({
+        endpoint: cleanEndpoint,
+        kind: 'timeout',
+        timeoutMs,
+      });
+      throw new Error(buildClientTimeoutMessage(timeoutMs, cleanEndpoint));
+    }
+    reportApiFailure({
+      endpoint: cleanEndpoint,
+      kind: 'network',
+      detail: error instanceof Error ? error.message : 'Network request failed',
+    });
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     const errorText = await response.text();

@@ -15,6 +15,10 @@ export interface NexusSocketListener {
 
 const WS_CONNECTING = 0;
 const WS_OPEN = 1;
+const WS_CLOSING = 2;
+
+const RECONNECT_BASE_MS = 3_000;
+const RECONNECT_MAX_MS = 60_000;
 
 /** Avoid calling WebSocket.close() while CONNECTING (noisy in React Strict Mode). */
 const safeCloseSocket = (ws: WebSocket) => {
@@ -34,13 +38,16 @@ class NexusWebSocketManager {
   private reconnectTimer: number | null = null;
   private idleCloseTimer: number | null = null;
   private intentionalClose = false;
-  private reconnectMs = 3000;
+  private reconnectMs = RECONNECT_BASE_MS;
+  private reconnectAttempt = 0;
 
   subscribe(listener: NexusSocketListener = {}): NexusSocketHandle {
     const id = Symbol();
     this.listeners.set(id, listener);
     this.subscriberCount += 1;
-    this.reconnectMs = listener.reconnectMs ?? this.reconnectMs;
+    if (listener.reconnectMs != null) {
+      this.reconnectMs = listener.reconnectMs;
+    }
     this.cancelIdleClose();
     this.ensureConnected();
 
@@ -113,6 +120,7 @@ class NexusWebSocketManager {
   private disconnect() {
     this.intentionalClose = true;
     this.clearReconnect();
+    this.reconnectAttempt = 0;
     const ws = this.socket;
     this.socket = null;
     if (!ws) return;
@@ -120,10 +128,23 @@ class NexusWebSocketManager {
     safeCloseSocket(ws);
   }
 
+  private scheduleReconnect() {
+    if (this.intentionalClose || this.subscriberCount <= 0) return;
+    this.clearReconnect();
+    const exp = Math.min(
+      RECONNECT_MAX_MS,
+      this.reconnectMs * 2 ** Math.min(this.reconnectAttempt, 5)
+    );
+    const jitter = Math.floor(Math.random() * 400);
+    this.reconnectAttempt += 1;
+    this.reconnectTimer = window.setTimeout(() => this.ensureConnected(), exp + jitter);
+  }
+
   private ensureConnected() {
     if (!getStoredToken()) return;
 
-    if (this.socket?.readyState === WS_CONNECTING || this.socket?.readyState === WS_OPEN) {
+    const state = this.socket?.readyState;
+    if (state === WS_CONNECTING || state === WS_OPEN || state === WS_CLOSING) {
       return;
     }
 
@@ -135,6 +156,7 @@ class NexusWebSocketManager {
 
     ws.onopen = () => {
       if (this.socket !== ws) return;
+      this.reconnectAttempt = 0;
       this.notifyOpen();
     };
 
@@ -142,10 +164,7 @@ class NexusWebSocketManager {
       if (this.socket !== ws) return;
       this.socket = null;
       this.notifyClose();
-      if (!this.intentionalClose && this.subscriberCount > 0) {
-        this.clearReconnect();
-        this.reconnectTimer = window.setTimeout(() => this.ensureConnected(), this.reconnectMs);
-      }
+      this.scheduleReconnect();
     };
 
     ws.onerror = () => {

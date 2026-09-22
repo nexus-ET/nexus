@@ -236,6 +236,15 @@ const NexusDashboard: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
+    // Absolute backstop: if fetch abort never settles (proxy hang), never leave
+    // the shell on Guest + "Loading…" / "Loading navigation..." indefinitely.
+    const SESSION_BOOTSTRAP_TIMEOUT_MS = 20_000;
+    const SESSION_READY_WATCHDOG_MS = 45_000;
+    const watchdogId = window.setTimeout(() => {
+      if (cancelled) return;
+      setAllowedRoutes(prev => prev ?? ['/']);
+      setSessionReady(true);
+    }, SESSION_READY_WATCHDOG_MS);
 
     const loadSession = async () => {
       if (!getStoredToken()) {
@@ -243,6 +252,7 @@ const NexusDashboard: React.FC = () => {
           setCurrentUser(null);
           setAllowedRoutes(['/']);
           setSessionReady(true);
+          window.clearTimeout(watchdogId);
         }
         return;
       }
@@ -250,11 +260,14 @@ const NexusDashboard: React.FC = () => {
       try {
         // Fetch in parallel, but apply BOTH results in one commit so Academia
         // (needs role from users/me) appears with the rest of the menu.
+        // Keep session bootstrap under a short budget so a busy backend cannot leave
+        // the shell stuck on Guest User + "Loading…" for the full 60s API timeout
+        // (UAT and counselors both hit this after heavy shortlist / matching calls).
         const [userData, permData] = await Promise.all([
-          apiFetch('users/me')
+          apiFetch('users/me', { timeoutMs: SESSION_BOOTSTRAP_TIMEOUT_MS })
             .then(data => data as CurrentUser)
             .catch(() => null),
-          apiFetch('permissions/my-role')
+          apiFetch('permissions/my-role', { timeoutMs: SESSION_BOOTSTRAP_TIMEOUT_MS })
             .then(
               data =>
                 data as {
@@ -286,9 +299,63 @@ const NexusDashboard: React.FC = () => {
 
         setCurrentUser(hydratedUser);
         setAllowedRoutes(routes);
+
+        // One quiet retry when bootstrap timed out / failed but a JWT is still present.
+        if (!hydratedUser || !permData?.allowed_routes?.length) {
+          await new Promise(r => window.setTimeout(r, 1500));
+          if (cancelled || !getStoredToken()) return;
+          try {
+            const [retryUser, retryPerm] = await Promise.all([
+              apiFetch('users/me', { timeoutMs: SESSION_BOOTSTRAP_TIMEOUT_MS })
+                .then(data => data as CurrentUser)
+                .catch(() => null),
+              apiFetch('permissions/my-role', { timeoutMs: SESSION_BOOTSTRAP_TIMEOUT_MS })
+                .then(
+                  data =>
+                    data as {
+                      allowed_routes?: string[];
+                      role?: string | null;
+                    }
+                )
+                .catch(() => null),
+            ]);
+            if (cancelled) return;
+            if (retryUser || retryPerm?.allowed_routes?.length) {
+              const retryRoutes = retryPerm?.allowed_routes?.length
+                ? retryPerm.allowed_routes
+                : routes;
+              const retryRole =
+                retryUser?.admin_role?.name ||
+                retryUser?.role ||
+                retryPerm?.role ||
+                roleName;
+              const retryHydrated: CurrentUser | null = retryUser
+                ? {
+                    ...retryUser,
+                    role: retryUser.role || retryRole,
+                    admin_role:
+                      retryUser.admin_role || (retryRole ? { name: retryRole } : null),
+                  }
+                : retryRole
+                  ? {
+                      id: 0,
+                      email: '',
+                      role: retryRole,
+                      admin_role: { name: retryRole },
+                      is_superuser: false,
+                    }
+                  : hydratedUser;
+              setCurrentUser(retryHydrated);
+              setAllowedRoutes(retryRoutes);
+            }
+          } catch {
+            // Keep first-pass Guest/restricted shell; caller can re-login.
+          }
+        }
       } finally {
         if (!cancelled) {
           setSessionReady(true);
+          window.clearTimeout(watchdogId);
         }
       }
     };
@@ -296,6 +363,7 @@ const NexusDashboard: React.FC = () => {
     void loadSession();
     return () => {
       cancelled = true;
+      window.clearTimeout(watchdogId);
     };
   }, []);
 

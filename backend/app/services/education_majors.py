@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from collections import defaultdict
 
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.education_major import EducationMajor
@@ -98,14 +99,34 @@ def _sync_education_major_levels_from_program(
 
 
 def _level_details_for_major(db: Session, major_id: int) -> tuple[list[int], list[str]]:
+    return _level_details_for_majors(db, [major_id]).get(major_id, ([], []))
+
+
+def _level_details_for_majors(
+    db: Session, major_ids: list[int]
+) -> dict[int, tuple[list[int], list[str]]]:
+    """Batch level id/name lookups for many majors (avoids N+1 over high-latency DB)."""
+    if not major_ids:
+        return {}
     rows = (
-        db.query(Level.id, Level.name)
-        .join(EducationMajorLevel, EducationMajorLevel.level_id == Level.id)
-        .filter(EducationMajorLevel.education_major_id == major_id)
-        .order_by(Level.id.asc())
+        db.query(
+            EducationMajorLevel.education_major_id,
+            Level.id,
+            Level.name,
+        )
+        .join(Level, Level.id == EducationMajorLevel.level_id)
+        .filter(EducationMajorLevel.education_major_id.in_(major_ids))
+        .order_by(EducationMajorLevel.education_major_id.asc(), Level.id.asc())
         .all()
     )
-    return [row.id for row in rows], [row.name for row in rows]
+    grouped: dict[int, tuple[list[int], list[str]]] = {
+        major_id: ([], []) for major_id in major_ids
+    }
+    for major_id, level_id, level_name in rows:
+        ids, names = grouped[int(major_id)]
+        ids.append(int(level_id))
+        names.append(level_name)
+    return grouped
 
 
 def _program_counts_by_level_for_major(
@@ -168,10 +189,13 @@ def education_major_to_read(
     db: Session,
     record: EducationMajor,
     *,
+    level_ids: list[int] | None = None,
+    level_names: list[str] | None = None,
     level_program_counts: list[MajorLevelProgramCount] | None = None,
     sub_major_count: int | None = None,
 ) -> EducationMajorRead:
-    level_ids, level_names = _level_details_for_major(db, record.id)
+    if level_ids is None or level_names is None:
+        level_ids, level_names = _level_details_for_major(db, record.id)
     if level_program_counts is None:
         level_program_counts = _program_counts_by_level_for_major(db, record.id)
     if sub_major_count is None:
@@ -223,11 +247,14 @@ def list_education_majors(
     page_size: int = 25,
     sort_by: str = "name",
     sort_dir: str = "asc",
+    eager_relations: bool = True,
 ) -> tuple[list[EducationMajor], int]:
-    q = db.query(EducationMajor).options(
-        joinedload(EducationMajor.program).joinedload(Program.level),
-        joinedload(EducationMajor.super_major),
-    )
+    q = db.query(EducationMajor)
+    if eager_relations:
+        q = q.options(
+            joinedload(EducationMajor.program).joinedload(Program.level),
+            joinedload(EducationMajor.super_major),
+        )
     if active_only:
         q = q.filter(EducationMajor.is_active.is_(True))
     if catalog_only and program_id is None:
@@ -330,7 +357,13 @@ def list_education_majors_read(
     page_size: int = 25,
     sort_by: str = "name",
     sort_dir: str = "asc",
+    lite: bool = False,
 ) -> tuple[list[EducationMajorRead], int]:
+    """List majors as read DTOs.
+
+    When ``lite`` is True, skip level/program enrichment (for filter dropdowns).
+    Still includes ``sub_major_count`` for option labels.
+    """
     rows, total = list_education_majors(
         db,
         query=query,
@@ -343,14 +376,44 @@ def list_education_majors_read(
         page_size=page_size,
         sort_by=sort_by,
         sort_dir=sort_dir,
+        eager_relations=not lite,
     )
     major_ids = [row.id for row in rows]
-    counts_by_major = _program_counts_by_level_for_majors(db, major_ids)
     sub_counts = _sub_major_counts_for_majors(db, major_ids)
+    if lite:
+        return [
+            EducationMajorRead(
+                id=row.id,
+                code=row.code,
+                label=row.label,
+                major_description=None,
+                sub_majors_key_fields=None,
+                program_id=row.program_id,
+                program_name=None,
+                super_major_id=row.super_major_id,
+                super_major_name=None,
+                level_id=None,
+                level_name=None,
+                is_other=row.is_other,
+                sort_order=row.sort_order,
+                is_active=row.is_active,
+                color=row.color,
+                level_ids=[],
+                level_names=[],
+                level_program_counts=[],
+                sub_major_count=sub_counts.get(row.id, 0),
+            )
+            for row in rows
+        ], total
+
+    counts_by_major = _program_counts_by_level_for_majors(db, major_ids)
+    levels_by_major = _level_details_for_majors(db, major_ids)
     return [
         education_major_to_read(
             db,
             row,
+            level_ids=levels_by_major.get(row.id, ([], []))[0],
+            level_names=levels_by_major.get(row.id, ([], []))[1],
             level_program_counts=counts_by_major.get(row.id, []),
             sub_major_count=sub_counts.get(row.id, 0),
         )
@@ -378,10 +441,13 @@ def list_education_majors_read_all(
     major_ids = [row.id for row in rows]
     counts_by_major = _program_counts_by_level_for_majors(db, major_ids)
     sub_counts = _sub_major_counts_for_majors(db, major_ids)
+    levels_by_major = _level_details_for_majors(db, major_ids)
     return [
         education_major_to_read(
             db,
             row,
+            level_ids=levels_by_major.get(row.id, ([], []))[0],
+            level_names=levels_by_major.get(row.id, ([], []))[1],
             level_program_counts=counts_by_major.get(row.id, []),
             sub_major_count=sub_counts.get(row.id, 0),
         )
@@ -432,6 +498,9 @@ def create_education_major(db: Session, payload: EducationMajorCreate) -> Educat
     db.flush()
     db.commit()
     db.refresh(record)
+    from app.services.taxonomy_embeddings import schedule_major_embedding
+
+    schedule_major_embedding(record.id)
     loaded = get_education_major(db, record.id)
     return education_major_to_read(db, loaded or record)
 
@@ -491,31 +560,152 @@ def update_education_major(
     ensure_major_color(db, record)
     db.commit()
     db.refresh(record)
+    from app.services.taxonomy_embeddings import schedule_major_embedding
+
+    schedule_major_embedding(record.id)
     loaded = get_education_major(db, record.id)
     return education_major_to_read(db, loaded or record)
 
 
+def _format_named_blockers(
+    rows: list[tuple[int, str]], *, kind: str, limit: int = 8
+) -> str:
+    if not rows:
+        return ""
+    shown = rows[:limit]
+    parts = [f"{name!r} (id={rid})" for rid, name in shown]
+    extra = len(rows) - len(shown)
+    suffix = f" and {extra} more" if extra > 0 else ""
+    return f"{len(rows)} {kind}: " + ", ".join(parts) + suffix
+
+
 def delete_education_major(db: Session, major_id: int) -> None:
-    from app.models.education_sub_major import EducationSubMajor
+    from app.models.education_course import EducationCourse
+    from app.models.target_course import TargetCourse
 
     record = get_education_major(db, major_id)
     if not record:
         raise HTTPException(status_code=404, detail="Major not found.")
-    sub_count = (
+
+    sub_majors = (
         db.query(EducationSubMajor)
         .filter(EducationSubMajor.major_id == major_id)
-        .count()
+        .order_by(EducationSubMajor.id.asc())
+        .all()
     )
-    if sub_count:
+    blocked_subs: list[tuple[int, str, int]] = []
+    empty_subs: list[EducationSubMajor] = []
+    for sub in sub_majors:
+        pem_count = (
+            db.query(ProgramEducationMajorMapping)
+            .filter(ProgramEducationMajorMapping.education_sub_major_id == sub.id)
+            .count()
+        )
+        if pem_count:
+            blocked_subs.append((sub.id, sub.name, pem_count))
+        else:
+            empty_subs.append(sub)
+
+    if blocked_subs:
+        parts = [
+            f"{name!r} (id={sid}, {n} program mapping{'s' if n != 1 else ''})"
+            for sid, name, n in blocked_subs[:8]
+        ]
+        extra = len(blocked_subs) - min(len(blocked_subs), 8)
+        suffix = f" and {extra} more" if extra > 0 else ""
         raise HTTPException(
             status_code=409,
             detail=(
                 "Cannot delete this major because "
-                f"{sub_count} sub-major{'s' if sub_count != 1 else ''} still reference it."
+                f"{len(blocked_subs)} sub-major"
+                f"{'s' if len(blocked_subs) != 1 else ''} still have program "
+                f"mappings: " + ", ".join(parts) + suffix + ". "
+                "Remap or remove those program mappings first."
             ),
         )
-    db.delete(record)
-    db.commit()
+
+    # Empty child sub-majors (no PEMs) are safe to remove with the major.
+    for sub in empty_subs:
+        db.delete(sub)
+
+    # Nullable NO ACTION FKs — detach rather than fail with a vague IntegrityError.
+    (
+        db.query(TargetCourse)
+        .filter(TargetCourse.education_major_id == major_id)
+        .update({TargetCourse.education_major_id: None}, synchronize_session=False)
+    )
+    (
+        db.query(EducationCourse)
+        .filter(EducationCourse.education_major_id == major_id)
+        .update({EducationCourse.education_major_id: None}, synchronize_session=False)
+    )
+
+    try:
+        db.delete(record)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        detail = _major_delete_integrity_detail(db, major_id)
+        raise HTTPException(status_code=409, detail=detail) from None
+
+
+def _major_delete_integrity_detail(db: Session, major_id: int) -> str:
+    """Best-effort explanation when a remaining FK still blocks delete."""
+    from app.models.education_course import EducationCourse
+    from app.models.target_course import TargetCourse
+
+    blockers: list[str] = []
+
+    subs = (
+        db.query(EducationSubMajor.id, EducationSubMajor.name)
+        .filter(EducationSubMajor.major_id == major_id)
+        .order_by(EducationSubMajor.id.asc())
+        .all()
+    )
+    msg = _format_named_blockers([(r.id, r.name) for r in subs], kind="sub-majors")
+    if msg:
+        blockers.append(msg)
+
+    targets = (
+        db.query(TargetCourse.id, TargetCourse.label)
+        .filter(TargetCourse.education_major_id == major_id)
+        .order_by(TargetCourse.id.asc())
+        .all()
+    )
+    msg = _format_named_blockers(
+        [(r.id, r.label) for r in targets], kind="target courses"
+    )
+    if msg:
+        blockers.append(msg)
+
+    courses = (
+        db.query(EducationCourse.id, EducationCourse.label)
+        .filter(EducationCourse.education_major_id == major_id)
+        .order_by(EducationCourse.id.asc())
+        .all()
+    )
+    msg = _format_named_blockers(
+        [(r.id, r.label) for r in courses], kind="education courses"
+    )
+    if msg:
+        blockers.append(msg)
+
+    pem_count = (
+        db.query(ProgramEducationMajorMapping)
+        .filter(ProgramEducationMajorMapping.education_major_id == major_id)
+        .count()
+    )
+    if pem_count:
+        blockers.append(f"{pem_count} program education major mappings")
+
+    if blockers:
+        return (
+            "Cannot delete this major because other records still reference it: "
+            + "; ".join(blockers)
+            + "."
+        )
+    return "Cannot delete this major because other records still reference it."
+
 
 
 def get_education_major_by_code(db: Session, code: str) -> EducationMajor | None:

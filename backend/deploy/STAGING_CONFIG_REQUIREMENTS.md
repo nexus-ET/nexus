@@ -54,8 +54,9 @@ This release does **not** introduce new mandatory secrets beyond what Staging al
 | `ENVIRONMENT` | Yes | Should be staging-like (not develop tunnel settings) |
 | `FRONTEND_URL` | Yes | `https://nexus-dev.edutrust.in` (or current Staging front URL) |
 | `SMTP_HOST` | Yes for Exception emails | Hostinger / SMTP provider |
-| `SMTP_PORT` | Yes for Exception emails | Usually `465` or `587` |
-| `SMTP_USE_TLS` | Yes for Exception emails | Match provider (`true`/`false`) |
+| `SMTP_PORT` | Yes for Exception emails | `465` (SSL) or `587` (STARTTLS) — do not mix |
+| `SMTP_USE_TLS` | Yes for Exception emails | `true` for 587 STARTTLS; ignored on 465 |
+| `SMTP_USE_SSL` | Optional | Override auto mode (`true`/`false`); default from port |
 | `SMTP_USER` | Yes for Exception emails | |
 | `SMTP_PASSWORD` | Yes for Exception emails | Never commit |
 | `SMTP_FROM_EMAIL` | Yes for Exception emails | From address |

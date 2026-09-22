@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import smtplib
+import ssl
+import threading
 import time
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
@@ -10,14 +12,20 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# GoDaddy / shared SMTP hosts drop parallel SSL handshakes (WRONG_VERSION_NUMBER /
+# WinError 10054). Serialize all deliveries so exception-alert storms stay reliable.
+_smtp_send_lock = threading.Lock()
+
 # Transient transport failures worth a short retry (provider resets, flaky TLS).
 # Do NOT include bare OSError: since Python 3.4, smtplib.SMTPException subclasses
 # OSError, so auth/protocol failures would be misclassified and retried.
+# ssl.SSLError is included: concurrent/racy handshakes often surface as
+# WRONG_VERSION_NUMBER even when port/mode are correct (465 + SMTP_SSL).
 _TRANSIENT_SMTP_ERRORS = (
     ConnectionResetError,
     ConnectionAbortedError,
     ConnectionRefusedError,
-    TimeoutError,
+    ssl.SSLError,
     smtplib.SMTPServerDisconnected,
     smtplib.SMTPConnectError,
 )
@@ -53,28 +61,38 @@ _SMTP_SOCKET_TIMEOUT_SECONDS = 8
 _SMTP_MAX_ATTEMPTS = 2
 
 
+def _use_implicit_ssl(port: int) -> bool:
+    """465 → SMTP_SSL; 587 → SMTP (+ STARTTLS when SMTP_USE_TLS). Optional override."""
+    override = getattr(settings, "SMTP_USE_SSL", None)
+    if override is not None:
+        return bool(override)
+    return int(port) == 465
+
+
 def _deliver(message: EmailMessage, *, recipients: list[str]) -> None:
     host = settings.SMTP_HOST
     port = int(settings.SMTP_PORT or 587)
-    # Port 465 = implicit SSL (SMTP_SSL). Port 587 = plain SMTP + STARTTLS.
-    use_implicit_ssl = port == 465
+    use_implicit_ssl = _use_implicit_ssl(port)
     # Envelope MAIL FROM must match the authenticated mailbox on many hosts
     # (GoDaddy / Hostinger); a mismatched From header alone often drops external mail.
     envelope_from = (settings.SMTP_USER or settings.SMTP_FROM_EMAIL or "").strip() or None
 
-    if use_implicit_ssl:
-        with smtplib.SMTP_SSL(host, port, timeout=_SMTP_SOCKET_TIMEOUT_SECONDS) as server:
+    # One SMTP session at a time — parallel SSL to the same host is flaky.
+    with _smtp_send_lock:
+        if use_implicit_ssl:
+            with smtplib.SMTP_SSL(host, port, timeout=_SMTP_SOCKET_TIMEOUT_SECONDS) as server:
+                if settings.SMTP_USER and settings.SMTP_PASSWORD:
+                    server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                server.send_message(message, from_addr=envelope_from, to_addrs=recipients)
+            return
+
+        with smtplib.SMTP(host, port, timeout=_SMTP_SOCKET_TIMEOUT_SECONDS) as server:
+            # STARTTLS only on non-SSL ports (typically 587). Never pair with SMTP_SSL/465.
+            if settings.SMTP_USE_TLS:
+                server.starttls()
             if settings.SMTP_USER and settings.SMTP_PASSWORD:
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
             server.send_message(message, from_addr=envelope_from, to_addrs=recipients)
-        return
-
-    with smtplib.SMTP(host, port, timeout=_SMTP_SOCKET_TIMEOUT_SECONDS) as server:
-        if settings.SMTP_USE_TLS:
-            server.starttls()
-        if settings.SMTP_USER and settings.SMTP_PASSWORD:
-            server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-        server.send_message(message, from_addr=envelope_from, to_addrs=recipients)
 
 
 def send_email(
@@ -184,10 +202,12 @@ def send_email(
             return False
         except _TRANSIENT_SMTP_ERRORS as exc:
             if attempt >= attempts:
-                logger.exception(
-                    "Failed to send email after %s attempts: %s (%s)",
+                # Soft-fail: no traceback spam for known flaky TLS/reset paths.
+                logger.warning(
+                    "Failed to send email after %s attempts: %s (%s: %s)",
                     attempts,
                     subject,
+                    type(exc).__name__,
                     exc,
                 )
                 return False

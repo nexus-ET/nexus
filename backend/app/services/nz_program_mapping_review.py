@@ -50,6 +50,8 @@ def bulk_apply_program_mappings(
     *,
     nz_scope_only: bool = True,
     ca_scope_only: bool = False,
+    us_scope_only: bool = False,
+    de_scope_only: bool = False,
 ) -> ProgramMappingBulkApplyResponse:
     if ca_scope_only:
         from app.services import ca_program_mapping_review as ca_review
@@ -58,6 +60,22 @@ def bulk_apply_program_mappings(
             db,
             items,
             ca_scope_only=True,
+        )
+    if us_scope_only:
+        from app.services import us_program_mapping_review as us_review
+
+        return us_review.bulk_apply_program_mappings(
+            db,
+            items,
+            us_scope_only=True,
+        )
+    if de_scope_only:
+        from app.services import de_program_mapping_review as de_review
+
+        return de_review.bulk_apply_program_mappings(
+            db,
+            items,
+            de_scope_only=True,
         )
     scope_validator = _nz_scope_error if nz_scope_only else None
     return shared.bulk_apply_program_mappings(

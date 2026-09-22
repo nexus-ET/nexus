@@ -1,24 +1,24 @@
-"""Framework /academia/degrees offering filters (country / institution)."""
+"""Framework /academia/degrees offering filters (country / institution / pem_gap)."""
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Query, sessionmaker
+from sqlalchemy.dialects import postgresql
 
-from app.models.program import Program
-from app.services.academia_hub_service import _program_offering_match_exists
+# Import relationship targets so Program/Level mappers can configure in isolation.
+from app.models.education_degree import EducationDegree  # noqa: F401
+from app.models.level import Level  # noqa: F401
+from app.models.program import Program  # noqa: F401
+from app.services.academia_hub_service import (
+    _program_offering_match_exists,
+    _program_pem_gap_filter,
+)
 
 
 def _compile(clause) -> str:
-    engine = create_engine("sqlite://")
-    db = sessionmaker(bind=engine)()
-    try:
-        sql = str(
-            Query(Program.id, session=db)
-            .filter(clause)
-            .statement.compile(compile_kwargs={"literal_binds": True})
+    return str(
+        clause.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
         )
-    finally:
-        db.close()
-    return sql.lower()
+    ).lower()
 
 
 def test_institution_filter_uses_inner_offering_join_not_left():
@@ -50,3 +50,30 @@ def test_institution_and_country_filters_are_both_applied():
     assert "7" in sql
     assert "institution_id" in sql
     assert "country_id" in sql
+
+
+def test_pem_gap_both_requires_no_major_and_no_sub():
+    sql = _compile(_program_pem_gap_filter("both"))
+    assert "program_education_major_mappings" in sql
+    assert "exists" in sql
+    assert "not exists" in sql or "not (exists" in sql
+
+
+def test_pem_gap_major_requires_no_major_pem():
+    sql = _compile(_program_pem_gap_filter("major"))
+    assert "program_education_major_mappings" in sql
+    assert "not exists" in sql or "not (exists" in sql
+
+
+def test_pem_gap_sub_major_is_major_only():
+    sql = _compile(_program_pem_gap_filter("sub_major"))
+    assert "program_education_major_mappings" in sql
+    assert "exists" in sql
+    assert "not exists" in sql or "not (exists" in sql
+    assert "education_sub_major_id" in sql
+
+
+def test_pem_gap_empty_returns_none():
+    assert _program_pem_gap_filter(None) is None
+    assert _program_pem_gap_filter("") is None
+    assert _program_pem_gap_filter("  ") is None

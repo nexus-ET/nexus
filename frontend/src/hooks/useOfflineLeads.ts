@@ -57,6 +57,37 @@ export function useUpdateOfflineLead() {
   });
 }
 
+export function useSetOfflineLeadActive() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      isActive,
+      reasons,
+    }: {
+      id: number;
+      isActive: boolean;
+      reasons: string[];
+    }) => {
+      const cleaned = (reasons || []).map(item => item.trim()).filter(Boolean);
+      if (!cleaned.length) {
+        throw new Error('Select at least one reason.');
+      }
+      return apiFetch(`leads/offline/${id}/status`, {
+        method: 'POST',
+        body: JSON.stringify({
+          is_active: isActive,
+          new_status: isActive ? 'active' : 'inactive',
+          reasons: cleaned,
+        }),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['offline-leads'] });
+    },
+  });
+}
+
 function buildDuplicateCheckUrl(
   email: string,
   phoneCountryIso2: string,

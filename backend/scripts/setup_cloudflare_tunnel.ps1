@@ -153,6 +153,8 @@ $credRelative = "credentials/$TunnelName.json"
 $configYaml = @(
     "tunnel: $TunnelName"
     "credentials-file: $credRelative"
+    "# Prefer HTTP/2 on Windows / restricted UDP; run_dev.py also passes --protocol http2"
+    "protocol: http2"
     ""
     "ingress:"
     "  - hostname: $Hostname"
@@ -175,6 +177,8 @@ Set-EnvKey "NEXUS_TUNNEL_MODE" "named"
 Set-EnvKey "NEXUS_TUNNEL_NAME" $TunnelName
 Set-EnvKey "PUBLIC_TUNNEL_BASE" $publicBase
 Set-EnvKey "NEXUS_TUNNEL_ENABLED" "true"
+Set-EnvKey "NEXUS_TUNNEL_PROTOCOL" "http2"
+Set-EnvKey "NEXUS_TUNNEL_EDGE_IP_VERSION" "4"
 
 Write-Host ""
 Write-Host "Done. Stable tunnel URL:" -ForegroundColor Green

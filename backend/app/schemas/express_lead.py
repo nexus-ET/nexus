@@ -7,20 +7,25 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 class ExpressLeadCreate(BaseModel):
     first_name: str = Field(..., min_length=1, max_length=100)
-    last_name: str = Field(..., min_length=1, max_length=100)
+    last_name: str = Field(default="", max_length=100)
     email: EmailStr = Field(..., min_length=3, max_length=255)
     phone_country_iso2: str = Field(..., min_length=2, max_length=2)
     phone_local: str = Field(..., min_length=10, max_length=10)
     target_destination_iso2s: list[str] = Field(default_factory=list, max_length=6)
     target_major_ids: list[int] = Field(default_factory=list)
 
-    @field_validator("first_name", "last_name")
+    @field_validator("first_name")
     @classmethod
-    def normalize_name(cls, value: str) -> str:
+    def normalize_first_name(cls, value: str) -> str:
         normalized = value.strip()
         if not normalized:
             raise ValueError("This field is required.")
         return normalized
+
+    @field_validator("last_name")
+    @classmethod
+    def normalize_last_name(cls, value: str | None) -> str:
+        return (value or "").strip()
 
     @field_validator("email", mode="before")
     @classmethod

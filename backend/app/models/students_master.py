@@ -39,6 +39,7 @@ class StudentsMaster(Base):
     date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
     gender: Mapped[str | None] = mapped_column(String(20), nullable=True)
     marital_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    spouse_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     phone_country_iso2: Mapped[str | None] = mapped_column(String(2), nullable=True)

@@ -52,6 +52,8 @@ import FrameworkLevelsPage from './components/academia/FrameworkLevelsPage';
 import FrameworkHierarchySummaryPage from './components/academia/FrameworkHierarchySummaryPage';
 import FrameworkNzMappingReviewPage from './components/academia/FrameworkNzMappingReviewPage';
 import FrameworkCaMappingReviewPage from './components/academia/FrameworkCaMappingReviewPage';
+import FrameworkUsMappingReviewPage from './components/academia/FrameworkUsMappingReviewPage';
+import FrameworkDeMappingReviewPage from './components/academia/FrameworkDeMappingReviewPage';
 import InstitutionsManagePage from './components/academia/InstitutionsManagePage';
 import InstitutionsCollegesManagePage from './components/academia/InstitutionsCollegesManagePage';
 import InstitutionIntakeManagePage from './components/academia/intakes/InstitutionIntakeManagePage';
@@ -212,6 +214,8 @@ const router = createBrowserRouter(
             <Route path="courses" element={<FrameworkCoursesPage embedded />} />
             <Route path="nz-mapping-review" element={<FrameworkNzMappingReviewPage embedded />} />
             <Route path="ca-mapping-review" element={<FrameworkCaMappingReviewPage embedded />} />
+            <Route path="us-mapping-review" element={<FrameworkUsMappingReviewPage embedded />} />
+            <Route path="de-mapping-review" element={<FrameworkDeMappingReviewPage embedded />} />
           </Route>
           <Route path=":section/:entity" element={<AcademiaEntityPage />} />
           <Route path=":section/:entity/:recordId" element={<AcademiaEntityPage />} />
