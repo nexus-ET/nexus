@@ -171,6 +171,7 @@ def save_business_profile(
         db,
         business_id,
         business_name=payload.business_name,
+        business_short_name=payload.business_short_name,
         business_domain=payload.business_domain,
         address_line1=payload.address_line1,
         address_line2=payload.address_line2,

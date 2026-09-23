@@ -8,10 +8,48 @@ because its label failed to match.
 
 from __future__ import annotations
 
+import logging
 import re
+from difflib import SequenceMatcher
 from typing import Any, Callable
 
-from rapidfuzz import fuzz
+logger = logging.getLogger(__name__)
+
+try:
+    from rapidfuzz import fuzz as _rf_fuzz
+
+    def _token_set_ratio(a: str, b: str) -> float:
+        return float(_rf_fuzz.token_set_ratio(a, b))
+
+    def _wratio(a: str, b: str) -> float:
+        return float(_rf_fuzz.WRatio(a, b))
+
+except ImportError:  # pragma: no cover - staging/venv gap must not blank Review panels
+    logger.warning(
+        "rapidfuzz is not installed; using difflib for ScanX label matching. "
+        "Install rapidfuzz>=3.0.0 for better passport OCR anchors."
+    )
+
+    def _token_set_ratio(a: str, b: str) -> float:
+        ta = set(a.split())
+        tb = set(b.split())
+        if not ta or not tb:
+            return 100.0 * SequenceMatcher(None, a, b).ratio()
+        inter = " ".join(sorted(ta & tb))
+        only_a = " ".join(sorted(ta - tb))
+        only_b = " ".join(sorted(tb - ta))
+        combined_a = f"{inter} {only_a}".strip()
+        combined_b = f"{inter} {only_b}".strip()
+        scores = [
+            SequenceMatcher(None, a, b).ratio(),
+            SequenceMatcher(None, combined_a, combined_b).ratio(),
+            SequenceMatcher(None, inter, combined_b).ratio() if inter else 0.0,
+            SequenceMatcher(None, combined_a, inter).ratio() if inter else 0.0,
+        ]
+        return 100.0 * max(scores)
+
+    def _wratio(a: str, b: str) -> float:
+        return 100.0 * SequenceMatcher(None, a, b).ratio()
 
 # Fuzzy label threshold (0-100). Short labels need a higher bar so
 # "Spouse" does not match "Father" and "Pita No." does not match "File No.".
@@ -144,14 +182,14 @@ def _threshold_for(alias: str) -> int:
 
 
 def fuzzy_label_score(ocr_text: str | None, canonical: str) -> float:
-    """rapidfuzz similarity after OCR digit lookalike normalization."""
+    """Label similarity after OCR digit lookalike normalization (rapidfuzz or difflib)."""
     a = normalize_label_text(ocr_text)
     b = normalize_label_text(canonical)
     if not a or not b:
         return 0.0
     if _confusable_collision(a, b):
         return 0.0
-    return float(max(fuzz.token_set_ratio(a, b), fuzz.WRatio(a, b)))
+    return float(max(_token_set_ratio(a, b), _wratio(a, b)))
 
 
 def best_fuzzy_alias(

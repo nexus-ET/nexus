@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
+
+JsonColumn = JSON().with_variant(JSONB, "postgresql")
 
 
 class CounselorStatusMaster(Base):
@@ -48,6 +51,12 @@ class CounselorFollowupLog(Base):
     points_discussed: Mapped[str] = mapped_column(Text, nullable=False)
     action_items: Mapped[str | None] = mapped_column(Text, nullable=True)
     target_completion_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    checklist_email_to: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    checklist_email_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    checklist_sent_documents: Mapped[list | None] = mapped_column(JsonColumn, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

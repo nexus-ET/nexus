@@ -47,6 +47,7 @@ import FrameworkProgramsPage from './components/academia/FrameworkProgramsPage';
 import FrameworkSubMajorsPage from './components/academia/FrameworkSubMajorsPage';
 import FrameworkSuperMajorsPage from './components/academia/FrameworkSuperMajorsPage';
 import FrameworkCoursesPage from './components/academia/FrameworkCoursesPage';
+import DocumentRequirementsPage from './components/academia/DocumentRequirementsPage';
 import FrameworkDegreesPage from './components/academia/FrameworkDegreesPage';
 import FrameworkLevelsPage from './components/academia/FrameworkLevelsPage';
 import FrameworkHierarchySummaryPage from './components/academia/FrameworkHierarchySummaryPage';
@@ -212,6 +213,10 @@ const router = createBrowserRouter(
             <Route path="sub-majors" element={<FrameworkSubMajorsPage embedded />} />
             <Route path="degrees" element={<Navigate to="../programs" replace />} />
             <Route path="courses" element={<FrameworkCoursesPage embedded />} />
+            <Route
+              path="document-requirements"
+              element={<DocumentRequirementsPage embedded />}
+            />
             <Route path="nz-mapping-review" element={<FrameworkNzMappingReviewPage embedded />} />
             <Route path="ca-mapping-review" element={<FrameworkCaMappingReviewPage embedded />} />
             <Route path="us-mapping-review" element={<FrameworkUsMappingReviewPage embedded />} />

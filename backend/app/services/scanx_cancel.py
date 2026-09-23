@@ -42,15 +42,50 @@ class ScanxCancelResult:
 
 
 def bind_job(document_id: int) -> None:
-    """Remember the active document on this thread and copied executor contexts."""
+    """Remember the active document on this thread and copied executor contexts.
+
+    Preserves any queue/slot wait_ms already recorded on this thread (e.g. parse
+    slot wait in ``_start_thread`` before ``process_scanx_document`` runs).
+    """
     doc_id = int(document_id)
+    prior_wait = getattr(_current, "wait_ms", 0) or 0
     _current.document_id = doc_id
+    try:
+        _current.wait_ms = max(0, int(prior_wait))
+    except (TypeError, ValueError):
+        _current.wait_ms = 0
     _current_doc.set(doc_id)
 
 
 def unbind_job() -> None:
     _current.document_id = None
+    _current.wait_ms = 0
     _current_doc.set(None)
+
+
+def add_job_wait_ms(ms: int) -> None:
+    """Accumulate queue / slot wait so leave_parsing_ms can exclude it."""
+    try:
+        delta = max(0, int(ms))
+    except (TypeError, ValueError):
+        return
+    if delta <= 0:
+        return
+    cur = getattr(_current, "wait_ms", 0) or 0
+    try:
+        _current.wait_ms = int(cur) + delta
+    except (TypeError, ValueError):
+        _current.wait_ms = delta
+
+
+def take_job_wait_ms() -> int:
+    """Return and clear accumulated wait milliseconds for this job thread."""
+    raw = getattr(_current, "wait_ms", 0) or 0
+    _current.wait_ms = 0
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
 
 
 def current_job_document_id() -> int | None:

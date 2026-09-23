@@ -72,6 +72,7 @@ def update_business_profile(
     business_id: int,
     *,
     business_name: str,
+    business_short_name: str | None = None,
     business_domain: str | None,
     address_line1: str | None,
     address_line2: str | None,
@@ -90,6 +91,7 @@ def update_business_profile(
     office_email_contacts: list[dict[str, Any]] | None = None,
 ) -> dict:
     cleaned_name = business_name.strip()
+    cleaned_short_name = _optional_text(business_short_name)
     cleaned_domain = _optional_text(business_domain)
     cleaned_address_line1 = _optional_text(address_line1)
     cleaned_address_line2 = _optional_text(address_line2)
@@ -135,6 +137,7 @@ def update_business_profile(
         db.add(business)
 
     business.name = cleaned_name
+    business.short_name = cleaned_short_name
     business.domain = cleaned_domain
     business.address_line1 = cleaned_address_line1
     business.address_line2 = cleaned_address_line2
@@ -422,6 +425,7 @@ def _serialize_business(business: Business) -> dict:
     return {
         "business_id": business.id,
         "business_name": business.name,
+        "business_short_name": getattr(business, "short_name", None),
         "business_domain": business.domain,
         "address_line1": business.address_line1,
         "address_line2": business.address_line2,

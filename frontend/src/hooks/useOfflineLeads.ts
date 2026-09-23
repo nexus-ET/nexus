@@ -14,6 +14,8 @@ function buildOfflineLeadsUrl(query: OfflineLeadsQuery): string {
   params.set('page', String(query.page));
   params.set('page_size', String(query.pageSize));
   if (query.q.trim()) params.set('q', query.q.trim());
+  if (query.name?.trim()) params.set('name', query.name.trim());
+  if (query.studentId?.trim()) params.set('student_id', query.studentId.trim());
   if (query.status !== 'ALL') params.set('status', query.status);
   params.set('sort_by', query.sortBy);
   params.set('sort_dir', query.sortDir);

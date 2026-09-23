@@ -406,8 +406,10 @@ export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
   const isIdempotent = method === 'GET' || method === 'HEAD';
   // GET/HEAD: retry 502/503/504 (SSH-tunnel pool / busy). Do not retry
   // AbortError — a 120s–5min abort retried 3x holds sockets and starves OCR.
-  // Never retry POST/PUT/PATCH/DELETE (uploads).
-  const maxAttempts = isIdempotent ? 3 : 1;
+  // Never retry POST/PUT/PATCH/DELETE (uploads) — except ScanX bulk-delete,
+  // which is hard-delete idempotent (already-gone ids are skipped).
+  const isScanxBulkDelete = /^scanx\/documents\/bulk-delete/i.test(cleanEndpoint);
+  const maxAttempts = isIdempotent ? 3 : isScanxBulkDelete ? 2 : 1;
 
   const headers: Record<string, string> = {
     ...(requestInit.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
@@ -477,7 +479,7 @@ export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
       }
 
       if (
-        isIdempotent &&
+        (isIdempotent || isScanxBulkDelete) &&
         isTransientUnavailableStatus(response.status) &&
         attempt < maxAttempts
       ) {
@@ -535,6 +537,30 @@ export async function apiFetch(endpoint: string, options?: ApiFetchOptions) {
 
 /** Fetch a binary response (e.g. PDF export) with the same auth/session handling as apiFetch. */
 export async function apiFetchBlob(endpoint: string, options?: ApiFetchOptions): Promise<Blob> {
+  const { blob } = await apiFetchBlobDownload(endpoint, options);
+  return blob;
+}
+
+function filenameFromContentDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const utf8Match = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(header);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].trim().replace(/^"+|"+$/g, ''));
+    } catch {
+      /* fall through */
+    }
+  }
+  const plainMatch = /filename\s*=\s*("?)([^";]+)\1/i.exec(header);
+  const raw = plainMatch?.[2]?.trim();
+  return raw || null;
+}
+
+/** Like apiFetchBlob, but also returns Content-Disposition filename when present. */
+export async function apiFetchBlobDownload(
+  endpoint: string,
+  options?: ApiFetchOptions
+): Promise<{ blob: Blob; filename: string | null }> {
   const {
     timeoutMs: timeoutMsOverride,
     auditContext,
@@ -635,7 +661,10 @@ export async function apiFetchBlob(endpoint: string, options?: ApiFetchOptions):
     });
   }
 
-  return response.blob();
+  const filename =
+    filenameFromContentDisposition(response.headers.get('Content-Disposition')) ||
+    response.headers.get('X-Checklist-Filename');
+  return { blob: await response.blob(), filename };
 }
 
 export async function apiUpload(

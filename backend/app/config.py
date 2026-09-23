@@ -219,6 +219,10 @@ class Settings(BaseSettings):
     # Public CDN/custom domain base, e.g. https://assets.example.com (no trailing slash)
     R2_PUBLIC_BASE_URL: str | None = None
     R2_ENDPOINT_URL: str | None = None
+    # Object-key prefix for Document Requirement sample templates (no leading/trailing slash)
+    DOCUMENT_TEMPLATE_R2_PREFIX: str = "INSTITUTIONS/DOCUMENTS/TEMPLATES"
+    # Object-key prefix for generated Document Checklist PDFs (no leading/trailing slash)
+    DOCUMENT_CHECKLIST_R2_PREFIX: str = "INSTITUTIONS/DOCUMENTS/CHECKLIST"
 
     # ScanX CRM document ingest (env-only limits; no admin UI in v1)
     # Defaults suit local/dev; production must set explicitly in .env.

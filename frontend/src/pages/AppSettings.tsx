@@ -216,6 +216,7 @@ function isWorkspaceSectionId(value: string | null): value is WorkspaceSectionId
 interface BusinessProfile {
   business_id: number;
   business_name: string;
+  business_short_name: string | null;
   business_domain: string | null;
   address_line1: string | null;
   address_line2: string | null;
@@ -237,6 +238,7 @@ interface BusinessProfile {
 
 type BusinessProfileDraft = {
   business_name: string;
+  business_short_name: string;
   business_domain: string;
   address_line1: string;
   address_line2: string;
@@ -257,6 +259,7 @@ type BusinessProfileFieldErrors = Partial<
 
 const EMPTY_BUSINESS_PROFILE_DRAFT: BusinessProfileDraft = {
   business_name: '',
+  business_short_name: '',
   business_domain: '',
   address_line1: '',
   address_line2: '',
@@ -348,6 +351,7 @@ const businessProfileToDraft = (profile: BusinessProfile | null): BusinessProfil
   const contacts = contactsFromProfile(profile);
   return {
     business_name: profile?.business_name ?? '',
+    business_short_name: profile?.business_short_name ?? '',
     business_domain: profile?.business_domain ?? '',
     address_line1: profile?.address_line1 ?? '',
     address_line2: profile?.address_line2 ?? '',
@@ -761,6 +765,7 @@ const AppSettings: React.FC = () => {
             method: 'PUT',
             body: JSON.stringify({
               business_name: businessProfileDraft.business_name.trim(),
+              business_short_name: businessProfileDraft.business_short_name.trim() || null,
               business_domain: businessProfileDraft.business_domain.trim() || null,
               address_line1: businessProfileDraft.address_line1.trim() || null,
               address_line2: businessProfileDraft.address_line2.trim() || null,
@@ -1366,9 +1371,19 @@ Scholarship Guidance | Funding options, eligibility, and application tips`}
                   'Core name and public-facing web presence for this tenant.'
                 )}
                 <div className="col-span-1 grid grid-cols-1 items-start gap-x-6 gap-y-4 md:col-span-2 md:grid-cols-2 xl:col-span-3 xl:grid-cols-5">
-                  {renderBusinessProfileField('business-name', 'Business Name', 'business_name', {
-                    required: true,
-                  })}
+                  <div className="min-w-0 grid grid-cols-2 gap-x-3">
+                    {renderBusinessProfileField('business-name', 'Business Name', 'business_name', {
+                      required: true,
+                    })}
+                    {renderBusinessProfileField(
+                      'business-short-name',
+                      'Business short name',
+                      'business_short_name',
+                      {
+                        placeholder: 'Short name',
+                      }
+                    )}
+                  </div>
                   {renderBusinessProfileField('business-domain', 'Business Domain', 'business_domain', {
                     placeholder: 'company.com',
                   })}

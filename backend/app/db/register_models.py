@@ -26,6 +26,11 @@ def register_all_models() -> None:
         CounselorStatusMaster,
     )
     from app.models.country import Country  # noqa: F401
+    from app.models.document_requirement import (  # noqa: F401
+        DocumentRequirement,
+        DocumentRequirementLevel,
+        DocumentTemplate,
+    )
     from app.models.course_education_major_mapping import CourseEducationMajorMapping  # noqa: F401
     from app.models.digital_presence_link import DigitalPresenceLink  # noqa: F401
     from app.models.dynamic_setting import DynamicSetting  # noqa: F401

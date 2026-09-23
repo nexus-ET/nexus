@@ -14,6 +14,7 @@ from app.constants.scanx import (
     STATUS_ACTION_REQUIRED,
     STATUS_PARSING,
     STATUS_RED_FLAG,
+    STATUS_VERIFIED,
 )
 from sqlalchemy.exc import DBAPIError, OperationalError
 
@@ -49,10 +50,12 @@ from app.services.scanx_progress import (
 )
 from app.services.scanx_cancel import (
     ScanxJobCancelled,
+    add_job_wait_ms,
     bind_job,
     is_cancel_requested,
     raise_if_cancelled,
     request_cancel,
+    take_job_wait_ms,
     unbind_job,
 )
 from app.services.scanx_academic_parse import (
@@ -602,7 +605,11 @@ def _reopen_job_db(document_id: int) -> tuple[Any, ScanxDocument | None]:
                 time.sleep(min(1.5 * attempt, 5.0))
         db: Any = None
         try:
+            t_open = time.perf_counter()
             db = open_scanx_session()
+            open_ms = int((time.perf_counter() - t_open) * 1000)
+            if open_ms >= 2000:
+                add_job_wait_ms(open_ms)
             ensure_db_connection(db)
             doc = (
                 db.query(ScanxDocument)
@@ -1238,18 +1245,49 @@ def _finalize_status(
         doc.metrics_json = metrics
 
 
-def process_scanx_document(document_id: int) -> dict[str, Any]:
+def process_scanx_document(
+    document_id: int,
+    *,
+    claimed: bool = False,
+) -> dict[str, Any]:
     """Worker entrypoint: Parsing → Action Required | Verified | Red Flags.
 
     Extract text first and leave Parsing promptly; embeddings run with a short
     budget afterward (or are skipped if Ollama is slow/down). Progress steps
     are committed along the way so the UI can poll live %.
+
+    ``claimed=True`` when the in-process thread already holds the per-document
+    in-flight claim (RQ / direct callers claim here instead).
     """
+    from app.services.scanx_queue import (
+        release_scanx_document,
+        try_claim_scanx_document,
+    )
+
     t0 = time.perf_counter()
+    own_claim = False
+    if not claimed:
+        if not try_claim_scanx_document(document_id):
+            logger.info(
+                "ScanX worker skipped — already in flight document_id=%s",
+                document_id,
+            )
+            return {
+                "ok": False,
+                "error": "already_in_flight",
+                "skipped": True,
+                "document_id": int(document_id),
+            }
+        own_claim = True
     bind_job(int(document_id))
     db = None
     try:
+        t_open = time.perf_counter()
         db = open_scanx_session()
+        open_ms = int((time.perf_counter() - t_open) * 1000)
+        # Only attribute slow checkouts (slot / connect-gate queue) as wait.
+        if open_ms >= 2000:
+            add_job_wait_ms(open_ms)
         raise_if_cancelled(int(document_id))
         doc = db.query(ScanxDocument).filter(ScanxDocument.id == int(document_id)).first()
         if not doc:
@@ -1257,6 +1295,25 @@ def process_scanx_document(document_id: int) -> dict[str, Any]:
         metrics_early = dict(doc.metrics_json or {}) if isinstance(doc.metrics_json, dict) else {}
         if metrics_early.get("cancel_requested"):
             raise ScanxJobCancelled()
+
+        # Reprocess resets status to parsing before enqueue. A twin worker that
+        # loses the race after the winner already left Parsing must not overwrite.
+        if doc.status in {
+            STATUS_ACTION_REQUIRED,
+            STATUS_VERIFIED,
+            STATUS_RED_FLAG,
+        }:
+            logger.info(
+                "ScanX worker no-op — document_id=%s already status=%s",
+                document_id,
+                doc.status,
+            )
+            return {
+                "ok": True,
+                "skipped": "already_terminal",
+                "document_id": int(document_id),
+                "status": doc.status,
+            }
 
         doc.status = STATUS_PARSING
         doc.error_code = None
@@ -2513,15 +2570,22 @@ def process_scanx_document(document_id: int) -> dict[str, Any]:
                 document_id,
                 exc_info=True,
             )
-        leave_parsing_ms = int((time.perf_counter() - t0) * 1000)
+        leave_parsing_wall_ms = int((time.perf_counter() - t0) * 1000)
+        queue_wait_ms = take_job_wait_ms()
+        # Exclude parse/OCR/DB slot waits — those are queue time, not OCR work.
+        leave_parsing_ms = max(0, leave_parsing_wall_ms - queue_wait_ms)
         metrics["leave_parsing_ms"] = leave_parsing_ms
+        metrics["leave_parsing_wall_ms"] = leave_parsing_wall_ms
+        metrics["queue_wait_ms"] = queue_wait_ms
         logger.info(
             "ScanX left Parsing doc_id=%s status=%s extract_ms=%s leave_parsing_ms=%s "
-            "chars=%s chunks=%s progress=%s",
+            "wall_ms=%s queue_wait_ms=%s chars=%s chunks=%s progress=%s",
             document_id,
             doc.status,
             extract_ms,
             leave_parsing_ms,
+            leave_parsing_wall_ms,
+            queue_wait_ms,
             len(embed_source),
             len(chunks),
             metrics.get("progress_percent"),
@@ -2630,6 +2694,8 @@ def process_scanx_document(document_id: int) -> dict[str, Any]:
             "embedded": embed_stats.get("embedded_count", 0),
             "extracted_chars": len(embed_source),
             "leave_parsing_ms": leave_parsing_ms,
+            "leave_parsing_wall_ms": metrics.get("leave_parsing_wall_ms"),
+            "queue_wait_ms": metrics.get("queue_wait_ms"),
             "total_ms": metrics.get("total_ms"),
             "embeddings_note": embed_stats.get("embeddings_note"),
             "progress_percent": metrics.get("progress_percent"),
@@ -2717,6 +2783,8 @@ def process_scanx_document(document_id: int) -> dict[str, Any]:
         }
     finally:
         unbind_job()
+        if own_claim:
+            release_scanx_document(document_id)
         try:
             safe_close_session(db)
         except Exception:

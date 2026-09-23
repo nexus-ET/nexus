@@ -10,10 +10,17 @@ export interface CounselorStatusMasterItem {
   sort_order: number;
 }
 
+export interface CounselorFollowupSentDocument {
+  label: string;
+  url?: string | null;
+  link_unavailable?: boolean;
+}
+
 export interface CounselorFollowupItem {
   id: number;
   lead_id: number;
   counselor_id?: string | null;
+  counselor_name?: string | null;
   status_id: number;
   status_key: string;
   status_heading: string;
@@ -21,6 +28,11 @@ export interface CounselorFollowupItem {
   action_items?: string | null;
   target_completion_date?: string | null;
   created_at: string;
+  email_sent?: boolean | null;
+  email_error?: string | null;
+  checklist_email_to?: string | null;
+  checklist_email_sent_at?: string | null;
+  checklist_sent_documents?: CounselorFollowupSentDocument[] | null;
 }
 
 export interface CounselorFollowupCreatePayload {
@@ -28,6 +40,18 @@ export interface CounselorFollowupCreatePayload {
   points_discussed: string;
   action_items?: string | null;
   target_completion_date?: string | null;
+  send_document_checklist_email?: boolean;
+  checklist_program_level?: string | null;
+  checklist_scope?: 'global' | 'country_specific' | null;
+  checklist_country_id?: number | null;
+}
+
+function sortStatusesByHeading(
+  items: CounselorStatusMasterItem[]
+): CounselorStatusMasterItem[] {
+  return [...items].sort((a, b) =>
+    a.status_heading.localeCompare(b.status_heading, undefined, { sensitivity: 'base' })
+  );
 }
 
 export function useCounselorFollowupStatuses(enabled = true) {
@@ -36,6 +60,10 @@ export function useCounselorFollowupStatuses(enabled = true) {
     queryFn: () => apiFetch('leads/counselor-followup-statuses'),
     enabled,
     staleTime: 60_000,
+    select: data => ({
+      ...data,
+      items: sortStatusesByHeading(data.items ?? []),
+    }),
   });
 }
 

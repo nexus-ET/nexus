@@ -29,6 +29,7 @@ export type AcademiaEntityKey =
   | 'sub-majors'
   | 'courses'
   | 'summary'
+  | 'document-requirements'
   | 'nz-mapping-review'
   | 'ca-mapping-review'
   | 'us-mapping-review'
@@ -86,6 +87,11 @@ export const FRAMEWORK_TABS: AcademiaSectionTab[] = [
   { key: 'levels', label: 'Levels', path: `${FRAMEWORK_SECTION_PATH}/levels` },
   { key: 'programs', label: 'Programs', path: `${FRAMEWORK_SECTION_PATH}/programs` },
   { key: 'courses', label: 'Courses', path: `${FRAMEWORK_SECTION_PATH}/courses` },
+  {
+    key: 'document-requirements',
+    label: 'Document Requirements',
+    path: `${FRAMEWORK_SECTION_PATH}/document-requirements`,
+  },
   {
     key: 'nz-mapping-review',
     label: 'NZ Mapping Review',
@@ -180,6 +186,13 @@ export const ACADEMIA_HUB_SECTIONS: AcademiaNavSection[] = [
         singular: 'Course',
         path: `${FRAMEWORK_SECTION_PATH}/courses`,
         apiPath: 'academia/courses',
+      },
+      {
+        key: 'document-requirements',
+        label: 'Document Requirements',
+        singular: 'Document Requirement',
+        path: `${FRAMEWORK_SECTION_PATH}/document-requirements`,
+        apiPath: 'document-requirements',
       },
       {
         key: 'nz-mapping-review',

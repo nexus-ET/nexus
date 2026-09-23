@@ -595,16 +595,64 @@ def list_scanx_documents(
 def bulk_delete_scanx_documents(
     payload: ScanxBulkDeleteRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(deps.require_page_access(DOCUMENT_READINESS_ROUTE)),
 ):
-    """Hard-delete many documents (DB cascade + async R2/local cleanup)."""
-    _ = current_user
-    return _hard_delete_scanx_documents(
-        db,
-        payload.ids,
-        background_tasks=background_tasks,
-        defer_storage=True,
+    """Hard-delete many documents (DB cascade + async R2/local cleanup).
+
+    Auth + page RBAC are enforced by NavigationRBACMiddleware (same as list).
+    Own the session here so a brief SSH-tunnel / Postgres warm-up can retry
+    without Depends(get_db) failing once and QuietDbTunnelMiddleware 503'ing.
+    """
+    from app.db.database import (
+        DB_TEMPORARILY_BUSY_DETAIL,
+        SessionLocal,
+        db_temporarily_busy_headers,
+        dispose_db_pool,
+        safe_close_session,
+        should_dispose_pool_for_error,
+    )
+    from app.services.scanx_jobs import _is_db_connectivity_error
+
+    last_exc: BaseException | None = None
+    retry_delays = (0.5, 1.5)
+    for attempt in range(3):
+        db = SessionLocal()
+        try:
+            return _hard_delete_scanx_documents(
+                db,
+                payload.ids,
+                background_tasks=background_tasks,
+                defer_storage=True,
+            )
+        except Exception as exc:
+            last_exc = exc
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            if not _is_db_connectivity_error(exc) or attempt >= 2:
+                break
+            logger.warning(
+                "ScanX bulk-delete retry attempt=%s ids=%s: %s",
+                attempt + 1,
+                len(payload.ids),
+                type(exc).__name__,
+            )
+            if should_dispose_pool_for_error(exc):
+                dispose_db_pool(reason=f"scanx bulk-delete: {type(exc).__name__}")
+            time.sleep(retry_delays[min(attempt, len(retry_delays) - 1)])
+        finally:
+            safe_close_session(db)
+
+    if last_exc is not None:
+        logger.warning(
+            "ScanX bulk-delete failed after retries (%s): %s",
+            type(last_exc).__name__,
+            last_exc,
+        )
+    raise HTTPException(
+        status_code=503,
+        detail=DB_TEMPORARILY_BUSY_DETAIL,
+        headers=db_temporarily_busy_headers(),
     )
 
 

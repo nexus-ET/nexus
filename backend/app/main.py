@@ -40,6 +40,7 @@ from app.models.processed_message import ProcessedMessage
 from app.models.dynamic_setting import DynamicSetting
 from app.models.business import Business
 from app.models.public_holiday import PublicHoliday
+from app.models.document_requirement import DocumentRequirement, DocumentTemplate  # noqa: F401
 from app.models.sync_log import SyncLog
 from app.models.exception_log import ExceptionLog
 from app.models.raw_incoming_lead import RawIncomingLead
@@ -74,7 +75,7 @@ from app.models.university_matching import (
     MatchingWeightProfile,
 )
 from app.api.v1.endpoints import leads
-from app.api.v1 import analytics, notifications, dashboard, users, login, agents, rbac, countries, education_degrees, education_majors, gpa_cgpa_scores, full_time_study_years, qualification_programs, target_programs, conversation_audit, academia, academia_wizard, academic_calendar, nexus_intel, flowx
+from app.api.v1 import analytics, notifications, dashboard, users, login, agents, rbac, countries, education_degrees, education_majors, gpa_cgpa_scores, full_time_study_years, qualification_programs, target_programs, conversation_audit, academia, academia_wizard, academic_calendar, nexus_intel, flowx, document_requirements
 from app.models.nexus_intel import (  # noqa: F401
     IntelAcademyModule,
     IntelGlossary,
@@ -520,6 +521,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=[
+        "Content-Disposition",
+        "X-Checklist-Storage-Key",
+        "X-Checklist-Filename",
+    ],
 )
 
 # ⚡ GLOBAL NGROK BYPASS & ABSOLUTE CORS ENFORCEMENT MIDDLEWARE
@@ -552,6 +558,9 @@ async def absolute_cors_and_ngrok_bypass(request: Request, call_next):
     response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Nexus-Page, X-Requested-With, ngrok-skip-browser-warning"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, PUT, DELETE, OPTIONS, HEAD"
+    response.headers["Access-Control-Expose-Headers"] = (
+        "Content-Disposition, X-Checklist-Storage-Key, X-Checklist-Filename"
+    )
     return response
 
 app.add_middleware(NavigationRBACMiddleware)
@@ -637,6 +646,7 @@ app.include_router(target_programs.router, prefix="/api/v1", tags=["Study Intere
 app.include_router(academia.router, prefix="/api/v1", tags=["Academia Hub"])
 app.include_router(academic_calendar.router, prefix="/api/v1", tags=["Academia Hub"])
 app.include_router(academia_wizard.router, prefix="/api/v1", tags=["Academia Hub"])
+app.include_router(document_requirements.router, prefix="/api/v1", tags=["Document Requirements"])
 app.include_router(nexus_intel.router, prefix="/api/v1", tags=["Nexus Intel"])
 app.include_router(flowx.router, prefix="/api/v1", tags=["FlowX"])
 app.include_router(login.router, prefix="/api/v1", tags=["Auth"])

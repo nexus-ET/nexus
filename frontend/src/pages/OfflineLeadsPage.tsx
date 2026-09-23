@@ -69,10 +69,10 @@ import {
 import './OfflineLeadsPage.css';
 
 const OFFLINE_LEADS_PAGE_SIZE_KEY = 'nexus.offlineLeads.pageSize';
-const OFFLINE_LEADS_COLUMNS_KEY = 'nexus.offlineLeads.visibleColumns.v8';
-const OFFLINE_LEADS_ORDER_KEY = 'nexus.offlineLeads.columnOrder.v1';
-const OFFLINE_LEADS_PIN_KEY = 'nexus.offlineLeads.columnPin.v1';
-const OFFLINE_LEADS_WIDTH_KEY = 'nexus.offlineLeads.columnWidths.v1';
+const OFFLINE_LEADS_COLUMNS_KEY = 'nexus.offlineLeads.visibleColumns.v9';
+const OFFLINE_LEADS_ORDER_KEY = 'nexus.offlineLeads.columnOrder.v2';
+const OFFLINE_LEADS_PIN_KEY = 'nexus.offlineLeads.columnPin.v2';
+const OFFLINE_LEADS_WIDTH_KEY = 'nexus.offlineLeads.columnWidths.v2';
 const PAGE_SIZE_OPTIONS = TABLE_PAGE_SIZE_OPTIONS;
 
 type OfflineLeadsPageToken = number | 'ellipsis';
@@ -132,7 +132,7 @@ type OfflineLeadColumnKey =
   | 'new_booking'
   | 'counselor_notes'
   | 'lead_status'
-  | 'status'
+  | 'followup_status'
   | 'created_at';
 
 const OFFLINE_LEAD_COLUMN_DEFS: Array<{
@@ -160,7 +160,7 @@ const OFFLINE_LEAD_COLUMN_DEFS: Array<{
   { key: 'new_booking', label: 'New Booking', defaultVisible: true },
   { key: 'counselor_notes', label: 'Counselor Notes', defaultVisible: true },
   { key: 'lead_status', label: 'Lead Status', defaultVisible: true },
-  { key: 'status', label: 'Chat Status', defaultVisible: true },
+  { key: 'followup_status', label: 'Lead Follow-up Status', defaultVisible: true },
   { key: 'created_at', label: 'Date Added', defaultVisible: true },
 ];
 
@@ -186,14 +186,31 @@ function normalizeOfflineLeadColumns(keys: string[]): OfflineLeadColumnKey[] {
   return OFFLINE_LEAD_COLUMN_DEFS.map(column => column.key).filter(key => selected.has(key));
 }
 
+function insertFollowupStatusColumn(keys: OfflineLeadColumnKey[]): OfflineLeadColumnKey[] {
+  if (keys.includes('followup_status')) return keys;
+  const next = [...keys];
+  const leadStatusIdx = next.indexOf('lead_status');
+  next.splice(leadStatusIdx >= 0 ? leadStatusIdx + 1 : next.length, 0, 'followup_status');
+  return next;
+}
+
 function readStoredOfflineLeadColumns(): OfflineLeadColumnKey[] {
   try {
     const raw = localStorage.getItem(OFFLINE_LEADS_COLUMNS_KEY);
     if (!raw) return defaultOfflineLeadColumns();
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return defaultOfflineLeadColumns();
-    const normalized = normalizeOfflineLeadColumns(parsed.map(String));
-    return normalized.length ? normalized : defaultOfflineLeadColumns();
+    let normalized = normalizeOfflineLeadColumns(parsed.map(String));
+    if (!normalized.length) return defaultOfflineLeadColumns();
+    const migratedKey = `${OFFLINE_LEADS_COLUMNS_KEY}:followup-status-v1`;
+    if (!localStorage.getItem(migratedKey)) {
+      localStorage.setItem(migratedKey, '1');
+      if (!normalized.includes('followup_status')) {
+        normalized = insertFollowupStatusColumn(normalized);
+        storeOfflineLeadColumns(normalized);
+      }
+    }
+    return normalized;
   } catch {
     return defaultOfflineLeadColumns();
   }
@@ -428,6 +445,10 @@ function formatLeadSourceLabel(source?: string | null): string {
   return 'Offline Lead';
 }
 
+function offlineLeadPipelineStatus(lead: OfflineLeadItem): string {
+  return (lead.lead_status || lead.status_stage_name || '').trim();
+}
+
 function isManualOfflineLead(lead: Pick<OfflineLeadItem, 'source'>): boolean {
   const s = String(lead.source || '').toUpperCase();
   return s === 'OFFLINE' || s === 'EXPRESS' || s === '';
@@ -487,9 +508,9 @@ function offlineLeadColumnFilterText(lead: OfflineLeadItem, key: OfflineLeadColu
     case 'counselor_notes':
       return String(lead.followup_count ?? 0);
     case 'lead_status':
-      return 'journey';
-    case 'status':
-      return lead.status_label || '';
+      return offlineLeadPipelineStatus(lead);
+    case 'followup_status':
+      return lead.followup_status_label || '';
     case 'created_at':
       return lead.created_at || '';
     default:
@@ -501,7 +522,6 @@ function renderOfflineLeadCell(
   lead: OfflineLeadItem,
   key: OfflineLeadColumnKey,
   handlers?: {
-    onViewJourney?: (lead: OfflineLeadItem) => void;
     onOpenBookings?: (lead: OfflineLeadItem) => void;
     onOpenCounselorNotes?: (lead: OfflineLeadItem) => void;
     onEditLead?: (lead: OfflineLeadItem) => void;
@@ -610,31 +630,17 @@ function renderOfflineLeadCell(
         </button>
       );
     }
-    case 'lead_status':
-      return (
-        <button
-          type="button"
-          className="offline-leads-journey-link"
-          onClick={() => handlers?.onViewJourney?.(lead)}
-          title="View student journey timeline"
-        >
-          <MapIcon size={13} />
-          View Journey
-        </button>
-      );
-    case 'status':
-      return <span className={statusClass(lead.status_label)}>{lead.status_label}</span>;
+    case 'lead_status': {
+      const label = offlineLeadPipelineStatus(lead);
+      return label || '—';
+    }
+    case 'followup_status':
+      return lead.followup_status_label?.trim() ? lead.followup_status_label : '—';
     case 'created_at':
       return formatDateAdded(lead.created_at);
     default:
       return '—';
   }
-}
-
-function statusClass(label: string): string {
-  if (label === 'Handoff') return 'offline-leads-status offline-leads-status--handoff';
-  if (label === 'Archive' || label === 'Inactive') return 'offline-leads-status offline-leads-status--archive';
-  return 'offline-leads-status offline-leads-status--ai';
 }
 
 function SortIcon({
@@ -714,17 +720,30 @@ export default function OfflineLeadsPage() {
 
 
   const debouncedSearch = useDebouncedValue(search, 350);
+  const debouncedNameFilter = useDebouncedValue((columnFilters.full_name || '').trim(), 350);
+  const debouncedStudentIdFilter = useDebouncedValue((columnFilters.student_id || '').trim(), 350);
 
   const query: OfflineLeadsQuery = useMemo(
     () => ({
       page,
       pageSize,
       q: debouncedSearch,
+      name: debouncedNameFilter,
+      studentId: debouncedStudentIdFilter,
       status,
       sortBy,
       sortDir,
     }),
-    [page, pageSize, debouncedSearch, status, sortBy, sortDir]
+    [
+      page,
+      pageSize,
+      debouncedSearch,
+      debouncedNameFilter,
+      debouncedStudentIdFilter,
+      status,
+      sortBy,
+      sortDir,
+    ]
   );
 
   const listQuery = useOfflineLeads(query);
@@ -1014,7 +1033,7 @@ export default function OfflineLeadsPage() {
       return;
     }
     setPage(1);
-  }, [debouncedSearch, status, pageSize, sortBy, sortDir]);
+  }, [debouncedSearch, debouncedNameFilter, debouncedStudentIdFilter, status, pageSize, sortBy, sortDir]);
 
   useEffect(() => {
     setSearchParams(
@@ -1318,7 +1337,7 @@ export default function OfflineLeadsPage() {
   const items = listQuery.data?.items ?? [];
   const filteredItems = useMemo(() => {
     const active = (Object.entries(columnFilters) as Array<[OfflineLeadColumnKey, string]>).filter(
-      ([, value]) => value?.trim()
+      ([key, value]) => value?.trim() && key !== 'full_name' && key !== 'student_id'
     );
     if (!active.length) return items;
     return items.filter(lead =>
@@ -1644,11 +1663,6 @@ export default function OfflineLeadsPage() {
                     return (
                       <td key={column.key} className={columnHeaderClass(column.key)} style={style}>
                         {renderOfflineLeadCell(lead, column.key, {
-                          onViewJourney: next =>
-                            setJourneyModal({
-                              studentId: next.id,
-                              studentName: next.full_name,
-                            }),
                           onOpenBookings: next =>
                             setBookingsModal({
                               leadId: next.id,
@@ -1673,6 +1687,20 @@ export default function OfflineLeadsPage() {
                   })}
                   <td className="offline-leads-table__actions">
                     <div className="offline-leads-actions">
+                      <button
+                        type="button"
+                        className="offline-leads-btn offline-leads-btn--ghost offline-leads-btn--icon"
+                        onClick={() =>
+                          setJourneyModal({
+                            studentId: lead.id,
+                            studentName: lead.full_name,
+                          })
+                        }
+                        aria-label="View Journey"
+                        title="View Journey"
+                      >
+                        <MapIcon size={14} />
+                      </button>
                       <button
                         type="button"
                         className="offline-leads-btn offline-leads-btn--ghost offline-leads-btn--icon"
