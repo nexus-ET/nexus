@@ -35,6 +35,11 @@ def _smtp_configured() -> bool:
     return bool(settings.SMTP_HOST and (settings.SMTP_FROM_EMAIL or settings.SMTP_USER))
 
 
+def is_smtp_configured() -> bool:
+    """Public check for callers that need an honest pre-send failure message."""
+    return _smtp_configured()
+
+
 def _plain_to_simple_html(body: str) -> str:
     """Minimal HTML alternative — improves inbox placement vs plain-only bulk-looking mail."""
     escaped = (

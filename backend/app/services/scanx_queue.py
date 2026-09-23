@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,6 +25,32 @@ _THREAD_PARSE_SLOTS = threading.Semaphore(
 # Bound Redis so enqueue/rescue never hangs a request thread for minutes.
 _REDIS_SOCKET_CONNECT_TIMEOUT_S = 2.0
 _REDIS_SOCKET_TIMEOUT_S = 3.0
+# Heartbeat while waiting for a parse slot so stale-rescue does not spawn twins.
+_PARSE_SLOT_WAIT_HEARTBEAT_SEC = 15.0
+# One in-process/RQ worker per document_id (claim held for the whole job).
+_inflight_lock = threading.Lock()
+_inflight_docs: dict[int, float] = {}
+
+
+def try_claim_scanx_document(document_id: int) -> bool:
+    """Atomically claim a document for processing. False if already in flight."""
+    doc_id = int(document_id)
+    with _inflight_lock:
+        if doc_id in _inflight_docs:
+            return False
+        _inflight_docs[doc_id] = time.monotonic()
+        return True
+
+
+def release_scanx_document(document_id: int) -> None:
+    """Release an in-flight claim (safe if already absent)."""
+    with _inflight_lock:
+        _inflight_docs.pop(int(document_id), None)
+
+
+def is_scanx_document_inflight(document_id: int) -> bool:
+    with _inflight_lock:
+        return int(document_id) in _inflight_docs
 
 
 def _redis_from_url(redis_url: str):
@@ -134,27 +161,49 @@ def _start_thread(document_id: int) -> str:
         if is_cancel_requested(document_id):
             logger.info("ScanX thread skipped cancelled document_id=%s", document_id)
             return
-        acquired = _THREAD_PARSE_SLOTS.acquire(blocking=False)
-        if not acquired:
-            _mark_thread_dispatch(
+        if not try_claim_scanx_document(document_id):
+            logger.info(
+                "ScanX thread skipped duplicate in-flight document_id=%s",
                 document_id,
-                mode="thread",
-                job_id=f"thread-{document_id}",
-                note="Waiting for parse slot…",
             )
-            _THREAD_PARSE_SLOTS.acquire()
-            if is_cancel_requested(document_id):
-                logger.info(
-                    "ScanX thread slot released for cancelled document_id=%s",
-                    document_id,
-                )
-                _THREAD_PARSE_SLOTS.release()
-                return
+            return
+        slot_held = False
         try:
+            acquired = _THREAD_PARSE_SLOTS.acquire(blocking=False)
+            if not acquired:
+                wait_t0 = time.perf_counter()
+                _mark_thread_dispatch(
+                    document_id,
+                    mode="thread",
+                    job_id=f"thread-{document_id}",
+                    note="Waiting for parse slot…",
+                )
+                while True:
+                    if is_cancel_requested(document_id):
+                        logger.info(
+                            "ScanX thread abandoned parse-slot wait for cancelled "
+                            "document_id=%s",
+                            document_id,
+                        )
+                        return
+                    got = _THREAD_PARSE_SLOTS.acquire(
+                        timeout=_PARSE_SLOT_WAIT_HEARTBEAT_SEC
+                    )
+                    if got:
+                        acquired = True
+                        break
+                    waited_s = int(time.perf_counter() - wait_t0)
+                    _mark_thread_dispatch(
+                        document_id,
+                        mode="thread",
+                        job_id=f"thread-{document_id}",
+                        note=f"Waiting for parse slot… {waited_s}s",
+                    )
+            slot_held = True
             from app.services.scanx_jobs import process_scanx_document
 
             logger.info("ScanX thread worker starting document_id=%s", document_id)
-            result = process_scanx_document(int(document_id))
+            result = process_scanx_document(int(document_id), claimed=True)
             logger.info(
                 "ScanX thread worker finished document_id=%s result=%s",
                 document_id,
@@ -163,7 +212,9 @@ def _start_thread(document_id: int) -> str:
         except Exception:
             logger.exception("In-process ScanX job failed document_id=%s", document_id)
         finally:
-            _THREAD_PARSE_SLOTS.release()
+            if slot_held:
+                _THREAD_PARSE_SLOTS.release()
+            release_scanx_document(document_id)
 
     thread = threading.Thread(
         target=_run,
@@ -255,6 +306,14 @@ def enqueue_process_document(
     Must not be awaited from an HTTP handler — use ``schedule_process_document``
     so the client receives 202 before OCR starts.
     """
+    if is_scanx_document_inflight(document_id):
+        logger.info(
+            "ScanX enqueue skipped — already in flight document_id=%s force_thread=%s",
+            document_id,
+            force_thread,
+        )
+        return {"mode": "skipped_inflight", "job_id": f"inflight-{int(document_id)}"}
+
     redis_url = (settings.REDIS_URL or "").strip()
     if redis_url and not force_thread:
         try:
@@ -331,6 +390,9 @@ def rescue_stale_waiting_document(document_id: int) -> dict[str, Any] | None:
         waiting_age_seconds,
     )
 
+    if is_scanx_document_inflight(document_id):
+        return None
+
     job_id_to_cancel: str | None = None
     db = SessionLocal()
     try:
@@ -389,6 +451,10 @@ def rescue_stale_parsing_document(document_id: int) -> dict[str, Any] | None:
         progress_idle_seconds,
         set_step,
     )
+
+    # Live in-process worker (possibly waiting on OCR/parse slot) — do not twin it.
+    if is_scanx_document_inflight(document_id):
+        return None
 
     action: str | None = None
     job_id_to_cancel: str | None = None

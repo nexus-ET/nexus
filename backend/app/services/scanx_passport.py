@@ -607,6 +607,38 @@ def _is_noise_value(val: str | None) -> bool:
     return False
 
 
+# Indian passport OCR often glues Sex/Nationality as "HA/INDIAN", "HR/INDIAN",
+# "M/INDIAN" on the row above Place of Birth — never accept those as a city.
+_NATIONALITY_AS_PLACE_RE = re.compile(
+    r"(?i)^(?:[A-Z]{1,3}\s*/\s*)?(?:INDIAN|IND|INDIA)$"
+)
+_SEX_NATIONALITY_GLUE_RE = re.compile(
+    r"(?i)^[MFX]\s*[/\s]\s*(?:INDIAN|IND|INDIA)$"
+)
+
+
+def _is_nationality_as_place(val: str | None) -> bool:
+    """True when ``val`` is a nationality/header token, not a birth/issue city."""
+    if not val:
+        return False
+    t = re.sub(r"\s+", " ", str(val).strip()).upper()
+    if not t:
+        return False
+    if _NATIONALITY_AS_PLACE_RE.fullmatch(t) or _SEX_NATIONALITY_GLUE_RE.fullmatch(t):
+        return True
+    if re.fullmatch(r"[A-Z]{1,3}/INDIAN", t):
+        return True
+    bare = re.sub(r"^[A-Z]{1,3}/", "", t).strip()
+    if bare in {"INDIAN", "IND", "INDIA"}:
+        return True
+    if t in _KNOWN_DEMONYMS or bare in _KNOWN_DEMONYMS:
+        return True
+    demonym, _code = resolve_nationality(bare if bare else t)
+    if demonym and demonym.upper() in {t, bare} and "," not in t:
+        return True
+    return False
+
+
 # Known CamScanner / OCR garbage blobs that must never become Other Details rows.
 _OCR_JUNK_OTHER_EXACT: frozenset[str] = frozenset(
     {
@@ -1571,8 +1603,18 @@ def _is_plausible_person_name(val: str | None) -> bool:
     return False
 
 
-def _looks_like_signature_or_given_name(val: str | None, given_names: str | None = None) -> bool:
-    """True for handwritten signatures mis-read as Place of Issue."""
+def _norm_holder_token(val: str | None) -> str:
+    u = re.sub(r"[^A-Z0-9 ]", " ", (val or "").upper())
+    return re.sub(r"\s+", " ", u).strip()
+
+
+def _looks_like_signature_or_given_name(
+    val: str | None,
+    given_names: str | None = None,
+    *,
+    surname: str | None = None,
+) -> bool:
+    """True when a place field latched onto the holder's name or a signature."""
     t = (val or "").strip()
     if not t:
         return False
@@ -1580,19 +1622,37 @@ def _looks_like_signature_or_given_name(val: str | None, given_names: str | None
         return True
     if re.match(r"^[A-Z]\.\s*[A-Za-z]", t):
         return True
-    g = re.sub(r"\s+", " ", (given_names or "").strip()).upper()
-    u = re.sub(r"[^A-Z0-9 ]", " ", t.upper())
-    u = re.sub(r"\s+", " ", u).strip()
-    if g and u and (u in g or g in u or u.replace(" ", "") in g.replace(" ", "")):
+    u = _norm_holder_token(t)
+    u_compact = u.replace(" ", "")
+    # Surname: exact / compact equality only (avoid ALI ⊂ ALIGARH false positives).
+    sn = _norm_holder_token(surname)
+    if sn and (u == sn or u_compact == sn.replace(" ", "")):
         return True
-    # Token overlap with given names (VENU GOPAL ↔ Venugopal).
-    if g:
-        g_toks = {tok for tok in g.split() if len(tok) >= 3}
-        u_compact = u.replace(" ", "")
-        for tok in g_toks:
-            if tok in u_compact or u_compact in tok:
-                return True
+    g = _norm_holder_token(given_names)
+    if not g:
+        return False
+    if u == g or u_compact == g.replace(" ", ""):
+        return True
+    if u in g or g in u or u_compact in g.replace(" ", "") or g.replace(" ", "") in u_compact:
+        return True
+    # Token overlap (VENU GOPAL ↔ Venugopal).
+    g_toks = {tok for tok in g.split() if len(tok) >= 3}
+    for tok in g_toks:
+        if tok in u_compact or u_compact in tok:
+            return True
     return False
+
+
+def _is_holder_name_as_place(
+    val: str | None,
+    *,
+    surname: str | None = None,
+    given_names: str | None = None,
+) -> bool:
+    """Structural reject: place must never equal the holder's given name or surname."""
+    return _looks_like_signature_or_given_name(
+        val, given_names, surname=surname
+    )
 
 
 def _looks_like_file_number_token(val: str | None) -> bool:
@@ -1652,13 +1712,64 @@ def _looks_like_date_value(val: str | None) -> bool:
     return bool(re.match(r"^\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}$", (val or "").strip()))
 
 
-def _is_place_candidate(text: str) -> bool:
+def _normalize_place_token(text: str | None) -> str:
+    """Strip OCR page crumbs (``1 VISAKHAPATNAM``) without inventing values."""
     t = (text or "").strip()
+    t = re.sub(r"^\d+\s+", "", t).strip(" ,/-")
+    return t
+
+
+def _is_postal_address_as_place(text: str | None) -> bool:
+    """True for residential / PIN lines — never an issuing-office city.
+
+    Place of Issue is the office city near its label. Address may still keep
+    ``PIN:######, STATE, INDIA``; that line must not be stored as place_of_issue.
+    """
+    t = _normalize_place_token(text)
+    if not t:
+        return False
+    if re.search(r"(?i)\bPIN\b", t):
+        return True
+    if re.search(r"(?<!\d)\d{6}(?!\d)", t):
+        return True
+    if re.search(
+        r"(?i)\b(?:road|street|lane|colony|nagar|thota|complex|apartment|"
+        r"flat|house|block|h\.?\s*no\.?|d\.?\s*no\.?|door|society)\b",
+        t,
+    ):
+        return True
+    # Multi-part postal: …, STATE, COUNTRY (or PIN already caught above).
+    if t.count(",") >= 2 and re.search(
+        r"(?i)\b(?:pradesh|nadu|india|state|province|territory)\b", t
+    ):
+        return True
+    if re.search(r"(?i),\s*INDIA\s*$", t) and "," in t:
+        return True
+    return False
+
+
+def _is_place_candidate(
+    text: str,
+    *,
+    surname: str | None = None,
+    given_names: str | None = None,
+) -> bool:
+    """True for letter-only place names of any reasonable length (CITY, STATE ok).
+
+    Rejects only structural junk: nationality headers, MRZ crumbs (``<`` / digits),
+    signatures, and the holder's own given name / surname when known.
+    Birth may be ``CITY, STATE``. Issuing office uses ``_is_issuing_office_candidate``.
+    """
+    t = _normalize_place_token(text)
     if not t or len(t) < 3 or len(t) > 80:
         return False
     if _looks_like_date_value(t):
         return False
     if _is_noise_value(t) or _NEXT_FIELD_LABEL_RE.match(t):
+        return False
+    if _is_nationality_as_place(t):
+        return False
+    if _is_holder_name_as_place(t, surname=surname, given_names=given_names):
         return False
     # Handwritten signature lines often sit near Place of Issue.
     if re.match(r"^[A-Z]\.\s*[A-Za-z]", t):
@@ -1672,7 +1783,38 @@ def _is_place_candidate(text: str) -> bool:
         return False
     if not re.search(r"[A-Za-z]{3,}", t):
         return False
-    if re.fullmatch(r"[A-Z0-9<]{12,}", t.replace(" ", "")):
+    # MRZ crumbs only: fillers or digits. Pure-letter cities of any length stay.
+    compact = re.sub(r"[\s,./\-]+", "", t)
+    if "<" in compact or (
+        len(compact) >= 12
+        and re.fullmatch(r"[A-Z0-9]+", compact)
+        and re.search(r"\d", compact)
+    ):
+        return False
+    return True
+
+
+def _is_issuing_office_candidate(
+    text: str,
+    *,
+    surname: str | None = None,
+    given_names: str | None = None,
+) -> bool:
+    """Place of Issue: office city near the issue label — not address / birth shape.
+
+    Rejects PIN / postal address lines and ``CITY, STATE`` (birth-shaped). A single
+    city token such as VISAKHAPATNAM or CHENNAI is accepted.
+    """
+    t = _normalize_place_token(text)
+    if not _is_place_candidate(t, surname=surname, given_names=given_names):
+        return False
+    if _is_postal_address_as_place(t):
+        return False
+    if "," in t and re.search(
+        r"(?i)\b(?:pradesh|nadu|india|state|province|territory)\b", t
+    ):
+        return False
+    if t.count(",") >= 2:
         return False
     return True
 
@@ -1799,9 +1941,16 @@ def _value_near_label(
 
 # OCR often turns Issue → lssue / lssuo; do not require the leading "i".
 _PLACE_OF_ISSUE_OCR = r"(?:l?issue|lssue|lssuo|issuc|issuance|issu)"
-_PLACE_OF_BIRTH_LABEL_RE = re.compile(r"(?i)\bplace\s*of\s*birth\b")
+# OCR-tolerant: Birth → Blrth / Birih / Bith on CamScanner / PDF renders.
+_PLACE_OF_BIRTH_LABEL_RE = re.compile(
+    r"(?i)\bplace\s*of\s*(?:birth|blrth|birih|bith)\b"
+)
 _PLACE_OF_ISSUE_LABEL_RE = re.compile(
     rf"(?i)\bplace\s*of[.\s]*{_PLACE_OF_ISSUE_OCR}"
+)
+# Page-2 stamp line embeds "Place of Issue" but is not the biodata office label.
+_OLD_PASSPORT_PLACE_OF_ISSUE_RE = re.compile(
+    rf"(?i)old\s*passport[^\n]{{0,80}}place\s*of[.\s]*{_PLACE_OF_ISSUE_OCR}"
 )
 _DATE_OF_BIRTH_LABEL_RE = re.compile(
     r"(?i)(?:\bdate\s*of\s*birth\b|\bdob\b|wferfer\s*/\s*date\s*of\s*birth)"
@@ -2075,8 +2224,38 @@ def _biodata_places_dates_from_ocr_blocks(
     if not items:
         return {}
     out: dict[str, str] = {}
-    # Include "above": CamScanner often stacks CITY above the Place of Issue label.
-    place_dirs: tuple[str, ...] = ("left", "right", "below", "above")
+    # Infer holder identity from labeled surname/given blocks so place geometry
+    # never latches onto the holder's own name (permanent, not city denylist).
+    holder_surname: str | None = None
+    holder_given: str | None = None
+    for i, (*_, text) in enumerate(items):
+        low = text.lower()
+        if re.search(r"(?i)\bsurname\b|\bfamily\s*name\b", text) and i + 1 < len(items):
+            nxt = items[i + 1][5]
+            if _is_parent_name_candidate(nxt) or (
+                re.fullmatch(r"[A-Za-z][A-Za-z .'-]{1,40}", nxt or "")
+                and "," not in (nxt or "")
+            ):
+                holder_surname = nxt.strip()
+        if re.search(r"(?i)\bgiven\s*name", text) and i + 1 < len(items):
+            nxt = items[i + 1][5]
+            if nxt and not _is_noise_value(nxt) and not _NEXT_FIELD_LABEL_RE.match(nxt):
+                holder_given = nxt.strip()
+
+    def _place_ok(t: str) -> bool:
+        return _is_place_candidate(
+            t, surname=holder_surname, given_names=holder_given
+        )
+
+    def _issue_ok(t: str) -> bool:
+        return _is_issuing_office_candidate(
+            t, surname=holder_surname, given_names=holder_given
+        )
+
+    # Place of Birth: never search "above" — nationality (HA/INDIAN) sits there.
+    # Place of Issue: keep "above" (CamScanner stacks CITY above that label).
+    birth_dirs: tuple[str, ...] = ("left", "right", "below")
+    issue_dirs: tuple[str, ...] = ("left", "right", "below", "above")
     date_dirs: tuple[str, ...] = ("left", "right", "below")
     stop = [
         _PLACE_OF_BIRTH_LABEL_RE,
@@ -2091,9 +2270,12 @@ def _biodata_places_dates_from_ocr_blocks(
         is_value,
         *,
         directions: tuple[str, ...],
+        skip_label=None,
     ) -> str | None:
         for i, (*_, text) in enumerate(items):
             if not label_re.search(text):
+                continue
+            if skip_label and skip_label.search(text):
                 continue
             # Skip the stacked Issue+Expiry strip — handled by pairing helper.
             if label_re is _DATE_OF_ISSUE_LABEL_RE and re.search(
@@ -2108,17 +2290,22 @@ def _biodata_places_dates_from_ocr_blocks(
                 stop_res=stop,
             )
             if raw:
-                return raw
+                return _normalize_place_token(raw) if label_re in (
+                    _PLACE_OF_BIRTH_LABEL_RE,
+                    _PLACE_OF_ISSUE_LABEL_RE,
+                ) else raw
         return None
 
-    pob = _near(_PLACE_OF_BIRTH_LABEL_RE, _is_place_candidate, directions=place_dirs)
-    if pob:
+    pob = _near(_PLACE_OF_BIRTH_LABEL_RE, _place_ok, directions=birth_dirs)
+    if pob and not _is_nationality_as_place(pob):
         out["place_of_birth"] = pob.strip()[:80]
     poi = _near(
         _PLACE_OF_ISSUE_LABEL_RE,
-        lambda t: _is_place_candidate(t)
-        and t.strip().upper() != str(out.get("place_of_birth") or "").strip().upper(),
-        directions=place_dirs,
+        lambda t: _issue_ok(t)
+        and _normalize_place_token(t).upper()
+        != str(out.get("place_of_birth") or "").strip().upper(),
+        directions=issue_dirs,
+        skip_label=_OLD_PASSPORT_PLACE_OF_ISSUE_RE,
     )
     if poi:
         out["place_of_issue"] = poi.strip()[:80]
@@ -2886,9 +3073,13 @@ def _extract_labeled_fields(
         if block_biodata.get(bk):
             found[bk] = block_biodata[bk]
 
-    pob = _value_after_label(raw, r"place[ \t]*of[ \t]*birth|lieu[ \t]*de[ \t]*naissance")
-    if pob and _looks_like_date_value(pob):
+    pob = _value_after_label(
+        raw,
+        r"place[ \t]*of[ \t]*(?:birth|blrth|birih|bith)|lieu[ \t]*de[ \t]*naissance",
+    )
+    if pob and (_looks_like_date_value(pob) or _is_nationality_as_place(pob)):
         # Rotated OCR often puts DOB immediately after the Place of Birth label.
+        # PDF OCR may also leave nationality (HR/INDIAN) on the prior line.
         pob = None
     if pob and not _is_noise_value(pob) and not re.search(r"(?i)issue", pob):
         # Stacked "Surname / Place of Birth / KUMAR / CHENNAI" — skip if value
@@ -2925,16 +3116,68 @@ def _extract_labeled_fields(
     if not found.get("place_of_birth") and block_biodata.get("place_of_birth"):
         found["place_of_birth"] = block_biodata["place_of_birth"]
 
-    poi = _value_after_label(
+    # Biodata Place of Issue only — skip "Old Passport … Place of Issue" stamps.
+    poi = None
+    for poi_m in re.finditer(
+        rf"(?im)^[^\n]*\bplace\s*of[.\s]*{_PLACE_OF_ISSUE_OCR}"
+        r"[ \t]*[:\-–—/]?[ \t]*(.*)$",
         raw,
-        rf"place\s*of[.\s]*{_PLACE_OF_ISSUE_OCR}|place\s*of\s*issuance",
-    )
+    ):
+        line_head = raw[poi_m.start() : poi_m.end()]
+        if _OLD_PASSPORT_PLACE_OF_ISSUE_RE.search(line_head) or re.search(
+            r"(?i)old\s*passport", line_head
+        ):
+            continue
+        same = (poi_m.group(1) or "").strip()
+        if same and not _is_noise_value(same) and not re.match(
+            r"(?i)^(place|date|name|sex|nationality|code|type|father|mother|"
+            r"guardian|legal)\b",
+            same,
+        ):
+            poi = same
+            break
+        poi = None
+        for ln in raw[poi_m.end() :].splitlines()[:8]:
+            line = ln.strip()
+            if not line:
+                continue
+            if _is_noise_value(line):
+                continue
+            if _NEXT_FIELD_LABEL_RE.match(line) or re.match(
+                r"(?i)^(place of|date of|name of|sex|gender|nationality|surname|"
+                r"given|passport|code|type|file|address|old passport)\b",
+                line,
+            ):
+                break
+            poi = line
+            break
+        if poi:
+            break
     if poi and not _is_noise_value(poi) and not re.search(r"(?i)birth", poi):
         pob_u = str(found.get("place_of_birth") or "").strip().upper()
-        if pob_u and poi.strip().upper() == pob_u:
+        poi_n = _normalize_place_token(poi)
+        if pob_u and poi_n.upper() == pob_u:
             poi = None
-        elif not found.get("place_of_issue"):
-            found["place_of_issue"] = poi[:80]
+        else:
+            existing_poi = str(found.get("place_of_issue") or "").strip()
+            holder_given = str(found.get("given_names") or "")
+            holder_surname = str(found.get("surname") or "")
+            # Linear city wins when geometry latched onto given-name / surname /
+            # residential PIN address (permanent issuing-office rule).
+            if (
+                not existing_poi
+                or _is_holder_name_as_place(
+                    existing_poi, surname=holder_surname, given_names=holder_given
+                )
+                or _is_postal_address_as_place(existing_poi)
+                or not _is_issuing_office_candidate(
+                    existing_poi, surname=holder_surname, given_names=holder_given
+                )
+            ):
+                if _is_issuing_office_candidate(
+                    poi_n, surname=holder_surname, given_names=holder_given
+                ):
+                    found["place_of_issue"] = poi_n[:80]
 
     # Linear OCR: "Date of Issue CHENNAI Place of lssue ERODE… Place of Birth".
     # City between the two issue labels is place of issue (not birth).
@@ -2946,14 +3189,18 @@ def _extract_labeled_fields(
             raw,
         )
         if between:
-            city = between.group(1).strip(" ,/-")
+            city = _normalize_place_token(between.group(1))
             pob_u = str(found.get("place_of_birth") or "").strip().upper()
             if (
                 city
                 and not _is_noise_value(city)
                 and not _looks_like_date_value(city)
                 and city.upper() != pob_u
-                and _is_place_candidate(city)
+                and _is_issuing_office_candidate(
+                    city,
+                    surname=str(found.get("surname") or ""),
+                    given_names=str(found.get("given_names") or ""),
+                )
             ):
                 found["place_of_issue"] = city[:80]
 
@@ -2966,8 +3213,12 @@ def _extract_labeled_fields(
         raw,
     )
     if stacked:
-        city = stacked.group(1).strip()
-        if not _is_noise_value(city):
+        city = _normalize_place_token(stacked.group(1))
+        if city and not _is_noise_value(city) and _is_issuing_office_candidate(
+            city,
+            surname=str(found.get("surname") or ""),
+            given_names=str(found.get("given_names") or ""),
+        ):
             # Under stacked birth/issue labels the first city is usually place of issue.
             found["place_of_issue"] = city[:80]
             found.pop("place_of_birth", None)
@@ -3532,12 +3783,27 @@ def _extract_labeled_fields(
                     found["address"] = joined
 
     # Label-less family page (CamScanner dropped Father/Mother/Spouse anchors).
-    # Only when both parents are still blank — never override a labeled extract.
-    if not found.get("father_name") and not found.get("mother_name"):
+    # Cover-note junk ("BY ORDER") must never block a 3-name unlabeled row.
+    def _parent_slot_usable(val: str | None) -> bool:
+        if not val:
+            return False
+        if _PARENT_NAME_JUNK_RE.search(val):
+            return False
+        return bool(_is_plausible_person_name(val))
+
+    if not _parent_slot_usable(found.get("father_name")) and not _parent_slot_usable(
+        found.get("mother_name")
+    ):
         unlabeled = _unlabeled_family_row_from_blocks(ocr_blocks)
         for key in ("father_name", "mother_name", "spouse_name", "address"):
-            if unlabeled.get(key) and not found.get(key):
-                found[key] = unlabeled[key]
+            cand = unlabeled.get(key)
+            if not cand:
+                continue
+            if key in ("father_name", "mother_name"):
+                if not _parent_slot_usable(found.get(key)):
+                    found[key] = cand
+            elif not found.get(key):
+                found[key] = cand
         # Prefer the street+locality address over a locality-only crumb.
         if unlabeled.get("address") and found.get("address"):
             prev = str(found["address"])
@@ -3902,11 +4168,11 @@ def extract_passport_fields(
 
     poi = str(fields.get("place_of_issue") or "").strip()
     if poi:
-        poi = re.sub(r"^\d+\s+", "", poi).strip(" ,/-")
+        poi = _normalize_place_token(poi)
         fields["place_of_issue"] = poi or None
     pob = str(fields.get("place_of_birth") or "").strip()
     if pob:
-        fields["place_of_birth"] = re.sub(r"^\d+\s+", "", pob).strip(" ,/-") or None
+        fields["place_of_birth"] = _normalize_place_token(pob) or None
 
     # Prefer visual-zone surname when MRZ surname looks like a place/label.
     mrz_surname = str(fields.get("surname") or "")
@@ -3969,17 +4235,40 @@ def extract_passport_fields(
         ):
             fields["place_of_birth"] = labeled["place_of_birth"]
 
-    # Place of issue must not be a signature / given-name echo.
-    poi = str(fields.get("place_of_issue") or "").strip()
-    if poi and _looks_like_signature_or_given_name(
-        poi, str(fields.get("given_names") or labeled.get("given_names") or "")
-    ):
-        fields["place_of_issue"] = None
-        alt = str(labeled.get("place_of_issue") or "").strip()
-        if alt and not _looks_like_signature_or_given_name(
-            alt, str(fields.get("given_names") or "")
+    # Place of issue / birth must not be a signature or the holder's own name.
+    holder_given = str(fields.get("given_names") or labeled.get("given_names") or "")
+    holder_surname = str(fields.get("surname") or labeled.get("surname") or "")
+
+    def _scrub_holder_place(key: str) -> None:
+        cur = str(fields.get(key) or "").strip()
+        if not cur:
+            return
+        if not _is_holder_name_as_place(
+            cur, surname=holder_surname, given_names=holder_given
+        ) and not _is_nationality_as_place(cur):
+            return
+        fields[key] = None
+        alt = str(labeled.get(key) or "").strip()
+        if (
+            alt
+            and not _is_holder_name_as_place(
+                alt, surname=holder_surname, given_names=holder_given
+            )
+            and not _is_nationality_as_place(alt)
+            and (
+                _is_issuing_office_candidate(
+                    alt, surname=holder_surname, given_names=holder_given
+                )
+                if key == "place_of_issue"
+                else _is_place_candidate(
+                    alt, surname=holder_surname, given_names=holder_given
+                )
+            )
         ):
-            fields["place_of_issue"] = alt
+            fields[key] = _normalize_place_token(alt)
+
+    _scrub_holder_place("place_of_issue")
+    _scrub_holder_place("place_of_birth")
 
     # Issue date must precede expiry (fixes swapped OCR on Date of Issue/Expiry row).
     def _passport_dt(s: str | None):
@@ -4118,10 +4407,27 @@ def extract_passport_fields(
     if not fields.get("file_number") and labeled_fno:
         fields["file_number"] = labeled_fno
 
-    if fields.get("place_of_birth") and _is_noise_value(str(fields["place_of_birth"])):
+    if fields.get("place_of_birth") and (
+        _is_noise_value(str(fields["place_of_birth"]))
+        or _is_nationality_as_place(str(fields["place_of_birth"]))
+    ):
         fields["place_of_birth"] = None
-    if fields.get("place_of_issue") and _is_noise_value(str(fields["place_of_issue"])):
+    if fields.get("place_of_issue") and (
+        _is_noise_value(str(fields["place_of_issue"]))
+        or _is_nationality_as_place(str(fields["place_of_issue"]))
+        or _is_postal_address_as_place(str(fields["place_of_issue"]))
+        or not _is_issuing_office_candidate(
+            str(fields["place_of_issue"]),
+            surname=holder_surname,
+            given_names=holder_given,
+        )
+    ):
         fields["place_of_issue"] = None
+        alt_poi = _normalize_place_token(str(labeled.get("place_of_issue") or ""))
+        if alt_poi and _is_issuing_office_candidate(
+            alt_poi, surname=holder_surname, given_names=holder_given
+        ):
+            fields["place_of_issue"] = alt_poi[:80]
     # If birth captured the issue label, clear and try swap from labeled.
     if fields.get("place_of_birth") and re.search(
         r"(?i)issue", str(fields["place_of_birth"])
@@ -4131,6 +4437,7 @@ def extract_passport_fields(
         not fields.get("place_of_birth")
         and labeled.get("place_of_birth")
         and not _is_noise_value(labeled["place_of_birth"])
+        and not _is_nationality_as_place(str(labeled["place_of_birth"]))
     ):
         fields["place_of_birth"] = labeled["place_of_birth"]
     # Drop garbage document numbers from false MRZ line-2 matches.

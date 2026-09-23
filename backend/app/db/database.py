@@ -257,7 +257,10 @@ def recover_ssh_tunnel(*, reason: str = "") -> bool:
         tcp = probe_ssh_tunnel_tcp()
         if tcp != "up":
             log_ssh_tunnel_down(detail=reason or tcp, state=tcp)
-        dispose_db_pool(reason=reason or "tunnel recover")
+        # Wipe pooled sockets only when the local forward is gone. Listening /
+        # warming means Postgres is still starting — dispose would reconnect-storm.
+        if tcp == "closed":
+            dispose_db_pool(reason=reason or "tunnel recover")
         deadline = time.monotonic() + 12.0
         while time.monotonic() < deadline:
             tcp = probe_ssh_tunnel_tcp()
@@ -399,10 +402,20 @@ def should_dispose_pool_for_error(exc_or_text: BaseException | str) -> bool:
 
     Pool timeout means connections are still in use. Disposing them kills in-flight
     work and triggers a reconnect storm through the SSH tunnel.
+
+    When the local SSH port is listening (or TCP is still warming) but remote
+    Postgres is not ready yet, keep the pool — disposing only worsens the storm.
+    Dispose only when the tunnel port is truly closed (connection refused).
     """
     if is_db_pool_pressure_error(exc_or_text):
         return False
-    return is_db_tunnel_transient_error(exc_or_text)
+    if not is_db_tunnel_transient_error(exc_or_text):
+        return False
+    if not _IS_SSH_TUNNEL_DB:
+        return True
+    tcp = probe_ssh_tunnel_tcp()
+    # Port up / warming: Postgres may still be starting — do not wipe the pool.
+    return tcp == "closed"
 
 
 _TUNNEL_TRANSIENT_NEEDLES = (

@@ -168,6 +168,7 @@ API_ROUTE_TO_PAGE: list[tuple[str, str]] = [
     ("/api/v1/permissions", "/access-control"),
     ("/api/v1/command-center", "/command-center"),
     ("/api/v1/academia", "/academia"),
+    ("/api/v1/document-requirements", "/academia"),
     ("/api/v1/intel", "/nexus-intel"),
     ("/api/v1/flowx", "/flowx"),
     ("/api/v1/scanx", "/students/document-readiness"),

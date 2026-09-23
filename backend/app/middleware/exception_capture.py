@@ -348,12 +348,28 @@ class QuietDbTunnelMiddleware:
 
     GET/HEAD: buffer the body and retry the ASGI call once after the tunnel
     recovers so a brief flap does not 503 the SPA bootstrap.
+
+    POST bulk-delete is hard-delete idempotent (missing ids are skipped) — retry
+    once through the same recover path so Postgres warm-up does not wipe the UX.
     """
 
     _IDEMPOTENT_METHODS = frozenset({"GET", "HEAD"})
+    _RETRYABLE_POST_PATHS = frozenset(
+        {
+            "/api/v1/scanx/documents/bulk-delete",
+        }
+    )
 
     def __init__(self, app: Any) -> None:
         self.app = app
+
+    @classmethod
+    def _is_retryable(cls, method: str, path: str) -> bool:
+        if method in cls._IDEMPOTENT_METHODS:
+            return True
+        if method == "POST" and path.rstrip("/") in cls._RETRYABLE_POST_PATHS:
+            return True
+        return False
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope.get("type") != "http":
@@ -362,7 +378,7 @@ class QuietDbTunnelMiddleware:
 
         method = str(scope.get("method") or "GET").upper()
         path = str(scope.get("path") or "")
-        if method in self._IDEMPOTENT_METHODS:
+        if self._is_retryable(method, path):
             await self._call_with_get_retry(scope, receive, send, method, path)
             return
         await self._call_once(scope, receive, send, method, path)

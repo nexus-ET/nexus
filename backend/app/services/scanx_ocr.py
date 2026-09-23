@@ -27,7 +27,11 @@ from app.services.ocr_cleaner import (
     clean_ocr_text,
     structure_marks_from_ocr,
 )
-from app.services.scanx_cancel import ScanxJobCancelled, is_cancel_requested
+from app.services.scanx_cancel import (
+    ScanxJobCancelled,
+    add_job_wait_ms,
+    is_cancel_requested,
+)
 from app.services.scanx_ocr_blocks import (
     OcrTextBlock,
     annotate_blocks_with_grid,
@@ -49,6 +53,9 @@ _paddle_engine_lock = threading.Lock()
 _rapid_engine_lock = threading.Lock()
 # Serialize heavy OCR inference across engines (not construction after timeout).
 _ocr_run_slots = threading.Semaphore(1)
+# Cap wait for the single OCR slot so a hung peer cannot pin leave_parsing_ms
+# for tens of minutes (unbounded acquire used to look like 45min "OCR").
+_OCR_SLOT_WAIT_CAP_SEC = 60.0
 
 _ENGINE_PADDLE = "paddle"
 _ENGINE_RAPID = "rapid"
@@ -811,7 +818,41 @@ def _try_engine(
     acquired = _ocr_run_slots.acquire(blocking=False)
     if not acquired:
         _emit_progress(on_progress, "Waiting for OCR slot…")
-        _ocr_run_slots.acquire()
+        wait_cap = min(_OCR_SLOT_WAIT_CAP_SEC, max(5.0, float(timeout_seconds)))
+        wait_t0 = time.perf_counter()
+        deadline = time.monotonic() + wait_cap
+        while True:
+            if is_cancel_requested():
+                try:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+                raise ScanxJobCancelled()
+            remaining_wait = deadline - time.monotonic()
+            if remaining_wait <= 0:
+                waited_ms = int((time.perf_counter() - wait_t0) * 1000)
+                add_job_wait_ms(waited_ms)
+                try:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+                logger.warning(
+                    "ScanX OCR slot wait timed out after %.1fs engine=%s",
+                    wait_cap,
+                    engine_name,
+                )
+                return None, "ocr_timeout", "ocr_slot_wait_timeout", empty_blocks
+            got = _ocr_run_slots.acquire(timeout=min(5.0, remaining_wait))
+            if got:
+                acquired = True
+                waited_ms = int((time.perf_counter() - wait_t0) * 1000)
+                add_job_wait_ms(waited_ms)
+                break
+            elapsed_wait = int(time.perf_counter() - wait_t0)
+            _emit_progress(
+                on_progress,
+                f"Waiting for OCR slot… {elapsed_wait}s",
+            )
 
     stop_hb = threading.Event()
     release_slot = True

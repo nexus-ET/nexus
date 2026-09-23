@@ -59,6 +59,11 @@ from app.schemas.counselor_followup import (
     CounselorFollowupListResponse,
     CounselorStatusMasterListResponse,
 )
+from app.schemas.document_requirement import (
+    DocumentChecklistCreate,
+    DocumentChecklistLevelsResponse,
+    DocumentChecklistScopeResponse,
+)
 from app.services.express_leads_service import (
     build_express_lead_response,
     check_express_lead_duplicates,
@@ -1124,6 +1129,8 @@ def get_offline_leads(
     page: int = 1,
     page_size: int = 25,
     q: str | None = None,
+    name: str | None = None,
+    student_id: str | None = None,
     status: str | None = None,
     sort_by: SortField = "created_at",
     sort_dir: SortDirection = "desc",
@@ -1135,6 +1142,8 @@ def get_offline_leads(
             page=page,
             page_size=page_size,
             q=q,
+            name=name,
+            student_id=student_id,
             status=status,
             sort_by=sort_by,
             sort_dir=sort_dir,
@@ -1291,6 +1300,64 @@ def get_counselor_followup_statuses(db: Session = Depends(get_db)):
     return {"items": list_counselor_statuses(db, active_only=True)}
 
 
+@router.get(
+    "/document-checklist/scope",
+    response_model=DocumentChecklistScopeResponse,
+)
+@router.get(
+    "/document-checklist/scope/",
+    response_model=DocumentChecklistScopeResponse,
+)
+def get_followup_document_checklist_scope(
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.get_current_active_user),
+):
+    """Checklist Country-Specific availability for counselor notes (not admin-only)."""
+    from app.services import document_requirement_service as doc_req_service
+
+    payload = doc_req_service.checklist_scope_options(db)
+    return DocumentChecklistScopeResponse.model_validate(payload)
+
+
+@router.get(
+    "/document-checklist/levels",
+    response_model=DocumentChecklistLevelsResponse,
+)
+@router.get(
+    "/document-checklist/levels/",
+    response_model=DocumentChecklistLevelsResponse,
+)
+def get_followup_document_checklist_levels(
+    scope: str = Query("global"),
+    country_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+    _: User = Depends(deps.get_current_active_user),
+):
+    """Levels with checklist documents for counselor notes (same rules as admin popup)."""
+    from app.services import document_requirement_service as doc_req_service
+
+    try:
+        normalized_scope = DocumentChecklistCreate.normalize_checklist_scope(scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if normalized_scope == "global" and country_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="country_id must not be provided when scope is global",
+        )
+    if normalized_scope == "country_specific" and country_id is None:
+        return DocumentChecklistLevelsResponse(program_levels=[])
+
+    return DocumentChecklistLevelsResponse(
+        program_levels=doc_req_service.list_catalog_levels_with_requirements(
+            db,
+            scope=normalized_scope,
+            country_id=country_id,
+        )
+    )
+
+
 @router.get("/{lead_id}/followups", response_model=CounselorFollowupListResponse)
 @router.get("/{lead_id}/followups/", response_model=CounselorFollowupListResponse)
 def get_lead_followups(lead_id: int, db: Session = Depends(get_db)):
@@ -1326,7 +1393,13 @@ def post_lead_followup(
         if getattr(current_user, "email", None):
             counselor_id = f"{current_user.id}:{current_user.email}"
     try:
-        return create_lead_followup(db, lead_id, payload, counselor_id=counselor_id)
+        return create_lead_followup(
+            db,
+            lead_id,
+            payload,
+            counselor_id=counselor_id,
+            current_user=current_user,
+        )
     except HTTPException:
         raise
     except Exception as e:

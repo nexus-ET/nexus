@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import String, asc, cast, desc, or_, text
+from sqlalchemy import String, asc, case, cast, desc, or_, text
 from sqlalchemy.orm import Session
 
 from app.models.lead import Lead, LeadChannel, LeadSource, LeadStage
@@ -151,6 +151,7 @@ def _build_additional_data(db: Session, payload: OfflineLeadCreate) -> dict[str,
 
 
 def _status_label(lead: Lead) -> str:
+    """AI/chat lifecycle label (AI Active / Handoff / Archive / Inactive), not pipeline Lead Status."""
     if lead.archived_at is not None:
         return "Inactive"
     stage = lead.stage.value if hasattr(lead.stage, "value") else str(lead.stage or "")
@@ -161,12 +162,75 @@ def _status_label(lead: Lead) -> str:
     return "AI Active"
 
 
+def _pipeline_status_names_for_leads(db: Session, lead_ids: list[int]) -> dict[int, str]:
+    """Map lead id → status_definitions.stage_name via leads.status_definition_id."""
+    if not lead_ids:
+        return {}
+    rows = db.execute(
+        text(
+            """
+            SELECT l.id AS lead_id, sd.stage_name AS stage_name
+            FROM leads l
+            JOIN status_definitions sd ON sd.id = l.status_definition_id
+            WHERE l.id = ANY(:lead_ids)
+              AND l.status_definition_id IS NOT NULL
+            """
+        ),
+        {"lead_ids": lead_ids},
+    ).all()
+    return {
+        int(lead_id): str(stage_name)
+        for lead_id, stage_name in rows
+        if lead_id is not None and stage_name
+    }
+
+
+def _status_stage_name(
+    lead: Lead,
+    db: Session | None = None,
+    *,
+    status_by_id: dict[int, Any] | None = None,
+    pipeline_names: dict[int, str] | None = None,
+) -> str | None:
+    """
+    Pipeline Lead Status: status_definitions.stage_name for leads.status_definition_id.
+
+    Set on create via on_lead_created → Lead: New; updated on stage transitions.
+    Not the AI/chat lifecycle (AI Active / Handoff / Archive).
+    """
+    if pipeline_names is not None:
+        named = pipeline_names.get(int(lead.id))
+        if named:
+            return named
+
+    status_id = getattr(lead, "status_definition_id", None)
+    if status_id is not None and status_by_id is not None:
+        cached = status_by_id.get(int(status_id))
+        if cached is not None:
+            name = getattr(cached, "stage_name", None)
+            if name:
+                return str(name)
+
+    if db is None:
+        return None
+    from app.services.status_definition_service import resolve_lead_status_meta
+
+    _status_id, stage_name, _category = resolve_lead_status_meta(db, lead)
+    return stage_name
+
+
 def _extract_additional(lead: Lead) -> dict[str, Any]:
     raw = getattr(lead, "additional_data", None)
     return raw if isinstance(raw, dict) else {}
 
 
-def build_offline_lead_list_item(lead: Lead, db: Session | None = None) -> dict[str, Any]:
+def build_offline_lead_list_item(
+    lead: Lead,
+    db: Session | None = None,
+    *,
+    status_by_id: dict[int, Any] | None = None,
+    pipeline_names: dict[int, str] | None = None,
+) -> dict[str, Any]:
     extra = _extract_additional(lead)
     education = extra.get("education") if isinstance(extra.get("education"), dict) else {}
     location = extra.get("location") if isinstance(extra.get("location"), dict) else {}
@@ -200,6 +264,13 @@ def build_offline_lead_list_item(lead: Lead, db: Session | None = None) -> dict[
         else:
             list_source = LeadSource.FACEBOOK_LEAD.value
 
+    pipeline_status = _status_stage_name(
+        lead,
+        db,
+        status_by_id=status_by_id,
+        pipeline_names=pipeline_names,
+    )
+
     return {
         "id": lead.id,
         "full_name": lead.full_name,
@@ -211,6 +282,8 @@ def build_offline_lead_list_item(lead: Lead, db: Session | None = None) -> dict[
         "phone_country_iso2": extra.get("phone_country_iso2"),
         "stage": lead.stage.value if hasattr(lead.stage, "value") else str(lead.stage),
         "status_label": _status_label(lead),
+        "status_stage_name": pipeline_status,
+        "lead_status": pipeline_status,
         "source": list_source,
         "is_active": lead.archived_at is None,
         "target_destination": extra.get("target_destination") or lead.preferred_country,
@@ -258,6 +331,7 @@ def build_offline_lead_list_item(lead: Lead, db: Session | None = None) -> dict[
         "created_at": lead.created_at.isoformat() if lead.created_at else None,
         "booking_count": 0,
         "followup_count": 0,
+        "followup_status_label": None,
     }
 
 
@@ -334,12 +408,45 @@ def _count_bookings_for_lead_ids(db: Session, lead_ids: list[int]) -> dict[int, 
     return {int(lead_id): int(count) for lead_id, count in rows if lead_id is not None}
 
 
+def _name_ilike_clauses(term: str):
+    """Match full_name and optional name parts stored on additional_data (case-insensitive contains)."""
+    pattern = f"%{term}%"
+    return or_(
+        Lead.full_name.ilike(pattern),
+        text("COALESCE(leads.additional_data->>'first_name', '') ILIKE :name_term").bindparams(
+            name_term=pattern
+        ),
+        text("COALESCE(leads.additional_data->>'middle_name', '') ILIKE :name_term").bindparams(
+            name_term=pattern
+        ),
+        text("COALESCE(leads.additional_data->>'last_name', '') ILIKE :name_term").bindparams(
+            name_term=pattern
+        ),
+    )
+
+
+def _student_id_clauses(raw: str):
+    """Match the on-screen Student ID column (leads.id) — exact when numeric, else id text contains."""
+    value = raw.strip()
+    if not value:
+        return None
+    clauses = [cast(Lead.id, String).ilike(f"%{value}%")]
+    if value.isdigit():
+        try:
+            clauses.append(Lead.id == int(value))
+        except ValueError:
+            pass
+    return or_(*clauses)
+
+
 def list_offline_leads(
     db: Session,
     *,
     page: int = 1,
     page_size: int = 25,
     q: str | None = None,
+    name: str | None = None,
+    student_id: str | None = None,
     status: str | None = None,
     sort_by: SortField = "created_at",
     sort_dir: SortDirection = "desc",
@@ -349,14 +456,34 @@ def list_offline_leads(
     query = _base_all_leads_query(db)
 
     if q and q.strip():
-        term = f"%{q.strip()}%"
-        query = query.filter(
-            or_(
-                Lead.full_name.ilike(term),
-                Lead.email.ilike(term),
-                Lead.phone_number.ilike(term),
-            )
-        )
+        raw_q = q.strip()
+        term = f"%{raw_q}%"
+        q_clauses = [
+            Lead.full_name.ilike(term),
+            Lead.email.ilike(term),
+            Lead.phone_number.ilike(term),
+            text("COALESCE(leads.additional_data->>'first_name', '') ILIKE :q_term").bindparams(
+                q_term=term
+            ),
+            text("COALESCE(leads.additional_data->>'middle_name', '') ILIKE :q_term").bindparams(
+                q_term=term
+            ),
+            text("COALESCE(leads.additional_data->>'last_name', '') ILIKE :q_term").bindparams(
+                q_term=term
+            ),
+        ]
+        id_clause = _student_id_clauses(raw_q)
+        if id_clause is not None and raw_q.isdigit():
+            q_clauses.append(id_clause)
+        query = query.filter(or_(*q_clauses))
+
+    if name and name.strip():
+        query = query.filter(_name_ilike_clauses(name.strip()))
+
+    if student_id and student_id.strip():
+        id_clause = _student_id_clauses(student_id)
+        if id_clause is not None:
+            query = query.filter(id_clause)
 
     query = _apply_status_filter(query, status)
 
@@ -367,24 +494,65 @@ def list_offline_leads(
 
     sort_col = SORT_COLUMNS.get(sort_by, Lead.created_at)
     ordering = asc(sort_col) if sort_dir == "asc" else desc(sort_col)
+    order_clauses: list[Any] = []
+    exact_id: int | None = None
+    digit_q = (q or "").strip()
+    digit_student = (student_id or "").strip()
+    if digit_student.isdigit():
+        exact_id = int(digit_student)
+    elif digit_q.isdigit():
+        exact_id = int(digit_q)
+    if exact_id is not None:
+        order_clauses.append(case((Lead.id == exact_id, 0), else_=1))
     if sort_by != "created_at":
-        query = query.order_by(ordering, Lead.id.desc())
+        order_clauses.extend([ordering, Lead.id.desc()])
     else:
-        query = query.order_by(ordering, Lead.id.desc())
+        order_clauses.extend([ordering, Lead.id.desc()])
+    query = query.order_by(*order_clauses)
 
     offset = (safe_page - 1) * safe_page_size
     rows = query.offset(offset).limit(safe_page_size).all()
 
     lead_ids = [row.id for row in rows]
     booking_counts = _count_bookings_for_lead_ids(db, lead_ids)
-    from app.services.counselor_followup_service import count_followups_for_lead_ids
+    from app.models.status_definition import StatusDefinition
+    from app.services.counselor_followup_service import (
+        count_followups_for_lead_ids,
+        latest_followup_status_for_lead_ids,
+    )
+
+    pipeline_names = _pipeline_status_names_for_leads(db, lead_ids)
+    status_ids = {
+        int(row.status_definition_id)
+        for row in rows
+        if getattr(row, "status_definition_id", None)
+    }
+    status_by_id: dict[int, Any] = {}
+    if status_ids:
+        status_by_id = {
+            int(defn.id): defn
+            for defn in db.query(StatusDefinition)
+            .filter(StatusDefinition.id.in_(status_ids))
+            .all()
+        }
 
     followup_counts = count_followups_for_lead_ids(db, lead_ids)
+    followup_statuses = latest_followup_status_for_lead_ids(db, lead_ids)
     items = []
     for row in rows:
-        item = build_offline_lead_list_item(row, db)
+        item = build_offline_lead_list_item(
+            row,
+            db,
+            status_by_id=status_by_id,
+            pipeline_names=pipeline_names,
+        )
         item["booking_count"] = booking_counts.get(row.id, 0)
         item["followup_count"] = followup_counts.get(row.id, 0)
+        item["followup_status_label"] = followup_statuses.get(row.id)
+        if not item.get("status_stage_name"):
+            item["status_stage_name"] = pipeline_names.get(row.id)
+        if not item.get("lead_status"):
+            item["lead_status"] = item.get("status_stage_name")
         items.append(item)
 
     return {

@@ -58,6 +58,7 @@ class BusinessContactEntry(BaseModel):
 class BusinessProfileOut(BaseModel):
     business_id: int
     business_name: str
+    business_short_name: str | None = None
     business_domain: str | None = None
     address_line1: str | None = None
     address_line2: str | None = None
@@ -81,6 +82,7 @@ class BusinessProfileOut(BaseModel):
 
 class BusinessProfileUpdateRequest(BaseModel):
     business_name: str = Field(min_length=1, max_length=200)
+    business_short_name: str | None = Field(default=None, max_length=80)
     business_domain: str | None = Field(default=None, max_length=255)
     address_line1: str | None = Field(default=None, max_length=255)
     address_line2: str | None = Field(default=None, max_length=255)

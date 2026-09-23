@@ -2201,9 +2201,13 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
       await loadDocs();
     } catch (err) {
       setDeleteConfirm(null);
+      const raw = err instanceof Error ? err.message : 'Could not delete selected documents.';
+      const busy = /temporarily busy|retry shortly/i.test(raw);
       setAlert({
         tone: 'error',
-        text: err instanceof Error ? err.message : 'Could not delete selected documents.',
+        text: busy
+          ? 'Database is temporarily busy (connection warming up). Wait a few seconds and try delete again — documents were likely not removed.'
+          : raw,
       });
     } finally {
       setBulkDeleting(false);
@@ -2898,11 +2902,35 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
     extractedText: review?.extracted_text,
     passport: review?.extracted_fields?.passport,
   });
-  const isPassportReview =
-    isPassportDoc && Boolean(review?.extracted_fields?.passport);
+  /** Prefer passport schema panels; hydrate from flat fields/categories when passport key is missing. */
+  const passportForReview: ScanxPassportExtract | null = useMemo(() => {
+    if (!isPassportDoc || isScanxInProgress(review?.document.status)) return null;
+    const raw = review?.extracted_fields?.passport;
+    const base =
+      raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? (raw as ScanxPassportExtract)
+        : ({} as ScanxPassportExtract);
+    return hydratePassportExtract(base, {
+      fields: review?.extracted_fields?.fields,
+      categories: reviewCategories,
+    });
+  }, [
+    isPassportDoc,
+    review?.document.status,
+    review?.extracted_fields?.passport,
+    review?.extracted_fields?.fields,
+    reviewCategories,
+  ]);
+  const isPassportReview = Boolean(passportForReview);
+  const passportHasAnyValue = useMemo(() => {
+    if (!passportForReview) return false;
+    return [...PASSPORT_PERSONAL_KEYS, ...PASSPORT_DOCUMENT_KEYS, ...PASSPORT_MRZ_KEYS].some(
+      key => coercePassportScalar(passportForReview[key]).length > 0
+    );
+  }, [passportForReview]);
   const isPassportDocMissingFields =
     isPassportDoc &&
-    !review?.extracted_fields?.passport &&
+    !passportHasAnyValue &&
     !isScanxInProgress(review?.document.status) &&
     !(review?.extracted_text || '').trim();
 
@@ -2923,7 +2951,7 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
 
   /** Passport: leftover OCR rows only. Personal/Document (+ MRZ) come from passport schema. */
   const passportOtherOnly = useMemo(() => {
-    if (!isPassportReview || !review?.extracted_fields?.passport) {
+    if (!isPassportReview || !passportForReview) {
       return [] as ScanxCategory[];
     }
     const known = new Set([
@@ -2996,7 +3024,7 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
     return [{ id: 'other', label: 'Other Details', items }];
   }, [
     isPassportReview,
-    review?.extracted_fields?.passport,
+    passportForReview,
     reviewCategories,
     review?.extracted_fields?.fields,
   ]);
@@ -3682,17 +3710,21 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
                       Re-process if they still do not appear.
                     </p>
                   ) : null}
-                  {isPassportReview && review.extracted_fields?.passport ? (
+                  {isPassportReview && passportForReview ? (
                     <>
                       <PassportGroupedTables
-                        passport={review.extracted_fields.passport}
-                        fields={review.extracted_fields.fields}
+                        passport={passportForReview}
+                        fields={review.extracted_fields?.fields}
                         categories={reviewCategories}
                         onHighlightField={highlightFieldOnViewer}
                       />
-                      <CategorizedExtractionTables categories={passportOtherOnly} />
+                      {passportOtherOnly.length > 0 ? (
+                        <CategorizedExtractionTables categories={passportOtherOnly} />
+                      ) : !passportHasAnyValue && categorizedTables.length > 0 ? (
+                        <CategorizedExtractionTables categories={categorizedTables} />
+                      ) : null}
                     </>
-                  ) : isPassportDoc ? null : (
+                  ) : (
                     <CategorizedExtractionTables categories={categorizedTables} />
                   )}
                   {!isPassportDoc &&

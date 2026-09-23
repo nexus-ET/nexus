@@ -1,10 +1,15 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Loader2, MessageSquareText, X } from 'lucide-react';
 import {
   useCounselorFollowupStatuses,
   useCreateLeadFollowup,
   useLeadFollowups,
+  type CounselorFollowupItem,
+  type CounselorFollowupSentDocument,
+  type CounselorStatusMasterItem,
 } from '../hooks/useCounselorFollowups';
+import { useLevels } from '../hooks/useLevels';
+import { apiFetch, apiFetchBlob } from '../utils/api';
 import HeadlessScrollArea from './HeadlessScrollArea';
 
 interface CounselorFollowupDrawerProps {
@@ -13,6 +18,19 @@ interface CounselorFollowupDrawerProps {
   leadName?: string | null;
   onClose: () => void;
   onFollowupSaved?: () => void;
+}
+
+type ChecklistScope = 'global' | 'country_specific';
+
+interface ChecklistCountryOption {
+  id: number;
+  iso2: string;
+  name: string;
+}
+
+interface MailSentConfirmation {
+  emailTo: string;
+  sentAt: string;
 }
 
 const formatTime = (value: string): string => {
@@ -60,6 +78,183 @@ function splitTemplateDescription(raw: string): { points: string; actions: strin
   return { points: points || text, actions };
 }
 
+function actionItemLines(raw: string): string[] {
+  return raw
+    .split(/\n+/)
+    .map(line => line.trim())
+    .filter(Boolean);
+}
+
+function isSendDocumentChecklistStatus(
+  status: CounselorStatusMasterItem | null
+): boolean {
+  if (!status) return false;
+  const key = (status.status_key || '').trim().toLowerCase();
+  if (key === 'send_document_checklist') return true;
+  return (status.status_heading || '').trim().toLowerCase() === 'send document checklist';
+}
+
+function hasChecklistEmailReceipt(item: CounselorFollowupItem): boolean {
+  return Boolean(item.checklist_email_sent_at && (item.checklist_email_to || '').trim());
+}
+
+function mediaUrlToApiEndpoint(url: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return null;
+  const marker = 'document-requirements/media/';
+  const idx = trimmed.indexOf(marker);
+  if (idx >= 0) return trimmed.slice(idx);
+  if (trimmed.startsWith('/api/v1/')) return trimmed.slice('/api/v1/'.length);
+  return trimmed.replace(/^\//, '');
+}
+
+function ActionItemsDisplay({ followupId, text }: { followupId: number; text: string }) {
+  const lines = actionItemLines(text);
+  if (lines.length <= 1) {
+    return (
+      <p>
+        <span className="font-semibold">Action Items: </span>
+        {text}
+      </p>
+    );
+  }
+  return (
+    <div className="space-y-1">
+      <p className="font-semibold">Action Items:</p>
+      {lines.map((line, index) => (
+        <p key={`${followupId}-action-${index}`}>{line}</p>
+      ))}
+    </div>
+  );
+}
+
+function ChecklistDocumentLink({
+  doc,
+}: {
+  doc: CounselorFollowupSentDocument;
+}) {
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
+  const label = (doc.label || '').trim() || 'Document';
+  const url = (doc.url || '').trim();
+  const unavailable = Boolean(doc.link_unavailable) || !url;
+
+  const openRelative = async () => {
+    const endpoint = mediaUrlToApiEndpoint(url);
+    if (!endpoint) {
+      setOpenError('Link unavailable');
+      return;
+    }
+    setOpening(true);
+    setOpenError(null);
+    try {
+      const blob = await apiFetchBlob(endpoint);
+      const objectUrl = URL.createObjectURL(blob);
+      window.open(objectUrl, '_blank', 'noopener,noreferrer');
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (err) {
+      setOpenError(err instanceof Error ? err.message : 'Failed to open file');
+    } finally {
+      setOpening(false);
+    }
+  };
+
+  if (unavailable) {
+    return (
+      <li className="text-sm text-text-main">
+        {label}{' '}
+        <span className="text-text-muted">(link unavailable)</span>
+      </li>
+    );
+  }
+
+  if (/^https?:\/\//i.test(url)) {
+    return (
+      <li className="text-sm">
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-accent underline underline-offset-2 hover:opacity-90 break-all"
+        >
+          {label}
+        </a>
+      </li>
+    );
+  }
+
+  return (
+    <li className="text-sm">
+      <button
+        type="button"
+        className="text-accent underline underline-offset-2 hover:opacity-90 disabled:opacity-50 text-left break-all"
+        onClick={() => void openRelative()}
+        disabled={opening}
+      >
+        {opening ? 'Opening…' : label}
+      </button>
+      {openError ? <span className="ml-2 text-xs text-red-700">{openError}</span> : null}
+    </li>
+  );
+}
+
+function ChecklistSentBlock({
+  item,
+  compact = false,
+}: {
+  item: CounselorFollowupItem;
+  compact?: boolean;
+}) {
+  if (!hasChecklistEmailReceipt(item)) return null;
+  const documents = item.checklist_sent_documents ?? [];
+  const sentAt = item.checklist_email_sent_at
+    ? formatTime(item.checklist_email_sent_at)
+    : '';
+  const emailTo = (item.checklist_email_to || '').trim();
+
+  return (
+    <div
+      className={
+        compact
+          ? 'space-y-2'
+          : 'rounded-lg border border-emerald-200 bg-emerald-50/80 px-3 py-2 space-y-2'
+      }
+    >
+      <p className="text-sm font-semibold text-text-main">Document checklist sent</p>
+      {documents.length > 0 ? (
+        <ul className="list-disc pl-5 space-y-1">
+          {documents.map((doc, index) => (
+            <ChecklistDocumentLink
+              key={`${item.id}-doc-${index}-${doc.label}`}
+              doc={doc}
+            />
+          ))}
+        </ul>
+      ) : (
+        <p className="text-xs text-text-muted">No attachment links were recorded.</p>
+      )}
+      <div className="text-xs text-text-main space-y-0.5 pt-1 border-t border-emerald-200/80">
+        <p>
+          <span className="font-semibold">Mail sent</span>
+        </p>
+        {sentAt ? (
+          <p>
+            <span className="font-semibold">Sent: </span>
+            {sentAt}
+          </p>
+        ) : null}
+        {emailTo ? (
+          <p>
+            <span className="font-semibold">Email: </span>
+            {emailTo}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
   open,
   leadId,
@@ -70,15 +265,79 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
   const statusesQuery = useCounselorFollowupStatuses(open);
   const followupsQuery = useLeadFollowups(leadId, open);
   const createMutation = useCreateLeadFollowup();
+  const { levels: catalogLevels } = useLevels();
 
   const [statusId, setStatusId] = useState<number | ''>('');
   const [pointsDiscussed, setPointsDiscussed] = useState('');
   const [actionItems, setActionItems] = useState('');
   const [nextFollowupDate, setNextFollowupDate] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  const [formWarning, setFormWarning] = useState<string | null>(null);
+  const [mailSentConfirmation, setMailSentConfirmation] =
+    useState<MailSentConfirmation | null>(null);
 
-  const statuses = statusesQuery.data?.items ?? [];
+  const [checklistScope, setChecklistScope] = useState<ChecklistScope>('global');
+  const [checklistCountryId, setChecklistCountryId] = useState('');
+  const [checklistLevel, setChecklistLevel] = useState('');
+  const [checklistSendEmail, setChecklistSendEmail] = useState<'yes' | 'no'>('no');
+  const [checklistLevelsWithDocs, setChecklistLevelsWithDocs] = useState<string[]>([]);
+  const [checklistLevelsLoading, setChecklistLevelsLoading] = useState(false);
+  const [checklistCountrySpecificAvailable, setChecklistCountrySpecificAvailable] =
+    useState(false);
+  const [checklistMappedCountries, setChecklistMappedCountries] = useState<
+    ChecklistCountryOption[]
+  >([]);
+  const [checklistScopeLoading, setChecklistScopeLoading] = useState(false);
+  const [checklistMetaError, setChecklistMetaError] = useState<string | null>(null);
+
+  const statuses = useMemo(() => {
+    const items = statusesQuery.data?.items ?? [];
+    return [...items].sort((a, b) =>
+      a.status_heading.localeCompare(b.status_heading, undefined, { sensitivity: 'base' })
+    );
+  }, [statusesQuery.data?.items]);
   const minFollowupDate = useMemo(() => todayLocalIso(), [open]);
+
+  const selectedStatus = useMemo(
+    () => statuses.find(item => item.id === statusId) ?? null,
+    [statuses, statusId]
+  );
+  const showChecklistPanel = isSendDocumentChecklistStatus(selectedStatus);
+
+  const levelsWithDocsSet = useMemo(
+    () => new Set(checklistLevelsWithDocs.map(name => name.trim()).filter(Boolean)),
+    [checklistLevelsWithDocs]
+  );
+
+  const catalogLevelNames = useMemo(
+    () =>
+      catalogLevels
+        .map(level => (level.name || '').trim())
+        .filter(Boolean),
+    [catalogLevels]
+  );
+
+  const checklistCountryOptions = useMemo(
+    () =>
+      checklistMappedCountries.map(country => ({
+        value: String(country.id),
+        label: country.name,
+      })),
+    [checklistMappedCountries]
+  );
+
+  const resetChecklistPanel = useCallback(() => {
+    setChecklistScope('global');
+    setChecklistCountryId('');
+    setChecklistLevel('');
+    setChecklistSendEmail('no');
+    setChecklistLevelsWithDocs([]);
+    setChecklistLevelsLoading(false);
+    setChecklistCountrySpecificAvailable(false);
+    setChecklistMappedCountries([]);
+    setChecklistScopeLoading(false);
+    setChecklistMetaError(null);
+  }, []);
 
   const resetForm = () => {
     setStatusId('');
@@ -86,11 +345,92 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
     setActionItems('');
     setNextFollowupDate('');
     setFormError(null);
+    setFormWarning(null);
+    setMailSentConfirmation(null);
+    resetChecklistPanel();
   };
 
+  const loadChecklistLevels = useCallback(
+    async (scope: ChecklistScope, countryId: string) => {
+      if (scope === 'country_specific' && !countryId) {
+        setChecklistLevelsWithDocs([]);
+        setChecklistLevel('');
+        setChecklistLevelsLoading(false);
+        return;
+      }
+      setChecklistLevelsLoading(true);
+      setChecklistMetaError(null);
+      try {
+        const params = new URLSearchParams();
+        params.set('scope', scope);
+        if (scope === 'country_specific' && countryId) {
+          params.set('country_id', countryId);
+        }
+        const data = await apiFetch<{ program_levels: string[] }>(
+          `leads/document-checklist/levels?${params.toString()}`
+        );
+        const levels = data.program_levels ?? [];
+        setChecklistLevelsWithDocs(levels);
+        setChecklistLevel(prev => {
+          if (prev && levels.includes(prev)) return prev;
+          return '';
+        });
+      } catch (err) {
+        setChecklistLevelsWithDocs([]);
+        setChecklistLevel('');
+        setChecklistMetaError(
+          err instanceof Error ? err.message : 'Failed to load checklist levels.'
+        );
+      } finally {
+        setChecklistLevelsLoading(false);
+      }
+    },
+    []
+  );
+
+  const loadChecklistScope = useCallback(async () => {
+    setChecklistScopeLoading(true);
+    setChecklistMetaError(null);
+    try {
+      const data = await apiFetch<{
+        country_specific_available: boolean;
+        countries: ChecklistCountryOption[];
+      }>('leads/document-checklist/scope');
+      const mapped = data.countries ?? [];
+      setChecklistCountrySpecificAvailable(Boolean(data.country_specific_available));
+      setChecklistMappedCountries(mapped);
+      return Boolean(data.country_specific_available);
+    } catch (err) {
+      setChecklistCountrySpecificAvailable(false);
+      setChecklistMappedCountries([]);
+      setChecklistMetaError(
+        err instanceof Error ? err.message : 'Failed to load checklist scope options.'
+      );
+      return false;
+    } finally {
+      setChecklistScopeLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    if (!open) resetForm();
+    if (!open) {
+      resetForm();
+      return;
+    }
   }, [open, leadId]);
+
+  useEffect(() => {
+    if (!open || !showChecklistPanel) {
+      if (!showChecklistPanel) resetChecklistPanel();
+      return;
+    }
+    setChecklistScope('global');
+    setChecklistCountryId('');
+    setChecklistLevel('');
+    setChecklistSendEmail('no');
+    void loadChecklistScope();
+    void loadChecklistLevels('global', '');
+  }, [open, showChecklistPanel, leadId, loadChecklistScope, loadChecklistLevels, resetChecklistPanel]);
 
   useEffect(() => {
     if (!open) return;
@@ -101,16 +441,12 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [open, onClose]);
 
-  const selectedStatus = useMemo(
-    () => statuses.find(item => item.id === statusId) ?? null,
-    [statuses, statusId]
-  );
-
   const handleStatusChange = (nextId: string) => {
     if (!nextId) {
       setStatusId('');
       setPointsDiscussed('');
       setActionItems('');
+      resetChecklistPanel();
       return;
     }
     const id = Number(nextId);
@@ -122,6 +458,26 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
       setActionItems(split.actions);
     }
     setFormError(null);
+    setFormWarning(null);
+    setMailSentConfirmation(null);
+  };
+
+  const handleChecklistScopeChange = (nextScope: ChecklistScope) => {
+    if (nextScope === 'country_specific' && !checklistCountrySpecificAvailable) return;
+    setChecklistScope(nextScope);
+    setFormError(null);
+    if (nextScope === 'global') {
+      setChecklistCountryId('');
+      void loadChecklistLevels('global', '');
+      return;
+    }
+    void loadChecklistLevels('country_specific', checklistCountryId);
+  };
+
+  const handleChecklistCountryChange = (nextCountryId: string) => {
+    setChecklistCountryId(nextCountryId);
+    setFormError(null);
+    void loadChecklistLevels('country_specific', nextCountryId);
   };
 
   const handleSave = async () => {
@@ -152,18 +508,79 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
       return;
     }
 
+    const sendEmail = showChecklistPanel && checklistSendEmail === 'yes';
+    if (sendEmail) {
+      if (!checklistLevel || !levelsWithDocsSet.has(checklistLevel)) {
+        setFormError('Select an enabled program level before sending the document checklist email.');
+        return;
+      }
+      if (checklistScope === 'country_specific') {
+        if (!checklistCountrySpecificAvailable) {
+          setFormError('Country-Specific checklists are not available (no country-mapped documents).');
+          return;
+        }
+        if (!checklistCountryId) {
+          setFormError('Select a country before sending a country-specific document checklist email.');
+          return;
+        }
+      }
+    }
+
     setFormError(null);
+    setFormWarning(null);
+    setMailSentConfirmation(null);
     try {
-      await createMutation.mutateAsync({
+      const created = await createMutation.mutateAsync({
         leadId,
         payload: {
           status_id: Number(statusId),
           points_discussed: points,
           action_items: actions || null,
           target_completion_date: followupDate || null,
+          ...(sendEmail
+            ? {
+                send_document_checklist_email: true,
+                checklist_program_level: checklistLevel,
+                checklist_scope: checklistScope,
+                checklist_country_id:
+                  checklistScope === 'country_specific'
+                    ? Number(checklistCountryId)
+                    : null,
+              }
+            : { send_document_checklist_email: false }),
         },
       });
-      resetForm();
+      const emailError =
+        typeof created?.email_error === 'string' ? created.email_error.trim() : '';
+      if (sendEmail && emailError) {
+        setFormWarning(emailError);
+        setMailSentConfirmation(null);
+        setStatusId('');
+        setPointsDiscussed('');
+        setActionItems('');
+        setNextFollowupDate('');
+        resetChecklistPanel();
+        onFollowupSaved?.();
+        return;
+      }
+      const sentAt = (created?.checklist_email_sent_at || '').trim();
+      const emailTo = (created?.checklist_email_to || '').trim();
+      const mailOk =
+        sendEmail &&
+        created?.email_sent === true &&
+        !emailError &&
+        Boolean(sentAt) &&
+        Boolean(emailTo);
+      setStatusId('');
+      setPointsDiscussed('');
+      setActionItems('');
+      setNextFollowupDate('');
+      resetChecklistPanel();
+      setFormError(null);
+      setFormWarning(null);
+      setMailSentConfirmation(
+        mailOk ? { emailTo, sentAt } : null
+      );
       onFollowupSaved?.();
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Failed to save notes.');
@@ -173,6 +590,11 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
   if (!open || !leadId) return null;
 
   const timeline = followupsQuery.data?.items ?? [];
+  const checklistBusy =
+    createMutation.isPending || checklistLevelsLoading || checklistScopeLoading;
+  const canChooseLevel =
+    checklistScope === 'global' ||
+    (checklistScope === 'country_specific' && Boolean(checklistCountryId));
 
   return (
     <>
@@ -288,9 +710,190 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
             </div>
           </div>
 
+          {showChecklistPanel ? (
+            <div className="rounded-xl border border-border-subtle bg-card p-4 space-y-4">
+              <div>
+                <p className="text-sm font-semibold text-text-main">Send Document Checklist</p>
+                <p className="text-xs text-text-muted mt-0.5">
+                  Choose level and scope. Email is optional and only sends when Yes is selected.
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold text-text-muted mb-2">Scope</p>
+                <div className="flex flex-wrap gap-4 text-sm text-text-main">
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="checklist-scope"
+                      value="global"
+                      checked={checklistScope === 'global'}
+                      onChange={() => handleChecklistScopeChange('global')}
+                      disabled={checklistBusy}
+                    />
+                    Global
+                  </label>
+                  <label
+                    className={`inline-flex items-center gap-2 ${
+                      checklistCountrySpecificAvailable ? '' : 'text-text-muted opacity-60'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="checklist-scope"
+                      value="country_specific"
+                      checked={checklistScope === 'country_specific'}
+                      onChange={() => handleChecklistScopeChange('country_specific')}
+                      disabled={checklistBusy || !checklistCountrySpecificAvailable}
+                    />
+                    {checklistCountrySpecificAvailable
+                      ? 'Country-Specific'
+                      : 'Country-Specific — No country-specific documents'}
+                  </label>
+                </div>
+                {!checklistScopeLoading && !checklistCountrySpecificAvailable ? (
+                  <p className="mt-1 text-xs text-text-muted">
+                    No document requirements are mapped to any country.
+                  </p>
+                ) : null}
+              </div>
+
+              {checklistScope === 'country_specific' && checklistCountrySpecificAvailable ? (
+                <div>
+                  <label
+                    className="block text-xs font-semibold text-text-muted mb-1"
+                    htmlFor="checklist-country"
+                  >
+                    Country
+                  </label>
+                  <select
+                    id="checklist-country"
+                    className="w-full rounded-lg border border-border-subtle bg-card px-3 py-2 text-sm text-text-main"
+                    value={checklistCountryId}
+                    onChange={e => handleChecklistCountryChange(e.target.value)}
+                    disabled={checklistBusy}
+                  >
+                    <option value="">Select a country…</option>
+                    {checklistCountryOptions.map(option => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+
+              <div>
+                <p className="text-xs font-semibold text-text-muted mb-2">Levels</p>
+                {checklistLevelsLoading || checklistScopeLoading ? (
+                  <p className="text-xs text-text-muted inline-flex items-center gap-2">
+                    <Loader2 size={12} className="animate-spin" />
+                    Loading levels…
+                  </p>
+                ) : checklistScope === 'country_specific' && !checklistCountryId ? (
+                  <p className="text-xs text-text-muted">
+                    Select a country to see available levels.
+                  </p>
+                ) : catalogLevelNames.length === 0 ? (
+                  <p className="text-xs text-text-muted">No program levels found.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-x-4 gap-y-2">
+                    {catalogLevelNames.map(name => {
+                      const enabled = canChooseLevel && levelsWithDocsSet.has(name);
+                      return (
+                        <label
+                          key={name}
+                          className={`inline-flex items-center gap-2 text-sm ${
+                            enabled ? 'text-text-main' : 'text-text-muted opacity-60'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="followup-checklist-level"
+                            value={name}
+                            checked={checklistLevel === name}
+                            disabled={!enabled || checklistBusy}
+                            onChange={() => {
+                              setChecklistLevel(name);
+                              setFormError(null);
+                            }}
+                          />
+                          {name}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold text-text-muted mb-2">Send email</p>
+                <div className="flex flex-wrap gap-4 text-sm text-text-main">
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="checklist-send-email"
+                      value="no"
+                      checked={checklistSendEmail === 'no'}
+                      onChange={() => {
+                        setChecklistSendEmail('no');
+                        setFormError(null);
+                      }}
+                      disabled={createMutation.isPending}
+                    />
+                    No
+                  </label>
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="checklist-send-email"
+                      value="yes"
+                      checked={checklistSendEmail === 'yes'}
+                      onChange={() => {
+                        setChecklistSendEmail('yes');
+                        setFormError(null);
+                      }}
+                      disabled={createMutation.isPending}
+                    />
+                    Yes
+                  </label>
+                </div>
+                {checklistSendEmail === 'yes' ? (
+                  <p className="mt-1 text-xs text-text-muted">
+                    On Save Notes, the checklist PDF and any matching requirement templates are
+                    emailed to this lead. A level
+                    {checklistScope === 'country_specific' ? ' and country' : ''} must be selected.
+                  </p>
+                ) : null}
+              </div>
+
+              {checklistMetaError ? (
+                <p className="text-sm text-red-700">{checklistMetaError}</p>
+              ) : null}
+            </div>
+          ) : null}
+
           {formError && (
             <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               {formError}
+            </div>
+          )}
+          {formWarning && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              {formWarning}
+            </div>
+          )}
+          {mailSentConfirmation && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900 space-y-1">
+              <p className="font-semibold">Mail sent</p>
+              <p>
+                <span className="font-semibold">Sent: </span>
+                {formatTime(mailSentConfirmation.sentAt)}
+              </p>
+              <p>
+                <span className="font-semibold">Email: </span>
+                {mailSentConfirmation.emailTo}
+              </p>
             </div>
           )}
           <div className="flex justify-end">
@@ -337,8 +940,11 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
                         <MessageSquareText size={12} />
                         {item.status_heading}
                       </span>
-                      <span className="text-[11px] text-text-muted whitespace-nowrap">
+                      <span className="text-[11px] text-text-muted text-right whitespace-nowrap">
                         {formatTime(item.created_at)}
+                        {item.counselor_name?.trim()
+                          ? ` · ${item.counselor_name.trim()}`
+                          : ''}
                       </span>
                     </div>
                     <div className="text-sm text-text-main whitespace-pre-wrap break-words space-y-2">
@@ -347,16 +953,16 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
                         {item.points_discussed}
                       </p>
                       {item.action_items ? (
-                        <p>
-                          <span className="font-semibold">Action Items: </span>
-                          {item.action_items}
-                        </p>
+                        <ActionItemsDisplay followupId={item.id} text={item.action_items} />
                       ) : null}
                       {item.target_completion_date ? (
                         <p>
                           <span className="font-semibold">Next Follow-up: </span>
                           {formatDateOnly(item.target_completion_date)}
                         </p>
+                      ) : null}
+                      {hasChecklistEmailReceipt(item) ? (
+                        <ChecklistSentBlock item={item} />
                       ) : null}
                     </div>
                   </article>

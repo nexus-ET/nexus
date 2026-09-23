@@ -38,6 +38,8 @@ export interface OfflineLeadItem {
   phone_country_iso2?: string | null;
   stage: string;
   status_label: string;
+  status_stage_name?: string | null;
+  lead_status?: string | null;
   source: string;
   is_active?: boolean;
   target_destination?: string | null;
@@ -77,6 +79,7 @@ export interface OfflineLeadItem {
   created_at?: string | null;
   booking_count?: number;
   followup_count?: number;
+  followup_status_label?: string | null;
 }
 
 export interface OfflineLeadListResponse {
@@ -107,6 +110,8 @@ export interface OfflineLeadsQuery {
   page: number;
   pageSize: number;
   q: string;
+  name?: string;
+  studentId?: string;
   status: OfflineLeadStatusFilter;
   sortBy: OfflineLeadSortField;
   sortDir: OfflineLeadSortDirection;

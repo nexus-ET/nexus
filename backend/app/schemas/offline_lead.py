@@ -250,6 +250,8 @@ class OfflineLeadListItem(BaseModel):
     phone_country_iso2: str | None = None
     stage: str
     status_label: str
+    status_stage_name: str | None = None
+    lead_status: str | None = None
     source: str
     is_active: bool = True
     target_destination: str | None = None
@@ -289,6 +291,7 @@ class OfflineLeadListItem(BaseModel):
     created_at: datetime | None = None
     booking_count: int = 0
     followup_count: int = 0
+    followup_status_label: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
