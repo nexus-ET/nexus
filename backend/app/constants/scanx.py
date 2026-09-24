@@ -120,6 +120,14 @@ STATUS_LABELS: Final[dict[str, str]] = {
     STATUS_RED_FLAG: "Red Flags",
 }
 
+# Bump when passport/mark-sheet rules, the OCR model, or raster settings change.
+SCANX_EXTRACTOR_VERSION: Final[str] = "scanx-extract-2"
+# Off so a new upload or re-scan runs the current pipeline. A stored JSON row
+# is not copied onto the new document just because the file bytes match.
+SCANX_REPLAY_EXTRACT_CACHE: Final[bool] = False
+# Single PDF render scale for every passport and mark sheet.
+SCANX_RASTER_SCALE: Final[float] = 2.0
+
 SOURCE_CRM = "crm"
 # Reserved for Phase 2 — do not accept via CRM API in v1.
 SOURCE_MOBILE = "mobile"

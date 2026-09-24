@@ -32,10 +32,12 @@ import {
   normalizeScanxStatus,
   SCANX_DEFAULT_CONCURRENT_UPLOAD_CAP,
   SCANX_DEFAULT_MAX_FILE_SIZE_BYTES,
+  SCANX_DOCUMENT_TYPES,
   SCANX_STATUS_LABELS,
   scanxStatusBadgeClass,
   type ScanxStatus,
 } from '../../constants/scanxMessages';
+import { groupPdfFrontBackFiles, isScanxPdfFile } from '../../utils/scanxUploadGroup';
 import {
   consumeScanxConfigSoftWarning,
   getCachedScanxConfig,
@@ -227,6 +229,51 @@ type LocalUpload = {
 
 /** Parallel HTTP POSTs per counsellor session (session cap of 10 is separate). */
 const SCANX_UPLOAD_HTTP_CONCURRENCY = 3;
+
+/** Canonical type key for ScanX document tabs (aliases collapsed). */
+function scanxTabTypeKey(typeId: string | null | undefined): string {
+  const id = (typeId || '').trim().toUpperCase() || 'UNKNOWN';
+  if (id === 'ACADEMIC_TRANSCRIPT') return 'TR_TRANSCRIPT';
+  if (id === 'MARKSHEET') return 'TR_TRANSCRIPT';
+  return id;
+}
+
+/** User-facing tab title; Passport / Transcript preferred for those categories. */
+function scanxTabTypeLabel(typeId: string, fallbackLabel?: string | null): string {
+  const id = scanxTabTypeKey(typeId);
+  if (id === 'PASSPORT') return 'Passport';
+  if (id === 'TR_TRANSCRIPT') return 'Transcript';
+  const trimmed = (fallbackLabel || '').trim();
+  if (trimmed) {
+    if (/^academic\s+transcript$/i.test(trimmed) || /^marksheet$/i.test(trimmed)) {
+      return 'Transcript';
+    }
+    return trimmed;
+  }
+  const known = SCANX_DOCUMENT_TYPES.find(t => t.id === id);
+  if (known) {
+    if (known.id === 'TR_TRANSCRIPT') return 'Transcript';
+    return known.label;
+  }
+  if (id === 'UNKNOWN') return 'Unknown (needs review)';
+  if (id === 'AUTO') return 'Auto-detect';
+  return id
+    .split('_')
+    .filter(Boolean)
+    .map(part => part.charAt(0) + part.slice(1).toLowerCase())
+    .join(' ');
+}
+
+const SCANX_TAB_TYPE_ORDER = ['PASSPORT', 'TR_TRANSCRIPT'] as const;
+
+function compareScanxTabTypes(a: string, b: string): number {
+  const ai = SCANX_TAB_TYPE_ORDER.indexOf(a as (typeof SCANX_TAB_TYPE_ORDER)[number]);
+  const bi = SCANX_TAB_TYPE_ORDER.indexOf(b as (typeof SCANX_TAB_TYPE_ORDER)[number]);
+  const aRank = ai >= 0 ? ai : a === 'UNKNOWN' || a === 'AUTO' ? 1000 : 100;
+  const bRank = bi >= 0 ? bi : b === 'UNKNOWN' || b === 'AUTO' ? 1000 : 100;
+  if (aRank !== bRank) return aRank - bRank;
+  return a.localeCompare(b);
+}
 
 function isScanxImageFile(file: File): boolean {
   const name = (file.name || '').toLowerCase();
@@ -1499,19 +1546,20 @@ type BatchProgressItem = {
   percent: number | null;
   tone: 'active' | 'queued' | 'error';
   steps?: ScanxProgressStep[] | null;
-  onCancel?: () => void;
-  cancelLabel?: string;
 };
 
 function ScanxBatchProgressPill({
   items,
   expanded,
   onToggle,
+  onRequestClose,
 }: {
   items: BatchProgressItem[];
   expanded: boolean;
   onToggle: () => void;
+  onRequestClose: () => void;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const activeItem = items.find(item => item.tone === 'active') ?? null;
   const serverPercent = Math.max(0, Math.min(100, Number(activeItem?.percent ?? 0) || 0));
   const processing = items.some(item => item.tone === 'active' || item.tone === 'queued');
@@ -1533,8 +1581,30 @@ function ScanxBatchProgressPill({
       ? `Processing ${activeItem?.name || items[0]?.name || 'document'}…`
       : `Processing Doc ${position} of ${total}…`;
 
+  useEffect(() => {
+    if (!expanded) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const node = rootRef.current;
+      if (!node) return;
+      if (event.target instanceof Node && node.contains(event.target)) return;
+      onRequestClose();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onRequestClose();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [expanded, onRequestClose]);
+
   return (
-    <div className="pointer-events-none fixed bottom-4 left-1/2 z-40 flex w-[min(24rem,calc(100vw-1.5rem))] -translate-x-1/2 flex-col items-stretch">
+    <div
+      ref={rootRef}
+      className="pointer-events-none fixed bottom-4 left-1/2 z-40 flex w-[min(24rem,calc(100vw-1.5rem))] -translate-x-1/2 flex-col items-stretch"
+    >
       {expanded ? (
         <div
           id="scanx-batch-progress-drawer"
@@ -1594,15 +1664,6 @@ function ScanxBatchProgressPill({
                         </ul>
                       ) : null}
                     </div>
-                    {item.onCancel ? (
-                      <button
-                        type="button"
-                        className="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-text-muted hover:bg-white hover:text-text-main"
-                        onClick={item.onCancel}
-                      >
-                        {item.cancelLabel || 'Cancel'}
-                      </button>
-                    ) : null}
                   </div>
                 </li>
               );
@@ -1636,6 +1697,26 @@ function ScanxBatchProgressPill({
   );
 }
 
+function sourcePageLooksPdf(spec: {
+  content_type?: string | null;
+  original_filename?: string | null;
+} | null | undefined): boolean {
+  const ctype = (spec?.content_type || '').toLowerCase();
+  const name = (spec?.original_filename || '').toLowerCase();
+  return ctype.includes('pdf') || name.endsWith('.pdf');
+}
+
+function previewBlob(blob: Blob, mimeHint?: string | null): Blob {
+  const hint = (mimeHint || '').toLowerCase();
+  if (hint.includes('pdf') && blob.type !== 'application/pdf') {
+    return new Blob([blob], { type: 'application/pdf' });
+  }
+  if (!blob.type && hint.startsWith('image/')) {
+    return new Blob([blob], { type: hint });
+  }
+  return blob;
+}
+
 export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
   const initialCached = getCachedScanxConfig();
   const [config, setConfig] = useState<ScanxConfig | null>(initialCached);
@@ -1659,11 +1740,13 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
   const [cancellingId, setCancellingId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [progressOpen, setProgressOpen] = useState(false);
+  const [activeTypeTab, setActiveTypeTab] = useState<string | null>(null);
   /** Keep silent list polls going after a client timeout until a fetch succeeds. */
   const [forceListPoll, setForceListPoll] = useState(false);
   const [reprocessing, setReprocessing] = useState(false);
   const [originalPreviewUrl, setOriginalPreviewUrl] = useState<string | null>(null);
-  const [originalPageUrls, setOriginalPageUrls] = useState<string[]>([]);
+  /** Sparse object URLs for multi-image groups; null slots mean not loaded yet. */
+  const [originalPageUrls, setOriginalPageUrls] = useState<(string | null)[]>([]);
   const [viewerPageIndex, setViewerPageIndex] = useState(0);
   const [viewerHighlight, setViewerHighlight] = useState<ViewerHighlight | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -1673,7 +1756,12 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
   const configLoadStarted = useRef(false);
   const blobUrlRef = useRef<string | null>(null);
   const originalPreviewRef = useRef<string | null>(null);
-  const originalPageUrlsRef = useRef<string[]>([]);
+  const originalPageUrlsRef = useRef<(string | null)[]>([]);
+  /** Bumped on each openReview / unmount so stale blob fetches never paint. */
+  const previewFetchGenRef = useRef(0);
+  /** Auth paths for multi-page `?page=` fetches (aligned with source_pages order). */
+  const sourcePagePathsRef = useRef<string[]>([]);
+  const pageLoadInFlightRef = useRef<Set<number>>(new Set());
   const selectAllRef = useRef<HTMLInputElement>(null);
   /** Tracks whether the selected doc was Uploading/Parsing so we refresh review when it settles. */
   const selectedWasBusyRef = useRef(false);
@@ -1732,6 +1820,7 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
 
   useEffect(() => {
     return () => {
+      previewFetchGenRef.current += 1;
       if (blobUrlRef.current) {
         URL.revokeObjectURL(blobUrlRef.current);
         blobUrlRef.current = null;
@@ -1741,9 +1830,11 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
         originalPreviewRef.current = null;
       }
       for (const url of originalPageUrlsRef.current) {
-        URL.revokeObjectURL(url);
+        if (url) URL.revokeObjectURL(url);
       }
       originalPageUrlsRef.current = [];
+      sourcePagePathsRef.current = [];
+      pageLoadInFlightRef.current.clear();
     };
   }, []);
 
@@ -1819,6 +1910,8 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
     setSelectedIds(new Set());
     setDeleteConfirm(null);
     setCancelConfirm(null);
+    setActiveTypeTab(null);
+    setProgressOpen(false);
     setLocalUploads([]);
     localUploadsRef.current = [];
     httpInFlightRef.current = 0;
@@ -1833,9 +1926,15 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
   localUploadsRef.current = localUploads;
 
   const docIds = useMemo(() => docs.map(d => d.id), [docs]);
+  const tabDocIds = useMemo(() => {
+    if (!activeTypeTab) return docIds;
+    return docs
+      .filter(d => scanxTabTypeKey(d.document_type_id) === activeTypeTab)
+      .map(d => d.id);
+  }, [docs, activeTypeTab, docIds]);
   const selectedCount = selectedIds.size;
-  const allSelected = docIds.length > 0 && docIds.every(id => selectedIds.has(id));
-  const someSelected = docIds.some(id => selectedIds.has(id)) && !allSelected;
+  const allSelected = tabDocIds.length > 0 && tabDocIds.every(id => selectedIds.has(id));
+  const someSelected = tabDocIds.some(id => selectedIds.has(id)) && !allSelected;
   const anyDeleting = bulkDeleting || deletingId != null || cancellingId != null;
   const anyDocInProgress = docs.some(d => isScanxInProgress(d.status));
   const activeLocalUploads = localUploads.filter(u => u.status === 'queued' || u.status === 'uploading');
@@ -1877,8 +1976,8 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
       setSelectedIds(new Set());
       return;
     }
-    setSelectedIds(new Set(docIds));
-  }, [allSelected, docIds]);
+    setSelectedIds(new Set(tabDocIds));
+  }, [allSelected, tabDocIds]);
 
   // Poll while any doc is in flight (WS fallback) — ~2.5s keeps tunnel load down.
   useEffect(() => {
@@ -1915,9 +2014,11 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
       originalPreviewRef.current = null;
     }
     for (const url of originalPageUrlsRef.current) {
-      URL.revokeObjectURL(url);
+      if (url) URL.revokeObjectURL(url);
     }
     originalPageUrlsRef.current = [];
+    sourcePagePathsRef.current = [];
+    pageLoadInFlightRef.current.clear();
     setOriginalPageUrls([]);
     setOriginalPreviewUrl(null);
     setViewerPageIndex(0);
@@ -1925,64 +2026,186 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
     setImgNaturalSize(null);
   }, []);
 
-  const openReview = useCallback(async (docId: number) => {
-    setOpeningReviewId(docId);
-    setSelectedId(docId);
-    revokePreviewUrls();
-    setPreviewLoading(true);
-    try {
-      const data = await apiFetch<ScanxReview>(`scanx/documents/${docId}/review`);
+  const applyPageUrl = useCallback((pageIndex: number, url: string) => {
+    const prev = originalPageUrlsRef.current;
+    const next = prev.slice();
+    while (next.length <= pageIndex) next.push(null);
+    const old = next[pageIndex];
+    if (old && old !== url) URL.revokeObjectURL(old);
+    next[pageIndex] = url;
+    originalPageUrlsRef.current = next;
+    setOriginalPageUrls(next);
+    if (pageIndex === 0) {
+      originalPreviewRef.current = url;
+      setOriginalPreviewUrl(url);
+    }
+  }, []);
+
+  const fetchPageBlobUrl = useCallback(
+    async (docId: number, pageIndex: number, pathHint?: string | null) => {
+      const raw =
+        pathHint ||
+        sourcePagePathsRef.current[pageIndex] ||
+        (pageIndex > 0
+          ? `scanx/documents/${docId}/file?page=${pageIndex}`
+          : `scanx/documents/${docId}/file`);
+      const path = raw.replace(/^\/api\/v1\//, '');
+      const blob = await apiFetchBlob(path);
+      return URL.createObjectURL(blob);
+    },
+    []
+  );
+
+  const ensurePageLoaded = useCallback(
+    async (docId: number, pageIndex: number, gen: number) => {
+      if (pageIndex < 0) return;
+      if (originalPageUrlsRef.current[pageIndex]) return;
+      if (pageLoadInFlightRef.current.has(pageIndex)) return;
+      pageLoadInFlightRef.current.add(pageIndex);
+      try {
+        const url = await fetchPageBlobUrl(docId, pageIndex);
+        if (gen !== previewFetchGenRef.current) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        applyPageUrl(pageIndex, url);
+      } catch {
+        // leave slot empty; viewer shows skeleton / fallback
+      } finally {
+        pageLoadInFlightRef.current.delete(pageIndex);
+      }
+    },
+    [applyPageUrl, fetchPageBlobUrl]
+  );
+
+  const openReview = useCallback(
+    async (docId: number) => {
+      const gen = ++previewFetchGenRef.current;
+      setOpeningReviewId(docId);
+      setSelectedId(docId);
+      setReview(null);
+      const listed = docsRef.current.find(d => d.id === docId);
+      if (listed) {
+        setActiveTypeTab(scanxTabTypeKey(listed.document_type_id));
+      }
+      revokePreviewUrls();
+      setPreviewLoading(true);
+
+      const hintMulti = (listed?.source_page_count ?? 0) > 1;
+
+      // Start original file (page 1) immediately — do not wait for review JSON.
+      const firstPagePromise = (async (): Promise<string | null> => {
+        try {
+          const path = hintMulti
+            ? `scanx/documents/${docId}/file?page=0`
+            : `scanx/documents/${docId}/file`;
+          const blob = await apiFetchBlob(path);
+          if (gen !== previewFetchGenRef.current) return null;
+          return URL.createObjectURL(blob);
+        } catch {
+          return null;
+        }
+      })();
+
+      const reviewPromise = apiFetch<ScanxReview>(`scanx/documents/${docId}/review`);
+
+      void firstPagePromise.then(url => {
+        if (gen !== previewFetchGenRef.current || !url) {
+          if (url) URL.revokeObjectURL(url);
+          return;
+        }
+        applyPageUrl(0, url);
+        setPreviewLoading(false);
+      });
+
+      let data: ScanxReview;
+      try {
+        data = await reviewPromise;
+      } catch (err) {
+        if (gen !== previewFetchGenRef.current) return;
+        // Invalidate this open's in-flight file fetch without clobbering a newer open.
+        previewFetchGenRef.current += 1;
+        const timedOut = isScanxClientTimeoutError(err);
+        if (timedOut) setForceListPoll(true);
+        setAlert({
+          tone: timedOut ? 'info' : 'error',
+          text: timedOut
+            ? 'Review is slow while OCR is running. Processing continues — wait and refresh.'
+            : err instanceof Error
+              ? err.message
+              : 'Could not load review.',
+        });
+        revokePreviewUrls();
+        setPreviewLoading(false);
+        setOpeningReviewId(null);
+        return;
+      }
+
+      if (gen !== previewFetchGenRef.current) return;
+
       setReview(data);
+      setActiveTypeTab(scanxTabTypeKey(data.document.document_type_id));
+      setOpeningReviewId(null);
       if (data.review_prompt) {
         setAlert({ tone: 'info', text: data.review_prompt });
       }
+
       const sourceSpecs =
         data.source_pages && data.source_pages.length > 0
           ? [...data.source_pages].sort((a, b) => a.page_index - b.page_index)
           : [];
+
       if (sourceSpecs.length > 1) {
-        const loadedOrig: string[] = [];
-        for (const spec of sourceSpecs) {
-          const raw = spec.file_url || `scanx/documents/${docId}/file?page=${spec.page_index}`;
-          const path = raw.replace(/^\/api\/v1\//, '');
-          try {
-            const blob = await apiFetchBlob(path);
-            loadedOrig.push(URL.createObjectURL(blob));
-          } catch {
-            // skip missing page
-          }
+        sourcePagePathsRef.current = sourceSpecs.map(
+          spec =>
+            (spec.file_url || `scanx/documents/${docId}/file?page=${spec.page_index}`).replace(
+              /^\/api\/v1\//,
+              ''
+            )
+        );
+        const slots: (string | null)[] = new Array(sourceSpecs.length).fill(null);
+        const existing0 = originalPageUrlsRef.current[0] ?? null;
+        if (existing0) slots[0] = existing0;
+        originalPageUrlsRef.current = slots;
+        setOriginalPageUrls(slots);
+
+        const firstUrl = existing0 ?? (await firstPagePromise);
+        if (gen !== previewFetchGenRef.current) {
+          if (firstUrl && firstUrl !== existing0) URL.revokeObjectURL(firstUrl);
+          return;
         }
-        originalPageUrlsRef.current = loadedOrig;
-        setOriginalPageUrls(loadedOrig);
-        if (loadedOrig[0]) {
-          setOriginalPreviewUrl(loadedOrig[0]);
+        if (firstUrl) {
+          applyPageUrl(0, firstUrl);
+          setPreviewLoading(false);
+        } else {
+          setPreviewLoading(false);
+        }
+
+        // Prefetch remaining pages in background; page 1 is already visible.
+        for (let i = 1; i < sourceSpecs.length; i++) {
+          if (gen !== previewFetchGenRef.current) return;
+          void ensurePageLoaded(docId, i, gen);
         }
       } else {
-        try {
-          const origBlob = await apiFetchBlob(`scanx/documents/${docId}/file`);
-          const origUrl = URL.createObjectURL(origBlob);
-          originalPreviewRef.current = origUrl;
-          setOriginalPreviewUrl(origUrl);
-        } catch {
+        sourcePagePathsRef.current = [];
+        const url = originalPageUrlsRef.current[0] ?? (await firstPagePromise);
+        if (gen !== previewFetchGenRef.current) {
+          if (url && url !== originalPageUrlsRef.current[0]) URL.revokeObjectURL(url);
+          return;
+        }
+        if (url) {
+          if (!originalPreviewRef.current) {
+            originalPreviewRef.current = url;
+            setOriginalPreviewUrl(url);
+          }
+        } else {
           setOriginalPreviewUrl(null);
         }
+        setPreviewLoading(false);
       }
-    } catch (err) {
-      const timedOut = isScanxClientTimeoutError(err);
-      if (timedOut) setForceListPoll(true);
-      setAlert({
-        tone: timedOut ? 'info' : 'error',
-        text: timedOut
-          ? 'Review is slow while OCR is running. Processing continues — wait and refresh.'
-          : err instanceof Error
-            ? err.message
-            : 'Could not load review.',
-      });
-    } finally {
-      setPreviewLoading(false);
-      setOpeningReviewId(null);
-    }
-  }, [revokePreviewUrls]);
+    },
+    [applyPageUrl, ensurePageLoaded, revokePreviewUrls]
+  );
 
   const highlightFieldOnViewer = useCallback(
     (fieldKey: string, box: number[][] | null, pageIndex: number) => {
@@ -1992,6 +2215,15 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
     },
     []
   );
+
+  // Load the visible multi-page slot on demand if prefetch has not finished.
+  useEffect(() => {
+    if (!review || selectedId == null) return;
+    if (originalPageUrls.length <= 1) return;
+    if (originalPageUrls[viewerPageIndex]) return;
+    const gen = previewFetchGenRef.current;
+    void ensurePageLoaded(selectedId, viewerPageIndex, gen);
+  }, [ensurePageLoaded, originalPageUrls, review, selectedId, viewerPageIndex]);
 
   // Keep selected review status in sync with list polls; reload details when parsing finishes.
   useEffect(() => {
@@ -2038,11 +2270,15 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
   }, [docs, selectedId, openReview]);
 
   const openDocumentView = useCallback(
-    async (docId: number, signedUrl?: string | null) => {
+    async (docId: number, signedUrl?: string | null, filePath?: string | null, mimeHint?: string | null) => {
       setOpeningView(true);
       try {
         try {
-          const blob = await apiFetchBlob(`scanx/documents/${docId}/file`);
+          const path = (filePath || `scanx/documents/${docId}/file`).replace(
+            /^\/api\/v1\//,
+            ''
+          );
+          const blob = previewBlob(await apiFetchBlob(path), mimeHint);
           if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
           const url = URL.createObjectURL(blob);
           blobUrlRef.current = url;
@@ -2213,6 +2449,24 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
       setBulkDeleting(false);
     }
   }, [anyDeleting, deleteConfirm, loadDocs, selectedId]);
+
+  const reextractDocument = useCallback(
+    async (docId: number) => {
+      setReprocessing(true);
+      try {
+        await apiFetch(`scanx/documents/${docId}/reextract`, { method: 'POST' });
+        setAlert({ tone: 'info', text: 'Extraction re-ran with the current rules.' });
+        await loadDocs();
+        await openReview(docId);
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : 'Re-run extraction failed.';
+        setAlert({ tone: 'error', text: raw });
+      } finally {
+        setReprocessing(false);
+      }
+    },
+    [loadDocs, openReview],
+  );
 
   const reprocessDocument = useCallback(
     async (docId: number) => {
@@ -2572,11 +2826,19 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
       }
 
       // Multi-image selection (e.g. passport front + back) → one document group.
+      // PDF front/back pairs with shared stem use the same /documents/group path;
+      // unrelated PDFs without side cues stay as separate documents.
       const imageFiles = acceptedFiles
         .filter(isScanxImageFile)
         .slice()
         .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-      const otherFiles = acceptedFiles.filter(f => !isScanxImageFile(f));
+      const pdfFiles = acceptedFiles
+        .filter(f => isScanxPdfFile(f) && !isScanxImageFile(f))
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+      const otherFiles = acceptedFiles.filter(
+        f => !isScanxImageFile(f) && !isScanxPdfFile(f)
+      );
       const accepted: LocalUpload[] = [];
       if (imageFiles.length >= 2) {
         const groupId = crypto.randomUUID();
@@ -2603,6 +2865,32 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
             status: 'queued',
           });
         }
+      }
+      const { groups: pdfGroups, singles: pdfSingles } = groupPdfFrontBackFiles(pdfFiles);
+      for (const group of pdfGroups) {
+        const groupId = crypto.randomUUID();
+        accepted.push({
+          localId: crypto.randomUUID(),
+          uploadId: crypto.randomUUID(),
+          file: group[0],
+          fileName: `${group[0].name} (+${group.length - 1} page${
+            group.length === 2 ? '' : 's'
+          })`,
+          leadId: uploadLeadId,
+          status: 'queued',
+          groupFiles: group,
+          documentGroupId: groupId,
+        });
+      }
+      for (const file of pdfSingles) {
+        accepted.push({
+          localId: crypto.randomUUID(),
+          uploadId: crypto.randomUUID(),
+          file,
+          fileName: file.name,
+          leadId: uploadLeadId,
+          status: 'queued',
+        });
       }
       for (const file of otherFiles) {
         accepted.push({
@@ -2683,8 +2971,6 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
             statusLabel: item.errorText || 'Upload failed',
             percent: null,
             tone: 'error',
-            onCancel: () => dismissLocalUpload(item.localId),
-            cancelLabel: 'Dismiss',
           },
         ];
       }
@@ -2702,8 +2988,6 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
               ? { ...step, status: 'in_progress', status_label: 'Progressing', note: 'Uploading…' }
               : step
           ),
-          onCancel: uploadingNow ? undefined : () => dismissLocalUpload(item.localId),
-          cancelLabel: 'Cancel',
         },
       ];
     }),
@@ -2722,11 +3006,115 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
       percent: typeof doc.progress_percent === 'number' ? doc.progress_percent : 0,
       tone: 'active',
       steps: doc.progress_steps,
-      onCancel: () => requestCancelJob(doc),
-      cancelLabel: 'Cancel',
     })),
   ];
   const showProgressPanel = batchProgressItems.length > 0;
+
+  const documentTypeTabs = useMemo(() => {
+    type TabAccum = {
+      id: string;
+      label: string;
+      progressPercent: number | null;
+      latestBusyId: number;
+    };
+    const byId = new Map<string, TabAccum>();
+
+    const ensureTab = (typeId: string, labelHint?: string | null) => {
+      const id = scanxTabTypeKey(typeId);
+      const existing = byId.get(id);
+      if (existing) {
+        if (!existing.label && labelHint) {
+          existing.label = scanxTabTypeLabel(id, labelHint);
+        }
+        return existing;
+      }
+      const created: TabAccum = {
+        id,
+        label: scanxTabTypeLabel(id, labelHint),
+        progressPercent: null,
+        latestBusyId: -1,
+      };
+      byId.set(id, created);
+      return created;
+    };
+
+    for (const doc of docs) {
+      const tab = ensureTab(doc.document_type_id, doc.document_type_label);
+      if (isScanxInProgress(doc.status)) {
+        const pct =
+          typeof doc.progress_percent === 'number' ? Math.round(doc.progress_percent) : 0;
+        if (doc.id >= tab.latestBusyId) {
+          tab.latestBusyId = doc.id;
+          tab.progressPercent = pct;
+        }
+      }
+    }
+
+    const localBusy = localUploads.some(
+      item => item.status === 'queued' || item.status === 'uploading'
+    );
+    const localErrorOnly =
+      !localBusy && localUploads.some(item => item.status === 'error');
+    if (localBusy || localErrorOnly) {
+      const tab = ensureTab('UNKNOWN');
+      if (localBusy) {
+        const uploadingNow = localUploads.some(item => item.status === 'uploading');
+        tab.progressPercent = uploadingNow ? 8 : 0;
+        tab.latestBusyId = Number.MAX_SAFE_INTEGER;
+      }
+    }
+
+    return [...byId.values()].sort((a, b) => compareScanxTabTypes(a.id, b.id));
+  }, [docs, localUploads]);
+
+  useEffect(() => {
+    if (documentTypeTabs.length === 0) {
+      if (activeTypeTab != null) setActiveTypeTab(null);
+      return;
+    }
+    if (activeTypeTab && documentTypeTabs.some(t => t.id === activeTypeTab)) return;
+    const preferredBusy = documentTypeTabs.find(t => t.progressPercent != null);
+    setActiveTypeTab((preferredBusy || documentTypeTabs[0]).id);
+  }, [documentTypeTabs, activeTypeTab]);
+
+  const selectedDocTypeKey = useMemo(() => {
+    if (selectedId == null) return null;
+    const row = docs.find(d => d.id === selectedId);
+    return row ? scanxTabTypeKey(row.document_type_id) : null;
+  }, [docs, selectedId]);
+  const prevSelectedDocTypeRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (selectedDocTypeKey == null) {
+      prevSelectedDocTypeRef.current = null;
+      return;
+    }
+    if (
+      prevSelectedDocTypeRef.current != null &&
+      prevSelectedDocTypeRef.current !== selectedDocTypeKey
+    ) {
+      setActiveTypeTab(selectedDocTypeKey);
+    }
+    prevSelectedDocTypeRef.current = selectedDocTypeKey;
+  }, [selectedDocTypeKey]);
+
+  const closeProgressPanel = useCallback(() => {
+    setProgressOpen(false);
+  }, []);
+
+  const tabDocs = useMemo(() => {
+    if (!activeTypeTab) return docs;
+    return docs.filter(d => scanxTabTypeKey(d.document_type_id) === activeTypeTab);
+  }, [docs, activeTypeTab]);
+
+  const tabLocalUploads = useMemo(() => {
+    if (!activeTypeTab || activeTypeTab === 'UNKNOWN') return localUploads;
+    return [] as LocalUpload[];
+  }, [localUploads, activeTypeTab]);
+
+  const reviewOnActiveTab =
+    Boolean(review) &&
+    selectedId != null &&
+    scanxTabTypeKey(review?.document.document_type_id) === activeTypeTab;
   const reviewCategories = useMemo(() => {
     if (!review) return [] as ScanxCategory[];
     if (review.categories && review.categories.length > 0) return review.categories;
@@ -3194,6 +3582,7 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
           items={batchProgressItems}
           expanded={progressOpen}
           onToggle={() => setProgressOpen(open => !open)}
+          onRequestClose={closeProgressPanel}
         />
       ) : null}
 
@@ -3213,19 +3602,69 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
         </div>
       ) : null}
 
+      {documentTypeTabs.length > 0 ? (
+        <div
+          role="tablist"
+          aria-label="ScanX document types"
+          className="flex flex-wrap gap-1 border-b border-border-subtle"
+        >
+          {documentTypeTabs.map(tab => {
+            const selected = tab.id === activeTypeTab;
+            const label =
+              tab.progressPercent != null
+                ? `${tab.label} ${tab.progressPercent}%`
+                : tab.label;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                id={`scanx-type-tab-${tab.id}`}
+                className={`relative -mb-px rounded-t-md px-3 py-1.5 text-[12px] font-semibold transition-colors ${
+                  selected
+                    ? 'border border-b-card border-border-subtle bg-card text-text-main'
+                    : 'border border-transparent text-text-muted hover:text-text-main'
+                }`}
+                onClick={() => setActiveTypeTab(tab.id)}
+              >
+                {label}
+                {tab.progressPercent != null ? (
+                  <span
+                    className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-sky-600 align-middle"
+                    aria-hidden
+                  />
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
       <div className="rounded-lg border border-border-subtle bg-card">
         <div className="flex items-center justify-between border-b border-border-subtle px-3 py-2">
-          <h4 className="text-xs font-semibold text-text-main">Documents</h4>
+          <h4 className="text-xs font-semibold text-text-main">
+            {activeTypeTab
+              ? `${scanxTabTypeLabel(
+                  activeTypeTab,
+                  documentTypeTabs.find(t => t.id === activeTypeTab)?.label
+                )} documents`
+              : 'Documents'}
+          </h4>
           {loadingList || anyDocInProgress || uploading ? (
             <Loader2 size={14} className="animate-spin text-sky-700" aria-label="Refreshing" />
           ) : (
-            <span className="text-[11px] text-text-muted">{docs.length}</span>
+            <span className="text-[11px] text-text-muted">{tabDocs.length}</span>
           )}
         </div>
         {!leadId ? (
           <p className="px-3 py-4 text-[12px] text-text-muted">{formatScanxMessage('M1')}</p>
-        ) : docs.length === 0 && localUploads.length === 0 ? (
-          <p className="px-3 py-4 text-[12px] text-text-muted">No documents uploaded yet.</p>
+        ) : tabDocs.length === 0 && tabLocalUploads.length === 0 ? (
+          <p className="px-3 py-4 text-[12px] text-text-muted">
+            {docs.length === 0 && localUploads.length === 0
+              ? 'No documents uploaded yet.'
+              : 'No documents of this type yet.'}
+          </p>
         ) : (
           <>
             {selectedCount > 0 ? (
@@ -3254,14 +3693,14 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
                 type="checkbox"
                 checked={allSelected}
                 onChange={toggleSelectAll}
-                disabled={anyDeleting || docs.length === 0}
+                disabled={anyDeleting || tabDocs.length === 0}
                 className="h-3.5 w-3.5 rounded border-border-subtle"
                 aria-label="Select all documents"
               />
               <span className="text-[11px] text-text-muted">Select all</span>
             </div>
             <ul className="divide-y divide-border-subtle">
-              {localUploads.map(item => {
+              {tabLocalUploads.map(item => {
                 const rowBusy = item.status === 'queued' || item.status === 'uploading';
                 const typeLabel = 'Auto-detecting type…';
                 return (
@@ -3339,7 +3778,7 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
                   </li>
                 );
               })}
-              {docs.map(doc => {
+              {tabDocs.map(doc => {
                 const rowBusy = isScanxInProgress(doc.status);
                 const rowOpening = openingReviewId === doc.id;
                 return (
@@ -3469,7 +3908,7 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
         )}
       </div>
 
-      {selectedId && review ? (
+      {selectedId && review && reviewOnActiveTab ? (
         <div className="grid gap-3 lg:grid-cols-2 lg:h-[min(78vh,56rem)] lg:min-h-[28rem]">
           <section className="flex min-h-[22rem] flex-col overflow-hidden rounded-lg border border-border-subtle bg-card lg:min-h-0 lg:h-full">
             <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border-subtle px-3 py-2">
@@ -3534,11 +3973,22 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
                               setImgNaturalSize(null);
                             }}
                           >
-                            <img
-                              src={url}
-                              alt=""
-                              className="h-full w-full object-cover"
-                            />
+                            {url && !sourcePageLooksPdf(review.source_pages?.[idx]) ? (
+                              <img
+                                src={url}
+                                alt=""
+                                className="h-full w-full object-cover"
+                              />
+                            ) : url ? (
+                              <span className="flex h-full w-full items-center justify-center text-[10px] font-semibold text-text-muted">
+                                PDF
+                              </span>
+                            ) : (
+                              <span
+                                className="block h-full w-full animate-pulse bg-border-subtle/70"
+                                aria-hidden
+                              />
+                            )}
                           </button>
                         ))}
                       </div>
@@ -3549,9 +3999,22 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
                 type="button"
                 className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle px-2 py-1 text-[11px] font-semibold text-accent hover:bg-accent/5 disabled:opacity-50"
                 disabled={openingView}
-                onClick={() =>
-                  void openDocumentView(review.document.id, review.viewer_url)
-                }
+                onClick={() => {
+                  const spec = review.source_pages?.[viewerPageIndex];
+                  const path = spec?.file_url
+                    ? spec.file_url
+                    : `scanx/documents/${review.document.id}/file`;
+                  void openDocumentView(
+                    review.document.id,
+                    review.viewer_url,
+                    path,
+                    spec?.content_type ||
+                      (sourcePageLooksPdf(spec) ||
+                      (review.document.original_filename || '').toLowerCase().endsWith('.pdf')
+                        ? 'application/pdf'
+                        : null)
+                  );
+                }}
               >
                 {openingView ? (
                   <Loader2 size={12} className="animate-spin" />
@@ -3562,117 +4025,176 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
               </button>
             </header>
             <div className="relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-surface-bg/50 p-1">
-              {previewLoading ? (
-                <Loader2 size={20} className="animate-spin text-text-muted" />
-              ) : originalPageUrls.length > 1 &&
-                originalPageUrls[viewerPageIndex] ? (
-                <div className="relative mx-auto w-full max-w-full">
-                  <img
-                    src={originalPageUrls[viewerPageIndex]}
-                    alt={`Document page ${viewerPageIndex + 1}`}
-                    className="block h-auto w-full max-w-full object-contain"
-                    onLoad={e => {
-                      const img = e.currentTarget;
-                      setImgNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
-                    }}
-                  />
-                  {viewerHighlight &&
-                  viewerHighlight.pageIndex === viewerPageIndex &&
-                  imgNaturalSize ? (
-                    <svg
-                      className="pointer-events-none absolute inset-0 h-full w-full"
-                      viewBox={`0 0 ${imgNaturalSize.w} ${imgNaturalSize.h}`}
-                      preserveAspectRatio="none"
-                      aria-hidden
+              {(() => {
+                const multi = originalPageUrls.length > 1;
+                const pageUrl = multi
+                  ? originalPageUrls[viewerPageIndex]
+                  : originalPageUrls[0] || originalPreviewUrl;
+                const showSkeleton =
+                  (!pageUrl && previewLoading) || (multi && !pageUrl);
+
+                if (showSkeleton) {
+                  return (
+                    <div
+                      className="flex h-full min-h-[14rem] flex-col gap-2 p-3"
+                      aria-busy="true"
+                      aria-label="Loading document preview"
                     >
-                      {(() => {
-                        const rect = boundingBoxToOverlayRect(
-                          viewerHighlight.box,
-                          imgNaturalSize.w,
-                          imgNaturalSize.h
-                        );
-                        if (!rect) return null;
-                        return (
-                          <rect
-                            x={rect.x}
-                            y={rect.y}
-                            width={rect.width}
-                            height={rect.height}
-                            fill="rgba(59, 130, 246, 0.22)"
-                            stroke="rgb(37, 99, 235)"
-                            strokeWidth={Math.max(2, imgNaturalSize.w / 400)}
-                          />
-                        );
-                      })()}
-                    </svg>
-                  ) : null}
-                </div>
-              ) : originalPreviewUrl ? (
-                (review.document.original_filename || '')
-                  .toLowerCase()
-                  .match(/\.(png|jpe?g|gif|webp|tif{1,2})$/) ||
-                (review.source_pages && review.source_pages.length > 0) ? (
-                  <div className="relative mx-auto w-full max-w-full">
-                    <img
-                      src={
-                        originalPageUrls[viewerPageIndex] || originalPreviewUrl
-                      }
-                      alt="Document preview"
-                      className="block h-auto w-full max-w-full object-contain"
-                      onLoad={e => {
-                        const img = e.currentTarget;
-                        setImgNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
-                      }}
+                      <div className="h-3 w-1/4 animate-pulse rounded bg-border-subtle/80" />
+                      <div className="min-h-[12rem] flex-1 animate-pulse rounded-md bg-border-subtle/55" />
+                      <div className="h-3 w-1/2 animate-pulse rounded bg-border-subtle/70" />
+                    </div>
+                  );
+                }
+
+                if (multi && pageUrl && sourcePageLooksPdf(review.source_pages?.[viewerPageIndex])) {
+                  return (
+                    <iframe
+                      title={`Document page ${viewerPageIndex + 1}`}
+                      src={pageUrl}
+                      className="h-full min-h-[28rem] w-full border-0 bg-white"
                     />
-                    {viewerHighlight &&
-                    viewerHighlight.pageIndex === viewerPageIndex &&
-                    imgNaturalSize ? (
-                      <svg
-                        className="pointer-events-none absolute inset-0 h-full w-full"
-                        viewBox={`0 0 ${imgNaturalSize.w} ${imgNaturalSize.h}`}
-                        preserveAspectRatio="none"
-                        aria-hidden
-                      >
-                        {(() => {
-                          const rect = boundingBoxToOverlayRect(
-                            viewerHighlight.box,
-                            imgNaturalSize.w,
-                            imgNaturalSize.h
-                          );
-                          if (!rect) return null;
-                          return (
-                            <rect
-                              x={rect.x}
-                              y={rect.y}
-                              width={rect.width}
-                              height={rect.height}
-                              fill="rgba(59, 130, 246, 0.22)"
-                              stroke="rgb(37, 99, 235)"
-                              strokeWidth={Math.max(2, imgNaturalSize.w / 400)}
-                            />
-                          );
-                        })()}
-                      </svg>
-                    ) : null}
-                  </div>
-                ) : (
-                  <iframe
-                    title="Document preview"
-                    src={originalPreviewUrl}
-                    className="h-full w-full border-0 bg-white"
-                  />
-                )
-              ) : (
-                <span className="p-4 text-[12px] text-text-muted">
-                  Use <span className="font-medium text-text-main">Open in new tab</span> to view{' '}
-                  {review.document.original_filename}.
-                </span>
-              )}
+                  );
+                }
+
+                if (multi && pageUrl) {
+                  return (
+                    <div className="relative mx-auto w-full max-w-full">
+                      <img
+                        src={pageUrl}
+                        alt={`Document page ${viewerPageIndex + 1}`}
+                        className="block h-auto w-full max-w-full object-contain"
+                        onLoad={e => {
+                          const img = e.currentTarget;
+                          setImgNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
+                        }}
+                      />
+                      {viewerHighlight &&
+                      viewerHighlight.pageIndex === viewerPageIndex &&
+                      imgNaturalSize ? (
+                        <svg
+                          className="pointer-events-none absolute inset-0 h-full w-full"
+                          viewBox={`0 0 ${imgNaturalSize.w} ${imgNaturalSize.h}`}
+                          preserveAspectRatio="none"
+                          aria-hidden
+                        >
+                          {(() => {
+                            const rect = boundingBoxToOverlayRect(
+                              viewerHighlight.box,
+                              imgNaturalSize.w,
+                              imgNaturalSize.h
+                            );
+                            if (!rect) return null;
+                            return (
+                              <rect
+                                x={rect.x}
+                                y={rect.y}
+                                width={rect.width}
+                                height={rect.height}
+                                fill="rgba(59, 130, 246, 0.22)"
+                                stroke="rgb(37, 99, 235)"
+                                strokeWidth={Math.max(2, imgNaturalSize.w / 400)}
+                              />
+                            );
+                          })()}
+                        </svg>
+                      ) : null}
+                    </div>
+                  );
+                }
+
+                if (pageUrl) {
+                  const pages = review.source_pages || [];
+                  const anyPdfPage = pages.some(sourcePageLooksPdf);
+                  const filenameIsImage = (review.document.original_filename || '')
+                    .toLowerCase()
+                    .match(/\.(png|jpe?g|gif|webp|tif{1,2})$/);
+                  const isImage =
+                    !anyPdfPage &&
+                    (filenameIsImage || pages.length > 0);
+                  if (isImage) {
+                    return (
+                      <div className="relative mx-auto w-full max-w-full">
+                        <img
+                          src={pageUrl}
+                          alt="Document preview"
+                          className="block h-auto w-full max-w-full object-contain"
+                          onLoad={e => {
+                            const img = e.currentTarget;
+                            setImgNaturalSize({
+                              w: img.naturalWidth,
+                              h: img.naturalHeight,
+                            });
+                          }}
+                        />
+                        {viewerHighlight &&
+                        viewerHighlight.pageIndex === viewerPageIndex &&
+                        imgNaturalSize ? (
+                          <svg
+                            className="pointer-events-none absolute inset-0 h-full w-full"
+                            viewBox={`0 0 ${imgNaturalSize.w} ${imgNaturalSize.h}`}
+                            preserveAspectRatio="none"
+                            aria-hidden
+                          >
+                            {(() => {
+                              const rect = boundingBoxToOverlayRect(
+                                viewerHighlight.box,
+                                imgNaturalSize.w,
+                                imgNaturalSize.h
+                              );
+                              if (!rect) return null;
+                              return (
+                                <rect
+                                  x={rect.x}
+                                  y={rect.y}
+                                  width={rect.width}
+                                  height={rect.height}
+                                  fill="rgba(59, 130, 246, 0.22)"
+                                  stroke="rgb(37, 99, 235)"
+                                  strokeWidth={Math.max(2, imgNaturalSize.w / 400)}
+                                />
+                              );
+                            })()}
+                          </svg>
+                        ) : null}
+                      </div>
+                    );
+                  }
+                  return (
+                    <iframe
+                      title="Document preview"
+                      src={pageUrl}
+                      className="h-full w-full border-0 bg-white"
+                    />
+                  );
+                }
+
+                return (
+                  <span className="p-4 text-[12px] text-text-muted">
+                    Use <span className="font-medium text-text-main">Open in new tab</span> to
+                    view {review.document.original_filename}.
+                  </span>
+                );
+              })()}
             </div>
           </section>
           <section className="flex min-h-[22rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border-subtle bg-card lg:min-h-0 lg:h-full">
             <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border-subtle px-3 py-2">
               <span className="text-xs font-semibold text-text-main">Extracted details</span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle px-2 py-1 text-[11px] font-semibold text-text-main hover:bg-surface-bg disabled:opacity-50"
+                  disabled={reprocessing}
+                  onClick={() => void reextractDocument(review.document.id)}
+                >
+                  {reprocessing ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <RefreshCw size={12} />
+                  )}
+                  Re-run extraction
+                </button>
               {needsReprocess ? (
                 <button
                   type="button"
@@ -3688,6 +4210,7 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
                   Re-process
                 </button>
               ) : null}
+              </div>
             </header>
             <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3 text-[12px]">
               <StatusBadge

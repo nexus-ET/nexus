@@ -803,6 +803,7 @@ def build_uvicorn_cmd(config: DevConfig, *, reload: bool) -> list[str]:
         ]
     if reload:
         cmd.append("--reload")
+        cmd.extend(["--reload-dir", "app"])
         # Windows WatchFiles often kills the whole reloader on .pyc / lock churn.
         # Never reload on .env rewrites (tunnel URL updates) — that exits code 1 on Windows.
         cmd.extend(
@@ -953,7 +954,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reload",
         action="store_true",
-        help="Enable uvicorn auto-reload (can leave zombie workers on Windows).",
+        default=True,
+        help="Enable uvicorn auto-reload (default). Watches backend/app only.",
+    )
+    parser.add_argument(
+        "--no-reload",
+        action="store_true",
+        help="Disable uvicorn auto-reload.",
     )
     parser.add_argument(
         "--no-kill",
@@ -1129,7 +1136,7 @@ def _run_stack_inner(args: argparse.Namespace) -> int:
         _apply_hostinger_tunnel_startup_defaults(child_env)
 
         backend_proc = _popen(
-            build_uvicorn_cmd(config, reload=args.reload),
+            build_uvicorn_cmd(config, reload=bool(args.reload) and not args.no_reload),
             cwd=BACKEND_ROOT,
             name="backend",
             env=child_env,

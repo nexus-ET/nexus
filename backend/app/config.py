@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str | None = None
     SMTP_FROM_EMAIL: str | None = None
     SMTP_FROM_NAME: str = "Nexus Counselling"
+    # Optional Cc for student-facing mail (comma / semicolon / whitespace separated).
+    SMTP_CC: str | None = None
     # STARTTLS on non-SSL ports (587). Ignored when implicit SSL is used (465).
     SMTP_USE_TLS: bool = True
     # None = auto from port (465 → True). Set explicitly only to override.
@@ -230,6 +232,11 @@ class Settings(BaseSettings):
     SCANX_MAX_PAGES: int = 10
     SCANX_R2_KEY_ROOT: str = "STUDENTS"
     SCANX_WORKER_QUEUE: str = "scanx"
+    # In-process worker slots (how many scans may run inside the worker at once).
+    # Extra uploads still return 202 and wait; this is not a max queue length.
+    SCANX_DOCUMENT_CONCURRENCY: int = 2
+    # Cap concurrent RapidOCR/Paddle inference (wraps OCR entry only; default 1).
+    SCANX_OCR_CONCURRENCY: int = 1
     # Wall-clock budget for post-extract embeddings (leave Parsing before this).
     SCANX_EMBED_BUDGET_SECONDS: float = 12.0
     # Wall-clock budget for image OCR (all engines); leave Parsing if exceeded.

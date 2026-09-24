@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import smtplib
 import ssl
 import threading
@@ -11,6 +12,26 @@ from email.utils import formataddr, formatdate, make_msgid
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Same separator style as parse_alert_emails; ignore blanks and non-email tokens.
+_EMAIL_TOKEN_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+
+def parse_smtp_cc(value: str | None = None) -> list[str]:
+    """Split SMTP_CC into unique addresses (comma / semicolon / whitespace)."""
+    parts = re.split(r"[,;\s]+", value or "")
+    emails: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        email = part.strip().strip("<>")
+        if not email or not _EMAIL_TOKEN_RE.fullmatch(email):
+            continue
+        key = email.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        emails.append(email)
+    return emails
 
 # GoDaddy / shared SMTP hosts drop parallel SSL handshakes (WRONG_VERSION_NUMBER /
 # WinError 10054). Serialize all deliveries so exception-alert storms stay reliable.
@@ -38,6 +59,30 @@ def _smtp_configured() -> bool:
 def is_smtp_configured() -> bool:
     """Public check for callers that need an honest pre-send failure message."""
     return _smtp_configured()
+
+
+def resolve_outbound_from_name() -> str:
+    """Display name on outbound mail: Business Short Name, then Business Name."""
+    db = None
+    try:
+        from app.db.database import SessionLocal
+        from app.models.business import Business
+        from app.services.business_profile_service import DEFAULT_BUSINESS_ID
+
+        db = SessionLocal()
+        business = db.query(Business).filter(Business.id == DEFAULT_BUSINESS_ID).first()
+        if not business:
+            return ""
+        short_name = (getattr(business, "short_name", None) or "").strip()
+        if short_name:
+            return short_name
+        return (getattr(business, "name", None) or "").strip()
+    except Exception:
+        logger.debug("Organization name unavailable for SMTP From", exc_info=True)
+        return ""
+    finally:
+        if db is not None:
+            db.close()
 
 
 def _plain_to_simple_html(body: str) -> str:
@@ -107,6 +152,7 @@ def send_email(
     *,
     html_body: str | None = None,
     attachments: list[tuple[str, bytes, str]] | None = None,
+    student: bool = False,
 ) -> bool:
     recipients = [addr.strip() for addr in to_addresses if addr and str(addr).strip()]
     if not recipients:
@@ -119,15 +165,25 @@ def send_email(
         )
         return False
 
+    # Student-facing only: apply configured SMTP_CC (never for admin/alert mail).
+    cc_addresses: list[str] = []
+    if student:
+        to_lower = {addr.lower() for addr in recipients}
+        cc_addresses = [
+            addr for addr in parse_smtp_cc(settings.SMTP_CC) if addr.lower() not in to_lower
+        ]
+
     message = EmailMessage()
     from_email = (settings.SMTP_FROM_EMAIL or settings.SMTP_USER or "").strip()
     smtp_user = (settings.SMTP_USER or "").strip()
     # Prefer authenticated mailbox as visible From when it is a real email — improves
     # SPF/alignment for external recipients (e.g. candidate @erxa.in vs counsellor @edutrust.in).
     visible_from = smtp_user if smtp_user and "@" in smtp_user else from_email
-    display_name = (getattr(settings, "SMTP_FROM_NAME", None) or "Nexus Counselling").strip()
+    display_name = resolve_outbound_from_name()
     message["From"] = formataddr((display_name, visible_from))
     message["To"] = ", ".join(recipients)
+    if cc_addresses:
+        message["Cc"] = ", ".join(cc_addresses)
     message["Subject"] = subject
     message["Date"] = formatdate(localtime=True)
     domain = visible_from.split("@", 1)[-1] if "@" in visible_from else "localhost"
@@ -159,11 +215,19 @@ def send_email(
             filename=safe_name,
         )
 
+    # Envelope must include Cc or those recipients never receive the message.
+    envelope_recipients = recipients + cc_addresses
     attempts = _SMTP_MAX_ATTEMPTS
     for attempt in range(1, attempts + 1):
         try:
-            _deliver(message, recipients=recipients)
-            logger.info("Email sent subject=%r to=%s from=%s", subject, recipients, visible_from)
+            _deliver(message, recipients=envelope_recipients)
+            logger.info(
+                "Email sent subject=%r to=%s cc=%s from=%s",
+                subject,
+                recipients,
+                cc_addresses or None,
+                visible_from,
+            )
             return True
         except smtplib.SMTPRecipientsRefused as exc:
             logger.error(

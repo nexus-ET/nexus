@@ -540,6 +540,7 @@ def send_document_checklist_to_lead(
         body,
         html_body=html_body,
         attachments=list(assets["attachments"]),
+        student=True,
     )
     if not sent:
         return {

@@ -51,11 +51,39 @@ _rapid_engine: Any | None = None
 # Separate locks: a hung PaddleOCR() model download must not block Rapid init.
 _paddle_engine_lock = threading.Lock()
 _rapid_engine_lock = threading.Lock()
+
+
+def _ocr_concurrency() -> int:
+    """Max concurrent RapidOCR/Paddle inference slots (SCANX_OCR_CONCURRENCY)."""
+    try:
+        n = int(getattr(settings, "SCANX_OCR_CONCURRENCY", 1) or 1)
+    except (TypeError, ValueError):
+        n = 1
+    return max(1, n)
+
+
 # Serialize heavy OCR inference across engines (not construction after timeout).
-_ocr_run_slots = threading.Semaphore(1)
-# Cap wait for the single OCR slot so a hung peer cannot pin leave_parsing_ms
-# for tens of minutes (unbounded acquire used to look like 45min "OCR").
-_OCR_SLOT_WAIT_CAP_SEC = 60.0
+# Sized from SCANX_OCR_CONCURRENCY (default 1) so Rapid + Paddle never overlap.
+_ocr_run_slots = threading.Semaphore(_ocr_concurrency())
+# Fail only when the slot looks stuck — waiting on a live OCR is queue time.
+# Peer may hold the slot for a full OCR budget plus abandon-drain (~180s).
+_OCR_SLOT_STUCK_FLOOR_SEC = 600.0
+_OCR_SLOT_DRAIN_ALLOWANCE_SEC = 180.0
+
+
+def _ocr_slot_stuck_wait_sec(timeout_seconds: float) -> float:
+    """How long a waiter may block before the busy slot is treated as stuck."""
+    budget = ocr_budget_seconds()
+    try:
+        share = max(0.0, float(timeout_seconds))
+    except (TypeError, ValueError):
+        share = budget
+    return max(
+        _OCR_SLOT_STUCK_FLOOR_SEC,
+        budget * 2.0 + _OCR_SLOT_DRAIN_ALLOWANCE_SEC,
+        share + _OCR_SLOT_DRAIN_ALLOWANCE_SEC,
+    )
+
 
 _ENGINE_PADDLE = "paddle"
 _ENGINE_RAPID = "rapid"
@@ -546,6 +574,8 @@ def _get_rapid_engine(
                         "Det.box_thresh": box_thresh,
                         "Det.unclip_ratio": unclip,
                         "Det.use_dilation": True,
+                        "Engine.intra_op_num_threads": 1,
+                        "Engine.inter_op_num_threads": 1,
                     }
                 )
             param_attempts.append(
@@ -818,7 +848,7 @@ def _try_engine(
     acquired = _ocr_run_slots.acquire(blocking=False)
     if not acquired:
         _emit_progress(on_progress, "Waiting for OCR slot…")
-        wait_cap = min(_OCR_SLOT_WAIT_CAP_SEC, max(5.0, float(timeout_seconds)))
+        wait_cap = _ocr_slot_stuck_wait_sec(timeout_seconds)
         wait_t0 = time.perf_counter()
         deadline = time.monotonic() + wait_cap
         while True:
@@ -837,7 +867,7 @@ def _try_engine(
                 except Exception:
                     pass
                 logger.warning(
-                    "ScanX OCR slot wait timed out after %.1fs engine=%s",
+                    "ScanX OCR slot appears stuck after %.1fs engine=%s",
                     wait_cap,
                     engine_name,
                 )
@@ -1008,6 +1038,7 @@ def extract_text_from_image(
     force_engine: str | None = None,
     prefer_engine: str | None = None,
     on_progress: ProgressCallback | None = None,
+    _after_slot_wait_retry: bool = False,
 ) -> OcrResult:
     """OCR PNG/JPEG/TIFF bytes or a filesystem path.
 
@@ -1020,6 +1051,12 @@ def extract_text_from_image(
     ``prefer_engine`` sets primary but keeps a fallback (the other engine /
     configured fallback). ``force_engine`` disables fallback entirely.
     Enhanced scans typically pass ``prefer_engine="rapid"``.
+
+    When every engine attempt fails solely because the OCR slot wait timed out
+    (peer held the slot — ``ocr_slot_wait_timeout``), retries **once** after the
+    slot is free. Waiting on a live slot remains queue time; this retry is only
+    after an actual timeout. Does not loop. Does not re-OCR when text was
+    already returned.
 
     Metrics callers should persist ``engine``, ``fallback_reason``, and
     ``primary_engine`` so counsellors can see Rapid vs Paddle.
@@ -1212,6 +1249,53 @@ def extract_text_from_image(
         )
     else:
         reason = last_detail
+
+    # One retry after OCR slot wait timeout (peer held the slot). Waiting on a
+    # live slot is queue time; this fires only after an actual wait timeout.
+    # Do not loop. Do not retry when text was already returned above.
+    slot_wait_hit = (
+        last_note == "ocr_timeout"
+        and (
+            last_detail == "ocr_slot_wait_timeout"
+            or "ocr_slot_wait_timeout" in str(primary_fail_detail or "")
+            or "ocr_slot_wait_timeout" in str(reason or "")
+        )
+    )
+    if slot_wait_hit and not _after_slot_wait_retry:
+        logger.warning(
+            "ScanX OCR slot wait timed out — retrying once after slot is free"
+        )
+        _emit_progress(on_progress, "Retrying OCR after slot wait timeout…")
+        retried = extract_text_from_image(
+            content,
+            timeout_seconds=timeout_seconds,
+            force_engine=force_engine,
+            prefer_engine=prefer_engine,
+            on_progress=on_progress,
+            _after_slot_wait_retry=True,
+        )
+        if retried.note == "ocr_ok":
+            retry_reason = (
+                f"ocr_slot_wait_timeout_retry_ok:{retried.engine}"
+                if not retried.fallback_reason
+                else f"ocr_slot_wait_timeout_retry: {retried.fallback_reason}"
+            )
+        elif retried.fallback_reason:
+            retry_reason = f"ocr_slot_wait_timeout_retry: {retried.fallback_reason}"
+        else:
+            retry_reason = "ocr_slot_wait_timeout_retry"
+        return OcrResult(
+            text=retried.text,
+            engine=retried.engine,
+            note=retried.note,
+            elapsed_ms=int((time.perf_counter() - t0) * 1000),
+            page_count=retried.page_count,
+            fallback_reason=retry_reason,
+            primary_engine=retried.primary_engine or primary,
+            blocks=list(retried.blocks or []),
+            marks=list(retried.marks or []),
+            table_regions=list(retried.table_regions or []),
+        )
 
     return OcrResult(
         text=None,
