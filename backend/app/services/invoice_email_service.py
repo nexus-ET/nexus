@@ -111,6 +111,7 @@ def send_student_invoice_email(
         body,
         html_body=html_body,
         attachments=attachments,
+        student=True,
     )
     if sent:
         logger.info("Invoice email sent to %s subject=%r", email, subject)
@@ -128,6 +129,7 @@ def send_student_invoice_email(
             body,
             html_body=html_body,
             attachments=None,
+            student=True,
         )
         if sent:
             logger.info("Invoice email sent to %s without attachment subject=%r", email, subject)

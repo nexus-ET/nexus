@@ -189,16 +189,23 @@ def _load_source_page_images(
     doc: ScanxDocument,
     *,
     fallback_content: bytes | None = None,
+    page_entries: list[dict[str, Any]] | None = None,
 ) -> list[bytes]:
-    """Fetch ordered page image bytes for a multi-image document group."""
-    pages = _source_pages_meta(doc)
+    """Fetch ordered page image bytes for a multi-page document group.
+
+    Image source pages are used as-is. PDF source pages (front/back PDF pairs)
+    are rendered to PNG frames so OCR runs once across both sides.
+    """
+    from app.constants.scanx import SCANX_RASTER_SCALE
+
+    pages = page_entries if page_entries is not None else _source_pages_meta(doc)
     images: list[bytes] = []
     for entry in pages:
         key = str(entry.get("r2_key") or "").strip()
         if not key:
             continue
         try:
-            blob, _ctype = fetch_scanx_bytes(key)
+            blob, fetched_ctype = fetch_scanx_bytes(key)
         except Exception:
             logger.exception(
                 "ScanX failed to load source page key=%s doc_id=%s",
@@ -206,15 +213,42 @@ def _load_source_page_images(
                 getattr(doc, "id", None),
             )
             continue
-        if blob:
+        if not blob:
+            continue
+        ctype = str(entry.get("content_type") or fetched_ctype or "").lower()
+        name = str(entry.get("original_filename") or "").lower()
+        if looks_like_pdf(blob) or ctype == "application/pdf" or name.endswith(".pdf"):
+            try:
+                frames = render_pdf_pages_as_png(blob, scale=float(SCANX_RASTER_SCALE))
+            except Exception:
+                logger.exception(
+                    "ScanX failed to render grouped PDF page key=%s doc_id=%s",
+                    key,
+                    getattr(doc, "id", None),
+                )
+                continue
+            images.extend(frames or [])
+        else:
             images.append(blob)
     if not images and fallback_content:
-        images = [fallback_content]
+        if looks_like_pdf(fallback_content):
+            try:
+                images = list(render_pdf_pages_as_png(fallback_content, scale=float(SCANX_RASTER_SCALE)) or [])
+            except Exception:
+                images = [fallback_content]
+        else:
+            images = [fallback_content]
     elif not images and doc.r2_key:
         try:
             blob, _ = fetch_scanx_bytes(doc.r2_key)
             if blob:
-                images = [blob]
+                if looks_like_pdf(blob):
+                    try:
+                        images = list(render_pdf_pages_as_png(blob, scale=float(SCANX_RASTER_SCALE)) or [])
+                    except Exception:
+                        images = [blob]
+                else:
+                    images = [blob]
         except Exception:
             pass
     return images
@@ -468,11 +502,15 @@ def commit_scanx_document_with_retry(
     db: Any,
     doc: ScanxDocument,
     *,
-    attempts: int = 4,
+    attempts: int = 3,
     emit: bool = False,
     heal_caller: bool = True,
+    backoff_seconds: float = 1.5,
 ) -> bool:
     """Commit document row with retry on AdminShutdown / closed connection.
+
+    Final leave-Parsing saves use at most 3 attempts with ~1–2s backoff from the
+    in-memory OCR result. Does not re-enter OCR. Cancel during retries aborts.
 
     Returns True when a commit succeeded. On soft failure keeps in-memory state
     on ``doc`` so Review can still backfill from extracted text.
@@ -484,13 +522,20 @@ def commit_scanx_document_with_retry(
     metrics = doc.metrics_json if isinstance(doc.metrics_json, dict) else {}
     row_state = _snapshot_scanx_row_state(doc)
     last_exc: BaseException | None = None
-    for attempt in range(max(1, attempts)):
+    total = max(1, int(attempts))
+    try:
+        delay = max(0.5, min(2.0, float(backoff_seconds)))
+    except (TypeError, ValueError):
+        delay = 1.5
+    for attempt in range(total):
         if attempt:
-            time.sleep(min(0.35 * attempt, 1.5))
+            raise_if_cancelled(doc_id or None)
+            time.sleep(delay)
             _apply_scanx_row_state(doc, row_state)
             if isinstance(metrics, dict):
                 doc.metrics_json = metrics
         try:
+            raise_if_cancelled(doc_id or None)
             if attempt == 0:
                 db.commit()
                 try:
@@ -533,6 +578,8 @@ def commit_scanx_document_with_retry(
             finally:
                 if side is not None:
                     safe_close_session(side)
+        except ScanxJobCancelled:
+            raise
         except Exception as exc:
             last_exc = exc
             logger.warning(
@@ -563,6 +610,36 @@ def commit_scanx_document_with_retry(
     if isinstance(metrics, dict):
         doc.metrics_json = metrics
     return False
+
+
+def _mark_document_failed_after_save(
+    db: Any,
+    doc: ScanxDocument,
+    metrics: dict[str, Any],
+    steps: list[dict[str, Any]],
+    *,
+    note: str = "Failed to save extract after OCR",
+) -> None:
+    """Set Red Flag after final-save retries without re-running OCR."""
+    steps = set_step(steps, "finalize", STEP_STATUS_FAILED, note=note)
+    metrics = apply_progress_to_metrics(metrics, steps)
+    metrics["save_failed"] = True
+    metrics["counsellor_note"] = (
+        f"{note}. Extract was computed but could not be persisted — use Re-process."
+    )
+    doc.status = STATUS_RED_FLAG
+    doc.error_code = "M16"
+    doc.metrics_json = metrics
+    # Best-effort mark; if this also fails the worker still releases its slot.
+    try:
+        commit_scanx_document_with_retry(db, doc, attempts=2, emit=True, backoff_seconds=1.0)
+    except ScanxJobCancelled:
+        raise
+    except Exception:
+        logger.exception(
+            "ScanX could not persist save-failed status doc_id=%s",
+            getattr(doc, "id", None),
+        )
 
 
 def _release_job_db(db: Any) -> None:
@@ -818,7 +895,9 @@ def rebuild_enhanced_preview_from_original(
     if not frames:
         frames = []
         if looks_like_pdf(original):
-            frames = render_pdf_pages_as_png(original, scale=2.0)
+            from app.constants.scanx import SCANX_RASTER_SCALE
+
+            frames = render_pdf_pages_as_png(original, scale=float(SCANX_RASTER_SCALE))
             if not frames:
                 embedded = extract_pdf_embedded_images(original)
                 pick = pick_largest_content_image(embedded)
@@ -1166,6 +1245,8 @@ def _ocr_progress_updater(
                 doc_id,
                 exc,
             )
+            # Tunnel / OperationalError mid-scan: log and ignore — do not fail
+            # the document and do not re-run OCR.
             try:
                 session.rollback()
             except Exception:
@@ -1243,6 +1324,101 @@ def _finalize_status(
         doc.error_code = "M14"
         metrics["empty_extract"] = True
         doc.metrics_json = metrics
+
+
+def _replay_versioned_extract(
+    db: Any,
+    doc: ScanxDocument,
+    metrics: dict[str, Any],
+    steps: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Copy a finished parse when file bytes and extractor version both match.
+
+    A different photo of the same passport has a different hash and is not replayed.
+    Parses saved under an older extractor version are not replayed.
+    """
+    from app.constants.scanx import SCANX_EXTRACTOR_VERSION, SCANX_REPLAY_EXTRACT_CACHE
+
+    if metrics.get("force_fresh_extract") or not SCANX_REPLAY_EXTRACT_CACHE:
+        return None
+    digest = str(doc.content_sha256 or "").strip()
+    if not digest:
+        return None
+    rows = (
+        db.query(ScanxDocument)
+        .filter(
+            ScanxDocument.content_sha256 == digest,
+            ScanxDocument.id != int(doc.id),
+            ScanxDocument.status.in_(
+                [STATUS_ACTION_REQUIRED, STATUS_VERIFIED, STATUS_RED_FLAG]
+            ),
+        )
+        .order_by(ScanxDocument.id.desc())
+        .limit(12)
+        .all()
+    )
+    source = None
+    for row in rows:
+        src_metrics = row.metrics_json if isinstance(row.metrics_json, dict) else {}
+        if src_metrics.get("extractor_version") != SCANX_EXTRACTOR_VERSION:
+            continue
+        if src_metrics.get("empty_extract"):
+            continue
+        has_fields = isinstance(row.extracted_fields_json, dict) and bool(
+            row.extracted_fields_json
+        )
+        has_text = bool((row.extracted_text or "").strip())
+        if not has_fields and not has_text:
+            continue
+        source = row
+        break
+    if source is None:
+        return None
+
+    doc.extracted_text = source.extracted_text
+    doc.extracted_fields_json = (
+        dict(source.extracted_fields_json)
+        if isinstance(source.extracted_fields_json, dict)
+        else None
+    )
+    if source.page_count:
+        doc.page_count = source.page_count
+    src_type = str(source.document_type_id or "").strip().upper()
+    cur_type = str(doc.document_type_id or "").strip().upper()
+    if src_type and src_type not in {"", "UNKNOWN"} and cur_type in {"", "UNKNOWN"}:
+        doc.document_type_id = source.document_type_id
+    doc.status = STATUS_ACTION_REQUIRED
+    doc.error_code = None
+    metrics["extractor_version"] = SCANX_EXTRACTOR_VERSION
+    metrics["extract_note"] = "cache_replay"
+    metrics["cache_source_document_id"] = int(source.id)
+    metrics["empty_extract"] = False
+    for step_id, note in (
+        ("classify", "Replayed stored parse"),
+        ("enhance", "Replayed stored parse"),
+        ("extract", "Replayed stored parse"),
+        ("embed", "Skipped — cached parse"),
+    ):
+        steps = set_step(steps, step_id, STEP_STATUS_SKIPPED, note=note)
+    metrics = apply_progress_to_metrics(metrics, steps)
+    metrics["progress_percent"] = 100
+    metrics["current_step_label"] = None
+    doc.metrics_json = metrics
+    if not commit_scanx_document_with_retry(db, doc, emit=True):
+        return {"ok": False, "error": "cache_replay_save_failed", "document_id": int(doc.id)}
+    logger.info(
+        "ScanX cache replay doc_id=%s source_id=%s version=%s",
+        doc.id,
+        source.id,
+        SCANX_EXTRACTOR_VERSION,
+    )
+    return {
+        "ok": True,
+        "document_id": int(doc.id),
+        "status": doc.status,
+        "cache_replay": True,
+        "cache_source_document_id": int(source.id),
+    }
 
 
 def process_scanx_document(
@@ -1387,6 +1563,13 @@ def process_scanx_document(
 
         if fetched_ctype and fetched_ctype != "application/octet-stream" and not doc.content_type:
             doc.content_type = fetched_ctype
+        if not str(doc.content_sha256 or "").strip() and content:
+            from app.services.scanx_validation import content_sha256
+
+            doc.content_sha256 = content_sha256(content)
+        replayed = _replay_versioned_extract(db, doc, metrics, steps)
+        if replayed is not None:
+            return replayed
 
         steps = set_step(
             steps,
@@ -1490,12 +1673,22 @@ def process_scanx_document(
                 metrics["pdf_subjects"] = len(prefetched_subjects)
 
             sparse_native = len((extracted or "").strip()) < 40
+            grouped_page_meta = _source_pages_meta(doc)
+            source_page_n = len(grouped_page_meta)
+            from app.services.scanx_passport import native_pdf_text_needs_ocr
+
+            native_unusable = native_pdf_text_needs_ocr(extracted)
             need_ocr = doc_kind == "scanned" or (
                 not (extracted or "").strip()
                 or (sparse_native and not prefetched_subjects)
             )
             if need_ocr and doc_kind == "born_digital" and (extracted or "").strip() and not sparse_native:
                 need_ocr = False
+            # Grouped front/back PDFs and symbol-soup text layers still need
+            # a raster of every source page. Native text from the first file
+            # is not the other page, and garbage text is not a field extract.
+            if source_page_n > 1 or native_unusable:
+                need_ocr = True
             if need_ocr:
                 doc_id = int(doc.id)
                 # Snapshot before release — commit+close detaches doc; reading
@@ -1518,8 +1711,11 @@ def process_scanx_document(
                 force_render = has_scan_stamp or multi_page_scan or (
                     not pdf_embedded_images_usable_for_ocr(ocr_images)
                 )
-                # Passports need sharper rasterization so the bottom MRZ is not cut off.
-                render_scale = 3.0 if (has_scan_stamp or likely_passport) else 2.0
+                # One render scale for every PDF. Passport vs mark sheet must not
+                # take different raster paths.
+                from app.constants.scanx import SCANX_RASTER_SCALE
+
+                render_scale = float(SCANX_RASTER_SCALE)
                 if force_render or likely_passport:
                     rendered = render_pdf_pages_as_png(content, scale=render_scale)
                     if rendered:
@@ -1532,7 +1728,7 @@ def process_scanx_document(
                             "render_after_camscanner_stamp"
                             if has_scan_stamp
                             else (
-                                "render_passport_high_dpi"
+                                "render_locked_scale"
                                 if likely_passport
                                 else (
                                     "render_multipage_scan"
@@ -1550,6 +1746,20 @@ def process_scanx_document(
                         metrics["pdf_ocr_fallback"] = "embedded_below_page_threshold"
                 else:
                     pdf_rendered_pages = 0
+                if source_page_n > 1:
+                    grouped_frames = _load_source_page_images(
+                        doc,
+                        fallback_content=content,
+                        page_entries=grouped_page_meta,
+                    )
+                    if grouped_frames:
+                        ocr_images = grouped_frames
+                        ocr_source = "grouped_source_pages"
+                        pdf_rendered_pages = len(grouped_frames)
+                        metrics["pdf_render_scale"] = render_scale
+                        metrics["pdf_page_count"] = len(grouped_frames)
+                        metrics["pdf_rendered_pages"] = pdf_rendered_pages
+                        metrics["pdf_ocr_fallback"] = "render_grouped_source_pages"
                 db, doc = _reopen_job_db(doc_id)
                 if not doc:
                     return {"ok": False, "error": "not_found_after_pdf_prep"}
@@ -1564,29 +1774,20 @@ def process_scanx_document(
                     metrics["ocr_page_indices"] = list(ocr_page_indices)
                     metrics["ocr_page_count_selected"] = len(images)
                     metrics["ocr_page_count_available"] = len(ocr_images)
-                    already_skipped = any(
-                        s.get("id") == "enhance"
-                        and s.get("status") == STEP_STATUS_SKIPPED
-                        for s in steps
-                    )
-                    if already_skipped:
-                        prefer_ocr_engine = "rapid" if doc_kind == "scanned" else None
-                        if metrics.get("dpi_before") is None and metrics.get("dpi_in") is None:
-                            metrics.update(dpi_metrics_without_enhance(images))
-                    else:
-                        images, metrics, steps, prefer_ocr_engine, db, doc = (
-                            _prepare_images_for_ocr(
-                                images,
-                                doc_kind=doc_kind,
-                                skip_enhance=skip_enhance,
-                                db=db,
-                                doc=doc,
-                                metrics=metrics,
-                                steps=steps,
-                            )
+                    images, metrics, steps, prefer_ocr_engine, db, doc = (
+                        _prepare_images_for_ocr(
+                            images,
+                            doc_kind="scanned",
+                            skip_enhance=False,
+                            db=db,
+                            doc=doc,
+                            metrics=metrics,
+                            steps=steps,
                         )
-                        if not doc:
-                            return {"ok": False, "error": "not_found_after_enhance"}
+                    )
+                    if not doc:
+                        return {"ok": False, "error": "not_found_after_enhance"}
+                    prefer_ocr_engine = prefer_ocr_engine or "rapid"
                     steps = set_step(
                         steps,
                         "extract",
@@ -1644,11 +1845,15 @@ def process_scanx_document(
                             # Always re-OCR the MRZ band for passports when line 2
                             # is missing — primary OCR often drops the second TD3 line.
                             if incomplete or likely_passport:
-                                band = crop_bottom_band_png(
-                                    images[0],
-                                    fraction=0.42 if likely_passport else 0.34,
-                                )
-                                if band:
+                                band_pages = images if likely_passport else images[:1]
+                                band = None
+                                for page_png in band_pages:
+                                    band = crop_bottom_band_png(
+                                        page_png,
+                                        fraction=0.42 if likely_passport else 0.34,
+                                    )
+                                    if not band:
+                                        continue
                                     doc_id = int(doc.id)
                                     _pause_db_during_ocr(db)
                                     strip = _call_extract_text_from_image(
@@ -1684,6 +1889,7 @@ def process_scanx_document(
                                             metrics["passport_mrz_string"] = strip_mrz[
                                                 "mrz_string"
                                             ]
+                                            break
                         except Exception:
                             logger.debug(
                                 "Passport MRZ strip OCR skipped doc_id=%s",
@@ -1692,7 +1898,13 @@ def process_scanx_document(
                             )
                     if ocr_parts:
                         ocr_text = "\n\n".join(ocr_parts)
-                        if not (extracted or "").strip():
+                        # Grouped PDFs and unusable text layers must not keep
+                        # the first file's native text in front of page OCR.
+                        if (
+                            source_page_n > 1
+                            or native_unusable
+                            or not (extracted or "").strip()
+                        ):
                             extracted = ocr_text
                         else:
                             extracted = f"{extracted}\n\n{ocr_text}"
@@ -1711,6 +1923,9 @@ def process_scanx_document(
                         prefetched_subjects = merge_subjects(
                             prefetched_subjects, ocr_subjects
                         )
+                    elif native_unusable:
+                        extracted = ""
+                        extract_note = "pdf_native_unusable"
                     elif not (extracted or "").strip():
                         extract_note = f"pdf_{batch['last_ocr_note']}"
                 else:
@@ -2254,80 +2469,14 @@ def process_scanx_document(
             categorized = None
 
         if is_passport:
-            try:
-                from app.services.scanx_passport import (
-                    attach_passport_to_fields,
-                    extract_passport_fields,
-                )
-                from app.services.scanx_extracted_store import (
-                    persist_extracted_from_scanx,
-                )
-
-                ocr_blocks_json = metrics.get("ocr_blocks")
-                passport = extract_passport_fields(
-                    text or "",
-                    ocr_blocks=ocr_blocks_json
-                    if isinstance(ocr_blocks_json, list)
-                    else None,
-                    ocr_mean_confidence=(
-                        float(metrics["ocr_mean_confidence"])
-                        if isinstance(metrics.get("ocr_mean_confidence"), (int, float))
-                        else None
-                    ),
-                )
-                preferred_mrz = metrics.get("passport_mrz_string")
-                if (
-                    isinstance(preferred_mrz, str)
-                    and "\n" in preferred_mrz
-                    and (
-                        not passport.get("mrz_string")
-                        or "\n" not in str(passport.get("mrz_string") or "")
-                    )
-                ):
-                    passport["mrz_string"] = preferred_mrz
-                    passport.pop("_mrz_incomplete", None)
-                base = (
-                    categorized
-                    if isinstance(categorized, dict)
-                    else {"version": 1}
-                )
-                categorized = attach_passport_to_fields(base, passport)
-                doc.extracted_fields_json = categorized
-                metrics["categories_count"] = len(
-                    categorized.get("categories") or []
-                )
-                metrics["passport_extracted"] = True
-                metrics["passport_low_confidence"] = bool(
-                    passport.get("is_low_confidence")
-                )
+            text_stripped = (text or "").strip()
+            # Empty / timed-out OCR must not invent passport fields (esp.
+            # document_type=P). Leave extract blank and keep the timeout/empty
+            # error path via _finalize_status.
+            if not text_stripped:
+                metrics["passport_extracted"] = False
                 metrics.pop("passport_extract_error", None)
-                doc.metrics_json = metrics
-                # Persist passport fields immediately with retry — do not wait for
-                # a later metrics-only progress write that can drop this column.
-                commit_scanx_document_with_retry(db, doc, emit=False)
-                try:
-                    persist_extracted_from_scanx(
-                        scanx_doc=doc,
-                        field_group="passport",
-                        structured_data=passport,
-                        is_low_confidence=bool(passport.get("is_low_confidence")),
-                    )
-                except Exception:
-                    logger.debug(
-                        "ScanX passport persist skipped doc_id=%s",
-                        document_id,
-                        exc_info=True,
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "ScanX passport extract failed doc_id=%s: %s",
-                    document_id,
-                    exc,
-                    exc_info=True,
-                )
-                metrics["passport_extract_error"] = (
-                    f"{type(exc).__name__}: {exc}"
-                )[:240]
+                metrics["passport_skipped_empty_ocr"] = True
                 if isinstance(categorized, dict):
                     doc.extracted_fields_json = categorized
                     metrics["categories_count"] = len(
@@ -2337,6 +2486,98 @@ def process_scanx_document(
                     metrics.pop("categories_count", None)
                 doc.metrics_json = metrics
                 commit_scanx_document_with_retry(db, doc, emit=False)
+            else:
+                try:
+                    from app.services.scanx_passport import (
+                        attach_passport_to_fields,
+                        run_passport_pipeline,
+                    )
+                    from app.services.scanx_extracted_store import (
+                        persist_extracted_from_scanx,
+                    )
+
+                    ocr_blocks_json = metrics.get("ocr_blocks")
+                    passport = run_passport_pipeline(
+                        text_stripped,
+                        ocr_blocks=ocr_blocks_json
+                        if isinstance(ocr_blocks_json, list)
+                        else None,
+                        ocr_mean_confidence=(
+                            float(metrics["ocr_mean_confidence"])
+                            if isinstance(metrics.get("ocr_mean_confidence"), (int, float))
+                            else None
+                        ),
+                    )
+                    preferred_mrz = metrics.get("passport_mrz_string")
+                    if (
+                        isinstance(preferred_mrz, str)
+                        and "\n" in preferred_mrz
+                        and (
+                            not passport.get("mrz_string")
+                            or "\n" not in str(passport.get("mrz_string") or "")
+                        )
+                    ):
+                        passport["mrz_string"] = preferred_mrz
+                        passport.pop("_mrz_incomplete", None)
+                    base = (
+                        categorized
+                        if isinstance(categorized, dict)
+                        else {"version": 1}
+                    )
+                    categorized = attach_passport_to_fields(
+                        base,
+                        passport,
+                        text=text_stripped,
+                        ocr_blocks=ocr_blocks_json
+                        if isinstance(ocr_blocks_json, list)
+                        else None,
+                    )
+                    doc.extracted_fields_json = categorized
+                    metrics["categories_count"] = len(
+                        categorized.get("categories") or []
+                    )
+                    metrics["passport_extracted"] = True
+                    metrics["passport_low_confidence"] = bool(
+                        passport.get("is_low_confidence")
+                    )
+                    metrics.pop("passport_extract_error", None)
+                    metrics.pop("passport_skipped_empty_ocr", None)
+                    doc.metrics_json = metrics
+                    # Persist passport fields immediately with retry — do not wait for
+                    # a later metrics-only progress write that can drop this column.
+                    commit_scanx_document_with_retry(db, doc, emit=False)
+                    try:
+                        persist_extracted_from_scanx(
+                            scanx_doc=doc,
+                            field_group="passport",
+                            structured_data=passport,
+                            is_low_confidence=bool(passport.get("is_low_confidence")),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "ScanX passport persist skipped doc_id=%s",
+                            document_id,
+                            exc_info=True,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "ScanX passport extract failed doc_id=%s: %s",
+                        document_id,
+                        exc,
+                        exc_info=True,
+                    )
+                    metrics["passport_extract_error"] = (
+                        f"{type(exc).__name__}: {exc}"
+                    )[:240]
+                    if isinstance(categorized, dict):
+                        doc.extracted_fields_json = categorized
+                        metrics["categories_count"] = len(
+                            categorized.get("categories") or []
+                        )
+                    elif doc.extracted_fields_json is None:
+                        metrics.pop("categories_count", None)
+                    doc.metrics_json = metrics
+                    commit_scanx_document_with_retry(db, doc, emit=False)
         elif categorized is not None:
             try:
                 # Merge table-extract subjects (PDF/DOCX) + LLM assist into categorizer.
@@ -2558,9 +2799,21 @@ def process_scanx_document(
                 STEP_STATUS_SKIPPED,
                 note="No text chunks to embed",
             )
+        from app.constants.scanx import SCANX_EXTRACTOR_VERSION
+
+        metrics["extractor_version"] = SCANX_EXTRACTOR_VERSION
         metrics = apply_progress_to_metrics(metrics, steps)
         doc.metrics_json = metrics
-        commit_scanx_document_with_retry(db, doc, emit=True)
+        # Final save from in-memory OCR result — retry only the commit, never OCR.
+        if not commit_scanx_document_with_retry(
+            db, doc, emit=True, attempts=3, backoff_seconds=1.5
+        ):
+            _mark_document_failed_after_save(db, doc, metrics, steps)
+            return {
+                "ok": False,
+                "error": "save_failed",
+                "document_id": int(document_id),
+            }
         # Cloudflare archival must not gate Review Scan — fire after extract is saved.
         try:
             _schedule_post_ocr_r2_archive(doc, metrics)

@@ -71,7 +71,18 @@ _LABEL_CONFUSABLES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
 # not let cover-note lines ("BY ORDER OF", "Place of Birth") anchor Father.
 _FIELD_LABEL_SIGNAL_TOKENS: dict[str, frozenset[str]] = {
     "father_name": frozenset(
-        {"father", "foter", "fother", "guardian", "guardlan", "curdian", "lepai"}
+        {
+            "father",
+            "foter",
+            "fother",
+            "pathvet",
+            "guardian",
+            "guardlan",
+            "gusrdian",
+            "gurdian",
+            "curdian",
+            "lepai",
+        }
     ),
     "mother_name": frozenset({"mother", "mather", "mothor", "maches"}),
     "spouse_name": frozenset({"spouse", "spouce", "sp0use"}),
@@ -254,6 +265,17 @@ def match_passport_field_label(ocr_text: str | None) -> str | None:
         return None
     scored.sort(key=lambda t: t[1], reverse=True)
     top_key, top_score = scored[0]
+    # When WRatio ties many short "… of …" labels, prefer a family-role key
+    # that still carries a distinctive OCR signal (e.g. Gusrdian / Pathvet).
+    signal_hits = [
+        (k, s)
+        for k, s in scored
+        if k in _FIELD_LABEL_SIGNAL_TOKENS and _ocr_has_field_label_signal(raw, k)
+    ]
+    if signal_hits:
+        signal_hits.sort(key=lambda t: t[1], reverse=True)
+        if signal_hits[0][1] >= top_score - 5:
+            return signal_hits[0][0]
     if len(scored) > 1 and scored[1][1] >= top_score - 3:
         if {scored[0][0], scored[1][0]} & {
             "spouse_name",
@@ -277,7 +299,18 @@ def _ocr_has_field_label_signal(text: str | None, field_key: str) -> bool:
     if tokens & signals:
         return True
     # Mild OCR garble: allow compact substring for signals len >= 4.
-    return any(sig in raw for sig in signals if len(sig) >= 4)
+    if any(sig in raw for sig in signals if len(sig) >= 4):
+        return True
+    # Near-miss tokens (Gusrdian ≈ guardian, Pathvet ≈ father via pathvet signal).
+    for tok in tokens:
+        if len(tok) < 5:
+            continue
+        for sig in signals:
+            if len(sig) < 5:
+                continue
+            if SequenceMatcher(None, tok, sig).ratio() >= 0.72:
+                return True
+    return False
 
 
 def block_is_field_label(text: str | None, field_key: str) -> bool:

@@ -881,7 +881,7 @@ def get_scanx_review(
             if is_passport:
                 from app.services.scanx_passport import (
                     attach_passport_to_fields,
-                    extract_passport_fields,
+                    run_passport_pipeline,
                 )
                 from app.services.scanx_extracted_store import (
                     persist_extracted_from_scanx,
@@ -939,7 +939,7 @@ def get_scanx_review(
                         else None
                     )
                     try:
-                        passport = extract_passport_fields(
+                        passport = run_passport_pipeline(
                             text,
                             ocr_blocks=ocr_blocks_json,
                             ocr_mean_confidence=(
@@ -950,7 +950,12 @@ def get_scanx_review(
                                 else None
                             ),
                         )
-                        fields = attach_passport_to_fields(base, passport)
+                        fields = attach_passport_to_fields(
+                            base,
+                            passport,
+                            text=text,
+                            ocr_blocks=ocr_blocks_json,
+                        )
                         doc.extracted_fields_json = fields
                         metrics_mut["fields_backfill_version"] = _FIELDS_BACKFILL_VERSION
                         metrics_mut["passport_extracted"] = True
@@ -1502,6 +1507,7 @@ def reprocess_scanx_document(
     )
     metrics = apply_progress_to_metrics(metrics, steps)
     metrics.pop("rescue_thread_started", None)
+    metrics["force_fresh_extract"] = True
     doc.metrics_json = metrics
     db.commit()
     db.refresh(doc)
@@ -1511,6 +1517,58 @@ def reprocess_scanx_document(
         job_id=str(enqueue_result.get("job_id") or ""),
         enqueue_mode=str(enqueue_result.get("mode") or ""),
     )
+
+
+@router.post("/documents/{document_id}/reextract", response_model=ScanxReprocessResponse)
+@log_action("scanx_reextract_document", "scanx_document")
+def reextract_scanx_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    _user: User = Depends(deps.require_page_access(DOCUMENT_READINESS_ROUTE)),
+):
+    """Re-read stored OCR text with the current passport pipeline.
+
+    Does not copy a previous document's JSON and does not start a new OCR job.
+    A passport field that fails validation is left null.
+    """
+    from app.constants.scanx import SCANX_EXTRACTOR_VERSION
+    from app.services.scanx_jobs import commit_scanx_document_with_retry
+    from app.services.scanx_passport import attach_passport_to_fields, run_passport_pipeline
+
+    doc = db.query(ScanxDocument).filter(ScanxDocument.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    stored = (doc.extracted_text or "").strip()
+    if not stored:
+        raise HTTPException(
+            status_code=400,
+            detail="No stored OCR text. Use Re-process to read the file again.",
+        )
+    metrics = dict(doc.metrics_json or {})
+    blocks = metrics.get("ocr_blocks")
+    passport = run_passport_pipeline(
+        stored,
+        ocr_blocks=blocks if isinstance(blocks, list) else None,
+        ocr_mean_confidence=(
+            float(metrics["ocr_mean_confidence"])
+            if isinstance(metrics.get("ocr_mean_confidence"), (int, float))
+            else None
+        ),
+    )
+    doc.extracted_fields_json = attach_passport_to_fields(
+        doc.extracted_fields_json if isinstance(doc.extracted_fields_json, dict) else None,
+        passport,
+        text=stored,
+        ocr_blocks=blocks if isinstance(blocks, list) else None,
+    )
+    metrics["extractor_version"] = SCANX_EXTRACTOR_VERSION
+    metrics["extract_note"] = "reextract_stored_text"
+    metrics["force_fresh_extract"] = True
+    doc.metrics_json = metrics
+    if not commit_scanx_document_with_retry(db, doc, emit=True):
+        raise HTTPException(status_code=503, detail="Could not save the re-extracted fields.")
+    db.refresh(doc)
+    return ScanxReprocessResponse(document=_doc_out(doc), job_id=None, enqueue_mode="reextract")
 
 
 @router.post("/documents", response_model=ScanxUploadResponse, status_code=202)
@@ -1717,10 +1775,12 @@ async def upload_scanx_document_group(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.require_page_access(DOCUMENT_READINESS_ROUTE)),
 ):
-    """Upload multiple image pages as one logical ScanX document (e.g. passport front+back).
+    """Upload multiple pages as one logical ScanX document (e.g. passport front+back).
 
     Files are stored as ordered ``source_pages`` on a single ``scanx_documents`` row and
-    processed with the same multi-page OCR path used for scanned PDFs.
+    processed with the same multi-page OCR path used for scanned PDFs. Members may be
+    images or PDFs (e.g. separate front/back PDF uploads); mixed image+PDF groups are
+    rejected.
     """
     if lead_id < 1:
         raise scanx_error("M1")
@@ -1760,6 +1820,7 @@ async def upload_scanx_document_group(
             )
 
     members: list[tuple[str, bytes, str]] = []
+    kinds: set[str] = set()
     for upload in files or []:
         raw = await upload.read()
         if not raw:
@@ -1775,25 +1836,42 @@ async def upload_scanx_document_group(
             raise
         except Exception as exc:
             raise scanx_error("M7") from exc
-        if not str(ctype).lower().startswith("image/"):
+        ctype_l = str(ctype).lower()
+        name_l = name.lower()
+        is_image = ctype_l.startswith("image/")
+        is_pdf = ctype_l == "application/pdf" or name_l.endswith(".pdf")
+        if not (is_image or is_pdf):
             raise HTTPException(
                 status_code=400,
                 detail={
                     "error_code": "M3",
                     "message": (
                         "Multi-file document groups must be images "
-                        "(PNG/JPEG/TIFF). Use a single PDF for multi-page PDF uploads."
+                        "(PNG/JPEG/TIFF) or PDFs (e.g. passport front+back)."
                     ),
                 },
             )
+        kinds.add("pdf" if is_pdf else "image")
         members.append((Path(name).name, raw, ctype))
+
+    if len(kinds) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "M3",
+                "message": (
+                    "Document groups must be all images or all PDFs — "
+                    "do not mix image and PDF pages in one group."
+                ),
+            },
+        )
 
     if len(members) < 2:
         raise HTTPException(
             status_code=400,
             detail={
                 "error_code": "M7",
-                "message": "Upload at least two image pages to create a document group.",
+                "message": "Upload at least two pages to create a document group.",
             },
         )
     if len(members) > max_pages():
@@ -1868,7 +1946,7 @@ async def upload_scanx_document_group(
         f"{'s' if len(members) != 2 else ''})"
     )
     if len(display_name) > 480:
-        display_name = f"Multi-page upload ({len(members)} images)"
+        display_name = f"Multi-page upload ({len(members)} pages)"
 
     doc = ScanxDocument(
         doc_uuid=doc_uuid,

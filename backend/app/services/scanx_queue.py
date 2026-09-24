@@ -9,19 +9,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.config import settings
-from app.db.database import is_ssh_tunnel_database_url
 
 logger = logging.getLogger(__name__)
 
 QUEUE_NAME_DEFAULT = "scanx"
 # Treat RQ worker registrations older than this as dead (ghost workers).
 _WORKER_HEARTBEAT_MAX_AGE_SECONDS = 45
-# Cap in-process parse threads so multi-upload does not thrash memory/CPU.
-# Extra jobs still get a daemon thread immediately but wait for a slot.
-# SSH tunnel: 2 jobs so OCR resume cannot take the whole 5+5 pool from the SPA.
-_THREAD_PARSE_SLOTS = threading.Semaphore(
-    2 if is_ssh_tunnel_database_url(settings.DATABASE_URL) else 4
-)
 # Bound Redis so enqueue/rescue never hangs a request thread for minutes.
 _REDIS_SOCKET_CONNECT_TIMEOUT_S = 2.0
 _REDIS_SOCKET_TIMEOUT_S = 3.0
@@ -30,6 +23,20 @@ _PARSE_SLOT_WAIT_HEARTBEAT_SEC = 15.0
 # One in-process/RQ worker per document_id (claim held for the whole job).
 _inflight_lock = threading.Lock()
 _inflight_docs: dict[int, float] = {}
+
+
+def _document_concurrency() -> int:
+    """How many scans may be inside the in-process worker (not max queue length)."""
+    try:
+        n = int(getattr(settings, "SCANX_DOCUMENT_CONCURRENCY", 2) or 2)
+    except (TypeError, ValueError):
+        n = 2
+    return max(1, n)
+
+
+# Cap in-process parse threads via SCANX_DOCUMENT_CONCURRENCY (default 2).
+# Extra jobs still get a daemon thread immediately but wait for a slot.
+_THREAD_PARSE_SLOTS = threading.Semaphore(_document_concurrency())
 
 
 def try_claim_scanx_document(document_id: int) -> bool:
@@ -156,7 +163,10 @@ def _seed_enqueue_progress(
 
 def _start_thread(document_id: int) -> str:
     def _run() -> None:
-        from app.services.scanx_cancel import is_cancel_requested
+        from app.services.scanx_cancel import (
+            add_job_wait_ms,
+            is_cancel_requested,
+        )
 
         if is_cancel_requested(document_id):
             logger.info("ScanX thread skipped cancelled document_id=%s", document_id)
@@ -191,6 +201,8 @@ def _start_thread(document_id: int) -> str:
                     )
                     if got:
                         acquired = True
+                        waited_ms = int((time.perf_counter() - wait_t0) * 1000)
+                        add_job_wait_ms(waited_ms)
                         break
                     waited_s = int(time.perf_counter() - wait_t0)
                     _mark_thread_dispatch(
@@ -437,14 +449,16 @@ def rescue_stale_waiting_document(document_id: int) -> dict[str, Any] | None:
 def rescue_stale_parsing_document(document_id: int) -> dict[str, Any] | None:
     """Recover Parsing docs with no progress bumps (hung thread / dead RQ).
 
+    - Extract already stored: leave Parsing without OCR (restart recovery).
     - First stall (>60s idle): force an in-process reprocess once.
     - Second stall after rescue: mark Red Flag so UI leaves “tracking parse steps”.
     """
     from app.db.database import SessionLocal, safe_close_session
     from app.models.scanx import ScanxDocument
-    from app.constants.scanx import STATUS_PARSING, STATUS_RED_FLAG
+    from app.constants.scanx import STATUS_ACTION_REQUIRED, STATUS_PARSING, STATUS_RED_FLAG
     from app.services.scanx_progress import (
         STALE_NO_PROGRESS_SECONDS,
+        STEP_STATUS_COMPLETE,
         STEP_STATUS_FAILED,
         apply_progress_to_metrics,
         is_waiting_for_worker,
@@ -485,7 +499,34 @@ def rescue_stale_parsing_document(document_id: int) -> dict[str, Any] | None:
             metrics.get("enqueue_mode"),
         )
 
-        if already_rescued or metrics.get("stale_failed"):
+        # Restart recovery: extract already in DB — do not OCR again.
+        prior_extract = (doc.extracted_text or "").strip()
+        if prior_extract:
+            steps = metrics.get("progress_steps")
+            if not isinstance(steps, list):
+                steps = []
+            else:
+                steps = list(steps)
+            steps = set_step(
+                steps,
+                "finalize",
+                STEP_STATUS_COMPLETE,
+                note="Recovered stored extract — skipped OCR",
+            )
+            metrics = apply_progress_to_metrics(metrics, steps)
+            metrics["progress_percent"] = 100
+            metrics["rescue_reason"] = "extract_already_stored"
+            metrics.pop("rescue_thread_started", None)
+            doc.status = STATUS_ACTION_REQUIRED
+            doc.error_code = None
+            doc.metrics_json = metrics
+            db.commit()
+            action = "extract_present"
+            logger.info(
+                "ScanX document_id=%s left Parsing with stored extract (no OCR)",
+                document_id,
+            )
+        elif already_rescued or metrics.get("stale_failed"):
             steps = metrics.get("progress_steps")
             if not isinstance(steps, list):
                 steps = []
@@ -532,6 +573,8 @@ def rescue_stale_parsing_document(document_id: int) -> dict[str, Any] | None:
 
     if action == "failed":
         return {"mode": "failed", "job_id": None}
+    if action == "extract_present":
+        return {"mode": "extract_present", "job_id": None}
     if action != "reprocess":
         return None
 

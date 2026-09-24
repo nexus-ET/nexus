@@ -399,22 +399,22 @@ def encode_preview_jpeg(
 
 
 def _compute_upscale(width: int, height: int, *, dpi_before: float | None = None) -> float:
-    """Scale so effective DPI reaches ≥300 (capped by max side)."""
-    source_dpi = float(dpi_before) if dpi_before and dpi_before > 0 else float(_ASSUMED_SOURCE_DPI)
-    if source_dpi >= _TARGET_DPI:
-        long_side = max(width, height)
-        if long_side >= 1800:
-            return 1.0
-    scale = max(1.0, float(_TARGET_DPI) / source_dpi)
-    # Floor for very low-res phone crops when metadata claims high DPI wrongly.
-    if source_dpi < 100:
-        scale = max(scale, _MIN_UPSCALE)
-    long_side = max(width, height)
+    """Locked raster scale from pixel size only.
+
+    DPI metadata is ignored. The same pixel dimensions always produce the same
+    scale, so a phone JPEG and a re-save with a different DPI tag do not take
+    different enhance paths.
+    """
+    del dpi_before
+    long_side = max(int(width), int(height))
+    short_side = min(int(width), int(height))
+    if short_side <= 0 or long_side <= 0:
+        return 1.0
+    if short_side >= 1600:
+        return 1.0
+    scale = 1600.0 / float(short_side)
     if long_side * scale > _MAX_SIDE_PX:
         scale = max(1.0, float(_MAX_SIDE_PX) / float(long_side))
-    letter_width_px = int(8.5 * _TARGET_DPI)
-    if width * scale < letter_width_px * 0.55 and long_side * 2.5 <= _MAX_SIDE_PX:
-        scale = max(scale, min(2.5, float(_MAX_SIDE_PX) / float(long_side)))
     return float(scale)
 
 

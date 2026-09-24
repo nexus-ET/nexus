@@ -15,7 +15,7 @@ from app.models.lead import Lead
 from app.models.message import Message
 from app.models.notification_log import NotificationLog
 from app.models.user import User
-from app.services.email_service import send_email
+from app.services.email_service import resolve_outbound_from_name, send_email
 from app.services.lead_conversation import touch_lead_activity
 from app.services.messaging import (
     OutreachTemplateParameter,
@@ -247,13 +247,13 @@ def _email_content(
     # Avoid spammy subject patterns ("Confirmation:", ALL CAPS, heavy punctuation).
     subject = f"Your counselling session with {admin_name}"
     purpose_line = f"\nSession purpose: {session_purpose}" if session_purpose else ""
-    company = (settings.WHATSAPP_OUTREACH_COMPANY_NAME or "Edutrust").strip() or "Edutrust"
+    from_name = resolve_outbound_from_name()
     body = (
         f"Hi {candidate_name},\n\n"
         f"Your counselling session with {admin_name} is confirmed for "
         f"{_format_time(scheduled_time)}.{purpose_line}\n\n"
         "Your counsellor will contact you at the scheduled time.\n\n"
-        f"Best regards,\n{company} / Nexus Counselling"
+        f"Best regards,\n{from_name}"
     )
     return subject, body
 
@@ -281,7 +281,7 @@ def _admin_email_content(
     base = (settings.FRONTEND_URL or "").rstrip("/")
     if base:
         body += f"\nOpen session: {base}/my-bookings/session/{booking.id}\n"
-    body += "\n— Nexus Counselling"
+    body += f"\n— {resolve_outbound_from_name()}"
     return subject, body
 
 
@@ -605,7 +605,7 @@ class NotificationService:
             )
             return "skipped"
 
-        sent = await asyncio.to_thread(send_email, [email], subject, body)
+        sent = await asyncio.to_thread(send_email, [email], subject, body, student=True)
         status = "sent" if sent else "failed"
         self._log_attempt(
             booking_id=booking_id,

@@ -326,6 +326,54 @@ export function formatPassportDate(raw: unknown): string {
   return text;
 }
 
+function mrzLine1NameParts(mrz: string | null | undefined): {
+  surname: string | null;
+  given_names: string | null;
+} {
+  for (const raw of String(mrz || '').split(/\r?\n/)) {
+    const line = raw.replace(/\s+/g, '').toUpperCase();
+    if (!line.startsWith('P') || line.length < 10) continue;
+    const names = line.slice(5, 44);
+    const sep = names.indexOf('<<');
+    if (sep < 0) continue;
+    const surname = names.slice(0, sep).replace(/</g, ' ').trim() || null;
+    const given_names =
+      names
+        .slice(sep + 2)
+        .replace(/</g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim() || null;
+    return { surname, given_names };
+  }
+  return { surname: null, given_names: null };
+}
+
+function rejectCrossFilledHolderNames(hydrated: ScanxPassportExtract): void {
+  const sn = coercePassportScalar(hydrated.surname);
+  const gn = coercePassportScalar(hydrated.given_names);
+  if (!sn || !gn || sn.toUpperCase() !== gn.toUpperCase()) return;
+  const parts = mrzLine1NameParts(hydrated.mrz_string);
+  const snOk = !!(parts.surname && parts.surname.toUpperCase() === sn.toUpperCase());
+  const gnOk = !!(
+    parts.given_names && parts.given_names.toUpperCase() === gn.toUpperCase()
+  );
+  if (!snOk) hydrated.surname = null;
+  if (!gnOk) hydrated.given_names = null;
+}
+
+/** Blank family fields that are exact copies of the holder's given name. */
+function rejectHolderGivenCopiedIntoFamily(hydrated: ScanxPassportExtract): void {
+  const gn = coercePassportScalar(hydrated.given_names);
+  if (!gn) return;
+  const gnU = gn.toUpperCase();
+  for (const key of ['father_name', 'mother_name', 'spouse_name'] as const) {
+    const v = coercePassportScalar(hydrated[key]);
+    if (v && v.toUpperCase() === gnU) {
+      hydrated[key] = null;
+    }
+  }
+}
+
 /**
  * Build a counsellor-ready passport object:
  * - Prefer explicit passport schema values
@@ -343,6 +391,8 @@ export function hydratePassportExtract(
   const src = passport && typeof passport === 'object' ? { ...passport } : {};
   const hydrated: ScanxPassportExtract = { ...src };
   const dateKeys = new Set(['date_of_birth', 'date_of_issue', 'date_of_expiry']);
+  const apiSurname = coercePassportScalar(src.surname);
+  const apiGiven = coercePassportScalar(src.given_names);
 
     // 1) Coerce direct schema keys (including camelCase on the same object).
   for (const key of CANONICAL_STRING_KEYS) {
@@ -385,8 +435,17 @@ export function hydratePassportExtract(
   }
 
     // 2) Fill / upgrade from flat Field|Value rows / category items.
+    // Never fill a blank by copying a sibling field's value.
     const pairs = collectLabelValuePairs(opts?.fields, opts?.categories);
     const nameKeys = new Set(['surname', 'given_names', 'father_name', 'mother_name', 'spouse_name']);
+    const siblingValues = (): Set<string> => {
+      const out = new Set<string>();
+      for (const k of CANONICAL_STRING_KEYS) {
+        const v = coercePassportScalar(hydrated[k]).toUpperCase();
+        if (v) out.add(v);
+      }
+      return out;
+    };
     for (const pair of pairs) {
       const label = String(pair.label || '').trim();
       const value = coercePassportScalar(pair.value);
@@ -421,6 +480,10 @@ export function hydratePassportExtract(
           continue;
         }
         if (key === 'file_number' && isGarbageFileNumber(value)) {
+          continue;
+        }
+        const siblings = siblingValues();
+        if (siblings.has(value.toUpperCase())) {
           continue;
         }
         if (key === 'address') {
@@ -509,6 +572,25 @@ export function hydratePassportExtract(
   if (typeof src.is_low_confidence === 'boolean') {
     hydrated.is_low_confidence = src.is_low_confidence;
   }
+
+  // API already returned equal names: keep only sides MRZ independently supports.
+  // Hydrate must not leave a blank filled from the sibling after the API left it empty.
+  if (
+    apiSurname &&
+    apiGiven &&
+    apiSurname.toUpperCase() === apiGiven.toUpperCase()
+  ) {
+    rejectCrossFilledHolderNames(hydrated);
+  } else {
+    const sn = coercePassportScalar(hydrated.surname);
+    const gn = coercePassportScalar(hydrated.given_names);
+    if (sn && gn && sn.toUpperCase() === gn.toUpperCase()) {
+      if (!apiSurname) hydrated.surname = null;
+      if (!apiGiven) hydrated.given_names = null;
+      rejectCrossFilledHolderNames(hydrated);
+    }
+  }
+  rejectHolderGivenCopiedIntoFamily(hydrated);
 
   return hydrated;
 }
