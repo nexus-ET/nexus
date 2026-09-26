@@ -12,6 +12,22 @@ import {
   type TablePageSize,
 } from '../../utils/tablePageSize';
 import QueuePaginationControls from '../QueuePaginationControls';
+import {
+  pageBtn,
+  pageMeta,
+  toolbar,
+  toolbarControl,
+  toolbarControls,
+  toolbarCount,
+  toolbarField,
+  toolbarHeading,
+  toolbarPagination,
+  toolbarSearch,
+  toolbarSearchInput,
+  toolbarTitle,
+  toolbarTitleRow,
+  toolbarViewing,
+} from './prospectsLayout';
 
 type ProspectsToolbarProps = {
   filters: ProspectsFilters;
@@ -49,17 +65,17 @@ export default function ProspectsToolbar({
   const viewingLabel = formatViewingRecordsLabel(rangeStart, rangeEnd, total);
 
   return (
-    <div className="prospects-toolbar">
+    <div className={toolbar}>
       {showTitleRow ? (
-        <div className="prospects-toolbar__title-row">
-          <div className="prospects-toolbar__title">
-            <h2>{title}</h2>
-            <p className="prospects-toolbar__viewing" title={viewingLabel}>
+        <div className={toolbarTitleRow}>
+          <div className={toolbarTitle}>
+            <h2 className={toolbarHeading}>{title}</h2>
+            <p className={toolbarViewing} title={viewingLabel}>
               {viewingLabel}
             </p>
             {typeof filteredTotal === 'number' ? (
               <span
-                className="prospects-toolbar__count"
+                className={toolbarCount}
                 title={
                   rangeLabel
                     ? `Showing ${rangeLabel} of ${filteredTotal} matching prospects`
@@ -78,26 +94,27 @@ export default function ProspectsToolbar({
               hasMorePages={hasMorePages}
               disabled={isLoading}
               onPageChange={nextPage => onChange({ page: nextPage })}
-              className="prospects-toolbar__pagination"
-              buttonClassName="prospects-list-panel__page-btn"
-              metaClassName="prospects-list-panel__page-meta"
+              className={toolbarPagination}
+              buttonClassName={pageBtn}
+              metaClassName={pageMeta}
             />
           ) : null}
         </div>
       ) : null}
 
-      <div className="prospects-toolbar__controls">
-        <label className="prospects-toolbar__search">
+      <div className={toolbarControls}>
+        <label className={toolbarSearch}>
           <Search size={16} />
           <input
             type="text"
             placeholder="Search name, email, phone..."
             value={filters.q}
             onChange={event => onChange({ q: event.target.value, page: 1 })}
+            className={toolbarSearchInput}
           />
         </label>
 
-        <label className="prospects-toolbar__field">
+        <label className={toolbarField}>
           <span>From</span>
           <DatePicker
             selected={dateFromValue}
@@ -110,11 +127,11 @@ export default function ProspectsToolbar({
             dateFormat="yyyy-MM-dd"
             placeholderText="Start date"
             isClearable
-            className="prospects-toolbar__date"
+            className={toolbarControl}
           />
         </label>
 
-        <label className="prospects-toolbar__field">
+        <label className={toolbarField}>
           <span>To</span>
           <DatePicker
             selected={dateToValue}
@@ -127,13 +144,14 @@ export default function ProspectsToolbar({
             dateFormat="yyyy-MM-dd"
             placeholderText="End date"
             isClearable
-            className="prospects-toolbar__date"
+            className={toolbarControl}
           />
         </label>
 
-        <label className="prospects-toolbar__field">
+        <label className={toolbarField}>
           <span>Source</span>
           <select
+            className={toolbarControl}
             value={filters.source}
             onChange={event => onChange({ source: event.target.value, page: 1 })}
           >
@@ -144,9 +162,10 @@ export default function ProspectsToolbar({
           </select>
         </label>
 
-        <label className="prospects-toolbar__field">
+        <label className={toolbarField}>
           <span>Contact status</span>
           <select
+            className={toolbarControl}
             value={filters.contactStatus}
             onChange={event =>
               onChange({
@@ -164,9 +183,10 @@ export default function ProspectsToolbar({
           </select>
         </label>
 
-        <label className="prospects-toolbar__field">
+        <label className={toolbarField}>
           <span>Rows</span>
           <select
+            className={toolbarControl}
             value={filters.pageSize}
             onChange={event =>
               onChange({

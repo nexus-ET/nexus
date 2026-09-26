@@ -57,6 +57,7 @@ from app.schemas.counselor_followup import (
     CounselorFollowupCreate,
     CounselorFollowupItem,
     CounselorFollowupListResponse,
+    CounselorFollowupUpdate,
     CounselorStatusMasterListResponse,
 )
 from app.schemas.document_requirement import (
@@ -81,6 +82,7 @@ from app.services.counselor_followup_service import (
     create_lead_followup,
     list_counselor_statuses,
     list_lead_followups,
+    update_lead_followup,
 )
 from app.services.messaging import WhatsAppDeliveryError
 from app.services.twilio_ai_conversation import initiate_ai_outreach, reset_whatsapp_conversation
@@ -1134,6 +1136,10 @@ def get_offline_leads(
     status: str | None = None,
     sort_by: SortField = "created_at",
     sort_dir: SortDirection = "desc",
+    booking_date_q: str | None = None,
+    followup_date_q: str | None = None,
+    client_date: date | None = None,
+    client_time: str | None = None,
 ):
     """Server-side paginated list of offline-sourced leads."""
     try:
@@ -1147,6 +1153,10 @@ def get_offline_leads(
             status=status,
             sort_by=sort_by,
             sort_dir=sort_dir,
+            booking_date_q=booking_date_q,
+            followup_date_q=followup_date_q,
+            client_date=client_date,
+            client_time=client_time,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -1400,6 +1410,31 @@ def post_lead_followup(
             counselor_id=counselor_id,
             current_user=current_user,
         )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.patch(
+    "/{lead_id}/followups/{followup_id}",
+    response_model=CounselorFollowupItem,
+)
+@router.patch(
+    "/{lead_id}/followups/{followup_id}/",
+    response_model=CounselorFollowupItem,
+)
+def patch_lead_followup(
+    lead_id: int,
+    followup_id: int,
+    payload: CounselorFollowupUpdate,
+    db: Session = Depends(get_db),
+    _: User | None = Depends(deps.get_optional_current_user),
+):
+    """Update the latest counselor note (status, points, actions, next follow-up date)."""
+    try:
+        return update_lead_followup(db, lead_id, followup_id, payload)
     except HTTPException:
         raise
     except Exception as e:

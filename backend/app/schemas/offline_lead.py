@@ -290,8 +290,11 @@ class OfflineLeadListItem(BaseModel):
     age: int | None = None
     created_at: datetime | None = None
     booking_count: int = 0
+    scheduled_time: datetime | None = None
+    scheduled_end_at: datetime | None = None
     followup_count: int = 0
     followup_status_label: str | None = None
+    followup_date: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -309,5 +312,5 @@ class OfflineLeadDuplicateCheckResponse(BaseModel):
     phone_taken: bool = False
 
 
-SortField = Literal["full_name", "created_at", "email", "phone_number"]
+SortField = Literal["full_name", "created_at", "email", "phone_number", "scheduled_time"]
 SortDirection = Literal["asc", "desc"]

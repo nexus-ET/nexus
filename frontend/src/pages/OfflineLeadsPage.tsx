@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowUp, ArrowUpDown, Ban, CheckCircle2, Map as MapIcon, MessageSquareText, Pencil, Plus, Search, X } from 'lucide-react';
+import { AlertCircle, ArrowDown, ArrowUp, ArrowUpDown, Ban, Calendar, CheckCircle2, Clock, History, Map as MapIcon, MessageSquareText, Pencil, Plus, Search, X } from 'lucide-react';
 import { useCreateOfflineLead, useOfflineLeadDuplicateCheck, useOfflineLeads, useSetOfflineLeadActive, useUpdateOfflineLead } from '../hooks/useOfflineLeads';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useCountries } from '../hooks/useCountries';
@@ -23,6 +23,18 @@ import StudentJourneyPanel from '../components/StudentJourneyPanel';
 import { useConfirmation } from '../context/ConfirmationContext';
 import type { LeadBookingSummary } from '../hooks/useLeadBookings';
 import { bookAppointmentHref } from '../utils/bookAppointmentHref';
+import {
+  SCHEDULED_TIME_BADGE_CLASS,
+  classifyFollowupDate,
+  classifyScheduledTime,
+  followupCalendarDayDiff,
+  formatScheduledTimeRange,
+  localCalendarDayDiff,
+  matchCalendarDateKeyword,
+  parseScheduledWallClock,
+  scheduledWeekdayShort,
+  type ScheduledTimeTone,
+} from '../utils/scheduledTimeBadge';
 import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 import {
   buildEducationPayload,
@@ -66,7 +78,6 @@ import {
   OFFLINE_LEAD_ACTIVE_REASONS,
   OFFLINE_LEAD_INACTIVE_REASONS,
 } from '../constants/offlineLeadStatusReasons';
-import './OfflineLeadsPage.css';
 
 const OFFLINE_LEADS_PAGE_SIZE_KEY = 'nexus.offlineLeads.pageSize';
 const OFFLINE_LEADS_COLUMNS_KEY = 'nexus.offlineLeads.visibleColumns.v9';
@@ -128,11 +139,12 @@ type OfflineLeadColumnKey =
   | 'city'
   | 'state'
   | 'country'
-  | 'booking'
   | 'new_booking'
+  | 'scheduled_time'
   | 'counselor_notes'
   | 'lead_status'
   | 'followup_status'
+  | 'followup_date'
   | 'created_at';
 
 const OFFLINE_LEAD_COLUMN_DEFS: Array<{
@@ -156,11 +168,12 @@ const OFFLINE_LEAD_COLUMN_DEFS: Array<{
   { key: 'city', label: 'City', defaultVisible: false },
   { key: 'state', label: 'State', defaultVisible: false },
   { key: 'country', label: 'Country', defaultVisible: false },
-  { key: 'booking', label: 'Booking', defaultVisible: true },
-  { key: 'new_booking', label: 'New Booking', defaultVisible: true },
   { key: 'counselor_notes', label: 'Counselor Notes', defaultVisible: true },
+  { key: 'new_booking', label: 'New Booking', defaultVisible: true },
+  { key: 'scheduled_time', label: 'Booking Date & Time', defaultVisible: true },
   { key: 'lead_status', label: 'Lead Status', defaultVisible: true },
   { key: 'followup_status', label: 'Lead Follow-up Status', defaultVisible: true },
+  { key: 'followup_date', label: 'Lead Follow-up Date', defaultVisible: true },
   { key: 'created_at', label: 'Date Added', defaultVisible: true },
 ];
 
@@ -175,10 +188,35 @@ function defaultOfflineLeadColumns(): OfflineLeadColumnKey[] {
   return OFFLINE_LEAD_COLUMN_DEFS.filter(column => column.defaultVisible).map(column => column.key);
 }
 
+function remapOfflineLeadColumnKey(key: string): string {
+  return key === 'booking' ? 'scheduled_time' : key;
+}
+
+function ensureNewBookingBeforeScheduledTime(keys: OfflineLeadColumnKey[]): OfflineLeadColumnKey[] {
+  const withoutNew = keys.filter(key => key !== 'new_booking');
+  const scheduledIdx = withoutNew.indexOf('scheduled_time');
+  if (scheduledIdx < 0 || !keys.includes('new_booking')) return keys;
+  if (keys.indexOf('new_booking') === scheduledIdx) return keys;
+  const next = [...withoutNew];
+  next.splice(scheduledIdx, 0, 'new_booking');
+  return next;
+}
+
+function ensureCounselorNotesBeforeNewBooking(keys: OfflineLeadColumnKey[]): OfflineLeadColumnKey[] {
+  const bookingIdx = keys.indexOf('new_booking');
+  const notesIdx = keys.indexOf('counselor_notes');
+  if (bookingIdx < 0 || notesIdx < 0 || notesIdx === bookingIdx - 1) return keys;
+  const next = keys.filter(key => key !== 'counselor_notes');
+  next.splice(next.indexOf('new_booking'), 0, 'counselor_notes');
+  return next;
+}
+
 function normalizeOfflineLeadColumns(keys: string[]): OfflineLeadColumnKey[] {
   const allowed = new Set(OFFLINE_LEAD_COLUMN_DEFS.map(column => column.key));
   const selected = new Set(
-    keys.filter((key): key is OfflineLeadColumnKey => allowed.has(key as OfflineLeadColumnKey))
+    keys
+      .map(remapOfflineLeadColumnKey)
+      .filter((key): key is OfflineLeadColumnKey => allowed.has(key as OfflineLeadColumnKey))
   );
   for (const key of REQUIRED_OFFLINE_LEAD_COLUMNS) {
     selected.add(key);
@@ -191,6 +229,14 @@ function insertFollowupStatusColumn(keys: OfflineLeadColumnKey[]): OfflineLeadCo
   const next = [...keys];
   const leadStatusIdx = next.indexOf('lead_status');
   next.splice(leadStatusIdx >= 0 ? leadStatusIdx + 1 : next.length, 0, 'followup_status');
+  return next;
+}
+
+function insertFollowupDateColumn(keys: OfflineLeadColumnKey[]): OfflineLeadColumnKey[] {
+  if (keys.includes('followup_date')) return keys;
+  const next = [...keys];
+  const statusIdx = next.indexOf('followup_status');
+  next.splice(statusIdx >= 0 ? statusIdx + 1 : next.length, 0, 'followup_date');
   return next;
 }
 
@@ -207,6 +253,14 @@ function readStoredOfflineLeadColumns(): OfflineLeadColumnKey[] {
       localStorage.setItem(migratedKey, '1');
       if (!normalized.includes('followup_status')) {
         normalized = insertFollowupStatusColumn(normalized);
+        storeOfflineLeadColumns(normalized);
+      }
+    }
+    const dateMigratedKey = `${OFFLINE_LEADS_COLUMNS_KEY}:followup-date-v1`;
+    if (!localStorage.getItem(dateMigratedKey)) {
+      localStorage.setItem(dateMigratedKey, '1');
+      if (!normalized.includes('followup_date')) {
+        normalized = insertFollowupDateColumn(normalized);
         storeOfflineLeadColumns(normalized);
       }
     }
@@ -228,7 +282,7 @@ function normalizeOfflineLeadOrder(keys: string[]): OfflineLeadColumnKey[] {
   const allowed = new Set(ALL_OFFLINE_LEAD_KEYS);
   const seen = new Set<OfflineLeadColumnKey>();
   const ordered: OfflineLeadColumnKey[] = [];
-  for (const key of keys) {
+  for (const key of keys.map(remapOfflineLeadColumnKey)) {
     if (!allowed.has(key as OfflineLeadColumnKey)) continue;
     const typed = key as OfflineLeadColumnKey;
     if (seen.has(typed)) continue;
@@ -238,7 +292,7 @@ function normalizeOfflineLeadOrder(keys: string[]): OfflineLeadColumnKey[] {
   for (const key of ALL_OFFLINE_LEAD_KEYS) {
     if (!seen.has(key)) ordered.push(key);
   }
-  return ordered;
+  return ensureCounselorNotesBeforeNewBooking(ensureNewBookingBeforeScheduledTime(ordered));
 }
 
 function readStoredOfflineLeadOrder(): OfflineLeadColumnKey[] {
@@ -247,7 +301,19 @@ function readStoredOfflineLeadOrder(): OfflineLeadColumnKey[] {
     if (!raw) return [...ALL_OFFLINE_LEAD_KEYS];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [...ALL_OFFLINE_LEAD_KEYS];
-    return normalizeOfflineLeadOrder(parsed.map(String));
+    let keys = parsed.map(String);
+    const dateMigratedKey = `${OFFLINE_LEADS_ORDER_KEY}:followup-date-v1`;
+    if (!localStorage.getItem(dateMigratedKey)) {
+      localStorage.setItem(dateMigratedKey, '1');
+      const remapped = keys.map(remapOfflineLeadColumnKey);
+      if (!remapped.includes('followup_date')) {
+        const statusIdx = remapped.indexOf('followup_status');
+        const next = [...keys];
+        next.splice(statusIdx >= 0 ? statusIdx + 1 : next.length, 0, 'followup_date');
+        keys = next;
+      }
+    }
+    return normalizeOfflineLeadOrder(keys);
   } catch {
     return [...ALL_OFFLINE_LEAD_KEYS];
   }
@@ -261,12 +327,18 @@ function readStoredOfflineLeadPins(): OfflineLeadPinState {
     if (!raw) return { left: [...DEFAULT_PINNED_LEFT], right: [] };
     const parsed = JSON.parse(raw) as Partial<OfflineLeadPinState>;
     const allowed = new Set(ALL_OFFLINE_LEAD_KEYS);
-    const left = (parsed.left ?? DEFAULT_PINNED_LEFT).filter(
-      (k): k is OfflineLeadColumnKey => allowed.has(k as OfflineLeadColumnKey)
-    );
-    const right = (parsed.right ?? []).filter(
-      (k): k is OfflineLeadColumnKey => allowed.has(k as OfflineLeadColumnKey)
-    );
+    const unique = (keys: string[]) => {
+      const seen = new Set<OfflineLeadColumnKey>();
+      return keys
+        .map(key => remapOfflineLeadColumnKey(key))
+        .filter((key): key is OfflineLeadColumnKey => {
+          if (!allowed.has(key as OfflineLeadColumnKey) || seen.has(key as OfflineLeadColumnKey)) return false;
+          seen.add(key as OfflineLeadColumnKey);
+          return true;
+        });
+    };
+    const left = unique((parsed.left ?? DEFAULT_PINNED_LEFT).map(String));
+    const right = unique((parsed.right ?? []).map(String)).filter(key => !left.includes(key));
     return { left, right };
   } catch {
     return { left: [...DEFAULT_PINNED_LEFT], right: [] };
@@ -278,6 +350,9 @@ function readStoredOfflineLeadWidths(): Partial<Record<OfflineLeadColumnKey, num
     const raw = localStorage.getItem(OFFLINE_LEADS_WIDTH_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as Record<string, number>;
+    if (typeof parsed.scheduled_time !== 'number' && typeof parsed.booking === 'number') {
+      parsed.scheduled_time = parsed.booking;
+    }
     const next: Partial<Record<OfflineLeadColumnKey, number>> = {};
     for (const key of ALL_OFFLINE_LEAD_KEYS) {
       const value = parsed[key];
@@ -403,6 +478,23 @@ function formatDateAdded(value?: string | null): string {
   }
 }
 
+function formatFollowupDate(value?: string | null): string {
+  const raw = (value || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new Date(`${raw.slice(0, 10)}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) return '';
+    const dateLabel = parsed.toLocaleDateString([], {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+    return `${scheduledWeekdayShort(parsed)}, ${dateLabel}`;
+  } catch {
+    return '';
+  }
+}
+
 function formatDateOfBirthCell(dob?: string | null): ReactNode {
   if (!dob) return '—';
   try {
@@ -417,7 +509,7 @@ function formatDateOfBirthCell(dob?: string | null): ReactNode {
     return (
       <>
         <div>{dobLabel}</div>
-        {ageLabel ? <div className="offline-leads-table__age">{ageLabel}</div> : null}
+        {ageLabel ? <div className="mt-0.5 text-xs text-slate-500">{ageLabel}</div> : null}
       </>
     );
   } catch {
@@ -455,8 +547,38 @@ function isManualOfflineLead(lead: Pick<OfflineLeadItem, 'source'>): boolean {
 }
 
 function columnHeaderClass(key: OfflineLeadColumnKey): string | undefined {
-  if (key === 'date_of_birth') return 'offline-leads-table__dob';
+  if (key === 'date_of_birth') return 'max-w-56 min-w-40 break-words whitespace-normal leading-snug text-slate-700 [overflow-wrap:anywhere]';
+  if (key === 'scheduled_time' || key === 'followup_date') return 'whitespace-nowrap text-center';
   return undefined;
+}
+
+const SCHEDULED_TIME_BADGE_ICON: Record<
+  ScheduledTimeTone,
+  typeof Clock
+> = {
+  'today-upcoming': Clock,
+  'today-overdue': AlertCircle,
+  tomorrow: CheckCircle2,
+  'day-after-tomorrow': Calendar,
+  upcoming: Calendar,
+  past: History,
+};
+
+const SCHEDULED_TIME_STATUS_LABEL: Record<ScheduledTimeTone, string> = {
+  'today-upcoming': 'Today',
+  'today-overdue': 'Overdue',
+  tomorrow: 'Tomorrow',
+  'day-after-tomorrow': 'Day After Tomorrow',
+  upcoming: 'Upcoming',
+  past: 'Date Passed',
+};
+
+function scheduledTimeFilterText(lead: OfflineLeadItem): string {
+  const start = parseScheduledWallClock(lead.scheduled_time);
+  if (!start) return '';
+  const end = parseScheduledWallClock(lead.scheduled_end_at) ?? start;
+  const status = SCHEDULED_TIME_STATUS_LABEL[classifyScheduledTime(start, new Date())];
+  return `${formatScheduledTimeRange(start, end)} ${status}`;
 }
 
 function offlineLeadColumnFilterText(lead: OfflineLeadItem, key: OfflineLeadColumnKey): string {
@@ -501,8 +623,8 @@ function offlineLeadColumnFilterText(lead: OfflineLeadItem, key: OfflineLeadColu
       return lead.state || '';
     case 'country':
       return lead.country || '';
-    case 'booking':
-      return String(lead.booking_count ?? 0);
+    case 'scheduled_time':
+      return scheduledTimeFilterText(lead);
     case 'new_booking':
       return 'book';
     case 'counselor_notes':
@@ -511,6 +633,12 @@ function offlineLeadColumnFilterText(lead: OfflineLeadItem, key: OfflineLeadColu
       return offlineLeadPipelineStatus(lead);
     case 'followup_status':
       return lead.followup_status_label || '';
+    case 'followup_date': {
+      const label = formatFollowupDate(lead.followup_date);
+      if (!label) return '';
+      const tone = classifyFollowupDate(lead.followup_date, new Date());
+      return tone ? `${label} ${SCHEDULED_TIME_STATUS_LABEL[tone]}` : label;
+    }
     case 'created_at':
       return lead.created_at || '';
     default:
@@ -533,7 +661,7 @@ function renderOfflineLeadCell(
       return handlers?.onEditLead ? (
         <button
           type="button"
-          className="offline-leads-journey-link"
+          className="offline-journey inline-flex cursor-pointer items-center gap-1 whitespace-nowrap border-0 bg-transparent p-0 text-[13px] font-semibold text-accent hover:underline"
           onClick={() => handlers.onEditLead?.(lead)}
           title={`Edit ${lead.full_name || `lead #${lead.id}`}`}
         >
@@ -546,7 +674,7 @@ function renderOfflineLeadCell(
       return handlers?.onEditLead ? (
         <button
           type="button"
-          className="offline-leads-journey-link"
+          className="offline-journey inline-flex cursor-pointer items-center gap-1 whitespace-nowrap border-0 bg-transparent p-0 text-[13px] font-semibold text-accent hover:underline"
           onClick={() => handlers.onEditLead?.(lead)}
           title={`Edit ${lead.full_name || `lead #${lead.id}`}`}
         >
@@ -581,20 +709,41 @@ function renderOfflineLeadCell(
       return lead.state || '—';
     case 'country':
       return lead.country || '—';
-    case 'booking': {
-      const count = lead.booking_count ?? 0;
-      if (count <= 0) {
-        return <span className="text-text-muted">0</span>;
+    case 'scheduled_time': {
+      const start = parseScheduledWallClock(lead.scheduled_time);
+      if (!start) return null;
+      const end = parseScheduledWallClock(lead.scheduled_end_at) ?? start;
+      const label = formatScheduledTimeRange(start, end);
+      const tone = classifyScheduledTime(start, new Date());
+      const Icon = SCHEDULED_TIME_BADGE_ICON[tone];
+      const className = `inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border px-2 py-1 text-xs font-semibold ${SCHEDULED_TIME_BADGE_CLASS[tone]}`;
+      const content = (
+        <>
+          <Icon size={13} aria-hidden />
+          <span className="flex flex-col items-center text-center leading-tight">
+            <span className="whitespace-nowrap">{label}</span>
+            <span className="whitespace-nowrap">{SCHEDULED_TIME_STATUS_LABEL[tone]}</span>
+          </span>
+        </>
+      );
+      if (!handlers?.onOpenBookings) {
+        return (
+          <div className="flex justify-center">
+            <span className={className}>{content}</span>
+          </div>
+        );
       }
       return (
-        <button
-          type="button"
-          className="offline-leads-journey-link"
-          onClick={() => handlers?.onOpenBookings?.(lead)}
-          title="View counselling bookings"
-        >
-          {count}
-        </button>
+        <div className="flex justify-center">
+          <button
+            type="button"
+            className={`${className} cursor-pointer`}
+            onClick={() => handlers.onOpenBookings?.(lead)}
+            title="View counselling bookings"
+          >
+            {content}
+          </button>
+        </div>
       );
     }
     case 'new_booking':
@@ -609,7 +758,7 @@ function renderOfflineLeadCell(
             },
             { returnTo: handlers?.bookAppointmentReturnTo }
           )}
-          className="offline-leads-journey-link"
+          className="offline-journey inline-flex cursor-pointer items-center gap-1 whitespace-nowrap border-0 bg-transparent p-0 text-[13px] font-semibold text-accent hover:underline"
           title={`Book appointment for ${lead.full_name || `lead #${lead.id}`}`}
         >
           Book Now
@@ -620,13 +769,13 @@ function renderOfflineLeadCell(
       return (
         <button
           type="button"
-          className="offline-leads-notes-btn"
+          className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-semibold text-slate-900 hover:border-slate-300 hover:bg-slate-100"
           onClick={() => handlers?.onOpenCounselorNotes?.(lead)}
           title="Open counselor notes"
         >
           <MessageSquareText size={13} />
           Notes
-          <span className="offline-leads-notes-badge">{count}</span>
+          <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-slate-900 px-[5px] text-[11px] font-bold leading-none text-white">{count}</span>
         </button>
       );
     }
@@ -636,6 +785,24 @@ function renderOfflineLeadCell(
     }
     case 'followup_status':
       return lead.followup_status_label?.trim() ? lead.followup_status_label : '—';
+    case 'followup_date': {
+      const label = formatFollowupDate(lead.followup_date);
+      const tone = classifyFollowupDate(lead.followup_date, new Date());
+      if (!label || !tone) return null;
+      const Icon = SCHEDULED_TIME_BADGE_ICON[tone];
+      const className = `inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border px-2 py-1 text-xs font-semibold ${SCHEDULED_TIME_BADGE_CLASS[tone]}`;
+      return (
+        <div className="flex justify-center">
+          <span className={className}>
+            <Icon size={13} aria-hidden />
+            <span className="flex flex-col items-center text-center leading-tight">
+              <span className="whitespace-nowrap">{label}</span>
+              <span className="whitespace-nowrap">{SCHEDULED_TIME_STATUS_LABEL[tone]}</span>
+            </span>
+          </span>
+        </div>
+      );
+    }
     case 'created_at':
       return formatDateAdded(lead.created_at);
     default:
@@ -656,6 +823,71 @@ function SortIcon({
   return sortDir === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />;
 }
 
+const BOOKING_FILTER_TITLE =
+  'Filter by: Today, Tomorrow, Day after tomorrow, Upcoming, Overdue, Completed';
+const FOLLOWUP_FILTER_TITLE =
+  'Filter by: Today, Tomorrow, Day after tomorrow, Upcoming, Completed';
+
+function dateColumnFilterTitle(key: string): string | undefined {
+  if (key === 'scheduled_time') return BOOKING_FILTER_TITLE;
+  if (key === 'followup_date') return FOLLOWUP_FILTER_TITLE;
+  return undefined;
+}
+
+function DateColumnFilterInput({
+  title,
+  value,
+  ariaLabel,
+  onChange,
+}: {
+  title?: string;
+  value: string;
+  ariaLabel: string;
+  onChange: (value: string) => void;
+}) {
+  const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(null);
+  return (
+    <>
+      <input
+        type="search"
+        className="mt-1.5 block w-full rounded-md border border-slate-200 bg-white px-1.5 py-1 text-left text-xs font-normal normal-case tracking-normal text-slate-900"
+        placeholder="Filter…"
+        title={title}
+        value={value}
+        aria-label={ariaLabel}
+        onClick={e => e.stopPropagation()}
+        onChange={e => onChange(e.target.value)}
+        onMouseEnter={e => {
+          if (!title) return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          setAnchor({ left: rect.left, top: rect.bottom + 6 });
+        }}
+        onMouseLeave={() => setAnchor(null)}
+        onBlur={() => setAnchor(null)}
+      />
+      {title && anchor
+        ? createPortal(
+            <div
+              role="tooltip"
+              className="pointer-events-none fixed z-[80] max-w-sm rounded-md bg-slate-900 px-2.5 py-1.5 text-left text-xs font-medium normal-case tracking-normal text-white shadow-lg"
+              style={{ left: anchor.left, top: anchor.top }}
+            >
+              {title}
+            </div>,
+            document.body
+          )
+        : null}
+    </>
+  );
+}
+
+function formatClientCivilStamp(now = new Date()): { date: string; time: string } {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:00`;
+  return { date, time };
+}
+
 export default function OfflineLeadsPage() {
   const openConfirm = useConfirmation();
   const navigate = useNavigate();
@@ -672,8 +904,8 @@ export default function OfflineLeadsPage() {
   );
   const [search, setSearch] = useState(() => searchParams.get('q') || '');
   const [status, setStatus] = useState<OfflineLeadStatusFilter>('ALL');
-  const [sortBy, setSortBy] = useState<OfflineLeadSortField>('created_at');
-  const [sortDir, setSortDir] = useState<OfflineLeadSortDirection>('desc');
+  const [sortBy, setSortBy] = useState<OfflineLeadSortField>('scheduled_time');
+  const [sortDir, setSortDir] = useState<OfflineLeadSortDirection>('asc');
   const [visibleColumns, setVisibleColumns] = useState<OfflineLeadColumnKey[]>(readStoredOfflineLeadColumns);
   const [columnOrder, setColumnOrder] = useState<OfflineLeadColumnKey[]>(readStoredOfflineLeadOrder);
   const [columnPins, setColumnPins] = useState<OfflineLeadPinState>(readStoredOfflineLeadPins);
@@ -715,13 +947,16 @@ export default function OfflineLeadsPage() {
   const [formBaseline, setFormBaseline] = useState('');
   const formIsDirty =
     modalOpen && Boolean(formBaseline) && serializeOfflineLeadForm(form) !== formBaseline;
-  useUnsavedChanges(formIsDirty, 'offline-leads-form');
+  useUnsavedChanges(formIsDirty, '');
   const [educationLevelId, setEducationLevelId] = useState('');
 
 
   const debouncedSearch = useDebouncedValue(search, 350);
   const debouncedNameFilter = useDebouncedValue((columnFilters.full_name || '').trim(), 350);
   const debouncedStudentIdFilter = useDebouncedValue((columnFilters.student_id || '').trim(), 350);
+  const debouncedBookingDate = useDebouncedValue((columnFilters.scheduled_time || '').trim(), 200);
+  const debouncedFollowupDate = useDebouncedValue((columnFilters.followup_date || '').trim(), 200);
+  const clientStamp = formatClientCivilStamp();
 
   const query: OfflineLeadsQuery = useMemo(
     () => ({
@@ -733,6 +968,10 @@ export default function OfflineLeadsPage() {
       status,
       sortBy,
       sortDir,
+      clientDate: clientStamp.date,
+      clientTime: clientStamp.time,
+      bookingDateQ: debouncedBookingDate,
+      followupDateQ: debouncedFollowupDate,
     }),
     [
       page,
@@ -740,9 +979,13 @@ export default function OfflineLeadsPage() {
       debouncedSearch,
       debouncedNameFilter,
       debouncedStudentIdFilter,
+      debouncedBookingDate,
+      debouncedFollowupDate,
       status,
       sortBy,
       sortDir,
+      clientStamp.date,
+      clientStamp.time,
     ]
   );
 
@@ -987,6 +1230,8 @@ export default function OfflineLeadsPage() {
     setColumnPins({ left: [...DEFAULT_PINNED_LEFT], right: [] });
     setColumnWidths({});
     setColumnFilters({});
+    setSortBy('scheduled_time');
+    setSortDir('asc');
     setSelectedRowIds(new Set());
   };
 
@@ -1033,7 +1278,7 @@ export default function OfflineLeadsPage() {
       return;
     }
     setPage(1);
-  }, [debouncedSearch, debouncedNameFilter, debouncedStudentIdFilter, status, pageSize, sortBy, sortDir]);
+  }, [debouncedSearch, debouncedNameFilter, debouncedStudentIdFilter, debouncedBookingDate, debouncedFollowupDate, status, pageSize, sortBy, sortDir]);
 
   useEffect(() => {
     setSearchParams(
@@ -1334,20 +1579,37 @@ export default function OfflineLeadsPage() {
     }
   };
 
-  const items = listQuery.data?.items ?? [];
+  const pageItems = listQuery.data?.items ?? [];
+  const items = pageItems;
+  const filterSource = pageItems;
   const filteredItems = useMemo(() => {
     const active = (Object.entries(columnFilters) as Array<[OfflineLeadColumnKey, string]>).filter(
       ([key, value]) => value?.trim() && key !== 'full_name' && key !== 'student_id'
     );
-    if (!active.length) return items;
-    return items.filter(lead =>
+    if (!active.length) return filterSource;
+    const now = new Date();
+    return filterSource.filter(lead =>
       active.every(([key, value]) => {
         const needle = value.trim().toLowerCase();
+        if (key === 'scheduled_time' || key === 'followup_date') {
+          const start = key === 'scheduled_time' ? parseScheduledWallClock(lead.scheduled_time) : null;
+          const diffDays =
+            key === 'scheduled_time'
+              ? start
+                ? localCalendarDayDiff(start, now)
+                : null
+              : followupCalendarDayDiff(lead.followup_date, now);
+          const keyword = matchCalendarDateKeyword(value, diffDays, {
+            column: key === 'scheduled_time' ? 'booking' : 'followup',
+            startHasPassed: start ? start.getTime() < now.getTime() : false,
+          });
+          if (keyword !== null) return keyword;
+        }
         const text = offlineLeadColumnFilterText(lead, key);
         return text.toLowerCase().includes(needle);
       })
     );
-  }, [items, columnFilters]);
+  }, [filterSource, columnFilters]);
   const total = listQuery.data?.total ?? 0;
   const totalPages = listQuery.data?.total_pages ?? 1;
   const currentPage = listQuery.data?.page ?? page;
@@ -1357,8 +1619,8 @@ export default function OfflineLeadsPage() {
   );
   const paginationBusy = listQuery.isFetching;
   const renderPaginationControls = () => (
-    <div className="offline-leads-pagination__controls">
-      <div className="offline-leads-toolbar__field">
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-col gap-1 text-[13px] text-slate-500 [&_select]:min-w-[140px] [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:bg-white [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm">
         <select
           value={pageSize}
           aria-label="Rows per page"
@@ -1373,24 +1635,24 @@ export default function OfflineLeadsPage() {
       </div>
       <button
         type="button"
-        className="offline-leads-btn offline-leads-btn--ghost"
+        className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold border-0 bg-slate-100 text-slate-700"
         disabled={currentPage <= 1 || paginationBusy}
         onClick={() => setPage(p => Math.max(1, p - 1))}
       >
         Previous
       </button>
-      <div className="offline-leads-pagination__pages" role="navigation" aria-label="Pagination">
+      <div className="inline-flex items-center gap-1" role="navigation" aria-label="Pagination">
         {pageTokens.map((token, index) =>
           token === 'ellipsis' ? (
-            <span key={`ellipsis-${index}`} className="offline-leads-pagination__ellipsis" aria-hidden>
+            <span key={`ellipsis-${index}`} className="min-w-5 select-none text-center text-[13px] font-semibold text-slate-400" aria-hidden>
               …
             </span>
           ) : (
             <button
               key={token}
               type="button"
-              className={`offline-leads-pagination__page${
-                token === currentPage ? ' offline-leads-pagination__page--active' : ''
+              className={`h-[34px] min-w-8 cursor-pointer rounded-lg border border-slate-200 bg-white px-2 text-[13px] font-semibold text-slate-600 hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-45${
+                token === currentPage ? ' cursor-default border-accent bg-accent text-white' : ''
               }`}
               aria-current={token === currentPage ? 'page' : undefined}
               aria-label={`Page ${token}`}
@@ -1404,7 +1666,7 @@ export default function OfflineLeadsPage() {
       </div>
       <button
         type="button"
-        className="offline-leads-btn offline-leads-btn--ghost"
+        className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold border-0 bg-slate-100 text-slate-700"
         disabled={currentPage >= totalPages || paginationBusy}
         onClick={() => setPage(p => p + 1)}
       >
@@ -1438,17 +1700,17 @@ export default function OfflineLeadsPage() {
 
   return (
     <>
-    <div className="offline-leads-page">
-      <div className="offline-leads-toolbar">
-        <div className="offline-leads-toolbar__title">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-slate-50">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-4 border-b border-slate-200 bg-white px-[18px] py-3.5">
+        <div className="min-w-0 [&_h2]:m-0 [&_h2]:text-lg [&_h2]:text-slate-900">
           <h2>All Leads</h2>
-          <p className="offline-leads-toolbar__subtitle">
+          <p className="m-0 mt-1 text-sm text-slate-500">
             Offline, Express, and Meta leads · Source shows Offline Lead, Express Lead, or Meta Lead
           </p>
         </div>
 
-        <div className="offline-leads-toolbar__controls">
-          <div className="offline-leads-toolbar__search">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex min-w-[260px] items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 [&_input]:w-full [&_input]:border-0 [&_input]:bg-transparent [&_input]:text-sm [&_input]:outline-none">
             <Search size={15} color="#64748b" />
             <input
               type="search"
@@ -1459,7 +1721,7 @@ export default function OfflineLeadsPage() {
             />
           </div>
 
-          <div className="offline-leads-toolbar__field">
+          <div className="flex flex-col gap-1 text-[13px] text-slate-500 [&_select]:min-w-[140px] [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:bg-white [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm">
             <select
               value={status}
               aria-label="Status"
@@ -1475,7 +1737,7 @@ export default function OfflineLeadsPage() {
 
           <button
             type="button"
-            className="offline-leads-btn offline-leads-btn--ghost offline-leads-btn--icon"
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold border-0 bg-slate-100 text-slate-700 px-2 py-1.5"
             onClick={() =>
               setSortDir(prev => (prev === 'asc' ? 'desc' : 'asc'))
             }
@@ -1495,12 +1757,12 @@ export default function OfflineLeadsPage() {
             }}
             refreshing={listQuery.isFetching}
             onResetView={resetTableView}
-            className="offline-leads-table-overflow"
+            className="self-end"
           />
 
           <button
             type="button"
-            className="offline-leads-btn offline-leads-btn--primary"
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold border-0 bg-accent text-white disabled:cursor-not-allowed disabled:opacity-60"
             onClick={() => {
               const params = new URLSearchParams(location.search);
               if (page > 1) params.set('page', String(page));
@@ -1518,18 +1780,18 @@ export default function OfflineLeadsPage() {
         </div>
       </div>
 
-      <div className="offline-leads-table-wrap">
+      <div className="min-h-0 flex-1 overflow-auto px-[18px] py-4 max-md:p-2">
         {listQuery.isLoading && !listQuery.data ? (
-          <div className="offline-leads-empty">Loading offline leads…</div>
+          <div className="px-6 py-12 text-center text-slate-500">Loading offline leads…</div>
         ) : listQuery.isError ? (
-          <div className="offline-leads-empty">Failed to load offline leads.</div>
-        ) : items.length === 0 ? (
-          <div className="offline-leads-empty">No offline leads match your filters.</div>
+          <div className="px-6 py-12 text-center text-slate-500">Failed to load offline leads.</div>
+        ) : pageItems.length === 0 ? (
+          <div className="px-6 py-12 text-center text-slate-500">No offline leads match your filters.</div>
         ) : (
-          <table className="offline-leads-table">
+          <table className="w-full min-w-[720px] border-collapse overflow-hidden rounded-[10px] border border-slate-200 bg-white text-sm max-md:text-xs [&_tbody_tr.is-selected]:bg-blue-50 [&_tbody_tr:hover]:bg-slate-50 [&_td]:border-b [&_td]:border-slate-100 [&_td]:px-3 [&_td]:py-2.5 [&_td]:text-left [&_th]:relative [&_th]:border-b [&_th]:border-slate-100 [&_th]:bg-slate-50 [&_th]:px-3 [&_th]:py-2.5 [&_th]:text-left [&_th]:align-top [&_th]:text-[13px] [&_th]:uppercase [&_th]:tracking-wide [&_th]:whitespace-nowrap [&_th]:text-slate-600 [&_th]:select-none [&_tr:last-child_td]:border-b-0">
             <thead>
               <tr>
-                <th className="offline-leads-table__select" style={{ width: 40 }}>
+                <th className="w-10 text-center" style={{ width: 40 }}>
                   <input
                     type="checkbox"
                     aria-label="Select all visible rows"
@@ -1555,7 +1817,8 @@ export default function OfflineLeadsPage() {
                     column.key === 'full_name' ||
                     column.key === 'email' ||
                     column.key === 'phone_number' ||
-                    column.key === 'created_at';
+                    column.key === 'created_at' ||
+                    column.key === 'scheduled_time';
                   const pinnedLeft = columnPins.left.includes(column.key);
                   const pinnedRight = columnPins.right.includes(column.key);
                   const width = columnWidths[column.key];
@@ -1568,22 +1831,25 @@ export default function OfflineLeadsPage() {
                     zIndex: pinnedLeft || pinnedRight ? 3 : undefined,
                     background: pinnedLeft || pinnedRight ? '#f8fafc' : undefined,
                   };
+                  const filterTitle =
+                    column.key === 'scheduled_time'
+                      ? 'Filter by: Today, Tomorrow, Day after tomorrow, Upcoming, Overdue, Completed'
+                      : column.key === 'followup_date'
+                        ? 'Filter by: Today, Tomorrow, Day after tomorrow, Upcoming, Completed'
+                        : undefined;
                   const filterInput = (
-                    <input
-                      type="search"
-                      className="offline-leads-th__filter"
-                      placeholder="Filter…"
+                    <DateColumnFilterInput
+                      title={filterTitle}
                       value={columnFilters[column.key] ?? ''}
-                      onClick={e => e.stopPropagation()}
-                      onChange={e =>
-                        setColumnFilters(prev => ({ ...prev, [column.key]: e.target.value }))
+                      ariaLabel={`Filter ${column.label}`}
+                      onChange={next =>
+                        setColumnFilters(prev => ({ ...prev, [column.key]: next }))
                       }
-                      aria-label={`Filter ${column.label}`}
                     />
                   );
                   const resizeHandle = (
                     <span
-                      className="offline-leads-th__resize"
+                      className="absolute top-0 right-0 h-full w-1 cursor-col-resize hover:bg-slate-400"
                       onMouseDown={e => {
                         e.preventDefault();
                         e.stopPropagation();
@@ -1597,11 +1863,13 @@ export default function OfflineLeadsPage() {
                     return (
                       <th
                         key={column.key}
-                        className={`sortable ${columnHeaderClass(column.key) || ''}`.trim()}
+                        className={`cursor-pointer hover:bg-slate-100 ${columnHeaderClass(column.key) || ''}`.trim()}
                         style={style}
                         onClick={() => toggleSort(sortField)}
                       >
-                        <span className="offline-leads-th__label">
+                        <span
+                          className={`inline-flex items-center gap-1 ${column.key === 'scheduled_time' || column.key === 'followup_date' ? 'w-full justify-center' : ''}`}
+                        >
                           {column.label}{' '}
                           <SortIcon field={sortField} sortBy={sortBy} sortDir={sortDir} />
                         </span>
@@ -1612,27 +1880,38 @@ export default function OfflineLeadsPage() {
                   }
                   return (
                     <th key={column.key} className={columnHeaderClass(column.key)} style={style}>
-                      <span className="offline-leads-th__label">{column.label}</span>
+                      <span
+                        className={`inline-flex items-center gap-1 ${column.key === 'scheduled_time' || column.key === 'followup_date' ? 'w-full justify-center' : ''}`}
+                      >
+                        {column.label}
+                      </span>
                       {filterInput}
                       {resizeHandle}
                     </th>
                   );
                 })}
-                <th className="offline-leads-table__actions">Actions</th>
+                <th className="w-[7.5rem] text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredItems.map((lead: OfflineLeadItem) => (
+              {filteredItems.length === 0 ? (
+                <tr>
+                  <td colSpan={visibleColumnDefs.length + 2} className="px-3 py-8 text-center text-slate-500">
+                    No leads match this filter.
+                  </td>
+                </tr>
+              ) : (
+                filteredItems.map((lead: OfflineLeadItem) => (
                 <tr
                   key={lead.id}
                   className={[
                     selectedRowIds.has(lead.id) ? 'is-selected' : '',
-                    lead.is_active === false ? 'offline-leads-table__row--inactive' : '',
+                    lead.is_active === false ? '[&_td]:bg-slate-100 [&_td]:text-slate-400 hover:[&_td]:bg-slate-200 [&.is-selected_td]:bg-slate-200 [&_.offline-journey]:text-slate-500' : '',
                   ]
                     .filter(Boolean)
                     .join(' ') || undefined}
                 >
-                  <td className="offline-leads-table__select">
+                  <td className="w-10 text-center">
                     <input
                       type="checkbox"
                       aria-label={`Select ${lead.full_name}`}
@@ -1685,11 +1964,11 @@ export default function OfflineLeadsPage() {
                       </td>
                     );
                   })}
-                  <td className="offline-leads-table__actions">
-                    <div className="offline-leads-actions">
+                  <td className="w-[7.5rem] text-right">
+                    <div className="inline-flex items-center justify-end gap-1">
                       <button
                         type="button"
-                        className="offline-leads-btn offline-leads-btn--ghost offline-leads-btn--icon"
+                        className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold border-0 bg-slate-100 text-slate-700 px-2 py-1.5"
                         onClick={() =>
                           setJourneyModal({
                             studentId: lead.id,
@@ -1703,7 +1982,7 @@ export default function OfflineLeadsPage() {
                       </button>
                       <button
                         type="button"
-                        className="offline-leads-btn offline-leads-btn--ghost offline-leads-btn--icon"
+                        className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold border-0 bg-slate-100 text-slate-700 px-2 py-1.5"
                         onClick={() => openEditModal(lead)}
                         aria-label={`Edit ${lead.full_name}`}
                         title="Edit lead"
@@ -1712,7 +1991,7 @@ export default function OfflineLeadsPage() {
                       </button>
                       <button
                         type="button"
-                        className="offline-leads-btn offline-leads-btn--ghost offline-leads-btn--icon"
+                        className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold border-0 bg-slate-100 text-slate-700 px-2 py-1.5"
                         onClick={() => handleToggleActive(lead)}
                         disabled={setActiveMutation.isPending}
                         aria-label={
@@ -1731,14 +2010,14 @@ export default function OfflineLeadsPage() {
                     </div>
                   </td>
                 </tr>
-              ))}
+              )))}
             </tbody>
           </table>
         )}
       </div>
 
-      <div className="offline-leads-pagination">
-        <div className="offline-leads-pagination__info">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-[18px] py-3">
+        <div className="text-[13px] text-slate-500">
           Showing {items.length} of {total} leads
         </div>
         {renderPaginationControls()}
@@ -1746,16 +2025,16 @@ export default function OfflineLeadsPage() {
 
       {modalOpen &&
         createPortal(
-        <div className="offline-leads-modal-backdrop">
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/45 p-4 max-md:items-stretch max-md:p-0">
           <div
-            className="offline-leads-modal"
+            className="flex max-h-[96vh] w-[min(1360px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl bg-white shadow-[0_20px_50px_rgba(15,23,42,0.2)] max-md:max-h-screen max-md:w-full max-md:max-w-full max-md:rounded-none max-[900px]:w-[min(960px,calc(100vw-20px))] [&_form]:flex [&_form]:min-h-0 [&_form]:flex-1 [&_form]:flex-col [&_form]:overflow-hidden"
             role="dialog"
             aria-modal="true"
             aria-labelledby="offline-lead-modal-title"
           >
-            <div className="offline-leads-modal__header">
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-6 py-4 [&_h3]:m-0 [&_h3]:text-[17px] [&_h3]:text-slate-900">
               <h3 id="offline-lead-modal-title">{editingLead ? 'Edit Lead' : 'Add Offline Lead'}</h3>
-              <button type="button" className="offline-leads-btn offline-leads-btn--ghost" onClick={requestCloseModal}>
+              <button type="button" className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold border-0 bg-slate-100 text-slate-700" onClick={requestCloseModal}>
                 <X size={16} />
               </button>
             </div>
@@ -1769,11 +2048,11 @@ export default function OfflineLeadsPage() {
                 event.preventDefault();
               }}
             >
-              <div className="offline-leads-modal__body">
-                <section className="offline-leads-panel">
-                  <h4 className="offline-leads-panel__title">Personal Profile</h4>
-                  <div className="offline-leads-form-grid offline-leads-form-grid--3">
-                    <div className="offline-leads-field">
+              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto px-6 py-5">
+                <section className="flex min-w-0 flex-col gap-3 overflow-visible rounded-[10px] border border-slate-200 px-4 py-3.5">
+                  <h4 className="m-0 text-sm font-bold uppercase tracking-wide text-slate-700">Personal Profile</h4>
+                  <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 [&>*]:min-w-0 grid min-w-0 grid-cols-1 gap-3 md:grid-cols-3 [&>*]:min-w-0">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-first-name">First Name *</label>
                       <input
                         id="ol-first-name"
@@ -1782,7 +2061,7 @@ export default function OfflineLeadsPage() {
                         required
                       />
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-middle-name">Middle Name</label>
                       <input
                         id="ol-middle-name"
@@ -1790,7 +2069,7 @@ export default function OfflineLeadsPage() {
                         onChange={e => updateForm({ middle_name: e.target.value })}
                       />
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-last-name">Last Name</label>
                       <input
                         id="ol-last-name"
@@ -1800,8 +2079,8 @@ export default function OfflineLeadsPage() {
                     </div>
                   </div>
 
-                  <div className="offline-leads-form-grid offline-leads-form-grid--4">
-                    <div className="offline-leads-field">
+                  <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 [&>*]:min-w-0 grid min-w-0 grid-cols-1 gap-3 min-[769px]:grid-cols-2 min-[901px]:grid-cols-4 [&>*]:min-w-0">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-dob">Date of Birth</label>
                       <input
                         id="ol-dob"
@@ -1811,14 +2090,14 @@ export default function OfflineLeadsPage() {
                         max={maxDateOfBirth}
                       />
                       {dobError ? (
-                        <span className="offline-leads-field-warning">{dobError}</span>
+                        <span className="text-[13px] font-semibold leading-snug text-amber-700">{dobError}</span>
                       ) : (
                         computedAge !== null && (
-                          <span className="offline-leads-age">Age: {computedAge} years</span>
+                          <span className="text-[13px] font-semibold text-emerald-600">Age: {computedAge} years</span>
                         )
                       )}
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-email">Email *</label>
                       <input
                         id="ol-email"
@@ -1828,12 +2107,12 @@ export default function OfflineLeadsPage() {
                         required
                       />
                       {emailTaken && (
-                        <span className="offline-leads-field-warning">
+                        <span className="text-[13px] font-semibold leading-snug text-amber-700">
                           This email is already registered.
                         </span>
                       )}
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-phone-country">Phone Country *</label>
                       <select
                         id="ol-phone-country"
@@ -1849,7 +2128,7 @@ export default function OfflineLeadsPage() {
                         ))}
                       </select>
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-phone-local">Phone Number *</label>
                       <input
                         id="ol-phone-local"
@@ -1866,7 +2145,7 @@ export default function OfflineLeadsPage() {
                         required
                       />
                       {phoneTaken && (
-                        <span className="offline-leads-field-warning">
+                        <span className="text-[13px] font-semibold leading-snug text-amber-700">
                           This phone number is already registered.
                         </span>
                       )}
@@ -1874,12 +2153,12 @@ export default function OfflineLeadsPage() {
                   </div>
                 </section>
 
-                <section className="offline-leads-panel">
-                  <h4 className="offline-leads-panel__title">
+                <section className="flex min-w-0 flex-col gap-3 overflow-visible rounded-[10px] border border-slate-200 px-4 py-3.5">
+                  <h4 className="m-0 text-sm font-bold uppercase tracking-wide text-slate-700">
                     Current Location{geoLoading && !editingLead ? ' (detecting…)' : ''}
                   </h4>
-                  <div className="offline-leads-form-grid offline-leads-form-grid--2">
-                    <div className="offline-leads-field">
+                  <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 [&>*]:min-w-0 grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 [&>*]:min-w-0">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-address-1">Address Line 1</label>
                       <input
                         id="ol-address-1"
@@ -1889,7 +2168,7 @@ export default function OfflineLeadsPage() {
                         autoComplete="address-line1"
                       />
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-address-2">Address Line 2</label>
                       <input
                         id="ol-address-2"
@@ -1900,8 +2179,8 @@ export default function OfflineLeadsPage() {
                       />
                     </div>
                   </div>
-                  <div className="offline-leads-form-grid offline-leads-form-grid--4">
-                    <div className="offline-leads-field">
+                  <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 [&>*]:min-w-0 grid min-w-0 grid-cols-1 gap-3 min-[769px]:grid-cols-2 min-[901px]:grid-cols-4 [&>*]:min-w-0">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-country">Country</label>
                       <select
                         id="ol-country"
@@ -1916,7 +2195,7 @@ export default function OfflineLeadsPage() {
                         ))}
                       </select>
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-state">State</label>
                       <input
                         id="ol-state"
@@ -1924,7 +2203,7 @@ export default function OfflineLeadsPage() {
                         onChange={e => updateLocation({ state: e.target.value })}
                       />
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-city">City</label>
                       <input
                         id="ol-city"
@@ -1932,7 +2211,7 @@ export default function OfflineLeadsPage() {
                         onChange={e => updateLocation({ city: e.target.value })}
                       />
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-zip">Zip code</label>
                       <input
                         id="ol-zip"
@@ -1944,10 +2223,10 @@ export default function OfflineLeadsPage() {
                   </div>
                 </section>
 
-                <section className="offline-leads-panel">
-                  <h4 className="offline-leads-panel__title">Education</h4>
-                  <div className="offline-leads-form-grid offline-leads-form-grid--4">
-                    <div className="offline-leads-field">
+                <section className="flex min-w-0 flex-col gap-3 overflow-visible rounded-[10px] border border-slate-200 px-4 py-3.5">
+                  <h4 className="m-0 text-sm font-bold uppercase tracking-wide text-slate-700">Education</h4>
+                  <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 [&>*]:min-w-0 grid min-w-0 grid-cols-1 gap-3 min-[769px]:grid-cols-2 min-[901px]:grid-cols-4 [&>*]:min-w-0">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-course-level">Levels</label>
                       <select
                         id="ol-course-level"
@@ -1970,7 +2249,7 @@ export default function OfflineLeadsPage() {
                         ))}
                       </select>
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-study-years">Full-Time Study Years</label>
                       <select
                         id="ol-study-years"
@@ -1994,7 +2273,7 @@ export default function OfflineLeadsPage() {
                         ))}
                       </select>
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-program">Programs</label>
                       <select
                         id="ol-program"
@@ -2028,7 +2307,7 @@ export default function OfflineLeadsPage() {
                         ))}
                       </select>
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-major">Major</label>
                       <select
                         id="ol-major"
@@ -2055,8 +2334,8 @@ export default function OfflineLeadsPage() {
                       </select>
                     </div>
                   </div>
-                  <div className="offline-leads-form-grid offline-leads-form-grid--3">
-                    <div className="offline-leads-field">
+                  <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 [&>*]:min-w-0 grid min-w-0 grid-cols-1 gap-3 md:grid-cols-3 [&>*]:min-w-0">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-university">University</label>
                       <input
                         id="ol-university"
@@ -2064,7 +2343,7 @@ export default function OfflineLeadsPage() {
                         onChange={e => updateEducation({ university: e.target.value })}
                       />
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-grad-year">Graduation Year</label>
                       <input
                         id="ol-grad-year"
@@ -2079,7 +2358,7 @@ export default function OfflineLeadsPage() {
                         }
                       />
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-gpa-cgpa">GPA / CGPA</label>
                       <select
                         id="ol-gpa-cgpa"
@@ -2105,7 +2384,7 @@ export default function OfflineLeadsPage() {
                       {selectedGpaCgpa?.is_other && (
                         <input
                           id="ol-gpa-cgpa-other"
-                          className="offline-leads-degree-other"
+                          className="mt-1.5"
                           value={form.education?.gpa_cgpa_other || ''}
                           onChange={e => updateEducation({ gpa_cgpa_other: e.target.value })}
                           placeholder="Enter GPA / CGPA"
@@ -2115,10 +2394,10 @@ export default function OfflineLeadsPage() {
                   </div>
                 </section>
 
-                <section className="offline-leads-panel">
-                  <h4 className="offline-leads-panel__title">Study Interest</h4>
-                  <div className="offline-leads-form-grid offline-leads-form-grid--4">
-                    <div className="offline-leads-field">
+                <section className="flex min-w-0 flex-col gap-3 overflow-visible rounded-[10px] border border-slate-200 px-4 py-3.5">
+                  <h4 className="m-0 text-sm font-bold uppercase tracking-wide text-slate-700">Study Interest</h4>
+                  <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 [&>*]:min-w-0 grid min-w-0 grid-cols-1 gap-3 min-[769px]:grid-cols-2 min-[901px]:grid-cols-4 [&>*]:min-w-0">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-target-destination">Target Destination</label>
                       <SearchableMultiSelect
                         id="ol-target-destination"
@@ -2143,7 +2422,7 @@ export default function OfflineLeadsPage() {
                         hint="Max 6 countries"
                       />
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-target-level">Target Levels</label>
                       <select
                         id="ol-target-level"
@@ -2172,7 +2451,7 @@ export default function OfflineLeadsPage() {
                         ))}
                       </select>
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-target-majors">Target Majors</label>
                       <SearchableMultiSelect
                         id="ol-target-majors"
@@ -2218,7 +2497,7 @@ export default function OfflineLeadsPage() {
                         emptyMessage="No majors for this level"
                       />
                     </div>
-                    <div className="offline-leads-field">
+                    <div className="flex flex-col gap-1 [&_input]:box-border [&_input]:w-full [&_input]:max-w-full [&_input]:rounded-lg [&_input]:border [&_input]:border-slate-200 [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-sm [&_input]:focus:border-accent [&_input]:focus:outline-2 [&_input]:focus:outline-accent/35 [&_label]:text-[13px] [&_label]:font-semibold [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-slate-500 [&_select]:box-border [&_select]:w-full [&_select]:max-w-full [&_select]:rounded-lg [&_select]:border [&_select]:border-slate-200 [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-sm [&_select]:focus:border-accent [&_select]:focus:outline-2 [&_select]:focus:outline-accent/35">
                       <label htmlFor="ol-target-programs">Target Programs</label>
                       <SearchableMultiSelect
                         id="ol-target-programs"
@@ -2248,16 +2527,16 @@ export default function OfflineLeadsPage() {
                   </div>
                 </section>
 
-                {formError && <p className="offline-leads-error">{formError}</p>}
+                {formError && <p className="m-0 text-[13px] text-red-700">{formError}</p>}
               </div>
 
-              <div className="offline-leads-modal__footer">
-                <button type="button" className="offline-leads-btn offline-leads-btn--ghost" onClick={requestCloseModal}>
+              <div className="flex shrink-0 justify-end gap-2 border-t border-slate-200 px-6 py-4">
+                <button type="button" className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold border-0 bg-slate-100 text-slate-700" onClick={requestCloseModal}>
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="offline-leads-btn offline-leads-btn--primary"
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold border-0 bg-accent text-white disabled:cursor-not-allowed disabled:opacity-60"
                   disabled={isSaving || emailTaken || phoneTaken}
                 >
                   {isSaving ? 'Saving…' : editingLead ? 'Update Lead' : 'Save Lead'}
@@ -2271,29 +2550,29 @@ export default function OfflineLeadsPage() {
     </div>
     {statusModal &&
       createPortal(
-        <div className="offline-leads-modal-backdrop" onMouseDown={closeStatusModal}>
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/45 p-4 max-md:items-stretch max-md:p-0" onMouseDown={closeStatusModal}>
           <div
-            className="offline-leads-status-modal"
+            className="max-h-[90vh] w-[min(480px,calc(100vw-32px))] overflow-auto rounded-xl bg-white shadow-[0_20px_50px_rgba(15,23,42,0.25)]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="offline-lead-status-title"
             onMouseDown={event => event.stopPropagation()}
           >
-            <div className="offline-leads-modal__header">
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-6 py-4 [&_h3]:m-0 [&_h3]:text-[17px] [&_h3]:text-slate-900">
               <h3 id="offline-lead-status-title">
                 {statusModal.nextActive ? 'Set lead Active' : 'Set lead Inactive'}
               </h3>
               <button
                 type="button"
-                className="offline-leads-btn offline-leads-btn--ghost"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold border-0 bg-slate-100 text-slate-700"
                 onClick={closeStatusModal}
                 aria-label="Close status change dialog"
               >
                 <X size={16} />
               </button>
             </div>
-            <div className="offline-leads-status-modal__body">
-              <p className="offline-leads-status-modal__intro">
+            <div className="flex flex-col gap-3.5 px-[18px] py-4">
+              <p className="m-0 text-sm leading-snug text-slate-700">
                 You are about to mark{' '}
                 <strong>
                   {statusModal.lead.full_name || `lead #${statusModal.lead.id}`}
@@ -2301,7 +2580,7 @@ export default function OfflineLeadsPage() {
                 as <strong>{statusModal.nextActive ? 'Active' : 'Inactive'}</strong>. Select at
                 least one reason. The lead is not deleted.
               </p>
-              <fieldset className="offline-leads-status-reasons">
+              <fieldset className="m-0 flex flex-col gap-2 rounded-[10px] border border-slate-200 p-3 [&_legend]:px-1 [&_legend]:text-xs [&_legend]:font-bold [&_legend]:text-slate-500">
                 <legend>Reasons</legend>
                 {(statusModal.nextActive
                   ? OFFLINE_LEAD_ACTIVE_REASONS
@@ -2310,7 +2589,7 @@ export default function OfflineLeadsPage() {
                   const checked = statusReasons.includes(reason);
                   const inputId = `status-reason-${reason.replace(/[^a-zA-Z0-9]+/g, '-')}`;
                   return (
-                    <label key={reason} htmlFor={inputId} className="offline-leads-status-reason">
+                    <label key={reason} htmlFor={inputId} className="flex cursor-pointer items-start gap-2 text-sm text-slate-900 [&_input]:mt-0.5">
                       <input
                         id={inputId}
                         type="checkbox"
@@ -2323,15 +2602,15 @@ export default function OfflineLeadsPage() {
                 })}
               </fieldset>
               {statusError ? (
-                <p className="offline-leads-field-warning" role="alert">
+                <p className="text-[13px] font-semibold leading-snug text-amber-700" role="alert">
                   {statusError}
                 </p>
               ) : null}
             </div>
-            <div className="offline-leads-modal__footer">
+            <div className="flex shrink-0 justify-end gap-2 border-t border-slate-200 px-6 py-4">
               <button
                 type="button"
-                className="offline-leads-btn offline-leads-btn--ghost"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold border-0 bg-slate-100 text-slate-700"
                 onClick={closeStatusModal}
                 disabled={setActiveMutation.isPending}
               >
@@ -2339,7 +2618,7 @@ export default function OfflineLeadsPage() {
               </button>
               <button
                 type="button"
-                className="offline-leads-btn offline-leads-btn--primary"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold border-0 bg-accent text-white disabled:cursor-not-allowed disabled:opacity-60"
                 onClick={() => void confirmStatusChange()}
                 disabled={setActiveMutation.isPending || statusReasons.length === 0}
               >

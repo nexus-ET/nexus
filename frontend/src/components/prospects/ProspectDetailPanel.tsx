@@ -68,6 +68,57 @@ import DigitalPresenceAdminSection from '../DigitalPresenceAdminSection';
 import AiActivePulseBoard, { type PulseLead } from '../AiActivePulseBoard';
 import HeadlessScrollArea from '../HeadlessScrollArea';
 import { categoryBadgeClass } from '../../utils/statusBadges';
+import {
+  actionBar,
+  actionBtn,
+  actionBtnIcon,
+  actionBtnInteraction,
+  actionBtnPrimary,
+  actionBtnSession,
+  actionDropdown,
+  actionDropdownItem,
+  actionDropdownLabel,
+  actionDropdownMenu,
+  actions,
+  backBtn,
+  chip,
+  chipMuted,
+  chips,
+  detailBody,
+  detailBodyViewport,
+  detailEmpty,
+  detailPanel,
+  detailSticky,
+  detailTab,
+  detailTabActive,
+  detailTabs,
+  emptyState,
+  historyBubble,
+  historyBubbleRow,
+  historyBubbleRowOut,
+  historyChat,
+  historyDivider,
+  historyDividerLabel,
+  historyPaneActive,
+  identityTitle,
+  notes,
+  notesHint,
+  pipelineDescription,
+  pipelineDescriptionMuted,
+  pipelineHeader,
+  pipelineLabel,
+  pipelineRevert,
+  pipelineSection,
+  pipelineStatus,
+  processStrip,
+  profileGrid,
+  profileWide,
+  tabPaneActive,
+  tabPaneHidden,
+  workspace,
+  workspaceEmpty,
+  workspaceLocked,
+} from './prospectsLayout';
 
 type ProspectDetailPanelProps = {
   leadId: number | null;
@@ -85,6 +136,10 @@ type ProspectDetailPanelProps = {
   onToggleFocus?: () => void;
   studentProfileTabs?: boolean;
   pipelinePath?: string;
+  scanxReviewOpen?: boolean;
+  onScanxReviewOpenChange?: (open: boolean) => void;
+  onBindScanxCloseReview?: (close: (() => void) | null) => void;
+  leadSelected?: boolean;
 };
 
 const STATUS_OPTIONS = [
@@ -146,8 +201,25 @@ export default function ProspectDetailPanel({
   onToggleFocus,
   studentProfileTabs = false,
   pipelinePath,
+  scanxReviewOpen = false,
+  onScanxReviewOpenChange,
+  onBindScanxCloseReview,
 }: ProspectDetailPanelProps) {
+  const closeScanxReviewRef = useRef<(() => void) | null>(null);
   const showAlert = useAlert();
+  const shellClass = (extra = '') =>
+    [detailPanel, leadId == null ? 'max-lg:!hidden' : '', isFocusMode ? 'w-full' : '', extra]
+      .filter(Boolean)
+      .join(' ');
+  const workspaceClass = scanxReviewOpen ? workspaceLocked : workspace;
+  const handlePaneBack = () => {
+    if (scanxReviewOpen) {
+      closeScanxReviewRef.current?.();
+      return;
+    }
+    onBack?.();
+  };
+  const showPaneBack = Boolean(onBack && (showBackButton || leadId != null));
   const { timezone } = useBusinessTimezone();
   const [searchParams] = useSearchParams();
   const pipelineConfig = pipelinePath ? pipelineProcessConfig(pipelinePath) : null;
@@ -309,26 +381,32 @@ export default function ProspectDetailPanel({
     // Document Readiness: show ScanX shell immediately (upload stays disabled until a lead is selected).
     if (isDocReadiness && pipelineConfig) {
       return (
-        <section className="prospects-detail-panel">
-          <div className="prospects-detail-panel__process-strip">
+        <section className={shellClass()}>
+          <div className={processStrip}>
             <PipelineProcessStrip
               config={pipelineConfig}
               activeCode={pipelineConfig.defaultSubprocess}
             />
           </div>
-          <div className="prospects-detail-panel__workspace">
+          <div className={workspaceClass}>
             <DocumentReadinessWorkspace
               code={pipelineConfig.defaultSubprocess}
               title="Document Readiness · ScanX"
               leadId={null}
               candidateName={null}
+              reviewOpen={scanxReviewOpen}
+              onReviewOpenChange={onScanxReviewOpenChange}
+              onBindCloseReview={close => {
+                closeScanxReviewRef.current = close;
+                onBindScanxCloseReview?.(close);
+              }}
             />
           </div>
         </section>
       );
     }
     return (
-      <section className="prospects-detail-panel prospects-detail-panel--pulse">
+      <section className={shellClass()}>
         <AiActivePulseBoard
           mode="prospects"
           leads={pulseLeads}
@@ -343,15 +421,20 @@ export default function ProspectDetailPanel({
   if (isDocReadiness && pipelineConfig) {
     return (
       <section
-        className={`prospects-detail-panel${isFocusMode ? ' prospects-detail-panel--focus' : ''}`}
+        className={shellClass()}
       >
-        <div className="prospects-detail-panel__sticky">
-          <div className="prospects-detail-panel__action-bar">
-            <div className="prospects-detail-panel__identity">
-              {showBackButton ? (
-                <button type="button" className="prospects-back-btn" onClick={onBack}>
+        <div className={detailSticky}>
+          <div className={actionBar}>
+            <div className="min-w-0">
+              {showPaneBack ? (
+                <button
+                  type="button"
+                  className={`${backBtn} ${showBackButton ? '' : 'lg:hidden'}`}
+                  onClick={handlePaneBack}
+                  aria-label={scanxReviewOpen ? 'Back to document list' : 'Back to student list'}
+                >
                   <ArrowLeft size={16} />
-                  Back
+                  {scanxReviewOpen ? 'Documents' : 'Students'}
                 </button>
               ) : null}
               <div className="min-w-0 flex-1">
@@ -366,16 +449,22 @@ export default function ProspectDetailPanel({
               </div>
             </div>
           </div>
-          <div className="prospects-detail-panel__process-strip">
+          <div className={processStrip}>
             <PipelineProcessStrip config={pipelineConfig} activeCode={pipelineSubprocess} />
           </div>
         </div>
-        <div className="prospects-detail-panel__workspace">
+        <div className={workspaceClass}>
           <DocumentReadinessWorkspace
             code={pipelineSubprocess}
             title={pipelineSubprocessTitle}
             leadId={leadId}
             candidateName={counsellingDisplayName}
+            reviewOpen={scanxReviewOpen}
+            onReviewOpenChange={onScanxReviewOpenChange}
+            onBindCloseReview={close => {
+              closeScanxReviewRef.current = close;
+              onBindScanxCloseReview?.(close);
+            }}
           />
         </div>
       </section>
@@ -384,16 +473,38 @@ export default function ProspectDetailPanel({
 
   if (isLoading && !detail) {
     return (
-      <section className="prospects-detail-panel prospects-detail-panel--empty">
-        <div className="prospects-empty">Loading lead details...</div>
+      <section className={shellClass(detailEmpty)}>
+        {showPaneBack ? (
+          <button
+            type="button"
+            className={`${backBtn} ${showBackButton ? '' : 'lg:hidden'}`}
+            onClick={handlePaneBack}
+            aria-label="Back to student list"
+          >
+            <ArrowLeft size={16} />
+            Students
+          </button>
+        ) : null}
+        <div className={emptyState}>Loading lead details...</div>
       </section>
     );
   }
 
   if (!detail) {
     return (
-      <section className="prospects-detail-panel prospects-detail-panel--empty">
-        <div className="prospects-empty">
+      <section className={shellClass(detailEmpty)}>
+        {showPaneBack ? (
+          <button
+            type="button"
+            className={`${backBtn} ${showBackButton ? '' : 'lg:hidden'}`}
+            onClick={handlePaneBack}
+            aria-label="Back to student list"
+          >
+            <ArrowLeft size={16} />
+            Students
+          </button>
+        ) : null}
+        <div className={emptyState}>
           {loadError ? 'Unable to load this lead.' : 'Unable to load this lead.'}
         </div>
       </section>
@@ -468,15 +579,20 @@ export default function ProspectDetailPanel({
 
   return (
     <>
-    <section className={`prospects-detail-panel${isFocusMode ? ' prospects-detail-panel--focus' : ''}`}>
-      <div className="prospects-detail-panel__sticky">
-        <div className="prospects-detail-panel__action-bar">
-          <div className="prospects-detail-panel__identity">
-            {showBackButton ? (
-              <button type="button" className="prospects-back-btn" onClick={onBack}>
-                <ArrowLeft size={16} />
-                Back
-              </button>
+    <section className={shellClass()}>
+      <div className={detailSticky}>
+        <div className={actionBar}>
+          <div className="min-w-0">
+            {showPaneBack ? (
+              <button
+                type="button"
+                className={`${backBtn} ${showBackButton ? '' : 'lg:hidden'}`}
+                onClick={handlePaneBack}
+                aria-label={scanxReviewOpen ? 'Back to document list' : 'Back to student list'}
+              >
+                  <ArrowLeft size={16} />
+                  {scanxReviewOpen ? 'Documents' : 'Students'}
+                </button>
             ) : null}
             <div className={isPipelineWorkspace ? 'min-w-0 flex-1' : undefined}>
               {isPipelineWorkspace ? (
@@ -488,13 +604,13 @@ export default function ProspectDetailPanel({
                     {!profileFullName && metaReceivedName ? (
                       <p className="text-xs text-text-muted mt-0.5">Meta received name</p>
                     ) : null}
-                    <div className="prospects-detail-panel__chips mt-1.5">
+                    <div className={`${chips} mt-1.5`}>
                       {detail.platform_badge ? (
-                        <span className="prospects-chip" style={badgeStyle}>
+                        <span className={chip} style={badgeStyle}>
                           {detail.platform_badge}
                         </span>
                       ) : null}
-                      <span className="prospects-chip prospects-chip--muted">
+                      <span className={chipMuted}>
                         {detail.stage || detail.status}
                       </span>
                     </div>
@@ -538,14 +654,14 @@ export default function ProspectDetailPanel({
                 </div>
               ) : (
                 <>
-                  <h3>{detail.full_name || detail.name}</h3>
-                  <div className="prospects-detail-panel__chips">
+                  <h3 className={identityTitle}>{detail.full_name || detail.name}</h3>
+                  <div className={chips}>
                     {detail.platform_badge ? (
-                      <span className="prospects-chip" style={badgeStyle}>
+                      <span className={chip} style={badgeStyle}>
                         {detail.platform_badge}
                       </span>
                     ) : null}
-                    <span className="prospects-chip prospects-chip--muted">
+                    <span className={chipMuted}>
                       {detail.stage || detail.status}
                     </span>
                   </div>
@@ -554,12 +670,12 @@ export default function ProspectDetailPanel({
             </div>
           </div>
 
-          <div className="prospects-detail-panel__actions">
+          <div className={actions}>
             {onBack ? (
               <button
                 type="button"
-                className="prospects-action-btn"
-                onClick={onBack}
+                className={actionBtn}
+                onClick={handlePaneBack}
                 title="Back to prospects pulse overview"
               >
                 Overview
@@ -568,7 +684,7 @@ export default function ProspectDetailPanel({
             {onToggleFocus ? (
               <button
                 type="button"
-                className="prospects-action-btn prospects-action-btn--icon"
+                className={`${actionBtn} ${actionBtnIcon}`}
                 onClick={onToggleFocus}
                 title={isFocusMode ? 'Show list' : 'Focus view'}
               >
@@ -584,7 +700,7 @@ export default function ProspectDetailPanel({
                     if (bookingId) setInteractionBookingId(bookingId);
                   }}
                   disabled={!profileBookingQuery.data?.id || profileBookingQuery.isLoading}
-                  className="prospects-action-btn prospects-action-btn--interaction"
+                  className={`${actionBtn} ${actionBtnInteraction}`}
                 >
                   <MessageSquare size={16} />
                   View Interaction
@@ -593,7 +709,7 @@ export default function ProspectDetailPanel({
                   type="button"
                   onClick={() => setSessionOpen(true)}
                   disabled={!profileBookingQuery.data?.id || profileBookingQuery.isLoading}
-                  className="prospects-action-btn prospects-action-btn--session"
+                  className={`${actionBtn} ${actionBtnSession}`}
                 >
                   <Sparkles size={16} />
                   Session
@@ -602,29 +718,30 @@ export default function ProspectDetailPanel({
             ) : (
               <button
                 type="button"
-                className="prospects-action-btn"
+                className={actionBtn}
                 onClick={handleMessage}
               >
                 <MessageCircle size={16} />
                 Message
               </button>
             )}
-            <button type="button" className="prospects-action-btn" onClick={() => setJourneyOpen(true)}>
+            <button type="button" className={actionBtn} onClick={() => setJourneyOpen(true)}>
               View Journey
             </button>
-            <button type="button" className="prospects-action-btn" onClick={() => handleStatus('handoff')}>
+            <button type="button" className={actionBtn} onClick={() => handleStatus('handoff')}>
               <UserPlus size={16} />
               Assign
             </button>
-            <div className="prospects-action-dropdown">
-              <span>Update Status</span>
-              <div className="prospects-action-dropdown__menu">
+            <div className={actionDropdown}>
+              <span className={actionDropdownLabel}>Update Status</span>
+              <div className={actionDropdownMenu}>
                 {STATUS_OPTIONS.map(option => {
                   const Icon = option.icon;
                   return (
                     <button
                       key={option.key}
                       type="button"
+                      className={actionDropdownItem}
                       onClick={() => handleStatus(option.key)}
                       disabled={statusMutation.isPending}
                     >
@@ -639,7 +756,7 @@ export default function ProspectDetailPanel({
         </div>
 
         {isPipelineWorkspace ? (
-          <div className="prospects-detail-panel__process-strip">
+          <div className={processStrip}>
             {isCounsellingPipeline ? (
               <CounsellingProcessStrip activeCode={counsellingSubprocess} />
             ) : pipelineConfig ? (
@@ -649,12 +766,12 @@ export default function ProspectDetailPanel({
         ) : null}
 
         {!isPipelineWorkspace ? (
-          <div className="prospects-detail-panel__tabs">
+          <div className={detailTabs}>
             {(Object.keys(TAB_LABELS) as ProspectDetailTab[]).map(tab => (
               <button
                 key={tab}
                 type="button"
-                className={activeTab === tab ? 'is-active' : ''}
+                className={activeTab === tab ? `${detailTab} ${detailTabActive}` : detailTab}
                 onClick={() => onTabChange(tab)}
               >
                 {TAB_LABELS[tab]}
@@ -666,7 +783,7 @@ export default function ProspectDetailPanel({
 
       {isPipelineWorkspace ? (
         !isCounsellingPipeline && pipelineConfig ? (
-          <div className="prospects-detail-panel__workspace">
+          <div className={workspaceClass}>
             {isAdmissionApplicationsSubprocess(pipelineSubprocess, pipelineConfig) ? (
               <AdmissionApplicationsWorkspace
                 code={pipelineSubprocess}
@@ -680,19 +797,25 @@ export default function ProspectDetailPanel({
                 title={pipelineSubprocessTitle}
                 leadId={leadId}
                 candidateName={counsellingDisplayName}
+                reviewOpen={scanxReviewOpen}
+                onReviewOpenChange={onScanxReviewOpenChange}
+                onBindCloseReview={close => {
+                  closeScanxReviewRef.current = close;
+                  onBindScanxCloseReview?.(close);
+                }}
               />
             ) : (
               <SubprocessShellWorkspace code={pipelineSubprocess} title={pipelineSubprocessTitle} />
             )}
           </div>
         ) : !showIntakeWorkspace && !showBillingWorkspace && !showCredentialsWorkspace ? (
-          <div className="prospects-detail-panel__workspace">
+          <div className={workspaceClass}>
             <CounsellingSubprocessPlaceholder code={counsellingSubprocess} />
           </div>
         ) : profileBookingQuery.isLoading ? (
-          <div className="prospects-detail-panel__workspace prospects-empty">Loading student profile...</div>
+          <div className={`${workspaceClass} ${workspaceEmpty} ${emptyState}`}>Loading student profile...</div>
         ) : profileBookingQuery.data ? (
-          <div className="prospects-detail-panel__workspace">
+          <div className={workspaceClass}>
             {showBillingWorkspace ? (
               <CounsellingBillingWorkspace
                 key={`billing-${profileBookingQuery.data.id}`}
@@ -720,17 +843,17 @@ export default function ProspectDetailPanel({
             )}
           </div>
         ) : (
-          <div className="prospects-detail-panel__workspace prospects-empty">
+          <div className={`${workspaceClass} ${workspaceEmpty} ${emptyState}`}>
             {profileBookingQuery.error instanceof Error
               ? profileBookingQuery.error.message
               : 'No counselling booking is available for this student on your account.'}
           </div>
         )
       ) : (
-      <HeadlessScrollArea className="prospects-detail-panel__body">
-        <div className={`prospects-tab-pane${activeTab === 'overview' ? ' is-active' : ''}`}>
-          <div className="prospects-pipeline-status">
-            <div className="prospects-pipeline-status__header">
+      <HeadlessScrollArea className={detailBody} viewportClassName={detailBodyViewport}>
+        <div className={activeTab === 'overview' ? tabPaneActive : tabPaneHidden}>
+          <div className={pipelineStatus}>
+            <div className={pipelineHeader}>
               <h4>Pipeline status</h4>
               {detail.status_stage_name ? (
                 <span
@@ -744,14 +867,14 @@ export default function ProspectDetailPanel({
             </div>
 
             {nextForward ? (
-              <div className="prospects-pipeline-status__section">
-                <p className="prospects-pipeline-status__label">Next step</p>
-                <p className="prospects-pipeline-status__description">
+              <div className={pipelineSection}>
+                <p className={pipelineLabel}>Next step</p>
+                <p className={pipelineDescription}>
                   {nextForward.description || `Advance to ${nextForward.stage_name}.`}
                 </p>
                 <button
                   type="button"
-                  className="prospects-action-btn prospects-action-btn--primary"
+                  className={`${actionBtn} ${actionBtnPrimary}`}
                   onClick={handleForwardStep}
                   disabled={pipelineStatusMutation.isPending}
                 >
@@ -759,14 +882,14 @@ export default function ProspectDetailPanel({
                 </button>
               </div>
             ) : (
-              <p className="prospects-pipeline-status__description prospects-pipeline-status__description--muted">
+              <p className={`${pipelineDescription} ${pipelineDescriptionMuted}`}>
                 No standard forward step is configured from this stage.
               </p>
             )}
 
             {(validTransitions?.express ?? []).length > 0 ? (
-              <div className="prospects-pipeline-status__section">
-                <label className="prospects-pipeline-status__label" htmlFor="express-status-select">
+              <div className={pipelineSection}>
+                <label className={pipelineLabel} htmlFor="express-status-select">
                   Jump to…
                 </label>
                 <select
@@ -787,13 +910,13 @@ export default function ProspectDetailPanel({
                   ))}
                 </select>
                 {selectedExpressTransition?.description ? (
-                  <p className="prospects-pipeline-status__description">
+                  <p className={pipelineDescription}>
                     {selectedExpressTransition.description}
                   </p>
                 ) : null}
                 <button
                   type="button"
-                  className="prospects-action-btn"
+                  className={actionBtn}
                   onClick={handleExpressJump}
                   disabled={!expressTargetId || pipelineStatusMutation.isPending}
                 >
@@ -812,9 +935,9 @@ export default function ProspectDetailPanel({
             ) : null}
 
             {revertTransitions.length > 0 ? (
-              <details className="prospects-pipeline-status__revert">
+              <details className={pipelineRevert}>
                 <summary>Revert / update</summary>
-                <label className="prospects-pipeline-status__label" htmlFor="revert-status-select">
+                <label className={pipelineLabel} htmlFor="revert-status-select">
                   Choose target stage
                 </label>
                 <select
@@ -842,7 +965,7 @@ export default function ProspectDetailPanel({
                 />
                 <button
                   type="button"
-                  className="prospects-action-btn"
+                  className={actionBtn}
                   onClick={handleRevertUpdate}
                   disabled={!revertTargetId || pipelineStatusMutation.isPending}
                 >
@@ -852,13 +975,13 @@ export default function ProspectDetailPanel({
             ) : null}
 
             {currentPipelineDefinition?.description ? (
-              <p className="prospects-pipeline-status__description prospects-pipeline-status__description--muted">
+              <p className={`${pipelineDescription} ${pipelineDescriptionMuted}`}>
                 Current stage guidance: {currentPipelineDefinition.description}
               </p>
             ) : null}
           </div>
 
-          <div className="prospects-profile-grid">
+          <div className={profileGrid}>
             <div>
               <span>Name</span>
               <strong>{detail.full_name || detail.name || '—'}</strong>
@@ -884,7 +1007,7 @@ export default function ProspectDetailPanel({
               <strong>{formatProspectDate(detail.created_at || detail.updated_at, timezone)}</strong>
             </div>
             {detail.meta_campaign_name ? (
-              <div className="prospects-profile-grid__wide">
+              <div className={profileWide}>
                 <span>Campaign</span>
                 <strong>{detail.meta_campaign_name}</strong>
               </div>
@@ -896,9 +1019,9 @@ export default function ProspectDetailPanel({
               </div>
             ) : null}
             {additionalFieldEntries.length > 0 ? (
-              <div className="prospects-profile-grid__wide">
+              <div className={profileWide}>
                 <span>Form responses</span>
-                <div className="prospects-profile-grid prospects-profile-grid--nested">
+                <div className={profileGrid}>
                   {additionalFieldEntries.map(([key, value]) => (
                     <div key={key}>
                       <span>{humanizeFieldKey(key)}</span>
@@ -909,7 +1032,7 @@ export default function ProspectDetailPanel({
               </div>
             ) : null}
             {detail.academic_summary ? (
-              <div className="prospects-profile-grid__wide">
+              <div className={profileWide}>
                 <span>Lead summary</span>
                 <p>{detail.academic_summary}</p>
               </div>
@@ -920,20 +1043,18 @@ export default function ProspectDetailPanel({
 
         <div
           ref={historyRef}
-          className={`prospects-tab-pane prospects-history prospects-history--chat${
-            activeTab === 'history' ? ' is-active' : ''
-          }`}
+          className={`${activeTab === 'history' ? historyPaneActive : tabPaneHidden} ${historyChat}`}
         >
           {Object.keys(interactionGroups).length === 0 ? (
-            <div className="prospects-empty">
+            <div className={emptyState}>
               <Mail size={18} />
               <p>No WhatsApp/Twilio messages logged yet.</p>
             </div>
           ) : (
             Object.entries(interactionGroups).map(([label, messages]) => (
-              <div key={label} className="prospects-history__group">
-                <div className="prospects-history__divider">
-                  <span>{label}</span>
+              <div key={label} className="flex flex-col">
+                <div className={historyDivider}>
+                  <span className={historyDividerLabel}>{label}</span>
                 </div>
                 {messages.map((msg, index) => {
                   const theme = ACTOR_THEME[msg.actor];
@@ -941,10 +1062,10 @@ export default function ProspectDetailPanel({
                   return (
                     <div
                       key={String(msg.id ?? `${label}-${index}`)}
-                      className={`prospects-history__bubble-row${outbound ? ' is-outbound' : ''}`}
+                      className={`${historyBubbleRow}${outbound ? ` ${historyBubbleRowOut}` : ''}`}
                     >
                       <div
-                        className="prospects-history__bubble"
+                        className={historyBubble}
                         style={{ backgroundColor: theme.bg, color: theme.textColor }}
                       >
                         <span style={{ color: theme.labelColor }}>{theme.label}</span>
@@ -959,9 +1080,9 @@ export default function ProspectDetailPanel({
           )}
         </div>
 
-        <div className={`prospects-tab-pane${activeTab === 'notes' ? ' is-active' : ''}`}>
-          <div className="prospects-notes">
-            <p className="prospects-notes__hint">
+        <div className={activeTab === 'notes' ? tabPaneActive : tabPaneHidden}>
+          <div className={notes}>
+            <p className={notesHint}>
               Internal team notes for this lead. Saved to Nexus and visible to your counselling team.
             </p>
             <textarea
@@ -972,7 +1093,7 @@ export default function ProspectDetailPanel({
             />
             <button
               type="button"
-              className="prospects-action-btn prospects-action-btn--primary"
+              className={`${actionBtn} ${actionBtnPrimary}`}
               onClick={handleSaveNotes}
               disabled={notesMutation.isPending}
             >

@@ -392,6 +392,14 @@ def document_looks_like_passport(
         re.I,
     ):
         return True
+    # Notary / true-copy comments do not override passport evidence that remains.
+    try:
+        from app.services.scanx_passport import text_has_enough_passport_evidence
+
+        if text_has_enough_passport_evidence(text):
+            return True
+    except Exception:
+        logger.debug("ScanX passport evidence check failed", exc_info=True)
     return False
 
 
@@ -955,6 +963,127 @@ def rebuild_enhanced_preview_from_original(
     return first_preview
 
 
+def _spread_region_degrees(axis: str, first: int, second: int) -> dict[str, int]:
+    if axis == "vertical":
+        return {"left": int(first), "right": int(second)}
+    return {"top": int(first), "bottom": int(second)}
+
+
+def _rotate_page_upright(
+    image_bytes: bytes,
+) -> tuple[bytes, int, dict[str, int] | None]:
+    """Return the page image, a whole-canvas degree, and optional region degrees.
+
+    A two-page canvas is cut on the gutter between the pages (side by side or
+    stacked). Each region is probed at 0° and 180°. If they disagree, only the
+    inverted region is rotated and the regions are stitched back in place. If
+    they agree, the whole image stays at 0° or turns 180° together. A region
+    that reads clearly better at 180° is rotated even when the other region
+    only shows an upright header. An upright region is not rotated. When
+    neither region has a signal, the original whole-image 0°/180° probe still
+    runs. Deskew is left as-is. Probe text is discarded; the following OCR is
+    what gets stored.
+    """
+    from app.services.scanx_image_enhance import (
+        locate_passport_spread_cut,
+        rotate_image_bytes_180,
+        rotate_spread_halves,
+        split_spread_halves,
+    )
+    from app.services.scanx_ocr import probe_page_orientation_text
+    from app.services.scanx_passport import (
+        choose_passport_page_rotation,
+        choose_stacked_canvas_rotation,
+        page_already_upright_for_orientation,
+    )
+
+    try:
+        located = locate_passport_spread_cut(image_bytes)
+    except Exception:
+        logger.debug("ScanX spread cut failed", exc_info=True)
+        located = None
+    if located:
+        axis = str(located.get("axis") or "")
+        cut = int(located.get("cut") or 0)
+        try:
+            halves = split_spread_halves(image_bytes, axis=axis, cut=cut)
+        except Exception:
+            logger.debug("ScanX spread split failed", exc_info=True)
+            halves = None
+        if halves:
+            first_bytes, second_bytes = halves
+            try:
+                first_probe = probe_page_orientation_text(first_bytes)
+                second_probe = probe_page_orientation_text(second_bytes)
+                first_turned = rotate_image_bytes_180(first_bytes)
+                second_turned = rotate_image_bytes_180(second_bytes)
+                first_probe_180 = (
+                    probe_page_orientation_text(first_turned) if first_turned else ""
+                )
+                second_probe_180 = (
+                    probe_page_orientation_text(second_turned) if second_turned else ""
+                )
+            except Exception:
+                logger.debug("ScanX spread orientation probe failed", exc_info=True)
+                first_probe = ""
+                second_probe = ""
+                first_probe_180 = ""
+                second_probe_180 = ""
+            decision = choose_stacked_canvas_rotation(
+                first_probe,
+                second_probe,
+                top_probe_180=first_probe_180,
+                bottom_probe_180=second_probe_180,
+            )
+            mode = str(decision.get("mode") or "")
+            first_deg = int(decision.get("top") or 0)
+            second_deg = int(decision.get("bottom") or 0)
+            if mode == "regional":
+                stitched = rotate_spread_halves(
+                    image_bytes,
+                    axis=axis,
+                    cut=cut,
+                    first_degrees=first_deg,
+                    second_degrees=second_deg,
+                )
+                if stitched:
+                    logger.info(
+                        "ScanX rotated one passport region before OCR axis=%s first=%s second=%s",
+                        axis,
+                        first_deg,
+                        second_deg,
+                    )
+                    return stitched, 0, _spread_region_degrees(axis, first_deg, second_deg)
+            elif mode == "whole" and first_deg == 180 and second_deg == 180:
+                rotated = rotate_image_bytes_180(image_bytes)
+                if rotated:
+                    logger.info("ScanX rotated a page 180 degrees before OCR")
+                    return rotated, 180, None
+                return image_bytes, 0, None
+            elif mode == "whole":
+                return image_bytes, 0, None
+
+    try:
+        probe_0 = probe_page_orientation_text(image_bytes)
+    except Exception:
+        logger.debug("ScanX orientation probe failed", exc_info=True)
+        return image_bytes, 0, None
+    if page_already_upright_for_orientation(probe_0):
+        return image_bytes, 0, None
+    rotated = rotate_image_bytes_180(image_bytes)
+    if not rotated:
+        return image_bytes, 0, None
+    try:
+        probe_180 = probe_page_orientation_text(rotated)
+    except Exception:
+        logger.debug("ScanX 180 orientation probe failed", exc_info=True)
+        return image_bytes, 0, None
+    if choose_passport_page_rotation(probe_0, probe_180) != 180:
+        return image_bytes, 0, None
+    logger.info("ScanX rotated a page 180 degrees before OCR")
+    return rotated, 180, None
+
+
 def _ocr_image_batch(
     images: list[bytes],
     on_progress: Any,
@@ -977,9 +1106,20 @@ def _ocr_image_batch(
     last_primary_engine: str | None = None
     timed_out = False
     sequential_offset = 0
+    page_rotations: list[int] = []
+    page_region_rotations: list[dict[str, int] | None] = []
 
     for img_i, img_bytes in enumerate(images):
         raise_if_cancelled()
+        remaining = budget - (time.perf_counter() - t0)
+        if remaining > 1.0:
+            img_bytes, orient_deg, region = _rotate_page_upright(img_bytes)
+            page_rotations.append(orient_deg)
+            page_region_rotations.append(region)
+            images[img_i] = img_bytes
+        else:
+            page_rotations.append(0)
+            page_region_rotations.append(None)
         remaining = budget - (time.perf_counter() - t0)
         if remaining <= 0.5:
             timed_out = True
@@ -1035,6 +1175,8 @@ def _ocr_image_batch(
         "last_engine": last_engine,
         "last_fallback_reason": last_fallback_reason,
         "last_primary_engine": last_primary_engine,
+        "page_rotations": page_rotations,
+        "page_region_rotations": page_region_rotations,
         "elapsed_ms": int((time.perf_counter() - t0) * 1000),
     }
 
@@ -1066,6 +1208,12 @@ def _apply_ocr_batch_metrics(metrics: dict[str, Any], batch: dict[str, Any]) -> 
     if regions:
         metrics["table_regions"] = regions
         metrics["table_region_count"] = len(regions)
+    rotations = batch.get("page_rotations")
+    if isinstance(rotations, list):
+        metrics["page_orientation_degrees"] = [int(v) for v in rotations]
+    region_rotations = batch.get("page_region_rotations")
+    if isinstance(region_rotations, list):
+        metrics["page_region_rotations"] = region_rotations
 
 
 def _prepare_images_for_ocr(
@@ -2308,6 +2456,11 @@ def process_scanx_document(
                     if not doc:
                         return {"ok": False, "error": "not_found_after_enhance"}
                 content_for_ocr = images[0] if images else content
+                content_for_ocr, orient_deg, orient_region = _rotate_page_upright(
+                    content_for_ocr
+                )
+                if images:
+                    images[0] = content_for_ocr
                 steps = set_step(
                     steps,
                     "extract",
@@ -2329,6 +2482,8 @@ def process_scanx_document(
                     return {"ok": False, "error": "not_found_after_ocr"}
                 metrics = dict(ocr_state["metrics"])
                 steps = list(ocr_state["steps"])
+                metrics["page_orientation_degrees"] = [int(orient_deg)]
+                metrics["page_region_rotations"] = [orient_region]
                 extracted = ocr.text
                 page_count = ocr.page_count or page_count or 1
                 extract_note = ocr.note

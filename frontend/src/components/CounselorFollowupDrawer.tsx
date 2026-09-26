@@ -4,6 +4,7 @@ import {
   useCounselorFollowupStatuses,
   useCreateLeadFollowup,
   useLeadFollowups,
+  useUpdateLeadFollowup,
   type CounselorFollowupItem,
   type CounselorFollowupSentDocument,
   type CounselorStatusMasterItem,
@@ -96,6 +97,29 @@ function isSendDocumentChecklistStatus(
 
 function hasChecklistEmailReceipt(item: CounselorFollowupItem): boolean {
   return Boolean(item.checklist_email_sent_at && (item.checklist_email_to || '').trim());
+}
+
+/** Newest note: latest created_at, then highest id. Same row the leads table uses. */
+function newestFollowupId(items: CounselorFollowupItem[]): number | null {
+  let best: CounselorFollowupItem | null = null;
+  for (const item of items) {
+    if (!best) {
+      best = item;
+      continue;
+    }
+    const bestAt = Date.parse(best.created_at);
+    const itemAt = Date.parse(item.created_at);
+    const bestTime = Number.isNaN(bestAt) ? 0 : bestAt;
+    const itemTime = Number.isNaN(itemAt) ? 0 : itemAt;
+    if (itemTime > bestTime || (itemTime === bestTime && item.id > best.id)) {
+      best = item;
+    }
+  }
+  return best?.id ?? null;
+}
+
+function followupDateValue(value: string | null | undefined): string {
+  return (value || '').trim().slice(0, 10);
 }
 
 function mediaUrlToApiEndpoint(url: string): string | null {
@@ -265,12 +289,17 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
   const statusesQuery = useCounselorFollowupStatuses(open);
   const followupsQuery = useLeadFollowups(leadId, open);
   const createMutation = useCreateLeadFollowup();
+  const updateMutation = useUpdateLeadFollowup();
   const { levels: catalogLevels } = useLevels();
 
   const [statusId, setStatusId] = useState<number | ''>('');
   const [pointsDiscussed, setPointsDiscussed] = useState('');
   const [actionItems, setActionItems] = useState('');
   const [nextFollowupDate, setNextFollowupDate] = useState('');
+  const [editingFollowupId, setEditingFollowupId] = useState<number | null>(null);
+  const [editingStatusHeading, setEditingStatusHeading] = useState('');
+  const [editingBaselineDate, setEditingBaselineDate] = useState('');
+  const [editNotice, setEditNotice] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [formWarning, setFormWarning] = useState<string | null>(null);
   const [mailSentConfirmation, setMailSentConfirmation] =
@@ -296,13 +325,30 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
       a.status_heading.localeCompare(b.status_heading, undefined, { sensitivity: 'base' })
     );
   }, [statusesQuery.data?.items]);
-  const minFollowupDate = useMemo(() => todayLocalIso(), [open]);
+  const minFollowupDate = useMemo(() => {
+    const today = todayLocalIso();
+    if (
+      editingFollowupId != null &&
+      editingBaselineDate &&
+      nextFollowupDate === editingBaselineDate &&
+      editingBaselineDate < today
+    ) {
+      return editingBaselineDate;
+    }
+    return today;
+  }, [open, editingFollowupId, editingBaselineDate, nextFollowupDate]);
 
   const selectedStatus = useMemo(
     () => statuses.find(item => item.id === statusId) ?? null,
     [statuses, statusId]
   );
-  const showChecklistPanel = isSendDocumentChecklistStatus(selectedStatus);
+  const showChecklistPanel =
+    editingFollowupId == null && isSendDocumentChecklistStatus(selectedStatus);
+  const notesBusy = createMutation.isPending || updateMutation.isPending;
+  const latestFollowupId = useMemo(
+    () => newestFollowupId(followupsQuery.data?.items ?? []),
+    [followupsQuery.data?.items]
+  );
 
   const levelsWithDocsSet = useMemo(
     () => new Set(checklistLevelsWithDocs.map(name => name.trim()).filter(Boolean)),
@@ -344,10 +390,35 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
     setPointsDiscussed('');
     setActionItems('');
     setNextFollowupDate('');
+    setEditingFollowupId(null);
+    setEditingStatusHeading('');
+    setEditingBaselineDate('');
+    setEditNotice(null);
     setFormError(null);
     setFormWarning(null);
     setMailSentConfirmation(null);
     resetChecklistPanel();
+  };
+
+  const startEdit = (item: CounselorFollowupItem) => {
+    if (item.id !== latestFollowupId) return;
+    const dateValue = followupDateValue(item.target_completion_date);
+    setEditingFollowupId(item.id);
+    setEditingStatusHeading((item.status_heading || '').trim());
+    setEditingBaselineDate(dateValue);
+    setStatusId(item.status_id);
+    setPointsDiscussed(item.points_discussed || '');
+    setActionItems(item.action_items || '');
+    setNextFollowupDate(dateValue);
+    setFormError(null);
+    setFormWarning(null);
+    setMailSentConfirmation(null);
+    setEditNotice(null);
+    resetChecklistPanel();
+  };
+
+  const handleCancelEdit = () => {
+    resetForm();
   };
 
   const loadChecklistLevels = useCallback(
@@ -413,10 +484,7 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
   }, []);
 
   useEffect(() => {
-    if (!open) {
-      resetForm();
-      return;
-    }
+    resetForm();
   }, [open, leadId]);
 
   useEffect(() => {
@@ -442,20 +510,25 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
   }, [open, onClose]);
 
   const handleStatusChange = (nextId: string) => {
+    setEditNotice(null);
     if (!nextId) {
       setStatusId('');
-      setPointsDiscussed('');
-      setActionItems('');
-      resetChecklistPanel();
+      if (editingFollowupId == null) {
+        setPointsDiscussed('');
+        setActionItems('');
+        resetChecklistPanel();
+      }
       return;
     }
     const id = Number(nextId);
     setStatusId(id);
-    const match = statuses.find(item => item.id === id);
-    if (match) {
-      const split = splitTemplateDescription(match.default_description);
-      setPointsDiscussed(split.points);
-      setActionItems(split.actions);
+    if (editingFollowupId == null) {
+      const match = statuses.find(item => item.id === id);
+      if (match) {
+        const split = splitTemplateDescription(match.default_description);
+        setPointsDiscussed(split.points);
+        setActionItems(split.actions);
+      }
     }
     setFormError(null);
     setFormWarning(null);
@@ -494,8 +567,10 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
     const actions = actionItems.trim();
     const followupDate = nextFollowupDate.trim();
     const today = todayLocalIso();
+    const keepingExistingDate =
+      editingFollowupId != null && followupDate === editingBaselineDate;
 
-    if (followupDate && followupDate < today) {
+    if (followupDate && followupDate < today && !keepingExistingDate) {
       setFormError('Next Follow-up Date cannot be in the past.');
       return;
     }
@@ -503,12 +578,14 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
       setFormError('Select a Next Follow-up Date (today or a future date) when Action Items are set.');
       return;
     }
-    if (actions && followupDate < today) {
+    if (actions && followupDate < today && !keepingExistingDate) {
       setFormError('Next Follow-up Date must be today or a future date.');
       return;
     }
 
-    const sendEmail = showChecklistPanel && checklistSendEmail === 'yes';
+    const editingId = editingFollowupId;
+    const sendEmail =
+      editingId == null && showChecklistPanel && checklistSendEmail === 'yes';
     if (sendEmail) {
       if (!checklistLevel || !levelsWithDocsSet.has(checklistLevel)) {
         setFormError('Select an enabled program level before sending the document checklist email.');
@@ -529,7 +606,24 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
     setFormError(null);
     setFormWarning(null);
     setMailSentConfirmation(null);
+    setEditNotice(null);
     try {
+      if (editingId != null) {
+        await updateMutation.mutateAsync({
+          leadId,
+          followupId: editingId,
+          payload: {
+            status_id: Number(statusId),
+            points_discussed: points,
+            action_items: actions || null,
+            target_completion_date: followupDate || null,
+          },
+        });
+        resetForm();
+        setEditNotice('Note updated.');
+        onFollowupSaved?.();
+        return;
+      }
       const created = await createMutation.mutateAsync({
         leadId,
         payload: {
@@ -591,7 +685,7 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
 
   const timeline = followupsQuery.data?.items ?? [];
   const checklistBusy =
-    createMutation.isPending || checklistLevelsLoading || checklistScopeLoading;
+    notesBusy || checklistLevelsLoading || checklistScopeLoading;
   const canChooseLevel =
     checklistScope === 'global' ||
     (checklistScope === 'country_specific' && Boolean(checklistCountryId));
@@ -619,6 +713,9 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
         </div>
 
         <div className="shrink-0 border-b border-border-subtle px-5 py-4 space-y-3 bg-surface-bg/30">
+          {editingFollowupId != null ? (
+            <p className="text-xs font-semibold text-text-main">Editing latest note</p>
+          ) : null}
           <div>
             <label className="block text-xs font-semibold text-text-muted mb-1" htmlFor="followup-status">
               Follow-up Status
@@ -628,9 +725,14 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
               className="w-full rounded-lg border border-border-subtle bg-card px-3 py-2 text-sm text-text-main"
               value={statusId === '' ? '' : String(statusId)}
               onChange={e => handleStatusChange(e.target.value)}
-              disabled={statusesQuery.isLoading || createMutation.isPending}
+              disabled={statusesQuery.isLoading || notesBusy}
             >
               <option value="">Select status…</option>
+              {editingFollowupId != null &&
+              statusId !== '' &&
+              !statuses.some(status => status.id === statusId) ? (
+                <option value={statusId}>{editingStatusHeading || 'Current status'}</option>
+              ) : null}
               {statuses.map(status => (
                 <option key={status.id} value={status.id}>
                   {status.status_heading}
@@ -656,7 +758,7 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
                   ? 'Edit points discussed as needed…'
                   : 'Select a status to inject a template…'
               }
-              disabled={createMutation.isPending}
+              disabled={notesBusy}
             />
           </div>
 
@@ -678,7 +780,7 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
                     ? 'Edit action items as needed…'
                     : 'Select a status to inject a template…'
                 }
-                disabled={createMutation.isPending}
+                disabled={notesBusy}
               />
             </div>
             <div>
@@ -697,7 +799,9 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
                 value={nextFollowupDate}
                 onChange={e => {
                   const next = e.target.value;
-                  if (next && next < todayLocalIso()) {
+                  const keepingLoadedDate =
+                    editingFollowupId != null && next === editingBaselineDate;
+                  if (next && next < todayLocalIso() && !keepingLoadedDate) {
                     setFormError('Next Follow-up Date cannot be in the past.');
                     return;
                   }
@@ -705,7 +809,7 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
                   setFormError(null);
                 }}
                 required={Boolean(actionItems.trim())}
-                disabled={createMutation.isPending}
+                disabled={notesBusy}
               />
             </div>
           </div>
@@ -839,7 +943,7 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
                         setChecklistSendEmail('no');
                         setFormError(null);
                       }}
-                      disabled={createMutation.isPending}
+                      disabled={notesBusy}
                     />
                     No
                   </label>
@@ -853,7 +957,7 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
                         setChecklistSendEmail('yes');
                         setFormError(null);
                       }}
-                      disabled={createMutation.isPending}
+                      disabled={notesBusy}
                     />
                     Yes
                   </label>
@@ -896,15 +1000,30 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
               </p>
             </div>
           )}
-          <div className="flex justify-end">
+          {editNotice ? (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+              {editNotice}
+            </div>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            {editingFollowupId != null ? (
+              <button
+                type="button"
+                className="inline-flex items-center rounded-lg border border-border-subtle bg-card px-3 py-2 text-sm font-semibold text-text-main hover:bg-surface-bg disabled:opacity-50"
+                onClick={handleCancelEdit}
+                disabled={notesBusy}
+              >
+                Cancel
+              </button>
+            ) : null}
             <button
               type="button"
               className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
               onClick={() => void handleSave()}
-              disabled={createMutation.isPending || !statusId}
+              disabled={notesBusy || !statusId}
             >
-              {createMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : null}
-              Save Notes
+              {notesBusy ? <Loader2 size={14} className="animate-spin" /> : null}
+              {editingFollowupId != null ? 'Update Notes' : 'Save Notes'}
             </button>
           </div>
         </div>
@@ -933,19 +1052,33 @@ const CounselorFollowupDrawer: React.FC<CounselorFollowupDrawerProps> = ({
                 {timeline.map(item => (
                   <article
                     key={item.id}
-                    className="rounded-xl border border-border-subtle bg-surface-bg/40 p-3"
+                    className={`rounded-xl border border-border-subtle bg-surface-bg/40 p-3${
+                      editingFollowupId === item.id ? ' ring-1 ring-accent' : ''
+                    }`}
                   >
                     <div className="flex items-start justify-between gap-2 mb-2">
                       <span className="inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-card px-2.5 py-0.5 text-[11px] font-semibold text-text-main">
                         <MessageSquareText size={12} />
                         {item.status_heading}
                       </span>
-                      <span className="text-[11px] text-text-muted text-right whitespace-nowrap">
-                        {formatTime(item.created_at)}
-                        {item.counselor_name?.trim()
-                          ? ` · ${item.counselor_name.trim()}`
-                          : ''}
-                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {item.id === latestFollowupId ? (
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                            onClick={() => startEdit(item)}
+                            disabled={notesBusy}
+                          >
+                            Edit
+                          </button>
+                        ) : null}
+                        <span className="text-[11px] text-text-muted text-right whitespace-nowrap">
+                          {formatTime(item.created_at)}
+                          {item.counselor_name?.trim()
+                            ? ` · ${item.counselor_name.trim()}`
+                            : ''}
+                        </span>
+                      </div>
                     </div>
                     <div className="text-sm text-text-main whitespace-pre-wrap break-words space-y-2">
                       <p>

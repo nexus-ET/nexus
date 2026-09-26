@@ -92,7 +92,7 @@ def test_normalize_env_newlines(raw: str, expected: str):
     assert run_dev._normalize_env_newlines(raw) == expected
 
 
-def test_reload_excludes_env_file():
+def test_reload_watches_app_dir_without_glob_excludes():
     cmd = run_dev.build_uvicorn_cmd(
         run_dev.DevConfig(
             host="127.0.0.1",
@@ -104,15 +104,14 @@ def test_reload_excludes_env_file():
             tunnel_config_path=None,
             public_tunnel_base=None,
             tunnel_edge_ip_version="4",
-            tunnel_protocol="http2",
         ),
         reload=True,
     )
     assert "--reload" in cmd
-    # Pair form: --reload-exclude <pattern>
-    excludes = [cmd[i + 1] for i, part in enumerate(cmd) if part == "--reload-exclude"]
-    assert "**/.env" in excludes
-    assert "**/.env.*" in excludes
+    assert cmd[cmd.index("--reload-dir") + 1] == "app"
+    # Windows python expands wildcards in argv; never pass glob excludes.
+    assert "--reload-exclude" not in cmd
+    assert not any("*" in part for part in cmd)
 
 
 def test_build_tunnel_cmd_puts_protocol_before_url(monkeypatch):

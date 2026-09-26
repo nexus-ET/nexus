@@ -37,7 +37,7 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").upper()).strip()
 
 
-def _score_passport(text: str, raw: str) -> tuple[float, str]:
+def _score_passport_signals(text: str, raw: str) -> tuple[float, str]:
     score = 0.0
     reasons: list[str] = []
     if re.search(r"\bP<[A-Z]{3}[A-Z0-9<]{20,}", raw.replace(" ", ""), re.I):
@@ -49,13 +49,46 @@ def _score_passport(text: str, raw: str) -> tuple[float, str]:
     if re.search(r"\bSURNAME\b", text) and re.search(r"\bGIVEN\s+NAMES?\b", text):
         score += 0.2
         reasons.append("surname_given")
+    if re.search(r"\bREPUBLIC\s+OF\s+INDIA\b", text):
+        score += 0.22
+        reasons.append("republic_of_india")
+    if re.search(r"\b[A-Z]\d{7}\b", text):
+        score += 0.2
+        reasons.append("passport_number")
     if re.search(r"\b(MRZ|MACHINE[- ]READABLE)\b", text):
         score += 0.1
         reasons.append("mrz_label")
     if re.search(r"\b(DATE\s+OF\s+EXPIRY|DATE\s+OF\s+ISSUE)\b", text):
         score += 0.08
         reasons.append("issue_expiry")
+    if re.search(r"\bDATE\s+OF\s+BIRTH\b", text):
+        score += 0.08
+        reasons.append("date_of_birth")
     return min(1.0, score), "+".join(reasons) or "none"
+
+
+def _score_passport(text: str, raw: str, *, original: str | None = None) -> tuple[float, str]:
+    """Score passport cues on the full OCR and again with comment lines removed.
+
+    Notary / attestation stamps must not hide a page that still reads as a passport.
+    """
+    best_s, best_r = _score_passport_signals(text, raw)
+    source = original if original is not None else text
+    try:
+        from app.services.scanx_passport import strip_non_passport_comments
+
+        stripped = strip_non_passport_comments(source)
+    except Exception:
+        return best_s, best_r
+    if not stripped.strip() or stripped == source:
+        return best_s, best_r
+    s2, r2 = _score_passport_signals(
+        _norm(stripped),
+        stripped.upper().replace(" ", ""),
+    )
+    if s2 > best_s:
+        return s2, r2
+    return best_s, best_r
 
 
 def _score_academic_transcript(text: str) -> tuple[float, str]:
@@ -187,7 +220,7 @@ def classify_document_type(
     scores: dict[str, float] = {}
     reasons: dict[str, str] = {}
 
-    s, r = _score_passport(blob, raw.upper().replace(" ", ""))
+    s, r = _score_passport(blob, raw.upper().replace(" ", ""), original=raw)
     # Filename hints.
     if re.search(r"PASSPORT", name):
         s = min(1.0, s + 0.25)

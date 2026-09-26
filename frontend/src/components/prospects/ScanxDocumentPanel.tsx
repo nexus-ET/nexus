@@ -204,6 +204,8 @@ type ScanxReview = {
 type Props = {
   leadId: number | null;
   candidateName?: string | null;
+  onReviewOpenChange?: (open: boolean) => void;
+  onBindCloseReview?: (close: (() => void) | null) => void;
 };
 
 type ScanxDeleteConfirm =
@@ -1143,7 +1145,7 @@ function CategorizedExtractionTables({
         <h5 className="text-[11px] font-semibold text-text-main">Extracted data</h5>
       </div>
       {sideBySide ? (
-        <div className="grid grid-cols-1 items-start gap-3 xl:grid-cols-2">
+        <div className="grid grid-cols-1 items-start gap-3 @min-[36rem]:grid-cols-2">
           <CategoryFieldTable cat={personal!} />
           <CategoryFieldTable cat={document!} />
         </div>
@@ -1410,8 +1412,7 @@ function PassportGroupedTables({
       <div className="px-0.5">
         <h5 className="text-[11px] font-semibold text-text-main">Passport extraction</h5>
       </div>
-      {/* Stack until xl: parent review column is already ~half viewport at lg. */}
-      <div className="grid grid-cols-1 items-start gap-3 xl:grid-cols-2">
+      <div className="grid grid-cols-1 items-start gap-3 @min-[36rem]:grid-cols-2">
         {groups.map(renderGroup)}
       </div>
     </div>
@@ -1717,7 +1718,12 @@ function previewBlob(blob: Blob, mimeHint?: string | null): Blob {
   return blob;
 }
 
-export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
+export default function ScanxDocumentPanel({
+  leadId,
+  candidateName,
+  onReviewOpenChange,
+  onBindCloseReview,
+}: Props) {
   const initialCached = getCachedScanxConfig();
   const [config, setConfig] = useState<ScanxConfig | null>(initialCached);
   const [configFailed, setConfigFailed] = useState(
@@ -3115,6 +3121,24 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
     Boolean(review) &&
     selectedId != null &&
     scanxTabTypeKey(review?.document.document_type_id) === activeTypeTab;
+  const reviewOpen = Boolean(selectedId && review && reviewOnActiveTab);
+  const closeReview = useCallback(() => {
+    setSelectedId(null);
+    setReview(null);
+  }, []);
+
+  useEffect(() => {
+    onReviewOpenChange?.(reviewOpen);
+  }, [onReviewOpenChange, reviewOpen]);
+
+  useEffect(() => {
+    onBindCloseReview?.(closeReview);
+    return () => onBindCloseReview?.(null);
+  }, [closeReview, onBindCloseReview]);
+
+  useEffect(() => {
+    return () => onReviewOpenChange?.(false);
+  }, [onReviewOpenChange]);
   const reviewCategories = useMemo(() => {
     if (!review) return [] as ScanxCategory[];
     if (review.categories && review.categories.length > 0) return review.categories;
@@ -3486,7 +3510,13 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
     );
 
   return (
-    <div className="relative space-y-4">
+    <div
+      className={
+        reviewOpen
+          ? 'flex min-h-0 flex-1 flex-col gap-3 overflow-hidden'
+          : 'relative space-y-4'
+      }
+    >
       <div className="flex items-start justify-between gap-3 rounded-lg border border-border-subtle bg-surface-bg/60 px-3 py-2">
         <div className="min-w-0">
           <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-accent/70">ScanX</p>
@@ -3641,6 +3671,7 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
         </div>
       ) : null}
 
+      {!reviewOpen ? (
       <div className="rounded-lg border border-border-subtle bg-card">
         <div className="flex items-center justify-between border-b border-border-subtle px-3 py-2">
           <h4 className="text-xs font-semibold text-text-main">
@@ -3697,6 +3728,12 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
                 className="h-3.5 w-3.5 rounded border-border-subtle"
                 aria-label="Select all documents"
               />
+              <span
+                className="w-6 shrink-0 text-center text-[11px] font-semibold tabular-nums text-text-muted"
+                title="Serial number"
+              >
+                #
+              </span>
               <span className="text-[11px] text-text-muted">Select all</span>
             </div>
             <ul className="divide-y divide-border-subtle">
@@ -3713,6 +3750,10 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
                         aria-label={`Pending ${item.fileName}`}
                       />
                     </div>
+                    <div
+                      className="flex w-6 shrink-0 items-center justify-center"
+                      aria-hidden
+                    />
                     <div
                       className="flex min-w-0 flex-1 items-center gap-3 px-2 py-2.5"
                       aria-busy={rowBusy || undefined}
@@ -3778,9 +3819,10 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
                   </li>
                 );
               })}
-              {tabDocs.map(doc => {
+              {tabDocs.map((doc, index) => {
                 const rowBusy = isScanxInProgress(doc.status);
                 const rowOpening = openingReviewId === doc.id;
+                const serial = index + 1;
                 return (
                   <li key={doc.id} className="flex items-stretch gap-1">
                     <div className="flex shrink-0 items-center pl-3">
@@ -3793,6 +3835,12 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
                         aria-label={`Select ${doc.original_filename}`}
                         onClick={e => e.stopPropagation()}
                       />
+                    </div>
+                    <div
+                      className="flex w-6 shrink-0 items-center justify-center text-[11px] font-semibold tabular-nums text-text-muted"
+                      aria-label={`Document ${serial} of ${tabDocs.length}`}
+                    >
+                      {serial}
                     </div>
                     <button
                       type="button"
@@ -3907,12 +3955,22 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
           </>
         )}
       </div>
+      ) : null}
 
-      {selectedId && review && reviewOnActiveTab ? (
-        <div className="grid gap-3 lg:grid-cols-2 lg:h-[min(78vh,56rem)] lg:min-h-[28rem]">
-          <section className="flex min-h-[22rem] flex-col overflow-hidden rounded-lg border border-border-subtle bg-card lg:min-h-0 lg:h-full">
+      {reviewOpen && review ? (
+        <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
+          <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border-subtle bg-card">
             <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border-subtle px-3 py-2">
               <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-[11px] font-semibold text-text-main hover:bg-surface-bg"
+                  onClick={closeReview}
+                  aria-label="Back to document list"
+                >
+                  <ChevronLeft size={14} />
+                  Documents
+                </button>
                 <span className="text-xs font-semibold text-text-main">Viewer</span>
                 {originalPageUrls.length > 1 ? (
                     <div className="flex flex-wrap items-center gap-2">
@@ -4052,7 +4110,7 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
                     <iframe
                       title={`Document page ${viewerPageIndex + 1}`}
                       src={pageUrl}
-                      className="h-full min-h-[28rem] w-full border-0 bg-white"
+                      className="h-full min-h-0 w-full border-0 bg-white"
                     />
                   );
                 }
@@ -4164,7 +4222,7 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
                     <iframe
                       title="Document preview"
                       src={pageUrl}
-                      className="h-full w-full border-0 bg-white"
+                      className="h-full min-h-0 w-full border-0 bg-white"
                     />
                   );
                 }
@@ -4178,7 +4236,7 @@ export default function ScanxDocumentPanel({ leadId, candidateName }: Props) {
               })()}
             </div>
           </section>
-          <section className="flex min-h-[22rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border-subtle bg-card lg:min-h-0 lg:h-full">
+          <section className="@container flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border-subtle bg-card">
             <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border-subtle px-3 py-2">
               <span className="text-xs font-semibold text-text-main">Extracted details</span>
               <div className="flex items-center gap-1.5">

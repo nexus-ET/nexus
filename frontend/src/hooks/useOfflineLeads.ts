@@ -19,6 +19,10 @@ function buildOfflineLeadsUrl(query: OfflineLeadsQuery): string {
   if (query.status !== 'ALL') params.set('status', query.status);
   params.set('sort_by', query.sortBy);
   params.set('sort_dir', query.sortDir);
+  if (query.clientDate) params.set('client_date', query.clientDate);
+  if (query.clientTime) params.set('client_time', query.clientTime);
+  if (query.bookingDateQ?.trim()) params.set('booking_date_q', query.bookingDateQ.trim());
+  if (query.followupDateQ?.trim()) params.set('followup_date_q', query.followupDateQ.trim());
   return `leads/offline?${params.toString()}`;
 }
 

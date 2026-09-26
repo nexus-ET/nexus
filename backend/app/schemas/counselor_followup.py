@@ -63,6 +63,15 @@ class CounselorFollowupCreate(BaseModel):
         return self
 
 
+class CounselorFollowupUpdate(BaseModel):
+    """Four fields the Notes page edits on the latest counselor note."""
+
+    status_id: int
+    points_discussed: str = Field(..., min_length=1, max_length=20000)
+    action_items: str | None = Field(default=None, max_length=20000)
+    target_completion_date: date | None = None
+
+
 class CounselorFollowupSentDocument(BaseModel):
     label: str
     url: str | None = None

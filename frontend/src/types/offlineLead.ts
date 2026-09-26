@@ -1,4 +1,4 @@
-export type OfflineLeadSortField = 'full_name' | 'created_at' | 'email' | 'phone_number';
+export type OfflineLeadSortField = 'full_name' | 'created_at' | 'email' | 'phone_number' | 'scheduled_time';
 export type OfflineLeadSortDirection = 'asc' | 'desc';
 export type OfflineLeadStatusFilter = 'ALL' | 'ACTIVE_LEAD' | 'AI_ACTIVE' | 'HANDOFF' | 'OFFLINE';
 
@@ -78,8 +78,12 @@ export interface OfflineLeadItem {
   age?: number | null;
   created_at?: string | null;
   booking_count?: number;
+  scheduled_time?: string | null;
+  scheduled_end_at?: string | null;
   followup_count?: number;
   followup_status_label?: string | null;
+  /** YYYY-MM-DD Next Follow-up Date from the latest counselor note. */
+  followup_date?: string | null;
 }
 
 export interface OfflineLeadListResponse {
@@ -115,6 +119,10 @@ export interface OfflineLeadsQuery {
   status: OfflineLeadStatusFilter;
   sortBy: OfflineLeadSortField;
   sortDir: OfflineLeadSortDirection;
+  clientDate?: string;
+  clientTime?: string;
+  bookingDateQ?: string;
+  followupDateQ?: string;
 }
 
 export interface OfflineLeadDuplicateCheck {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException
@@ -330,8 +330,11 @@ def build_offline_lead_list_item(
         "age": _compute_age(dob if isinstance(dob, str) else None),
         "created_at": lead.created_at.isoformat() if lead.created_at else None,
         "booking_count": 0,
+        "scheduled_time": None,
+        "scheduled_end_at": None,
         "followup_count": 0,
         "followup_status_label": None,
+        "followup_date": None,
     }
 
 
@@ -408,6 +411,63 @@ def _count_bookings_for_lead_ids(db: Session, lead_ids: list[int]) -> dict[int, 
     return {int(lead_id): int(count) for lead_id, count in rows if lead_id is not None}
 
 
+def _pick_display_scheduled_start(
+    times: list[datetime],
+    now: datetime,
+    slot_minutes: int,
+) -> datetime | None:
+    """Soonest slot that has not ended; otherwise the most recent past start."""
+    if not times:
+        return None
+    duration = timedelta(minutes=slot_minutes)
+    open_slots = sorted(start for start in times if start + duration > now)
+    if open_slots:
+        return open_slots[0]
+    return max(times)
+
+
+def _scheduled_slots_for_lead_ids(
+    db: Session,
+    lead_ids: list[int],
+) -> dict[int, tuple[datetime, datetime]]:
+    """Assigned counselling slot (start, end) to show on All Leads. End uses slot duration."""
+    if not lead_ids:
+        return {}
+    from app.services.settings_service import get_int_setting
+    from app.utils.timezone import office_now
+
+    slot_minutes = get_int_setting(db, "COUNSELING_SLOT_DURATION", 30)
+    now = office_now(db)
+    rows = db.execute(
+        text(
+            """
+            SELECT lead_id, scheduled_time
+            FROM counselling_bookings
+            WHERE lead_id = ANY(:lead_ids)
+              AND admin_id IS NOT NULL
+              AND UPPER(COALESCE(status, '')) <> 'CANCELLED'
+              AND scheduled_time IS NOT NULL
+            """
+        ),
+        {"lead_ids": lead_ids},
+    ).all()
+    by_lead: dict[int, list[datetime]] = {}
+    for lead_id, scheduled in rows:
+        if lead_id is None or scheduled is None:
+            continue
+        stamp = scheduled.replace(tzinfo=None) if getattr(scheduled, "tzinfo", None) else scheduled
+        by_lead.setdefault(int(lead_id), []).append(stamp)
+
+    result: dict[int, tuple[datetime, datetime]] = {}
+    duration = timedelta(minutes=slot_minutes)
+    for lead_id, times in by_lead.items():
+        chosen = _pick_display_scheduled_start(times, now, slot_minutes)
+        if chosen is None:
+            continue
+        result[lead_id] = (chosen, chosen + duration)
+    return result
+
+
 def _name_ilike_clauses(term: str):
     """Match full_name and optional name parts stored on additional_data (case-insensitive contains)."""
     pattern = f"%{term}%"
@@ -439,6 +499,420 @@ def _student_id_clauses(raw: str):
     return or_(*clauses)
 
 
+_DATE_KEYWORDS = (
+    "today",
+    "tomorrow",
+    "day after tomorrow",
+    "upcoming",
+    "overdue",
+    "completed",
+)
+_WEEKDAY_SHORT = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTH_SHORT = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _date_filter_keywords(raw: str | None) -> list[str]:
+    """Prefixes of a keyword or of a word inside it. Same rule as the date inputs."""
+    query = " ".join((raw or "").strip().lower().split())
+    if not query:
+        return []
+    hits: list[str] = []
+    for keyword in _DATE_KEYWORDS:
+        words = keyword.split(" ")
+        if keyword.startswith(query) or any(word.startswith(query) for word in words):
+            hits.append(keyword)
+    return hits
+
+
+def _parse_client_clock(client_time: str | None) -> datetime:
+    text_value = (client_time or "").strip()
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            parsed = datetime.strptime(text_value, fmt)
+            return parsed.replace(year=2000, month=1, day=1)
+        except ValueError:
+            continue
+    now = datetime.now()
+    return now.replace(year=2000, month=1, day=1, microsecond=0)
+
+
+def _booking_status_label(diff_days: int, start_has_passed: bool) -> str:
+    if diff_days == 0 and start_has_passed:
+        return "Overdue"
+    if diff_days == 0:
+        return "Today"
+    if diff_days == 1:
+        return "Tomorrow"
+    if diff_days == 2:
+        return "Day After Tomorrow"
+    if diff_days >= 3:
+        return "Upcoming"
+    return "Date Passed"
+
+
+def _keyword_matches_day(
+    keyword: str,
+    diff_days: int,
+    *,
+    column: str,
+    start_has_passed: bool,
+) -> bool:
+    if keyword == "overdue":
+        if column == "followup":
+            return False
+        return diff_days == 0 and start_has_passed
+    if keyword == "today":
+        return diff_days == 0
+    if keyword == "tomorrow":
+        return diff_days == 1
+    if keyword == "day after tomorrow":
+        return diff_days == 2
+    if keyword == "upcoming":
+        return diff_days >= 1
+    return diff_days < 0
+
+
+def _date_text_matches(
+    raw: str | None,
+    diff_days: int | None,
+    *,
+    column: str,
+    start_has_passed: bool,
+    visible_text: str,
+) -> bool:
+    trimmed = (raw or "").strip()
+    if not trimmed:
+        return True
+    keywords = _date_filter_keywords(trimmed)
+    if keywords:
+        if diff_days is None:
+            return False
+        return any(
+            _keyword_matches_day(
+                keyword,
+                diff_days,
+                column=column,
+                start_has_passed=start_has_passed,
+            )
+            for keyword in keywords
+        )
+    needle = " ".join(trimmed.lower().split())
+    return needle in visible_text.lower()
+
+
+def _booking_visible_text(start: datetime, end: datetime, diff_days: int, start_has_passed: bool) -> str:
+    weekday = _WEEKDAY_SHORT[start.weekday()]
+    month = _MONTH_SHORT[start.month - 1]
+    label = _booking_status_label(diff_days, start_has_passed)
+    return (
+        f"{weekday}, {start.day:02d}-{month}-{start.year % 100:02d} "
+        f"({start:%H:%M} - {end:%H:%M}) {label}"
+    )
+
+
+def _followup_visible_text(followup_day: date, diff_days: int) -> str:
+    weekday = _WEEKDAY_SHORT[followup_day.weekday()]
+    month = _MONTH_SHORT[followup_day.month - 1]
+    label = _booking_status_label(diff_days, False)
+    iso = followup_day.isoformat()
+    day_first = f"{weekday}, {followup_day.day} {month} {followup_day.year}"
+    month_first = f"{weekday}, {month} {followup_day.day}, {followup_day.year}"
+    return f"{day_first} {month_first} {iso} {label}"
+
+
+def _materialize_offline_lead_items(db: Session, rows: list[Any]) -> list[dict[str, Any]]:
+    lead_ids = [row.id for row in rows]
+    booking_counts = _count_bookings_for_lead_ids(db, lead_ids)
+    scheduled_slots = _scheduled_slots_for_lead_ids(db, lead_ids)
+    from app.models.status_definition import StatusDefinition
+    from app.services.counselor_followup_service import (
+        count_followups_for_lead_ids,
+        latest_followup_date_for_lead_ids,
+        latest_followup_status_for_lead_ids,
+    )
+
+    pipeline_names = _pipeline_status_names_for_leads(db, lead_ids)
+    status_ids = {
+        int(row.status_definition_id)
+        for row in rows
+        if getattr(row, "status_definition_id", None)
+    }
+    status_by_id: dict[int, Any] = {}
+    if status_ids:
+        status_by_id = {
+            int(defn.id): defn
+            for defn in db.query(StatusDefinition)
+            .filter(StatusDefinition.id.in_(status_ids))
+            .all()
+        }
+
+    followup_counts = count_followups_for_lead_ids(db, lead_ids)
+    followup_statuses = latest_followup_status_for_lead_ids(db, lead_ids)
+    followup_dates = latest_followup_date_for_lead_ids(db, lead_ids)
+    items = []
+    for row in rows:
+        item = build_offline_lead_list_item(
+            row,
+            db,
+            status_by_id=status_by_id,
+            pipeline_names=pipeline_names,
+        )
+        item["booking_count"] = booking_counts.get(row.id, 0)
+        slot = scheduled_slots.get(row.id)
+        if slot is not None:
+            item["scheduled_time"], item["scheduled_end_at"] = slot
+        item["followup_count"] = followup_counts.get(row.id, 0)
+        item["followup_status_label"] = followup_statuses.get(row.id)
+        item["followup_date"] = followup_dates.get(row.id)
+        if not item.get("status_stage_name"):
+            item["status_stage_name"] = pipeline_names.get(row.id)
+        if not item.get("lead_status"):
+            item["lead_status"] = item.get("status_stage_name")
+        items.append(item)
+    return items
+
+
+def _all_display_scheduled_slots(db: Session) -> dict[int, tuple[datetime, datetime]]:
+    """Display booking for every lead that has one. The bookings table is small."""
+    from app.services.settings_service import get_int_setting
+    from app.utils.timezone import office_now
+
+    slot_minutes = get_int_setting(db, "COUNSELING_SLOT_DURATION", 30)
+    now = office_now(db)
+    rows = db.execute(
+        text(
+            """
+            SELECT lead_id, scheduled_time
+            FROM counselling_bookings
+            WHERE admin_id IS NOT NULL
+              AND UPPER(COALESCE(status, '')) <> 'CANCELLED'
+              AND scheduled_time IS NOT NULL
+            """
+        )
+    ).all()
+    by_lead: dict[int, list[datetime]] = {}
+    for lead_id, scheduled in rows:
+        if lead_id is None or scheduled is None:
+            continue
+        stamp = scheduled.replace(tzinfo=None) if getattr(scheduled, "tzinfo", None) else scheduled
+        by_lead.setdefault(int(lead_id), []).append(stamp)
+    duration = timedelta(minutes=slot_minutes)
+    result: dict[int, tuple[datetime, datetime]] = {}
+    for lead_id, times in by_lead.items():
+        chosen = _pick_display_scheduled_start(times, now, slot_minutes)
+        if chosen is not None:
+            result[lead_id] = (chosen, chosen + duration)
+    return result
+
+
+def _all_latest_followup_dates(db: Session) -> dict[int, str]:
+    """Latest note's next-follow-up date, matching the Notes page newest-first rule."""
+    rows = db.execute(
+        text(
+            """
+            SELECT lead_id, target_completion_date
+            FROM (
+                SELECT lead_id,
+                       target_completion_date,
+                       row_number() OVER (
+                           PARTITION BY lead_id
+                           ORDER BY created_at DESC, id DESC
+                       ) AS rn
+                FROM counselor_followup_logs
+            ) ranked
+            WHERE rn = 1
+              AND target_completion_date IS NOT NULL
+            """
+        )
+    ).all()
+    result: dict[int, str] = {}
+    for lead_id, followup_day in rows:
+        if lead_id is None or followup_day is None:
+            continue
+        result[int(lead_id)] = followup_day.isoformat()[:10]
+    return result
+
+
+def _list_offline_leads_for_date_filter(
+    db: Session,
+    query,
+    *,
+    page: int,
+    page_size: int,
+    booking_date_q: str | None,
+    followup_date_q: str | None,
+    client_date: date | None,
+    client_time: str | None,
+    sort_by: SortField,
+    sort_dir: SortDirection,
+) -> dict[str, Any]:
+    """One response of leads whose booking or follow-up date matches the text.
+
+    Day math uses the browser's civil date. Appointment timestamps stay naive
+    wall-clock values, so a UTC midnight conversion cannot move the day.
+    """
+    civil = client_date or datetime.now().date()
+    clock = _parse_client_clock(client_time)
+    booking_q = (booking_date_q or "").strip()
+    followup_q = (followup_date_q or "").strip()
+    slots = _all_display_scheduled_slots(db)
+    followup_dates = _all_latest_followup_dates(db) if followup_q else {}
+    pool = set(slots)
+    if followup_q:
+        pool.update(followup_dates)
+    matched: list[int] = []
+    for lead_id in pool:
+        slot = slots.get(lead_id)
+        booking_ok = True
+        if booking_q:
+            if slot is None:
+                booking_ok = _date_text_matches(
+                    booking_q, None, column="booking", start_has_passed=False, visible_text=""
+                )
+            else:
+                start, end = slot
+                diff_days = (start.date() - civil).days
+                start_passed = start.date() == civil and start.time().replace(microsecond=0) < clock.time()
+                booking_ok = _date_text_matches(
+                    booking_q,
+                    diff_days,
+                    column="booking",
+                    start_has_passed=start_passed,
+                    visible_text=_booking_visible_text(start, end, diff_days, start_passed),
+                )
+        followup_ok = True
+        if followup_q:
+            raw_day = followup_dates.get(lead_id)
+            if not raw_day:
+                followup_ok = _date_text_matches(
+                    followup_q, None, column="followup", start_has_passed=False, visible_text=""
+                )
+            else:
+                followup_day = date.fromisoformat(raw_day[:10])
+                diff_days = (followup_day - civil).days
+                followup_ok = _date_text_matches(
+                    followup_q,
+                    diff_days,
+                    column="followup",
+                    start_has_passed=False,
+                    visible_text=_followup_visible_text(followup_day, diff_days),
+                )
+        if booking_ok and followup_ok:
+            matched.append(lead_id)
+
+    if matched:
+        allowed = {
+            int(row[0])
+            for row in query.filter(Lead.id.in_(matched)).with_entities(Lead.id).all()
+        }
+        matched = [lead_id for lead_id in matched if lead_id in allowed]
+    else:
+        matched = []
+
+    if sort_by == "scheduled_time":
+        dated = [lead_id for lead_id in matched if lead_id in slots]
+        undated = [lead_id for lead_id in matched if lead_id not in slots]
+        dated.sort(key=lambda lead_id: slots[lead_id][0], reverse=sort_dir == "desc")
+        ordered = dated + undated
+    else:
+        sort_col = SORT_COLUMNS.get(sort_by, Lead.created_at)
+        ordering = asc(sort_col) if sort_dir == "asc" else desc(sort_col)
+        ordered = [
+            int(row[0])
+            for row in db.query(Lead.id)
+            .filter(Lead.id.in_(matched or [-1]))
+            .order_by(ordering, Lead.id.desc())
+            .all()
+        ]
+
+    total = len(ordered)
+    total_pages = max(1, math.ceil(total / page_size)) if total else 1
+    safe_page = min(max(1, page), total_pages)
+    offset = (safe_page - 1) * page_size
+    page_ids = ordered[offset : offset + page_size]
+    if not page_ids:
+        return {
+            "items": [],
+            "page": safe_page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+        }
+    found = {
+        int(row.id): row
+        for row in query.filter(Lead.id.in_(page_ids)).all()
+    }
+    rows = [found[lead_id] for lead_id in page_ids if lead_id in found]
+    return {
+        "items": _materialize_offline_lead_items(db, rows),
+        "page": safe_page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+    }
+
+
+def _rows_today_bookings_first(
+    db: Session,
+    query,
+    *,
+    page: int,
+    page_size: int,
+    client_date: date | None,
+    sort_dir: SortDirection,
+) -> list[Any]:
+    """Full lead list: today's bookings, then other bookings, then rows with none.
+
+    The booking filter box is empty on this path. Today's civil date comes from
+    the browser so a UTC clock cannot move the day.
+    """
+    civil = client_date or datetime.now().date()
+    slots = _all_display_scheduled_slots(db)
+    today_ids: list[int] = []
+    other_ids: list[int] = []
+    for lead_id, (start, _end) in slots.items():
+        if start.date() == civil:
+            today_ids.append(lead_id)
+        else:
+            other_ids.append(lead_id)
+    reverse = sort_dir == "desc"
+    today_ids.sort(key=lambda lead_id: slots[lead_id][0], reverse=reverse)
+    other_ids.sort(key=lambda lead_id: slots[lead_id][0], reverse=reverse)
+    dated = today_ids + other_ids
+    if dated:
+        allowed = {
+            int(row[0])
+            for row in query.filter(Lead.id.in_(dated)).with_entities(Lead.id).all()
+        }
+        dated = [lead_id for lead_id in dated if lead_id in allowed]
+
+    offset = (page - 1) * page_size
+    page_ids = dated[offset : offset + page_size]
+    need = page_size - len(page_ids)
+    rows: list[Any] = []
+    if page_ids:
+        found = {
+            int(row.id): row
+            for row in query.filter(Lead.id.in_(page_ids)).all()
+        }
+        rows = [found[lead_id] for lead_id in page_ids if lead_id in found]
+    if need <= 0:
+        return rows
+
+    undated_offset = max(0, offset - len(dated))
+    undated_query = query
+    if dated:
+        undated_query = undated_query.filter(~Lead.id.in_(dated))
+    undated_rows = (
+        undated_query.order_by(Lead.created_at.desc(), Lead.id.desc())
+        .offset(undated_offset)
+        .limit(need)
+        .all()
+    )
+    rows.extend(undated_rows)
+    return rows
+
+
 def list_offline_leads(
     db: Session,
     *,
@@ -450,6 +924,10 @@ def list_offline_leads(
     status: str | None = None,
     sort_by: SortField = "created_at",
     sort_dir: SortDirection = "desc",
+    booking_date_q: str | None = None,
+    followup_date_q: str | None = None,
+    client_date: date | None = None,
+    client_time: str | None = None,
 ) -> dict[str, Any]:
     safe_page = max(1, page)
     safe_page_size = max(1, min(page_size, 100))
@@ -487,10 +965,41 @@ def list_offline_leads(
 
     query = _apply_status_filter(query, status)
 
+    if (booking_date_q or "").strip() or (followup_date_q or "").strip():
+        return _list_offline_leads_for_date_filter(
+            db,
+            query,
+            page=safe_page,
+            page_size=safe_page_size,
+            booking_date_q=booking_date_q,
+            followup_date_q=followup_date_q,
+            client_date=client_date,
+            client_time=client_time,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+        )
+
     total = query.count()
     total_pages = max(1, math.ceil(total / safe_page_size)) if total else 1
     if safe_page > total_pages and total > 0:
         safe_page = total_pages
+
+    if sort_by == "scheduled_time":
+        rows = _rows_today_bookings_first(
+            db,
+            query,
+            page=safe_page,
+            page_size=safe_page_size,
+            client_date=client_date,
+            sort_dir=sort_dir,
+        )
+        return {
+            "items": _materialize_offline_lead_items(db, rows),
+            "page": safe_page,
+            "page_size": safe_page_size,
+            "total": total,
+            "total_pages": total_pages,
+        }
 
     sort_col = SORT_COLUMNS.get(sort_by, Lead.created_at)
     ordering = asc(sort_col) if sort_dir == "asc" else desc(sort_col)
@@ -512,48 +1021,7 @@ def list_offline_leads(
 
     offset = (safe_page - 1) * safe_page_size
     rows = query.offset(offset).limit(safe_page_size).all()
-
-    lead_ids = [row.id for row in rows]
-    booking_counts = _count_bookings_for_lead_ids(db, lead_ids)
-    from app.models.status_definition import StatusDefinition
-    from app.services.counselor_followup_service import (
-        count_followups_for_lead_ids,
-        latest_followup_status_for_lead_ids,
-    )
-
-    pipeline_names = _pipeline_status_names_for_leads(db, lead_ids)
-    status_ids = {
-        int(row.status_definition_id)
-        for row in rows
-        if getattr(row, "status_definition_id", None)
-    }
-    status_by_id: dict[int, Any] = {}
-    if status_ids:
-        status_by_id = {
-            int(defn.id): defn
-            for defn in db.query(StatusDefinition)
-            .filter(StatusDefinition.id.in_(status_ids))
-            .all()
-        }
-
-    followup_counts = count_followups_for_lead_ids(db, lead_ids)
-    followup_statuses = latest_followup_status_for_lead_ids(db, lead_ids)
-    items = []
-    for row in rows:
-        item = build_offline_lead_list_item(
-            row,
-            db,
-            status_by_id=status_by_id,
-            pipeline_names=pipeline_names,
-        )
-        item["booking_count"] = booking_counts.get(row.id, 0)
-        item["followup_count"] = followup_counts.get(row.id, 0)
-        item["followup_status_label"] = followup_statuses.get(row.id)
-        if not item.get("status_stage_name"):
-            item["status_stage_name"] = pipeline_names.get(row.id)
-        if not item.get("lead_status"):
-            item["lead_status"] = item.get("status_stage_name")
-        items.append(item)
+    items = _materialize_offline_lead_items(db, rows)
 
     return {
         "items": items,

@@ -15,6 +15,42 @@ import {
   type StudentPipelineProcessConfig,
 } from '../../utils/studentPipelineProcess';
 import { parseLeadIdParam } from '../../utils/prospectsUrl';
+import {
+  moveArrow,
+  processArrow,
+  processArrowNested,
+  processCluster,
+  processCodeClasses,
+  processFlow,
+  processFlowCenter,
+  processFlowChevron,
+  processFlowChevronEnd,
+  processFlowChevronStart,
+  processFlowFade,
+  processFlowFadeEnd,
+  processFlowFadeStart,
+  processFlowMid,
+  processFlowMidPadEnd,
+  processFlowMidPadStart,
+  processFlowMidWrap,
+  processFlowPin,
+  processItem,
+  processNodeClasses,
+  processTerminus,
+  processTerminusEnd,
+  processTerminusStart,
+  processTitleClasses,
+  stripFlow,
+} from './prospectsLayout';
+
+function nodeFlags(node: StripNode, activeCode: string) {
+  return {
+    active: node.code === activeCode,
+    process: node.kind === 'process',
+    nestParent: node.kind === 'subprocess' && node.nestRole === 'parent',
+    nested: node.kind === 'subprocess' && node.nestRole === 'nested',
+  };
+}
 
 type StripNode = PipelineProcessNode & {
   href?: string;
@@ -22,16 +58,7 @@ type StripNode = PipelineProcessNode & {
 };
 
 function nodeClassName(node: StripNode, activeCode: string): string {
-  const nestClass =
-    node.kind === 'subprocess' && node.nestRole === 'parent'
-      ? ' is-nest-parent'
-      : node.kind === 'subprocess' && node.nestRole === 'nested'
-        ? ' is-nested'
-        : '';
-  const navClass = node.navRole === 'current' ? ' is-current-process' : '';
-  return `prospects-toolbar__process-node${
-    node.code === activeCode ? ' is-active' : ''
-  }${node.kind === 'process' ? ' is-process' : ''}${navClass}${nestClass}`;
+  return processNodeClasses(nodeFlags(node, activeCode));
 }
 
 function MoveProcessArrowLink({
@@ -46,7 +73,7 @@ function MoveProcessArrowLink({
   return (
     <Link
       to={href}
-      className={`prospects-toolbar__move-arrow is-${isPrevious ? 'previous' : 'next'}`}
+      className={moveArrow}
       title={`Move to Process ${node.code} · ${node.title}`}
       aria-label={`Move to Process ${node.code}: ${node.title}`}
     >
@@ -76,8 +103,8 @@ function ProcessNodeLink({
       title={`${label}: ${node.title}`}
       aria-current={node.navRole === 'current' || node.code === activeCode ? 'page' : undefined}
     >
-      <p className="prospects-toolbar__subprocess-code">{label}</p>
-      <p className="prospects-toolbar__subprocess-title">{node.title}</p>
+      <p className={processCodeClasses(nodeFlags(node, activeCode))}>{label}</p>
+      <p className={processTitleClasses(nodeFlags(node, activeCode))}>{node.title}</p>
     </Link>
   );
 }
@@ -87,14 +114,20 @@ function FlowArrow({ nested }: { nested?: boolean }) {
     <ArrowRight
       size={16}
       strokeWidth={2.25}
-      className={`prospects-toolbar__process-arrow${nested ? ' prospects-toolbar__process-arrow--nested' : ''}`}
+      className={nested ? `${processArrow} ${processArrowNested}` : processArrow}
       aria-hidden
     />
   );
 }
 
 function ProcessTerminus({ label, variant }: { label: 'Start' | 'End'; variant: 'start' | 'end' }) {
-  return <span className={`prospects-toolbar__process-terminus is-${variant}`}>{label}</span>;
+  return (
+    <span
+      className={`${processTerminus} ${variant === 'start' ? processTerminusStart : processTerminusEnd}`}
+    >
+      {label}
+    </span>
+  );
 }
 
 function useMidOverflow(enabled: boolean, revision: string | number) {
@@ -223,44 +256,42 @@ export default function PipelineProcessStrip({
   );
 
   return (
-    <div className="prospects-toolbar__subprocess prospects-toolbar__subprocess--flow">
+    <div className={stripFlow}>
       <div
-        className="prospects-toolbar__process-flow"
+        className={processFlow}
         role="list"
         aria-label={`Process ${config.processNumber} flow`}
       >
-        <div className="prospects-toolbar__process-flow-pin">
+        <div className={processFlowPin}>
           {previousChip ? (
-            <div className="prospects-toolbar__process-item" role="listitem">
+            <div className={processItem} role="listitem">
               <ProcessNodeLink node={previousChip} activeCode={activeCode} href={hrefFor(previousChip)} />
             </div>
           ) : null}
         </div>
 
-        <div className="prospects-toolbar__process-flow-center">
+        <div className={processFlowCenter}>
           {showStart ? (
-            <div className="prospects-toolbar__process-item" role="listitem">
+            <div className={processItem} role="listitem">
               <ProcessTerminus label="Start" variant="start" />
             </div>
           ) : null}
           {currentChip ? (
-            <div className="prospects-toolbar__process-item" role="listitem">
+            <div className={processItem} role="listitem">
               {showStart ? <FlowArrow /> : null}
               <ProcessNodeLink node={currentChip} activeCode={activeCode} href={hrefFor(currentChip)} />
             </div>
           ) : null}
         {middleSegments.length ? (
           <div
-            className={`prospects-toolbar__process-flow-mid-wrap${
-              midOverflow.left ? ' is-overflow-start' : ''
-            }${midOverflow.right ? ' is-overflow-end' : ''}`}
+            className={processFlowMidWrap}
           >
             {midOverflow.left ? (
               <>
-                <span className="prospects-toolbar__process-flow-fade is-start" aria-hidden />
+                <span className={`${processFlowFade} ${processFlowFadeStart}`} aria-hidden />
                 <button
                   type="button"
-                  className="prospects-toolbar__process-flow-chevron is-start"
+                  className={`${processFlowChevron} ${processFlowChevronStart}`}
                   aria-label="Scroll sub-processes left"
                   onClick={() => scrollByDir(-1)}
                 >
@@ -268,12 +299,17 @@ export default function PipelineProcessStrip({
                 </button>
               </>
             ) : null}
-          <div ref={midRef} className="prospects-toolbar__process-flow-mid">
+          <div
+            ref={midRef}
+            className={`${processFlowMid}${midOverflow.left ? ` ${processFlowMidPadStart}` : ''}${
+              midOverflow.right ? ` ${processFlowMidPadEnd}` : ''
+            }`}
+          >
             {middleSegments.map(segment => {
               if (segment.type === 'item') {
                 const node = segment.node as StripNode;
                 return (
-                  <div key={`${node.kind}-${node.code}`} className="prospects-toolbar__process-item" role="listitem">
+                  <div key={`${node.kind}-${node.code}`} className={processItem} role="listitem">
                     <FlowArrow />
                     <ProcessNodeLink node={node} activeCode={activeCode} href={hrefFor(node)} />
                   </div>
@@ -281,10 +317,10 @@ export default function PipelineProcessStrip({
               }
               const parent = segment.nodes[0] as StripNode;
               return (
-                <div key={`cluster-${parent.code}`} className="prospects-toolbar__process-item" role="listitem">
+                <div key={`cluster-${parent.code}`} className={processItem} role="listitem">
                   <FlowArrow />
                   <div
-                    className="prospects-toolbar__process-cluster"
+                    className={processCluster}
                     role="group"
                     aria-label={`Sub-process ${parent.code} with nested steps`}
                   >
@@ -308,10 +344,10 @@ export default function PipelineProcessStrip({
           </div>
             {midOverflow.right ? (
               <>
-                <span className="prospects-toolbar__process-flow-fade is-end" aria-hidden />
+                <span className={`${processFlowFade} ${processFlowFadeEnd}`} aria-hidden />
                 <button
                   type="button"
-                  className="prospects-toolbar__process-flow-chevron is-end"
+                  className={`${processFlowChevron} ${processFlowChevronEnd}`}
                   aria-label="Scroll sub-processes right"
                   onClick={() => scrollByDir(1)}
                 >
@@ -322,16 +358,16 @@ export default function PipelineProcessStrip({
           </div>
         ) : null}
           {showEnd ? (
-            <div className="prospects-toolbar__process-item" role="listitem">
+            <div className={processItem} role="listitem">
               <FlowArrow />
               <ProcessTerminus label="End" variant="end" />
             </div>
           ) : null}
         </div>
 
-        <div className="prospects-toolbar__process-flow-pin">
+        <div className={processFlowPin}>
           {nextChip ? (
-            <div className="prospects-toolbar__process-item" role="listitem">
+            <div className={processItem} role="listitem">
               <ProcessNodeLink node={nextChip} activeCode={activeCode} href={hrefFor(nextChip)} />
             </div>
           ) : null}

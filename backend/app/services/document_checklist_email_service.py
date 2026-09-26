@@ -142,7 +142,7 @@ def _build_email_bodies(
 ) -> tuple[str, str]:
     company = (business_name or "").strip() or "NEXUS"
     greeting = f"Dear {student_name}," if student_name else "Dear Student,"
-    team_line = f"{company} Team"
+    team_line = "Edutrust Global Admissions"
 
     if country_name:
         studies_clause = f"your {level_name} studies in {country_name}"
@@ -152,11 +152,7 @@ def _build_email_bodies(
     doc_paras: list[str] = []
     for index, row in enumerate(checklist_rows, start=1):
         title = (row.get("document_name") or "").strip() or "Document"
-        fmt = (row.get("accepted_format") or "").strip()
-        if fmt:
-            doc_paras.append(f"{index}. {title} — Accepted format: {fmt}")
-        else:
-            doc_paras.append(f"{index}. {title}")
+        doc_paras.append(f"{index}. {title}")
 
     docs_block = "\n\n".join(doc_paras) if doc_paras else "(No documents listed)"
 
@@ -169,10 +165,7 @@ def _build_email_bodies(
         f"with {studies_clause}, please gather and prepare the following "
         "documents:"
     )
-    guideline_size = (
-        "Ensure all documents adhere to the specified formats above, with a "
-        "total file size under 5MB."
-    )
+    guideline_size = "Ensure the total file size of all documents is under 5MB."
     guideline_attach = (
         "Please send your documents directly as email attachments "
         "(do not share via Google Drive links)."

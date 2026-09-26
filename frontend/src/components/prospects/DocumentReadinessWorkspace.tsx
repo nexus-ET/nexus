@@ -6,6 +6,9 @@ type Props = {
   title: string;
   leadId: number | null;
   candidateName?: string | null;
+  reviewOpen?: boolean;
+  onReviewOpenChange?: (open: boolean) => void;
+  onBindCloseReview?: (close: (() => void) | null) => void;
 };
 
 /** Document Readiness workspace hosting ScanX upload + split-view shell. */
@@ -14,10 +17,17 @@ export default function DocumentReadinessWorkspace({
   title,
   leadId,
   candidateName,
+  reviewOpen = false,
+  onReviewOpenChange,
+  onBindCloseReview,
 }: Props) {
   return (
-    <section className="rounded-xl border border-border-subtle bg-card shadow-[0_1px_0_rgba(50,47,134,0.04)]">
-      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border-subtle bg-gradient-to-r from-accent/[0.06] via-surface-bg to-surface-bg px-4 py-3">
+    <section
+      className={`rounded-xl border border-border-subtle bg-card shadow-[0_1px_0_rgba(50,47,134,0.04)] ${
+        reviewOpen ? 'flex h-full min-h-0 flex-1 flex-col overflow-hidden' : ''
+      }`}
+    >
+      <div className="flex shrink-0 flex-wrap items-end justify-between gap-3 border-b border-border-subtle bg-gradient-to-r from-accent/[0.06] via-surface-bg to-surface-bg px-4 py-3">
         <div className="min-w-0">
           <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-accent/70">
             Sub-Process {code}
@@ -33,8 +43,19 @@ export default function DocumentReadinessWorkspace({
           </h3>
         </div>
       </div>
-      <div className="space-y-4 overflow-visible p-4">
-        <ScanxDocumentPanel leadId={leadId} candidateName={candidateName} />
+      <div
+        className={
+          reviewOpen
+            ? 'flex min-h-0 flex-1 flex-col overflow-hidden p-3'
+            : 'space-y-4 overflow-visible p-4'
+        }
+      >
+        <ScanxDocumentPanel
+          leadId={leadId}
+          candidateName={candidateName}
+          onReviewOpenChange={onReviewOpenChange}
+          onBindCloseReview={onBindCloseReview}
+        />
       </div>
     </section>
   );

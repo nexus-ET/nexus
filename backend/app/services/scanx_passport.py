@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import date
+from difflib import SequenceMatcher
 from typing import Any
 
 from app.services.scanx_ocr_blocks import OCR_CONFIDENCE_THRESHOLD
@@ -373,7 +374,7 @@ _NAME_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z.'-]{0,30}$")
 # "Nere of Pathvet / Legas Gusrdian" must still anchor Father / Legal Guardian.
 _FATHER_LABEL_FUZZY_RE = re.compile(
     r"(?i)(?:\bf[ao]ther\b|\bfoter\b|\bfother\b|\bpathvet\b|"
-    r"\bguardian\b|\bguardlan\b|\buardian\b|\bcurdian\b|\bgusrdian\b|\bgurdian\b|"
+    r"\bguardian\b|\bguardlan\b|\buardian\b|\bquardian\b|\bcurdian\b|\bgusrdian\b|\bgurdian\b|"
     r"n(?:ame|ane|eme|ere)\s*(?:of|ot|ol)\s*"
     r"(?:f[ao]ther|foter|fother|pathvet|guardian|guardlan|gusrdian|gurdian)"
     r"(?:\s*/\s*lega[ls]?\s*(?:guardian|guardlan|gusrdian|gurdian|curdian))?|"
@@ -856,8 +857,9 @@ def _clean_person_name(val: str | None) -> str | None:
         maxsplit=1,
     )[0].strip(" /|,-")
     s = re.sub(r"(?i)\s+nama\s*$", "", s).strip(" /|,-")
-    # Passport number tokens (e.g. N4981701) are not part of a parent name.
+    # Passport number tokens (e.g. N4981701) and bare digit runs are not a name.
     s = re.sub(r"\b[A-Z]\d{7}\b", " ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b\d{6,}\b", " ", s)
     s = re.sub(r"\s+", " ", s).strip(" /|,-")
     if len(s) < 2 or not re.search(r"[A-Za-z]", s):
         return None
@@ -973,6 +975,21 @@ def _person_name_before_label_on_line(text: str, label_re: str) -> str | None:
             before,
         )
         for cand in reversed(runs):
+            if any(
+                tok.upper()
+                in {
+                    "COUNTRY",
+                    "CODE",
+                    "PASSPORT",
+                    "TYPE",
+                    "REPUBLIC",
+                    "INDIA",
+                    "INDIAN",
+                    "NATIONALITY",
+                }
+                for tok in cand.split()
+            ):
+                continue
             cleaned = _clean_person_name(cand)
             if not cleaned:
                 continue
@@ -1148,7 +1165,8 @@ def _issue_expiry_from_paired_date_line(text: str | None) -> tuple[str | None, s
     """
     lines = [ln.strip() for ln in (text or "").splitlines()]
     label_re = re.compile(
-        r"(?i)date\s+\w{1,12}.{0,60}?(?:issu|lssu|isss|expir|cepir|eapir|iaptr|capir)"
+        r"(?i)(?:date|oate|dnte|dete|cato|cate|pafe)\s+\w{0,8}.{0,48}?"
+        r"(?:issu|lssu|lesu|lasu|isss|expir|cepir|eapir|iaptr|capir)"
     )
     for i, line in enumerate(lines):
         found = re.findall(r"\b(\d{1,2}[./\-]\d{1,2}[./\-]\d{4})\b", line)
@@ -1229,6 +1247,72 @@ def _mrz_check_digit(data: str) -> int:
             v = 0
         total += v * weights[i % 3]
     return total % 10
+
+
+# Passport number, DOB, expiry, sex, and nationality come only from a
+# check-digit-valid TD3 line 2. A failed digit makes the whole line unusable.
+_MRZ_LINE2_AUTHORITY_KEYS: tuple[str, ...] = (
+    "document_number",
+    "date_of_birth",
+    "date_of_expiry",
+    "sex",
+    "nationality",
+)
+
+
+def _td3_check_matches(line: str, index: int, data: str) -> bool:
+    if index >= len(line) or not line[index].isdigit():
+        return False
+    return int(line[index]) == _mrz_check_digit(data)
+
+
+def _td3_line2_checks_pass(line: str) -> bool:
+    """ICAO 9303 TD3 line 2: doc, birth, expiry, and composite check digits."""
+    if not line or len(line) < 28:
+        return False
+    padded = (line + ("<" * 44))[:44]
+    if not _td3_check_matches(padded, 9, padded[0:9]):
+        return False
+    if not _td3_check_matches(padded, 19, padded[13:19]):
+        return False
+    if not _td3_check_matches(padded, 27, padded[21:27]):
+        return False
+    composite = padded[0:10] + padded[13:20] + padded[21:43]
+    if not _td3_check_matches(padded, 43, composite):
+        return False
+    if not _mrz_date_yyMMdd(padded[13:19]):
+        return False
+    if not _mrz_date_yyMMdd(padded[21:27], expiry=True):
+        return False
+    return True
+
+
+def _authority_fields_from_line2(raw_line: str) -> dict[str, Any] | None:
+    """Five identity fields from one TD3 line 2, or None when checks fail."""
+    line = (_normalize_mrz_candidate(raw_line) + ("<" * 44))[:44]
+    if not _looks_like_td3_line2(line):
+        return None
+    if not _td3_line2_checks_pass(line):
+        return None
+    doc_no = line[0:9].replace("<", "").strip()
+    nat_raw = line[10:13].replace("<", "").strip()
+    code = _to_alpha3(nat_raw) if nat_raw else None
+    if nat_raw and nat_raw in _VALID_ALPHA3 and not code:
+        code = nat_raw
+    if code and code not in _VALID_ALPHA3:
+        code = None
+    dob = _mrz_date_yyMMdd(line[13:19])
+    exp = _mrz_date_yyMMdd(line[21:27], expiry=True)
+    if not doc_no or not dob or not exp:
+        return None
+    return {
+        "document_number": doc_no,
+        "date_of_birth": dob,
+        "date_of_expiry": exp,
+        "sex": _norm_sex(line[20]),
+        "nationality": demonym_for_country_code(code) if code else None,
+        "country_code": code,
+    }
 
 
 def _normalize_mrz_candidate(raw: str) -> str:
@@ -1388,6 +1472,8 @@ def _parse_td3_line1(l1: str) -> dict[str, Any]:
 
 
 def _parse_td3_line2(l2: str, *, doc_number_hint: str | None = None) -> dict[str, Any]:
+    """Parse a TD3 line 2 as printed. A visual passport number is not spliced in."""
+    del doc_number_hint
     out: dict[str, Any] = {}
     raw = (l2 or "").upper()
     # Align when OCR prefixes junk before the passport number (e.g. "7U9663905<…").
@@ -1399,29 +1485,6 @@ def _parse_td3_line2(l2: str, *, doc_number_hint: str | None = None) -> dict[str
         m2 = re.search(r"([A-Z0-9]{6,9}<[A-Z0-9<]{20,})", raw)
         if m2:
             aligned = m2.group(1)
-    # CamScanner often drops the leading letter of Indian passport numbers in MRZ
-    # ("7766566<91ND…" instead of "S7766566<IND…"). Recover from visual-zone hint.
-    hint = re.sub(r"[\s\-]", "", (doc_number_hint or "").upper())
-    hint_m = re.fullmatch(r"([A-Z])(\d{7})", hint) if hint else None
-    if hint_m and re.match(r"^\d{7}<", aligned):
-        letter, digits = hint_m.group(1), hint_m.group(2)
-        if aligned.startswith(digits):
-            # Rebuild a standard TD3 L2 head: Letter+7digits + check + nationality fix.
-            rest = aligned[len(digits) :]  # starts with <…
-            # Common OCR: "<91ND" instead of "<IND" (check digit + IND mashed).
-            if rest.startswith("<") and len(rest) >= 4:
-                maybe_nat = rest[1:4]
-                if maybe_nat in {"1ND", "9ND", "IND", "1N0", "IN0"}:
-                    # Drop the mangled check+nat triplet and reinsert IND after a
-                    # recomputed check digit.
-                    tail = rest[4:]
-                    head = f"{letter}{digits}"
-                    check = str(_mrz_check_digit(head))
-                    aligned = f"{head}{check}IND{tail}"
-                else:
-                    aligned = f"{letter}{aligned}"
-            else:
-                aligned = f"{letter}{aligned}"
     line = (aligned + ("<" * 44))[:44]
     doc_no = line[0:9].replace("<", "")
     if doc_no:
@@ -1530,24 +1593,12 @@ def parse_td3_mrz(
     return out
 
 
-def _repair_door_slash_read_as_one(line: str) -> str:
-    """Indian door numbers like ``6/933`` often OCR as ``61933``.
-
-    Only a leading digit, a single ``1``, and exactly three digits before a
-    comma are rewritten. Other house numbers stay as read.
-    """
-    return re.sub(r"^(\d)1(\d{3})(?=\s*,)", r"\1/\2", line)
-
-
 def normalize_multiline_address(raw: str | None) -> str | None:
     """Collapse OCR address newlines into one readable comma-separated line."""
     if raw is None:
         return None
     text = str(raw).replace("\r\n", "\n").replace("\r", "\n")
-    parts = [
-        _repair_door_slash_read_as_one(re.sub(r"\s+", " ", p).strip(" ,;"))
-        for p in text.split("\n")
-    ]
+    parts = [re.sub(r"\s+", " ", p).strip(" ,;") for p in text.split("\n")]
     parts = [p for p in parts if p]
     if not parts:
         return None
@@ -1557,11 +1608,51 @@ def normalize_multiline_address(raw: str | None) -> str | None:
     return _sanitize_passport_address(joined)
 
 
+# Document headers and barcode dumps are not a street. Close OCR spellings
+# (l/I, 0/O) count. "INDIA" at the end of a PIN line does not.
+_ADDRESS_ADMIN_HEADER_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"REPUB[LI1|]{1,2}C[\s.\-]*[O0]F[\s.\-]*[I1L|]ND[I1L|]A",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"M[I1L|]SCELLANEOUS[\s.\-]*SERV[I1L|]CE",
+        re.IGNORECASE,
+    ),
+    re.compile(r"पत[िी]\s*(?:या|[/|])\s*पत्नी"),
+)
+
+
+def _address_is_administrative_noise(raw: str | None) -> bool:
+    """True when an assembled address is a header, translation, or barcode dump.
+
+    The whole value is dropped. A street that only ends with the country name
+    (``TELANGANA, INDIA``) is not this kind of header.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return False
+    if any(rx.search(text) for rx in _ADDRESS_ADMIN_HEADER_RES):
+        return True
+    # A PIN is six digits, often ``PIN:506164``. A 10+ digit or symbol run is
+    # a barcode, not that PIN. Door numbers stay because they are not one run.
+    if re.search(r"\d{10,}", text):
+        return True
+    compact = re.sub(r"\s+", "", text)
+    if re.search(r"[\d*#|]{10,}", compact):
+        return True
+    digits = re.sub(r"\D", "", text)
+    words = re.findall(r"[A-Za-z\u0900-\u097F]{3,}", text)
+    if len(digits) >= 12 and not words:
+        return True
+    return False
+
+
 def _sanitize_passport_address(raw: str | None) -> str | None:
     """Drop old-passport / file / PIN-label OCR tails glued onto the address."""
     if raw is None:
         return None
-    s = str(raw).strip()
+    s = _strip_address_header_prefix(str(raw))
     if not s:
         return None
     # Bilingual crumbs between street and locality (e.g. "ROAD ddy / ZAMEEN…").
@@ -1582,7 +1673,37 @@ def _sanitize_passport_address(raw: str | None) -> str | None:
     if pin_tail and not re.search(r"(?i)\bPIN\s*:?\s*\d{6}\b", s):
         s = f"{s}, {pin_tail.strip()}" if s else pin_tail.strip()
         s = re.sub(r"\s*,\s*", ", ", s).strip(" ,")
-    return (s[:400] or None)
+    kept = [
+        part.strip()
+        for part in s.split(",")
+        if part.strip() and not _address_comma_part_is_label_fragment(part)
+    ]
+    s = ", ".join(kept)
+    cleaned = s[:400] or None
+    if cleaned and _address_is_administrative_noise(cleaned):
+        return None
+    return cleaned
+
+
+def _address_comma_part_is_label_fragment(part: str) -> bool:
+    """A comma piece that is only a place or expiry label, not a street."""
+    text = re.sub(r"\s+", " ", str(part or "")).strip(" ,")
+    if not text:
+        return False
+    if re.search(r"(?i)\bpin\s*:?\s*\d{6}\b|\d{1,5}\s*[-/]\s*\d", text):
+        return False
+    if re.search(r"(?i)\b(?:nagar|road|street|lane|colony|school)\b", text):
+        return False
+    return bool(
+        re.search(
+            r"(?i)\b(?:"
+            r"expir\w*|cepir\w*|e\s*xpiry|"
+            r"cato\s+of|cate\s+of|oate\s+af|date\s+of|"
+            r"place\s+(?:gf|of|ot|af)\s+birt"
+            r")\b",
+            text,
+        )
+    )
 
 
 def _value_after_label(text: str, label_re: str) -> str | None:
@@ -1679,7 +1800,13 @@ def _name_from_block(block: str) -> str | None:
                 break
             continue
         # Address / file lines mean the name cell was blank — stop, do not
-        # skip past them into street/city lines (spouse bleed).
+        # skip past them into street/city lines (spouse bleed). Bilingual
+        # crumbs ("qa / Address") do not start with the word address.
+        if re.search(
+            r"(?i)\b(?:address|addrese|addiese|adrhess|adress|addres)\b",
+            line,
+        ) or _spouse_value_is_address_like(line):
+            break
         if re.match(
             r"(?i)^(den|address|room|pin\b|file|old\s*passport|h\.?\s*no|door)\b",
             line,
@@ -1814,9 +1941,13 @@ def _is_plausible_person_name(val: str | None) -> bool:
         return False
     if re.search(
         r"(?i)\b(?:urban|pin|university|room|sadan|lane|street|road|nagar|"
-        r"pradesh|nadu|state|india|address|thota|block)\b",
+        r"pradesh|nadu|state|india|address|thota|block|school|college|"
+        r"engineering|institute|polytechnic|hospital)\b",
         cleaned,
     ):
+        return False
+    # Door / flat numbers (E-202, 3-78/1) are addresses, not people.
+    if re.search(r"\d", cleaned):
         return False
     # Issue/birth city crumbs must not become parent/spouse names.
     if re.fullmatch(
@@ -2069,6 +2200,9 @@ def _is_place_candidate(
         return False
     if not re.search(r"[A-Za-z]{3,}", t):
         return False
+    # Slash or pipe is OCR soup (``f/Sos``), not a city or ``CITY, STATE``.
+    if re.search(r"[/\\|]", t):
+        return False
     # MRZ crumbs only: fillers or digits. Pure-letter cities of any length stay.
     compact = re.sub(r"[\s,./\-]+", "", t)
     if "<" in compact or (
@@ -2105,34 +2239,6 @@ def _is_issuing_office_candidate(
     return True
 
 
-def _issue_city_following_birth(text: str | None) -> str | None:
-    """City printed on its own line after ``CITY, STATE`` place of birth.
-
-    Indian passports print Place of Birth as ``CITY, STATE`` and Place of Issue
-    as the city alone on the next line. OCR often drops the issue label
-    (``Date af etie``) but keeps that city line. The city must match the birth
-    city token and must not be copied from the ``CITY, STATE`` value itself.
-    """
-    raw = text or ""
-    match = re.search(
-        r"(?im)^[^\n]*place\s*of\s*(?:birth|bre|blrth|birih|bith)\b[^\n]*\n+"
-        r"\s*([A-Za-z][A-Za-z .'-]{1,40})\s*,\s*[A-Za-z][A-Za-z .'-]{2,40}\s*\n+"
-        r"\s*([A-Za-z][A-Za-z .'-]{2,40})\s*$",
-        raw,
-    )
-    if not match:
-        return None
-    birth_city = re.sub(r"\s+", " ", match.group(1)).strip(" ,.")
-    nxt = re.sub(r"\s+", " ", match.group(2)).strip(" ,.")
-    if not birth_city or not nxt or "," in nxt:
-        return None
-    if _looks_like_date_value(nxt) or _is_noise_value(nxt):
-        return None
-    if nxt.upper() != birth_city.upper():
-        return None
-    return nxt.upper()
-
-
 _GLUED_STATE_SUFFIXES: tuple[tuple[str, str], ...] = (
     ("ANDHRAPRADESH", "ANDHRA PRADESH"),
     ("ARUNACHALPRADESH", "ARUNACHAL PRADESH"),
@@ -2166,6 +2272,108 @@ def _split_glued_city_state(token: str | None) -> str | None:
     return raw
 
 
+# City, State — the state token is a grammar check, not a city copied from issue.
+_STATE_GRAMMAR_RE = re.compile(
+    r"(?i)\b("
+    r"(?:andhra|arunachal|himachal|madhya|uttar)\s*pradesh|"
+    r"tamil\s*nadu|west\s*bengal|"
+    r"uttarakhand|telangana|maharashtra|karnataka|kerala|gujarat|"
+    r"rajasthan|odisha|orissa|punjab|haryana|bihar|assam|"
+    r"jharkhand|chhattisgarh|chattisgarh|goa"
+    r")\b"
+)
+
+
+def _pretty_state_name(state: str) -> str:
+    key = re.sub(r"[^A-Za-z]", "", state or "").upper()
+    spaced = {
+        "ANDHRAPRADESH": "ANDHRA PRADESH",
+        "ARUNACHALPRADESH": "ARUNACHAL PRADESH",
+        "HIMACHALPRADESH": "HIMACHAL PRADESH",
+        "MADHYAPRADESH": "MADHYA PRADESH",
+        "UTTARPRADESH": "UTTAR PRADESH",
+        "TAMILNADU": "TAMIL NADU",
+        "WESTBENGAL": "WEST BENGAL",
+    }
+    if key in spaced:
+        return spaced[key]
+    return re.sub(r"\s+", " ", (state or "").upper()).strip()
+
+
+def _city_state_token(fragment: str | None) -> str | None:
+    """CITY, STATE inside a line. Streets, PIN lines, and districts do not pass."""
+    text = re.sub(r"\s+", " ", str(fragment or "")).strip(" ,|")
+    if not text:
+        return None
+    for match in re.finditer(
+        r"(?i)\b([A-Z]{3,24})\s*,\s*([A-Z][A-Z .]{2,40})",
+        text,
+    ):
+        if re.search(r"\d", match.group(0)):
+            continue
+        city = match.group(1).upper()
+        state_hit = _STATE_GRAMMAR_RE.search(match.group(2))
+        if not state_hit:
+            continue
+        if re.search(r"(?i)nagar|road|street|school|lane|colony", city):
+            continue
+        state = _pretty_state_name(state_hit.group(1))
+        candidate = f"{city}, {state}"
+        if _place_value_is_label_junk(candidate) or not _is_place_candidate(candidate):
+            continue
+        return candidate
+    compact = re.sub(r"[^A-Za-z]", "", text).upper()
+    if not compact or re.search(r"\d", text):
+        return None
+    glued = _split_glued_city_state(compact)
+    if not glued or "," not in glued or not _STATE_GRAMMAR_RE.search(glued):
+        return None
+    city, state = [part.strip() for part in glued.split(",", 1)]
+    candidate = f"{city}, {_pretty_state_name(state)}"
+    if _place_value_is_label_junk(candidate) or not _is_place_candidate(candidate):
+        return None
+    return candidate
+
+
+def _city_state_near_birth_label(text: str | None) -> str | None:
+    """Place of birth from its own label, including ``Place gf Birth``.
+
+    The value has to be city/state grammar. A street glued on the label line
+    is skipped. Place of issue is not reused.
+    """
+    lines = (text or "").splitlines()
+    for index, line in enumerate(lines):
+        if not _PLACE_OF_BIRTH_LABEL_RE.search(line):
+            continue
+        if _PLACE_OF_ISSUE_LABEL_RE.search(line) and not re.search(
+            r"(?i)birth|birt|burt|blrth|birih|bith", line
+        ):
+            continue
+        tail = re.sub(
+            rf"(?i)^.*?\b{_PLACE_OF_BIRTH_WORD_OCR}\b",
+            "",
+            line,
+            count=1,
+        ).strip(" ,|")
+        hit = _city_state_token(tail) if tail else None
+        if hit:
+            return hit
+        for nxt in lines[index + 1 : index + 4]:
+            piece = nxt.strip()
+            if not piece:
+                continue
+            if _PLACE_OF_ISSUE_LABEL_RE.search(piece) or _PLACE_OF_BIRTH_LABEL_RE.search(
+                piece
+            ):
+                break
+            if _line_is_mrz_boundary(piece):
+                break
+            hit = _city_state_token(piece)
+            if hit:
+                return hit
+    return None
+
+
 def _place_value_is_label_junk(val: str | None) -> bool:
     """A place field must not be a garbled Place-of label or symbol soup."""
     s = str(val or "").strip()
@@ -2197,8 +2405,8 @@ def _birth_after_short_place_label(text: str | None) -> str | None:
 def _city_state_before_birth_label(text: str | None) -> str | None:
     """Reversed column OCR: ``ERODE,TAMIL NADU Place of Birth``."""
     match = re.search(
-        r"(?i)\b([A-Z][A-Z]{2,24}\s*,\s*[A-Z][A-Z .]{2,30})\s+"
-        r"(?:place|pace|puce|piace)\s+of\s+(?:birth|blrth|birih|bith|bre)\b",
+        rf"(?i)\b([A-Z][A-Z]{{2,24}}\s*,\s*[A-Z][A-Z .]{{2,30}})\s+"
+        rf"(?:[a-z]\s*/\s*)?{_PLACE_WORD_OCR}\s*o[ft]\s*{_PLACE_OF_BIRTH_WORD_OCR}\b",
         text or "",
     )
     if not match:
@@ -2226,8 +2434,8 @@ def _city_token_from_noisy_line(line: str | None) -> str | None:
 def _issue_city_before_garbled_label(text: str | None) -> str | None:
     """``Date of issue CHENNAI … Piace of ssue`` — city sits before the label."""
     match = re.search(
-        r"(?i)date\s*of\s*(?:issue|lssue|ssue|tssue)\s+([A-Za-z]{4,24})\b"
-        r".{0,48}?(?:place|pace|puce|piace)\s*o[ft]",
+        rf"(?i)date\s*of\s*{_PLACE_OF_ISSUE_OCR}\s+([A-Za-z]{{4,24}})\b"
+        rf".{{0,48}}?{_PLACE_WORD_OCR}\s*o[ft]",
         text or "",
     )
     if not match:
@@ -2238,17 +2446,8 @@ def _issue_city_before_garbled_label(text: str | None) -> str | None:
 def _issue_city_on_garbled_label(text: str | None) -> str | None:
     """City on the line after ``Place ot.lssue`` / ``Piace of ssue``."""
     raw = text or ""
-    for match in re.finditer(
-        r"(?im)^[^\n]*\b(?:place|pace|puce|piace)\s*o[ft][.\s]*"
-        r"(?:l?ssue|issue|sue|tssue|tsue)\b[^\n]*$",
-        raw,
-    ):
-        same = match.group(0)
-        tail = re.split(
-            r"(?i)\b(?:place|pace|puce|piace)\s*o[ft][.\s]*(?:l?ssue|issue|sue|tssue|tsue)\b",
-            same,
-            maxsplit=1,
-        )[-1]
+    for match in _PLACE_OF_ISSUE_LABEL_RE.finditer(raw):
+        tail = raw[match.end() :].split("\n", 1)[0]
         if "," in tail:
             tail = ""
         city = _city_token_from_noisy_line(tail)
@@ -2267,34 +2466,802 @@ def _issue_city_on_garbled_label(text: str | None) -> str | None:
     return None
 
 
-def _issue_city_repeated_after_birth(text: str | None, birth: str | None) -> str | None:
-    """A later short line that repeats the birth city is the issuing office."""
-    city = re.split(r"[,/]", str(birth or ""))[0].strip()
-    if len(city) < 4 or not city.isalpha():
+def _spouse_value_is_address_like(
+    value: str | None,
+    address: str | None = None,
+) -> bool:
+    """True when a spouse string is a street, school, door number, or city line.
+
+    A Spouse label with a blank cell often sits directly above Address. ALL-CAPS
+    address lines must not be stored as a person.
+    """
+    raw = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not raw:
+        return False
+    if re.search(
+        r"(?i)\b(?:school|college|university|institute|engineering|polytechnic|"
+        r"hospital|apartment|road|street|lane|nagar|colony|block|flat|room|"
+        r"house|door|plot|pin|address|urban|district)\b",
+        raw,
+    ):
+        return True
+    if re.search(r"(?i)\b(?:h|d)\.?\s*no\b", raw):
+        return True
+    if re.search(r"\d", raw):
+        return True
+    if re.search(
+        r"(?i)\b(?:hyderabad|chennai|mumbai|delhi|bengaluru|bangalore|"
+        r"kolkata|pune|jaipur|ahmedabad|lucknow|patna|kochi|"
+        r"karnataka|telangana|maharashtra|tamil\s*nadu|kerala|andhra|"
+        r"pradesh|india)\b",
+        raw,
+    ):
+        return True
+    addr = re.sub(r"\s+", " ", str(address or "")).strip()
+    core = re.sub(r"(?i)^(?:qa|den|qan|qm)\s+", "", raw).strip(" /")
+    if addr and core and len(core) >= 12 and core.upper() in addr.upper():
+        return True
+    return False
+
+
+def _spouse_supported_by_label(
+    value: str | None,
+    text: str | None,
+    blocks: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Spouse stays only when a Spouse label or an unlabeled person-row supports it.
+
+    Address-like strings never count as support. Without a Spouse label, the only
+    allowed source is the three-name unlabeled family row (a real person name).
+    """
+    if not value or _spouse_value_is_address_like(value):
+        return False
+    if not _is_plausible_person_name(value):
+        return False
+    lines = [ln for ln in (text or "").splitlines()]
+    for blk in blocks or []:
+        if isinstance(blk, dict):
+            lines.append(_block_text(blk))
+    if _name_is_notary_neighbor(value, lines):
+        return False
+    # A Spouse label only supports the value in its own cell. A stamp or
+    # another field sitting elsewhere on the page is not that value.
+    if not _passport_has_spouse_label(text, blocks):
+        return False
+    zone = _family_label_zone_value(
+        "spouse_name", text=text, ocr_blocks=blocks
+    )
+    return bool(zone and zone.strip().upper() == str(value).strip().upper())
+
+
+_STAMP_TITLE_RE = re.compile(
+    r"(?i)\b(?:advoc\w*|notary|notar\w*|attorney|attest\w*|"
+    r"b\.?\s*a\.?\s*l+\.?\s*m\.?|b\.?\s*allm|ballm|b\.?\s*a\.?\s*llm|"
+    r"ll\.?\s*m\.?)\b"
+)
+# Notary / attestation / true-copy comments overlaid on a passport page.
+# OCR often drops a letter (Netary, Otary) or glues "ATTESTED".
+_NOTARY_COMMENT_RE = re.compile(
+    r"(?i)(?:"
+    r"\badvoc\w*\b|"
+    r"\bnotari\w*\b|"
+    r"\bnotar\w*\b|"
+    r"\bnetary\b|"
+    r"\botary\b|"
+    r"\battest\w*\b|"
+    r"\battorney\b|"
+    r"\btrue\s*cop\w*\b|"
+    r"\bcertified\s*(?:true\s*)?cop\w*\b|"
+    r"\bstamp\s*duty\b|"
+    r"\bsolemnly\b|"
+    r"\bverified\b|"
+    r"\bverification\b|"
+    r"\bb\.?\s*a\.?\s*l+\.?\s*m\.?\b|"
+    r"\bb\.?\s*allm\b|"
+    r"\bballm\b|"
+    r"\bb\.?\s*a\.?\s*llm\b|"
+    r"\bll\.?\s*b\.?\b|"
+    r"\bll\.?\s*m\.?\b"
+    r")"
+)
+# Lines that carry passport content stay even when a stamp shares the line.
+_PASSPORT_PAYLOAD_RE = re.compile(
+    r"(?i)(?:"
+    r"\b(?:passport|passeport)\b|"
+    r"\brepublic\s+of\b|"
+    r"\b(?:surname|family\s+name|given\s+names?)\b|"
+    r"\bdate\s+of\s+(?:birth|issue|expir\w*)\b|"
+    r"\b(?:nationality|nationalit[eé])\b|"
+    r"\bplace\s+of\s+(?:birth|issue)\b|"
+    r"\b(?:father|mother|spouse)\b|"
+    r"\b(?:file\s*(?:no\.?|number)|mrz)\b|"
+    r"\baddress\b|"
+    r"P\s*<|"
+    r"<{4,}"
+    r")"
+)
+_PASSPORT_LABEL_LINE_RE = re.compile(
+    r"(?i)\b(?:surname|given\s+names?|date\s+of\s+birth|date\s+of\s+issue|"
+    r"date\s+of\s+expir|place\s+of\s+birth|place\s+of\s+issue|address|"
+    r"nationality|name\s+of\s+(?:father|mother|spouse)|passport\s*(?:no|number)|"
+    r"file\s*(?:no|number))\b"
+)
+# Residential lines (street, door, PIN) are not stamp locality.
+_STREET_LINE_RE = re.compile(
+    r"(?i)(?:\bpin\s*:?\s*\d{6}\b|\b\d{6}\b|"
+    r"\b(?:road|street|lane|nagar|colony|block|flat|room|house|door|plot|"
+    r"apartment)\b|\bh\.?\s*no\b|\bd\.?\s*no\b)"
+)
+# State / admin words are shared by a stamp and a real place of birth.
+# Distinctive locality tokens (the town the stamp repeats) are what cluster.
+_STAMP_GEO_GENERIC = frozenset(
+    {
+        "india",
+        "state",
+        "urban",
+        "rural",
+        "district",
+        "pradesh",
+        "telangana",
+        "karnataka",
+        "maharashtra",
+        "tamil",
+        "nadu",
+        "kerala",
+        "andhra",
+        "gujarat",
+        "bengal",
+        "uttar",
+        "madhya",
+        "rajasthan",
+        "punjab",
+        "haryana",
+        "bihar",
+        "odisha",
+        "orissa",
+        "assam",
+        "delhi",
+        "goa",
+        "jharkhand",
+        "chhattisgarh",
+        "uttarakhand",
+        "himachal",
+        "manipur",
+        "meghalaya",
+        "mizoram",
+        "nagaland",
+        "tripura",
+        "sikkim",
+        "ladakh",
+        "kashmir",
+        "jammu",
+    }
+)
+# "B. BHAVANY" is an attestor initial, not "T.S. INDIA" / "S. INDIA".
+_STAMP_NAME_PREFIX_RE = re.compile(
+    r"(?i)(?<![A-Za-z.])\b[A-Z]\.\s+(?!INDIA\b|STATE\b)[A-Z]{4,}\b"
+)
+_LOCALITY_MARK_RE = re.compile(
+    r"(?i)\b(?:india|state|urban|rural|district|pradesh|nagar|"
+    r"road|street|colony|taluk|mandal|pin)\b|\bT\.?\s*S\.?\b"
+)
+_LOCALITY_TOKEN_SKIP = frozenset(
+    {
+        "india",
+        "state",
+        "urban",
+        "rural",
+        "advocate",
+        "notary",
+        "notarial",
+        "attorney",
+        "attested",
+        "attest",
+        "ballm",
+        "allm",
+    }
+)
+
+
+def _prep_locality_line(line: str) -> str:
+    s = _STAMP_TITLE_RE.sub(" ", line or "")
+    s = _STAMP_NAME_PREFIX_RE.sub(" ", s)
+    s = re.sub(r"[★*•|]+", " ", s)
+    s = re.sub(r"\s+\d{1,3}\s*$", "", s)
+    s = re.sub(r"\s+", " ", s).strip(" ,;:-/&")
+    s = re.sub(r"\s*,\s*", ", ", s)
+    return s.strip(" ,")
+
+
+def _locality_signature(line: str) -> set[str]:
+    out: set[str] = set()
+    for tok in re.findall(r"[A-Za-z]{4,}", (line or "").lower()):
+        if tok in _LOCALITY_TOKEN_SKIP:
+            continue
+        out.add(tok)
+    return out
+
+
+def _locality_token_overlap(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    matched = 0
+    used: set[str] = set()
+    for ta in left:
+        for tb in right:
+            if tb in used:
+                continue
+            if ta == tb or (
+                len(ta) >= 4
+                and len(tb) >= 4
+                and SequenceMatcher(None, ta, tb).ratio() >= 0.78
+            ):
+                matched += 1
+                used.add(tb)
+                break
+    return matched / max(min(len(left), len(right)), 1)
+
+
+def _locality_parts_are_repeats(parts: list[str]) -> bool:
+    """True when fragments are OCR variants of one locality, not a street address."""
+    return _largest_locality_cluster(parts) is not None
+
+
+def _largest_locality_cluster(parts: list[str]) -> list[str] | None:
+    """Biggest set of near-duplicate locality lines. Street addresses stay split."""
+    sigs = [_locality_signature(p) for p in parts]
+    n = len(parts)
+    if n < 3:
         return None
-    seen_birth = False
-    for line in (text or "").splitlines():
-        compact = re.sub(r"\s+", " ", line).strip()
-        if not compact:
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    for i in range(n):
+        if not sigs[i]:
             continue
-        if re.search(rf"(?i)\b{re.escape(city)}\b", compact) and "," in compact:
-            seen_birth = True
+        for j in range(i + 1, n):
+            if not sigs[j]:
+                continue
+            if _locality_token_overlap(sigs[i], sigs[j]) >= 0.5:
+                union(i, j)
+    groups: dict[int, list[str]] = {}
+    for i, part in enumerate(parts):
+        if not sigs[i]:
             continue
-        if not seen_birth:
+        groups.setdefault(find(i), []).append(part)
+    if not groups:
+        return None
+    ranked = sorted(groups.values(), key=len, reverse=True)
+    largest = ranked[0]
+    second = len(ranked[1]) if len(ranked) > 1 else 0
+    # A real street address splits into singletons. A stamp repeats one locality.
+    if len(largest) < 3 or len(largest) <= second:
+        return None
+    return largest
+
+
+def _best_locality_line(parts: list[str]) -> str | None:
+    sigs = [_locality_signature(p) for p in parts]
+    best: str | None = None
+    best_score = -1e9
+    for i, line in enumerate(parts):
+        consensus = 0
+        for tok in sigs[i]:
+            hits = 0
+            for j, other in enumerate(sigs):
+                if j == i:
+                    continue
+                if any(
+                    tok == o
+                    or (
+                        len(tok) >= 4
+                        and len(o) >= 4
+                        and SequenceMatcher(None, tok, o).ratio() >= 0.78
+                    )
+                    for o in other
+                ):
+                    hits += 1
+            if hits >= max(2, int(0.25 * max(len(sigs) - 1, 1))):
+                consensus += 1
+        bonus = 0
+        if re.search(r"(?i)\bindia\b", line):
+            bonus += 3
+        if re.search(r"(?i)\bstate\b|\bT\.?\s*S\.?\b", line):
+            bonus += 2
+        if re.search(r"(?i)\burban\b|\brural\b", line):
+            bonus += 1
+        garbage = len(re.findall(r"[^A-Za-z\s,.\-]", line))
+        score = consensus * 4 + bonus + min(len(line), 90) / 30.0 - garbage * 2
+        if score > best_score:
+            best_score = score
+            best = line
+    return best
+
+
+def _attach_country_fragment(chosen: str, parts: list[str]) -> str:
+    """Keep one state/country tail when the winning line does not already have it."""
+    if re.search(r"(?i)\bindia\b|\bstate\b|\bT\.?\s*S\.?\b", chosen):
+        return chosen
+    for part in parts:
+        if part.upper() == chosen.upper():
             continue
-        if len(compact) > 60 or re.search(r"(?i)\b(?:address|road|pin|block)\b", compact):
+        if not re.search(r"(?i)\bindia\b|\bstate\b|\bT\.?\s*S\.?\b", part):
             continue
-        if re.search(rf"(?i)\b{re.escape(city)}\b", compact):
-            return city.upper()
-    return None
+        if len(part) > 48:
+            continue
+        if _locality_token_overlap(_locality_signature(part), _locality_signature(chosen)) >= 0.5:
+            continue
+        return f"{chosen}, {part}"
+    return chosen
+
+
+def _collapse_repeated_locality_parts(parts: list[str]) -> str | None:
+    """Reduce repeated city/state OCR variants to one line that is actually present."""
+    prepped: list[str] = []
+    country_tails: list[str] = []
+    for raw in parts:
+        line = _prep_locality_line(raw)
+        letters = re.sub(r"[^A-Za-z]", "", line)
+        if len(letters) < 4:
+            continue
+        if (
+            re.search(r"(?i)\bindia\b|\bT\.?\s*S\.?\b", line)
+            and not _locality_signature(line)
+            and len(line) <= 24
+        ):
+            if line.upper() not in {t.upper() for t in country_tails}:
+                country_tails.append(line)
+            continue
+        if not _LOCALITY_MARK_RE.search(line) or not _locality_signature(line):
+            continue
+        if line.upper() not in {p.upper() for p in prepped}:
+            prepped.append(line)
+    if not _locality_parts_are_repeats(prepped):
+        return None
+    cluster = _largest_locality_cluster(prepped) or []
+    best = _best_locality_line(cluster)
+    if not best:
+        return None
+    return _attach_country_fragment(best, [*cluster, *country_tails])[:400]
+
+
+def _line_is_notary_comment(line: str) -> bool:
+    return bool(_NOTARY_COMMENT_RE.search(line or ""))
+
+
+def _line_is_passport_payload(line: str) -> bool:
+    """Passport label, MRZ, or passport-number line — not a stamp comment."""
+    s = line or ""
+    if _PASSPORT_PAYLOAD_RE.search(s):
+        return True
+    return bool(re.search(r"\b[A-Z]\d{7}\b", s.upper()))
+
+
+def _stamp_place_signature(line: str) -> set[str]:
+    out: set[str] = set()
+    for tok in re.findall(r"[A-Za-z]{4,}", (line or "").lower()):
+        if tok in _STAMP_GEO_GENERIC or tok in _LOCALITY_TOKEN_SKIP:
+            continue
+        out.add(tok)
+    return out
+
+
+def _is_stamp_country_tail(line: str) -> bool:
+    """'T.S. INDIA' / 'State-INDIA' fragments that sit under a notary stamp."""
+    words = re.findall(r"[A-Za-z]{2,}", line or "")
+    if not words:
+        return False
+    distinctive = [
+        w
+        for w in words
+        if len(w) >= 4 and w.lower() not in _STAMP_GEO_GENERIC and w.lower() not in _LOCALITY_TOKEN_SKIP
+    ]
+    if distinctive:
+        return False
+    return bool(re.search(r"(?i)\bindia\b|\bstate\b|\bT\.?\s*S\.?\b", line or ""))
+
+
+def _follows_notary_stamp(lines: list[str], index: int) -> bool:
+    """A town line sitting under a notary comment is a stamp, not an address."""
+    prev = _previous_content_line(lines, index)
+    if not prev or not _line_is_notary_comment(prev):
+        return False
+    line = lines[index]
+    if _line_is_passport_payload(line) or _STREET_LINE_RE.search(line):
+        return False
+    if re.search(r"(?i)\bpin\s*:?\s*\d{6}\b", line):
+        return False
+    if re.search(r"(?i)\b(?:india|state|urban|district)\b", line):
+        return True
+    generic = {
+        "advocate",
+        "notary",
+        "netary",
+        "attorney",
+        "attested",
+        "attest",
+        "certified",
+        "stamp",
+        "duty",
+        "true",
+        "copy",
+        "verified",
+    }
+    prev_toks = {
+        tok.lower()
+        for tok in re.findall(r"[A-Za-z]{5,}", prev)
+        if tok.lower() not in generic
+    }
+    line_toks = {tok.lower() for tok in re.findall(r"[A-Za-z]{5,}", line)}
+    return bool(prev_toks & line_toks)
+
+
+def _previous_content_line(lines: list[str], index: int) -> str:
+    j = index - 1
+    while j >= 0 and not lines[j].strip():
+        j -= 1
+    return lines[j] if j >= 0 else ""
+
+
+def _stamp_locality_indexes(lines: list[str]) -> set[int]:
+    """Indexes of near-duplicate stamp places, when notary comments are present.
+
+    A residential line (street, door, PIN) and the value under a passport label
+    are not part of the stamp cluster.
+    """
+    idxs: list[int] = []
+    sigs: list[set[str]] = []
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if not s or _line_is_notary_comment(s) or _line_is_passport_payload(s):
+            continue
+        if _STREET_LINE_RE.search(s):
+            continue
+        if _PASSPORT_LABEL_LINE_RE.search(_previous_content_line(lines, i)):
+            continue
+        sig = _stamp_place_signature(s)
+        if not sig:
+            continue
+        if not (
+            _LOCALITY_MARK_RE.search(s)
+            or re.search(r"(?i)\bindia\b|\bstate\b|\burban\b", s)
+        ):
+            continue
+        idxs.append(i)
+        sigs.append(sig)
+    n = len(idxs)
+    if n < 3:
+        return set()
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _locality_token_overlap(sigs[i], sigs[j]) >= 0.5:
+                union(i, j)
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    ranked = sorted(groups.values(), key=len, reverse=True)
+    largest = ranked[0]
+    second = len(ranked[1]) if len(ranked) > 1 else 0
+    if len(largest) < 3 or len(largest) <= second:
+        return set()
+    return {idxs[i] for i in largest}
+
+
+def _repeated_stamp_signatures(text: str | None) -> list[set[str]]:
+    """Distinctive tokens of a town the notary stamp repeats."""
+    lines = (text or "").splitlines()
+    if not lines or not any(_line_is_notary_comment(ln) for ln in lines):
+        return []
+    sigs: list[set[str]] = []
+    for i in _stamp_locality_indexes(lines):
+        sig = _stamp_place_signature(lines[i])
+        if sig:
+            sigs.append(sig)
+    return sigs
+
+
+def _line_matches_stamp_locality(line: str, signatures: list[set[str]]) -> bool:
+    """True when a fragment is a repeated stamp town, not a residential line."""
+    if not signatures:
+        return False
+    if re.search(
+        r"(?i)\b(?:house|village|mandal|pin|road|street|lane|nagar|colony|"
+        r"block|flat|room|door|number)\b",
+        line or "",
+    ):
+        return False
+    if re.search(r"\d", line or ""):
+        return False
+    sig = _stamp_place_signature(line)
+    if not sig:
+        return False
+    return any(_locality_token_overlap(sig, other) >= 0.5 for other in signatures)
+
+
+def _strip_stamp_locality_tail(address: str | None, text: str | None) -> str | None:
+    """Drop a notary-town suffix glued after the real residential lines."""
+    raw = str(address or "").strip()
+    if not raw:
+        return None
+    signatures = _repeated_stamp_signatures(text)
+    if not signatures:
+        return raw
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    while parts and _line_matches_stamp_locality(parts[-1], signatures):
+        parts.pop()
+    if not parts:
+        return None
+    return ", ".join(parts)[:400]
+
+
+_NOTARY_NAME_SKIP = _LOCALITY_TOKEN_SKIP | frozenset(
+    {
+        "advocate",
+        "notarial",
+        "attorney",
+        "attested",
+        "attest",
+        "certified",
+        "copy",
+        "true",
+        "stamp",
+        "duty",
+        "solemnly",
+        "verified",
+        "verification",
+        "ballm",
+        "allm",
+    }
+)
+
+
+def _notary_neighbor_tokens(lines: list[str]) -> set[str]:
+    """Person-like tokens that sit on or beside an advocate / notary comment."""
+    bad: set[str] = set()
+    for i, line in enumerate(lines):
+        window = lines[max(0, i - 2) : i + 3]
+        if not any(_line_is_notary_comment(part) for part in window):
+            continue
+        for tok in re.findall(r"[A-Za-z]{4,}", line or ""):
+            low = tok.lower()
+            if low in _NOTARY_NAME_SKIP or low in _STAMP_GEO_GENERIC:
+                continue
+            bad.add(low)
+    return bad
+
+
+def _name_is_notary_neighbor(name: str | None, lines: list[str]) -> bool:
+    """True when a 'name' is a garbled attestor (B. BHAVANY → B Bhaoay), not a relative."""
+    parts = re.findall(r"[A-Za-z]{4,}", str(name or "").lower())
+    if not parts:
+        return False
+    stamps = _notary_neighbor_tokens(lines)
+    if not stamps:
+        return False
+    for part in parts:
+        for stamp in stamps:
+            if part == stamp or SequenceMatcher(None, part, stamp).ratio() >= 0.72:
+                return True
+    return False
+
+
+def _passport_number_or_mrz_fragment(line: str) -> str:
+    """Keep a passport number or MRZ token that OCR glued onto a comment line."""
+    bits: list[str] = []
+    mrz = re.search(r"P\s*<[A-Z0-9< ]{8,}", line or "", re.I)
+    if mrz:
+        bits.append(re.sub(r"\s+", "", mrz.group(0).upper()))
+    for tok in re.findall(r"\b[A-Z]\d{7}\b", (line or "").upper()):
+        if tok not in bits:
+            bits.append(tok)
+    return " ".join(bits)
+
+
+def strip_non_passport_comments(text: str | None) -> str:
+    """Drop notary, attestation, and true-copy lines before field assignment.
+
+    Passport labels, MRZ, passport numbers, and residential lines stay.
+    A town repeated only inside the stamp is dropped with the comments.
+    When the page has no comment boilerplate, the text is unchanged.
+    """
+    raw = text or ""
+    lines = raw.splitlines()
+    if not lines or not any(_line_is_notary_comment(ln) for ln in lines):
+        return raw
+    drop_locality = _stamp_locality_indexes(lines)
+    kept: list[str] = []
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if not s:
+            kept.append(ln)
+            continue
+        comment = _line_is_notary_comment(s)
+        if comment and not _line_is_passport_payload(s):
+            fragment = _passport_number_or_mrz_fragment(s)
+            if fragment:
+                kept.append(fragment)
+            continue
+        if comment and _line_is_passport_payload(s):
+            kept.append(ln)
+            continue
+        if (
+            i in drop_locality
+            or _follows_notary_stamp(lines, i)
+            or (
+                _is_stamp_country_tail(s)
+                and not _line_is_passport_payload(s)
+                and not _STREET_LINE_RE.search(s)
+                and not _PASSPORT_LABEL_LINE_RE.search(_previous_content_line(lines, i))
+            )
+        ):
+            continue
+        kept.append(ln)
+    return "\n".join(kept)
+
+
+def _passport_signal_count(text: str | None) -> int:
+    """How many independent passport cues are in ``text``. MRZ alone counts as enough."""
+    raw = text or ""
+    compact = re.sub(r"\s+", "", raw)
+    if re.search(r"P<[A-Z0-9<]{3}", compact, re.I):
+        return 2
+    n = 0
+    if re.search(r"\b(?:PASSPORT|PASSEPORT)\b", raw, re.I):
+        n += 1
+    if re.search(r"\bREPUBLIC\s+OF\s+[A-Z]", raw, re.I):
+        n += 1
+    if re.search(r"\b(?:SURNAME|GIVEN\s+NAMES?)\b", raw, re.I):
+        n += 1
+    if re.search(r"\bDATE\s+OF\s+BIRTH\b", raw, re.I):
+        n += 1
+    if re.search(r"\b[A-Z]\d{7}\b", raw.upper()):
+        n += 1
+    if re.search(
+        r"\b(?:DATE\s+OF\s+(?:ISSUE|EXPIRY)|NATIONALITY|PLACE\s+OF\s+BIRTH)\b",
+        raw,
+        re.I,
+    ):
+        n += 1
+    return n
+
+
+def text_has_enough_passport_evidence(text: str | None) -> bool:
+    """True when the page is still a passport after comment lines are ignored.
+
+    Notary or attestation text does not cancel MRZ, a passport number together
+    with a passport label, or the usual biodata headings. A stamp locality
+    and a bare passport number are not enough on their own.
+    """
+    raw = text or ""
+    if _passport_signal_count(raw) >= 2:
+        return True
+    stripped = strip_non_passport_comments(raw)
+    if stripped != raw and _passport_signal_count(stripped) >= 2:
+        return True
+    return False
+
+
+def _filter_ocr_blocks_after_comment_strip(
+    blocks: list[dict[str, Any]] | None,
+    original_text: str,
+    stripped_text: str,
+) -> list[dict[str, Any]] | None:
+    """Drop OCR boxes whose lines were removed as notary or stamp comments.
+
+    Boxes that never appeared as their own line in the page text are kept.
+    A split name box (``JOSEPHINE`` beside ``ANUNCIA``) is not a comment line.
+    """
+    if not blocks:
+        return blocks
+
+    def norm(line: str) -> str:
+        return re.sub(r"\s+", " ", line).strip().upper()
+
+    kept = {norm(ln) for ln in (stripped_text or "").splitlines() if ln.strip()}
+    dropped = {
+        norm(ln)
+        for ln in (original_text or "").splitlines()
+        if ln.strip() and norm(ln) not in kept
+    }
+    if not dropped:
+        return blocks
+    out: list[dict[str, Any]] = []
+    for blk in blocks:
+        if not isinstance(blk, dict):
+            continue
+        text = str(
+            blk.get("cleaned_text") or blk.get("text") or blk.get("raw_ocr_text") or ""
+        ).strip()
+        if not text:
+            continue
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()] or [text]
+        surviving = [ln for ln in lines if norm(ln) not in dropped]
+        if not surviving:
+            continue
+        if len(surviving) == len(lines):
+            out.append(blk)
+            continue
+        copied = dict(blk)
+        joined = "\n".join(surviving)
+        copied["cleaned_text"] = joined
+        if "text" in copied:
+            copied["text"] = joined
+        out.append(copied)
+    return out
+
+
+def _value_grounded_in_text(
+    value: str,
+    text: str,
+    ocr_blocks: list[dict[str, Any]] | None = None,
+) -> bool:
+    """True when a free-text value still appears on the page after comments are removed.
+
+    Spatial OCR boxes count. A stamp town that was stripped out of both the
+    page text and its boxes does not.
+    """
+    blob = text or ""
+    for blk in ocr_blocks or []:
+        if not isinstance(blk, dict):
+            continue
+        blob += "\n" + str(
+            blk.get("cleaned_text") or blk.get("text") or blk.get("raw_ocr_text") or ""
+        )
+    tokens = [
+        tok
+        for tok in re.findall(r"[A-Za-z]{4,}", (value or "").lower())
+        if tok not in _STAMP_GEO_GENERIC and tok not in _LOCALITY_TOKEN_SKIP
+    ]
+    if not tokens:
+        digits = re.findall(r"\d{3,}", value or "")
+        return any(d in blob for d in digits) if digits else True
+    blob_l = blob.lower()
+    return any(tok in blob_l for tok in tokens)
 
 
 def _tidy_passport_address(val: str | None) -> str | None:
     """Keep street lines; drop dates, names, and visa crumbs glued into address."""
-    raw = str(val or "").strip()
+    raw = _strip_address_header_prefix(str(val or ""))
     if not raw:
         return None
-    raw = re.sub(r"\s+\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}\b", " ", raw)
+    collapsed = _collapse_repeated_locality_parts(re.split(r"[\n,]+", raw))
+    if collapsed:
+        # A repeated town/state line is a notary stamp, not the holder's address.
+        # A repeated street (road, door, PIN) is still the residential address.
+        if _STREET_LINE_RE.search(collapsed):
+            sanitized = _sanitize_passport_address(collapsed)
+            if sanitized:
+                return sanitized
+            if _address_is_administrative_noise(collapsed):
+                return None
+            return collapsed
+        return None
+    # Door numbers such as 12-1-47/1 share a date shape. Keep them when a slash
+    # tail shows they are a street token, not a glued issue date.
+    raw = re.sub(r"\s+\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}\b(?!/\d)", " ", raw)
     parts = re.split(
         r"(?i)\b(?:name\s*(?:of|ot)\s*(?:spouse|father|mother)|visa)\b|\s*\|\s*",
         raw,
@@ -2314,7 +3281,8 @@ def _tidy_passport_address(val: str | None) -> str | None:
         looks_street = bool(
             re.search(
                 r"(?i)\b(?:road|street|nagar|colony|block|flat|room|lane|society|"
-                r"pin\s*:?\s*\d{6}|h\s*no|no\s*:)\b",
+                r"pin\s*:?\s*\d{6}|h\s*no|no\s*:|house\s*(?:no\.?|number)|"
+                r"village|mandal)\b|\d{1,4}\s*-\s*\d{1,4}",
                 piece,
             )
         )
@@ -2357,7 +3325,10 @@ def _tidy_passport_address(val: str | None) -> str | None:
         ):
             deduped[i], deduped[i + 1] = nxt, city
         i += 1
-    return ", ".join(deduped)[:400] or None
+    final = ", ".join(deduped)[:400] or None
+    if final and _address_is_administrative_noise(final):
+        return None
+    return final
 
 
 def _ocr_block_items(
@@ -2480,13 +3451,20 @@ def _value_near_label(
     return None
 
 
-# OCR often turns Issue → lssue / lssuo; do not require the leading "i".
-_PLACE_OF_ISSUE_OCR = r"(?:l?issue|lssue|lssuo|issuc|issuance|issu|sue|tssue|tsue|ssue)"
-# "Place" often OCRs as Pace / Puce, and "of issue" glues to "ofsue".
-_PLACE_WORD_OCR = r"(?:place|pace|puce|piace)"
-# OCR-tolerant: Birth → Blrth / Birih / Bith on CamScanner / PDF renders.
+# OCR often turns Issue → lssue / lssuo / tssuo; do not require the leading "i".
+# Trailing e-acute is the same word when the last letter is accented.
+_PLACE_OF_ISSUE_OCR = (
+    r"(?:l?issue|lssue|lssuo|lssve|issuc|issuance|issu|sue|tssue|tssuo|tssve|"
+    r"tsue|ssue|lasue|lesue|tssu[eé]|ssu[eé])"
+)
+# "Place" often OCRs as Pace / Puce / Piace / Pteca, and "of issue" glues to "ofsue".
+_PLACE_WORD_OCR = r"(?:place|pace|puce|piace|pteca)"
+# "of" often OCRs as ot / gf / af (Place gf Birth).
+_PLACE_OF_CONNECTOR_OCR = r"(?:o[ft]|gf|af|0f)"
+# OCR-tolerant: Birth → Blrth / Birih / Bith / Burt / Birt; "of" → "ot" / "gf".
+_PLACE_OF_BIRTH_WORD_OCR = r"(?:birth|blrth|birih|bith|burth|burt|birt|bre)"
 _PLACE_OF_BIRTH_LABEL_RE = re.compile(
-    rf"(?i)\b{_PLACE_WORD_OCR}\s*of\s*(?:birth|blrth|birih|bith|bre)\b"
+    rf"(?i)\b{_PLACE_WORD_OCR}\s*{_PLACE_OF_CONNECTOR_OCR}\s*{_PLACE_OF_BIRTH_WORD_OCR}\b"
 )
 _PLACE_OF_ISSUE_LABEL_RE = re.compile(
     rf"(?i)\b{_PLACE_WORD_OCR}\s*o[ft][.\s]*{_PLACE_OF_ISSUE_OCR}"
@@ -2507,6 +3485,160 @@ _ADDRESS_LABEL_RE = re.compile(
     r"denl\s*/\s*add\w*|qa\s*/\s*add\w*|qm\s*/\s*add\w*|"
     r"ift.?l?\s*/\s*adrhess)\b"
 )
+
+# High RapidFuzz bar so "Piace of ssue" / "Date of issse" match, and
+# "Place of Birth" does not win the place-of-issue slot.
+_ISSUE_LABEL_FUZZY_THRESHOLD = 85
+
+_ADDRESS_MAJOR_STOP_RE = re.compile(
+    r"(?i)(?:"
+    r"\b(?:name\s+of|file\s*(?:no\.?|number)|fileno|old\s+passport|"
+    r"place\s+of|date\s+of|surname|given\s+names?|nationality|"
+    r"father|mother|spouse|legal\s+guardian|passport\s+no)\b"
+    r")"
+)
+# Leftmost पता / Address label, including a trailing letter glued on (Addresse)
+# and bilingual crumbs (qa / Address). The value starts after this match.
+_ADDRESS_VALUE_ANCHOR_RE = re.compile(
+    r"(?i)(?:"
+    r"\b(?:addresse|address|addiese|adrhess|addrese|adress|addres|adres)\b"
+    r"|(?:denl|qan|qa|qm|went)\s*/\s*add\w*"
+    r"|ift.?l?\s*/\s*adrhess"
+    r"|(?:पता|पत्ता)"
+    r")"
+)
+# Header noise only at the absolute start: "e, Address,", "पता / Address", OCR
+# variants of Address. A street already starting at "D.NO:" or "12-1-47/1" does
+# not match. Address / पता later in the line are left alone.
+_ADDRESS_HEADER_PREFIX_RE = re.compile(
+    r"^(?:"
+    r"[\s,;:/|–—.\-]*"
+    r"(?:"
+    r"[A-Za-z]\s*,\s*"
+    r"|(?:qan|denl|qa|qm|den|went)\s*/\s*"
+    r")?"
+    r"(?:"
+    r"addresse|address|addiese|adrhess|addrese|adress|addres|adres|पता|पत्ता"
+    r")"
+    r"(?![A-Za-z\u0900-\u097F])"
+    r"[\s,;:/|–—.\-]*"
+    r")+",
+    re.IGNORECASE,
+)
+_STREET_VALUE_START_RE = re.compile(
+    r"(?i)(?:"
+    r"\b(?:d\.?\s*no|h\.?\s*no|door|flat|house|room|block|plot|lane|road|street|nagar)\b"
+    r"|\d{1,5}\s*[-/]\s*\d"
+    r"|^\d{1,6}\b"
+    r")"
+)
+
+
+def _issue_label_scores(line: str) -> dict[str, float]:
+    try:
+        from rapidfuzz import fuzz
+    except ImportError:
+        return {}
+    norm = re.sub(r"[^a-z0-9]+", " ", (line or "").lower())
+    norm = re.sub(r"\s+", " ", norm).strip()
+    if len(re.sub(r"[^a-z]", "", norm)) < 8:
+        return {}
+    phrases = {
+        "place_of_issue": "place of issue",
+        "date_of_issue": "date of issue",
+        "place_of_birth": "place of birth",
+    }
+    return {key: float(fuzz.WRatio(norm, phrase)) for key, phrase in phrases.items()}
+
+
+def _fuzzy_issue_label_kind(line: str) -> str | None:
+    scores = _issue_label_scores(line)
+    if not scores:
+        return None
+    best = max(scores, key=lambda key: scores[key])
+    if scores[best] < _ISSUE_LABEL_FUZZY_THRESHOLD:
+        return None
+    for other, score in scores.items():
+        if other != best and score >= scores[best]:
+            return None
+    return best
+
+
+def _line_is_mrz_boundary(line: str) -> bool:
+    norm = _normalize_mrz_candidate(line or "")
+    if len(norm) < 20:
+        return False
+    return _looks_like_td3_line1(norm) or _looks_like_td3_line2(norm)
+
+
+def _anchor_tail_after_issue_label(line: str) -> str:
+    tail = re.sub(
+        r"(?i)^.*\b(?:issue|lssue|issse|issuc|lssuo|ssue|birth|blrth|birih|bith)\b",
+        "",
+        line or "",
+    )
+    tail = re.sub(r"^[\s.:/\-–—]+", "", tail).strip()
+    if tail and _fuzzy_issue_label_kind(tail):
+        return ""
+    return tail
+
+
+def _values_from_fuzzy_issue_labels(text: str | None) -> dict[str, str]:
+    """Place/date of issue (and birth) from a fuzzy label plus value grammar."""
+    found: dict[str, str] = {}
+    lines = (text or "").splitlines()
+    for index, line in enumerate(lines):
+        if _OLD_PASSPORT_PLACE_OF_ISSUE_RE.search(line) or _line_is_notary_comment(line):
+            continue
+        kind = _fuzzy_issue_label_kind(line)
+        if kind not in {"place_of_issue", "date_of_issue", "place_of_birth"}:
+            continue
+        if found.get(kind):
+            continue
+        candidates: list[str] = []
+        tail = _anchor_tail_after_issue_label(line)
+        if tail:
+            candidates.append(tail)
+        for nxt in lines[index + 1 : index + 3]:
+            piece = nxt.strip()
+            if not piece:
+                continue
+            if (
+                _line_is_notary_comment(piece)
+                or _line_is_mrz_boundary(piece)
+                or _fuzzy_issue_label_kind(piece)
+                or _PLACE_OF_BIRTH_LABEL_RE.search(piece)
+                or _PLACE_OF_ISSUE_LABEL_RE.search(piece)
+                or _DATE_OF_ISSUE_LABEL_RE.search(piece)
+                or _ADDRESS_LABEL_RE.search(piece)
+            ):
+                break
+            candidates.append(piece)
+            break
+        for cand in candidates:
+            if kind == "date_of_issue":
+                iso = _parse_flexible_date(cand)
+                if not iso:
+                    dm = re.search(r"\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}", cand)
+                    iso = _parse_flexible_date(dm.group(0) if dm else None)
+                if iso:
+                    found[kind] = iso
+                    break
+            elif kind == "place_of_issue":
+                token = _normalize_place_token(cand)
+                if token and _is_issuing_office_candidate(token):
+                    found[kind] = token[:80]
+                    break
+            else:
+                token = _split_glued_city_state(_normalize_place_token(cand))
+                if (
+                    token
+                    and not _place_value_is_label_junk(token)
+                    and _is_place_candidate(token)
+                ):
+                    found[kind] = token[:80]
+                    break
+    return found
 
 
 def _is_address_line_candidate(text: str) -> bool:
@@ -2561,49 +3693,265 @@ def _prefer_full_address_lines(lines: list[str]) -> list[str]:
     return out or cleaned
 
 
-def _address_from_ocr_text(raw: str) -> str | None:
-    """Keep every printed address line after a (possibly bilingual) Address label.
+_LEADING_NATIONALITY_GLUE_RE = re.compile(
+    r"^(?P<glue>[A-Za-z]{2,4}\s*/\s*INDIAN)\b[\s,;:/|.\-]*",
+    re.IGNORECASE,
+)
+_LEADING_BIRTH_LABEL_FRAGMENT_RE = re.compile(
+    rf"^(?:{_PLACE_WORD_OCR})\s+{_PLACE_OF_CONNECTOR_OCR}\s+"
+    rf"{_PLACE_OF_BIRTH_WORD_OCR}\b[\s,;:/|.\-]*",
+    re.IGNORECASE,
+)
 
-    Labels like ``qan/ Address`` do not start with ``address``, so a start-anchored
-    ``_value_after_label`` miss would drop line 1 (e.g. TRIVENI COMPLEX…).
+
+def _strip_leading_address_noise(raw: str) -> str:
+    """Drop a junk header only at the absolute start of an address.
+
+    ``NTR/INDIAN`` and a following ``Place gf Birth`` fragment are header noise.
+    A street that does not start with that noise is unchanged.
     """
-    m = re.search(
-        r"(?im)^[^\n]*\b(?:address|residential[ \t]*address|addrese|addiese|adrhess|adress|addres)\b[ \t]*[:\-–—/]?[ \t]*(.*)$",
-        raw or "",
+    s = raw
+    changed = False
+    glue = _LEADING_NATIONALITY_GLUE_RE.match(s)
+    if glue:
+        s = s[glue.end() :]
+        changed = True
+        s = re.sub(r"^[\s,;:/|.\-]+", "", s)
+        s = re.sub(
+            r"^\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}\b(?!/\d)[\s,;]*",
+            "",
+            s,
+        )
+        s = re.sub(r"^[\s,;:/|.\-]+", "", s)
+    birth = _LEADING_BIRTH_LABEL_FRAGMENT_RE.match(s)
+    if birth:
+        s = s[birth.end() :]
+        changed = True
+    if not changed:
+        return raw
+    return re.sub(r"^[\s,;:/|–—.\-]+", "", s)
+
+
+def _strip_address_header_prefix(raw: str | None) -> str:
+    """Drop Address / पता label noise only from the start of an address string."""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    cleaned = _ADDRESS_HEADER_PREFIX_RE.sub("", s)
+    cleaned = _strip_leading_address_noise(cleaned)
+    if cleaned == s:
+        return s
+    cleaned = re.sub(r"^[\s,;:/|–—.\-]+", "", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip(" ,;")
+
+
+def _line_has_address_anchor(line: str) -> bool:
+    text = line or ""
+    return bool(
+        _ADDRESS_VALUE_ANCHOR_RE.search(text)
+        or _ADDRESS_LABEL_RE.search(text)
+        or block_is_field_label(text, "address")
     )
-    if not m:
+
+
+def _street_value_starts(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    # A leading issue date is not a door. 12-1-47/1 stays (slash tail).
+    if re.match(r"^\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}\b(?!/\d)", t):
+        return False
+    return bool(_STREET_VALUE_START_RE.search(t))
+
+
+def _text_after_address_anchor(line: str) -> str:
+    """Text strictly after पता / Address and its immediate punctuation."""
+    match = _ADDRESS_VALUE_ANCHOR_RE.search(line or "")
+    if not match:
+        return ""
+    tail = (line or "")[match.end() :]
+    tail = re.sub(r"^[\s,;:/|–—.\-]+", "", tail)
+    tail = re.sub(r"(?i)\b(?:qan|denl|qa|den|went|qm)\b", " ", tail)
+    tail = re.sub(r"^[\s,;:/|–—.\-]+", "", tail)
+    tail = _strip_address_header_prefix(tail)
+    return re.sub(r"\s+", " ", tail).strip(" ,;")
+
+
+def _address_block_pre_street(piece: str) -> str | None:
+    """Street text after a leading label fragment, or None while still pre-street.
+
+    Field labels and OCR crumbs between the anchor and the door line are not
+    part of the address. A line that is only ``e, Address,`` is skipped; the
+    same line with a street after that fragment starts at the street.
+    """
+    text = re.sub(r"\s+", " ", (piece or "").strip())
+    if not text or _line_is_notary_comment(text) or _line_is_mrz_boundary(text):
         return None
-    same = (m.group(1) or "").strip()
-    lines: list[str] = []
-    if (
-        same
-        and not _is_noise_value(same)
-        and not re.match(r"(?i)^(file|fileno|old passport|name of|pin\b)", same)
-        and len(same) >= 6
-    ):
-        lines.append(same)
-    for ln in (raw or "")[m.end() :].splitlines()[:12]:
-        t = ln.strip()
-        if not t:
-            if len(lines) >= 3 or any(
-                re.search(r"(?i)\bpin\s*:?\s*\d{6}\b", x) for x in lines
-            ):
-                break
+    stripped = _strip_address_header_prefix(text)
+    # A date glued ahead of the door is label-adjacent noise, not the street.
+    stripped = re.sub(
+        r"^\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}\b(?!/\d)\s*,?\s*",
+        "",
+        stripped,
+    ).strip(" ,;")
+    if not stripped or _looks_like_file_number_token(stripped):
+        return None
+    # Door tokens (D.NO, 12-1-47/1) and ordinary street lines (complex, nagar).
+    # Labels and short OCR crumbs stay skipped until that line appears.
+    if _street_value_starts(stripped) or _is_address_line_candidate(stripped):
+        return stripped
+    return None
+
+
+def _address_from_ocr_text(raw: str) -> str | None:
+    """Consume address lines in order from the address label until the next stop.
+
+    The street starts strictly after पता / Address. Intermediate labels and
+    OCR noise before that street are skipped. Line 1 of the street is kept.
+    A notary tail is dropped. The next major label or an MRZ line ends the block.
+    """
+    lines_in = (raw or "").splitlines()
+    start = None
+    for index, line in enumerate(lines_in):
+        if _line_has_address_anchor(line):
+            start = index
+            break
+    if start is None:
+        return None
+    collected: list[str] = []
+    tail = _text_after_address_anchor(lines_in[start])
+    if tail:
+        started = _address_block_pre_street(tail)
+        if started:
+            collected.append(started)
+    for line in lines_in[start + 1 :]:
+        piece = line.strip()
+        if not piece:
             continue
-        if re.match(
-            r"(?i)^(old passport|name of|file|fileno|passport|fke|ma\s*3|a3\s*/)",
-            t,
+        if _line_is_mrz_boundary(piece):
+            break
+        if not collected:
+            if _line_is_notary_comment(piece):
+                continue
+            started = _address_block_pre_street(piece)
+            if started:
+                collected.append(started)
+            continue
+        if _line_is_notary_comment(piece):
+            break
+        if _ADDRESS_MAJOR_STOP_RE.search(piece) or _FILE_LABEL_FUZZY_RE.search(piece):
+            break
+        if block_is_field_label(piece, "file_number") or block_is_field_label(
+            piece, "father_name"
         ):
             break
-        if _is_noise_value(t):
-            continue
-        lines.append(t)
-        if re.search(r"(?i)\bpin\s*:?\s*\d{6}\b", t):
+        collected.append(piece)
+        if re.search(r"(?i)\bpin\s*:?\s*\d{6}\b", piece):
             break
-    lines = _prefer_full_address_lines(lines)
-    joined = normalize_multiline_address("\n".join(lines)[:400])
+    while collected and _line_is_notary_comment(collected[-1]):
+        collected.pop()
+    collected = _prefer_full_address_lines(collected)
+    joined = normalize_multiline_address("\n".join(collected)[:400])
     if joined and len(joined) >= 12:
         return joined
+    return None
+
+
+def _address_is_residential(val: str | None) -> bool:
+    return bool(
+        re.search(
+            r"(?i)\b(?:pin\s*:?\s*\d{6}|house|village|mandal|road|street|nagar|"
+            r"block|flat|room|lane|colony|h\.?\s*no|d\.?\s*no)\b|\d{1,4}\s*-\s*\d",
+            val or "",
+        )
+    )
+
+
+def _address_from_reading_order(
+    blocks: list[dict[str, Any]] | None,
+) -> str | None:
+    """Address lines after the Address label in OCR reading order.
+
+    Rotated pages put the street lines "above" the label in image y, so a
+    center-y "below" search drops line 1. Reading order still has
+    Address, street, locality, PIN.
+    """
+    if not blocks:
+        return None
+    rows: list[tuple[int, int, int, str]] = []
+    for idx, blk in enumerate(blocks):
+        if not isinstance(blk, dict):
+            continue
+        text = _block_text(blk)
+        if not text:
+            continue
+        try:
+            page = int(
+                blk.get("page_index")
+                if blk.get("page_index") is not None
+                else blk.get("page")
+                or 0
+            )
+        except (TypeError, ValueError):
+            page = 0
+        raw_order = blk.get("reading_order_index")
+        if raw_order is None:
+            raw_order = blk.get("order")
+        try:
+            order = int(raw_order) if raw_order is not None else idx
+        except (TypeError, ValueError):
+            order = idx
+        rows.append((page, order, idx, text))
+    by_page: dict[int, list[tuple[int, int, str]]] = {}
+    for page, order, idx, text in rows:
+        by_page.setdefault(page, []).append((order, idx, text))
+    for page_rows in by_page.values():
+        page_rows.sort(key=lambda item: (item[0], item[1]))
+        texts = [text for _, _, text in page_rows]
+        stamp_sigs = _repeated_stamp_signatures("\n".join(texts))
+        for i, text in enumerate(texts):
+            if not _line_has_address_anchor(text):
+                continue
+            lines: list[str] = []
+            remainder = _text_after_address_anchor(text)
+            started = _address_block_pre_street(remainder) if remainder else None
+            if started:
+                lines.append(started)
+            for nxt in texts[i + 1 :]:
+                piece = nxt.strip()
+                if not piece:
+                    continue
+                if _line_matches_stamp_locality(piece, stamp_sigs):
+                    continue
+                if _line_is_mrz_boundary(piece):
+                    break
+                if not lines:
+                    if _line_is_notary_comment(piece):
+                        continue
+                    started = _address_block_pre_street(piece)
+                    if started:
+                        lines.append(started)
+                    continue
+                if _line_is_notary_comment(piece):
+                    break
+                if (
+                    _ADDRESS_MAJOR_STOP_RE.search(piece)
+                    or _FILE_LABEL_FUZZY_RE.search(piece)
+                    or re.match(
+                        r"(?i)^(old passport|name of|file|fileno|passport|fke|a3\s*/)",
+                        piece,
+                    )
+                ):
+                    break
+                if _looks_like_file_number_token(piece):
+                    break
+                lines.append(piece)
+                if re.search(r"(?i)\bpin\s*:?\s*\d{6}\b", piece):
+                    break
+            lines = _prefer_full_address_lines(lines)
+            joined = normalize_multiline_address("\n".join(lines)[:400])
+            if joined and len(joined) >= 12 and _address_is_residential(joined):
+                return joined
     return None
 
 
@@ -2612,8 +3960,12 @@ def _address_from_ocr_blocks(blocks: list[dict[str, Any]] | None) -> str | None:
 
     Long address lines have a right-shifted *center* even when left-aligned with
     the Address header. Scoring by center-x then picks line 2 as “below” and
-    drops line 1. Collect by left-edge alignment instead.
+    drops line 1. Collect by left-edge alignment instead. Rotated scans use
+    reading order so the first street line is not treated as above the label.
     """
+    ordered = _address_from_reading_order(blocks)
+    if ordered:
+        return ordered
     items = _ocr_block_items(blocks)
     if not items:
         return None
@@ -2626,18 +3978,14 @@ def _address_from_ocr_blocks(blocks: list[dict[str, Any]] | None) -> str | None:
     ]
 
     for i, (page0, y0, x0, w0, _h0, text) in enumerate(items):
-        if not (
-            _ADDRESS_LABEL_RE.search(text) or block_is_field_label(text, "address")
-        ):
+        if not _line_has_address_anchor(text):
             continue
         label_left = x0 - (w0 / 2.0)
         lines: list[str] = []
-        remainder = _ADDRESS_LABEL_RE.sub(" ", text)
-        remainder = re.sub(r"(?i)\b(?:qan|denl|qa|den|went)\b", " ", remainder)
-        remainder = re.sub(r"[/|:\-–—]+", " ", remainder)
-        remainder = re.sub(r"\s+", " ", remainder).strip()
-        if remainder and _is_address_line_candidate(remainder):
-            lines.append(remainder)
+        remainder = _text_after_address_anchor(text)
+        started = _address_block_pre_street(remainder) if remainder else None
+        if started:
+            lines.append(started)
         for page, cy, cx, w, _h, t2 in items:
             if page != page0 or t2 == text:
                 continue
@@ -2647,16 +3995,19 @@ def _address_from_ocr_blocks(blocks: list[dict[str, Any]] | None) -> str | None:
             # Wide street lines share the label's left edge, not its center.
             if abs(left - label_left) > 180:
                 continue
+            if _line_is_mrz_boundary(t2):
+                break
+            if not lines:
+                if _line_is_notary_comment(t2):
+                    continue
+                started = _address_block_pre_street(t2)
+                if started:
+                    lines.append(started)
+                continue
+            if _line_is_notary_comment(t2):
+                break
             if any(rx.search(t2) for rx in stop):
-                if lines:
-                    break
-                continue
-            if not _is_address_line_candidate(t2) and not re.search(
-                r"(?i)\bpin\b|\b\d{6}\b", t2
-            ):
-                if lines:
-                    break
-                continue
+                break
             lines.append(t2)
             if re.search(r"(?i)\bpin\s*:?\s*\d{6}\b", t2):
                 break
@@ -2669,7 +4020,7 @@ def _address_from_ocr_blocks(blocks: list[dict[str, Any]] | None) -> str | None:
                     break
         lines = _prefer_full_address_lines(lines)
         joined = normalize_multiline_address("\n".join(lines)[:400])
-        if joined and len(joined) >= 12:
+        if joined and len(joined) >= 12 and _address_is_residential(joined):
             return joined
     return None
 
@@ -3210,9 +4561,12 @@ def _unlabeled_family_row_from_blocks(
         if re.search(r"(?i)\bPIN\s*:?\s*\d{6}\b", t):
             return True
         if re.search(
-            r"(?i)\b(?:blok|block|h\.?\s*no|d\.?\s*no|room|road|street|lane|nagar|oad)\b",
+            r"(?i)\b(?:blok|block|h\.?\s*no|d\.?\s*no|room|road|street|lane|nagar|oad|"
+            r"school|college|engineering|institute|house\s*(?:no\.?|number))\b",
             t,
         ):
+            return True
+        if re.search(r"(?i)\b[A-Z]{1,3}-\d|\d{1,4}\s*/\s*\d|\d{1,4}\s*-\s*\d{1,4}", t):
             return True
         if "," in t and re.search(r"[A-Za-z]{4,}", t):
             return True
@@ -3226,13 +4580,18 @@ def _unlabeled_family_row_from_blocks(
             continue
         if not (
             re.search(r"(?i)\bPIN\s*:?\s*\d{6}\b", blob)
-            or re.search(r"(?i)\b(?:blok|block)\b", blob)
+            or re.search(r"(?i)\b(?:blok|block|house\s*(?:no\.?|number))\b", blob)
         ):
             continue
+        stamp_names = _notary_neighbor_tokens(texts)
         names: list[str] = []
         addr: list[str] = []
         for text in texts:
+            if _line_is_notary_comment(text) or _name_is_notary_neighbor(text, texts):
+                continue
             if _addr_piece(text):
+                if _line_matches_stamp_locality(text, _repeated_stamp_signatures(blob)):
+                    continue
                 addr.append(re.sub(r"\s+", " ", text).strip(" ,"))
                 continue
             if (
@@ -3240,20 +4599,27 @@ def _unlabeled_family_row_from_blocks(
                 and _is_plausible_person_name(text)
                 and len(text.split()) >= 2
                 and "," not in text
+                and not _name_is_notary_neighbor(text, texts)
+                and not any(
+                    SequenceMatcher(None, part, stamp).ratio() >= 0.72
+                    for part in re.findall(r"[A-Za-z]{4,}", text.lower())
+                    for stamp in stamp_names
+                )
             ):
                 cleaned = _clean_person_name(text)
-                if cleaned:
+                if cleaned and not _name_is_notary_neighbor(cleaned, texts):
                     names.append(cleaned)
                 continue
-            if _addr_piece(text):
-                addr.append(re.sub(r"\s+", " ", text).strip(" ,"))
-        if len(names) < 3 or len(addr) < 2:
+        # Spouse is the third person only. Two names are father and mother;
+        # a blank spouse cell must not be filled from a stamp.
+        if len(names) < 2 or len(addr) < 2:
             continue
         out: dict[str, str] = {
             "father_name": names[0],
             "mother_name": names[1],
-            "spouse_name": names[2],
         }
+        if len(names) >= 3:
+            out["spouse_name"] = names[2]
         addr = _prefer_full_address_lines(addr)
         joined = normalize_multiline_address(", ".join(addr))
         if joined and len(joined) >= 12:
@@ -3300,11 +4666,7 @@ def _passport_has_spouse_evidence(
     still printing a clear third person name (e.g. LAKXMI ARAVIND). Do not wipe
     that name solely because the label string is missing.
     """
-    if _passport_has_spouse_label(text, blocks):
-        return True
-    unlabeled = _unlabeled_family_row_from_blocks(blocks)
-    spouse = unlabeled.get("spouse_name")
-    return bool(spouse and _is_plausible_person_name(spouse))
+    return _passport_has_spouse_label(text, blocks)
 
 
 def _is_blank_spouse_value(value: str | None) -> bool:
@@ -3621,7 +4983,7 @@ def _extract_labeled_fields(
 
     pob = _value_after_label(
         raw,
-        rf"{_PLACE_WORD_OCR}[ \t]*of[ \t]*(?:birth|blrth|birih|bith|bre)|"
+        rf"{_PLACE_WORD_OCR}[ \t]*{_PLACE_OF_CONNECTOR_OCR}[ \t]*{_PLACE_OF_BIRTH_WORD_OCR}|"
         r"lieu[ \t]*de[ \t]*naissance",
     )
     if pob and (_looks_like_date_value(pob) or _is_nationality_as_place(pob)):
@@ -3662,6 +5024,14 @@ def _extract_labeled_fields(
         found["place_of_birth"] = block_biodata.get("place_of_birth")
     if not found.get("place_of_birth") and block_biodata.get("place_of_birth"):
         found["place_of_birth"] = block_biodata["place_of_birth"]
+    if (
+        not found.get("place_of_birth")
+        or _is_postal_address_as_place(str(found.get("place_of_birth") or ""))
+        or re.search(r"\d", str(found.get("place_of_birth") or ""))
+    ):
+        city_state = _city_state_near_birth_label(raw)
+        if city_state:
+            found["place_of_birth"] = city_state
 
     # Biodata Place of Issue only — skip "Old Passport … Place of Issue" stamps.
     poi = None
@@ -3751,16 +5121,6 @@ def _extract_labeled_fields(
             ):
                 found["place_of_issue"] = city[:80]
 
-    # Place of Issue label dropped, city left on the line after CITY, STATE birth.
-    if not found.get("place_of_issue"):
-        issue_city = _issue_city_following_birth(raw)
-        if issue_city and _is_issuing_office_candidate(
-            issue_city,
-            surname=str(found.get("surname") or ""),
-            given_names=str(found.get("given_names") or ""),
-        ):
-            found["place_of_issue"] = issue_city[:80]
-
     # When OCR stacks "Place of Birth / Place of issue / CITY", city is often issue.
     if "place_of_birth" not in found and "place_of_issue" in found:
         pass
@@ -3778,7 +5138,6 @@ def _extract_labeled_fields(
         ):
             # Under stacked birth/issue labels the first city is usually place of issue.
             found["place_of_issue"] = city[:80]
-            found.pop("place_of_birth", None)
 
     # Birth place sometimes appears as "CITY, STATE" away from labels — only
     # when a Place of Birth label exists. Never promote address city/state lines
@@ -4015,6 +5374,19 @@ def _extract_labeled_fields(
         if before_issue and before_issue != found.get("date_of_birth"):
             found["date_of_issue"] = before_issue
 
+    fuzzy_issue = _values_from_fuzzy_issue_labels(raw)
+    if not found.get("place_of_birth") and fuzzy_issue.get("place_of_birth"):
+        found["place_of_birth"] = fuzzy_issue["place_of_birth"]
+    if not found.get("place_of_issue") and fuzzy_issue.get("place_of_issue"):
+        poi_f = fuzzy_issue["place_of_issue"]
+        pob_u = str(found.get("place_of_birth") or "").strip().upper()
+        if poi_f.strip().upper() != pob_u:
+            found["place_of_issue"] = poi_f
+    if not found.get("date_of_issue") and fuzzy_issue.get("date_of_issue"):
+        doi_f = fuzzy_issue["date_of_issue"]
+        if doi_f != found.get("date_of_birth"):
+            found["date_of_issue"] = doi_f
+
     iss = _value_after_label(
         raw,
         r"issuing[ \t]*(?:state|country|authority)|code[ \t]*of[ \t]*issuing",
@@ -4055,7 +5427,7 @@ def _extract_labeled_fields(
         r"(?:father|foter|fother|pathvet)"
         r"(?:[ \t]*/[ \t]*lega[ls]?[ \t]*(?:guardian|guardlan|gusrdian|gurdian|curdian))?|"
         r"father(?:'s)?[ \t]*name|foter|fother|name[ \t]*of[ \t]*guardian|"
-        r"(?:lega[ls]?[ \t]*)?(?:guardian|guardlan|gusrdian|gurdian|curdian|uardian)|"
+        r"(?:lega[ls]?[ \t]*)?(?:guardian|guardlan|gusrdian|gurdian|curdian|uardian|quardian)|"
         r"reme[ \t]*of[ \t]*foter|lepai[ \t]*curdian|"
         r"nere[ \t]*of[ \t]*pathvet"
     )
@@ -4087,7 +5459,7 @@ def _extract_labeled_fields(
         # Do not let IGNORECASE apply to the name capture — OCR crumbs like
         # "on" / "Name" would otherwise match as continuation lines.
         fm = re.search(
-            r"(?s)(?:[Ff]ather|[Ff]oter|[Gg]uardian|[Pp]arer|[Cc]urdian)[^\n]{0,60}\n"
+            r"(?s)(?:[Ff]ather|[Ff]oter|[Gg]uardian|[Qq]uardian|[Pp]arer|[Cc]urdian)[^\n]{0,60}\n"
             r"([A-Z][A-Za-z .']{4,100}(?:\n[A-Z][A-Za-z.']{2,40}){0,3})",
             raw,
         )
@@ -4444,7 +5816,7 @@ def _extract_labeled_fields(
         found.get("mother_name")
     ):
         unlabeled = _unlabeled_family_row_from_blocks(ocr_blocks)
-        for key in ("father_name", "mother_name", "spouse_name", "address"):
+        for key in ("father_name", "mother_name", "address"):
             cand = unlabeled.get(key)
             if not cand:
                 continue
@@ -4470,6 +5842,13 @@ def _extract_labeled_fields(
         == found["place_of_birth"].strip().upper().split(",")[0].strip()
     ):
         found.pop("surname", None)
+
+    spouse_now = found.get("spouse_name")
+    if spouse_now and (
+        _spouse_value_is_address_like(spouse_now, found.get("address"))
+        or not _spouse_supported_by_label(spouse_now, raw, ocr_blocks)
+    ):
+        found.pop("spouse_name", None)
 
     return found
 
@@ -4598,7 +5977,7 @@ _FATHER_TEXT_LABEL_RE = (
     r"(?:father|foter|fother|pathvet)"
     r"(?:[ \t]*/[ \t]*lega[ls]?[ \t]*(?:guardian|guardlan|gusrdian|gurdian|curdian))?|"
     r"father(?:'s)?[ \t]*name|foter|fother|name[ \t]*of[ \t]*guardian|"
-    r"(?:lega[ls]?[ \t]*)?(?:guardian|guardlan|gusrdian|gurdian|curdian|uardian)|"
+    r"(?:lega[ls]?[ \t]*)?(?:guardian|guardlan|gusrdian|gurdian|curdian|uardian|quardian)|"
     r"reme[ \t]*of[ \t]*foter|lepai[ \t]*curdian|"
     r"nere[ \t]*of[ \t]*pathvet"
 )
@@ -4791,6 +6170,188 @@ def _reject_cross_filled_holder_names(
         out[key] = None
 
 
+def _mother_name_on_own_label(
+    mother: str | None,
+    *,
+    text: str | None,
+    ocr_blocks: list[dict[str, Any]] | None,
+) -> bool:
+    """True when this mother name is the value of a mother label, not a father suffix."""
+    target = str(mother or "").strip()
+    if not target:
+        return False
+    zone = _family_label_zone_value(
+        "mother_name", text=text, ocr_blocks=ocr_blocks
+    )
+    if zone and zone.strip().upper() == target.upper():
+        return True
+    if zone and zone.strip().upper() != target.upper():
+        return False
+    has_label = False
+    has_value = False
+    for blk in ocr_blocks or []:
+        if not isinstance(blk, dict):
+            continue
+        blob = _block_text(blk)
+        if not blob:
+            continue
+        if _MOTHER_LABEL_FUZZY_RE.search(blob) and not _FATHER_LABEL_FUZZY_RE.search(blob):
+            has_label = True
+        cleaned = _clean_person_name(blob)
+        if (
+            cleaned
+            and cleaned.upper() == target.upper()
+            and not _MOTHER_LABEL_FUZZY_RE.search(blob)
+            and not _FATHER_LABEL_FUZZY_RE.search(blob)
+        ):
+            has_value = True
+    return has_label and has_value
+
+
+def _strip_trailing_mother_from_father(
+    father: str | None,
+    mother: str | None,
+    *,
+    text: str | None,
+    ocr_blocks: list[dict[str, Any]] | None,
+) -> str | None:
+    """Drop a trailing mother name from father when that mother has her own label.
+
+    The mother field is not modified and is not copied into father. A father
+    name is left unchanged when the mother label does not independently show
+    that name.
+    """
+    father_s = str(father or "").strip()
+    mother_s = str(mother or "").strip()
+    if not father_s or not mother_s:
+        return father if father_s else None
+    f_parts = father_s.split()
+    m_parts = mother_s.split()
+    if len(m_parts) < 2 or len(f_parts) <= len(m_parts):
+        return father_s
+    if [p.upper() for p in f_parts[-len(m_parts) :]] != [p.upper() for p in m_parts]:
+        return father_s
+    if not _mother_name_on_own_label(
+        mother_s, text=text, ocr_blocks=ocr_blocks
+    ):
+        return father_s
+    trimmed = " ".join(f_parts[: -len(m_parts)]).strip()
+    if (
+        not trimmed
+        or trimmed.upper() == mother_s.upper()
+        or not _is_plausible_person_name(trimmed)
+    ):
+        return father_s
+    return trimmed
+
+
+def _father_name_on_own_label(
+    father: str | None,
+    *,
+    text: str | None,
+    ocr_blocks: list[dict[str, Any]] | None,
+) -> bool:
+    """True when this father name is the value of a father label, not a mother suffix."""
+    target = str(father or "").strip()
+    if not target:
+        return False
+    zone = _family_label_zone_value(
+        "father_name", text=text, ocr_blocks=ocr_blocks
+    )
+    if zone and zone.strip().upper() == target.upper():
+        return True
+    if zone and zone.strip().upper() != target.upper():
+        return False
+    has_label = False
+    has_value = False
+    for blk in ocr_blocks or []:
+        if not isinstance(blk, dict):
+            continue
+        blob = _block_text(blk)
+        if not blob:
+            continue
+        if _FATHER_LABEL_FUZZY_RE.search(blob) and not _MOTHER_LABEL_FUZZY_RE.search(blob):
+            has_label = True
+        cleaned = _clean_person_name(blob)
+        if (
+            cleaned
+            and cleaned.upper() == target.upper()
+            and not _MOTHER_LABEL_FUZZY_RE.search(blob)
+            and not _FATHER_LABEL_FUZZY_RE.search(blob)
+        ):
+            has_value = True
+    return has_label and has_value
+
+
+def _strip_leading_father_portion_from_mother(
+    mother: str | None,
+    father: str | None,
+) -> str | None:
+    """Drop a father-name prefix from mother. The mother value stays hers.
+
+    The prefix may be the whole father name or a portion of it (a leading
+    token run that is a prefix or a suffix of the father tokens). A mother
+    name that does not start with that portion is unchanged.
+    """
+    mother_s = str(mother or "").strip()
+    father_s = str(father or "").strip()
+    if not mother_s or not father_s:
+        return mother if mother_s else None
+    m_parts = mother_s.split()
+    f_parts = father_s.split()
+    if len(m_parts) < 2 or not f_parts:
+        return mother_s
+    m_up = [part.upper() for part in m_parts]
+    f_up = [part.upper() for part in f_parts]
+    best = 0
+    for count in range(1, len(m_parts)):
+        head = m_up[:count]
+        is_prefix = count <= len(f_up) and head == f_up[:count]
+        is_suffix = count <= len(f_up) and head == f_up[-count:]
+        if is_prefix or is_suffix:
+            best = count
+    if best == 0:
+        return mother_s
+    trimmed = " ".join(m_parts[best:]).strip()
+    if (
+        not trimmed
+        or trimmed.upper() == father_s.upper()
+        or not _is_plausible_person_name(trimmed)
+    ):
+        return mother_s
+    return trimmed
+
+
+def _strip_trailing_father_from_mother(
+    mother: str | None,
+    father: str | None,
+    *,
+    text: str | None,
+    ocr_blocks: list[dict[str, Any]] | None,
+) -> str | None:
+    """Drop a trailing father name from mother when that father has his own label."""
+    mother_s = str(mother or "").strip()
+    father_s = str(father or "").strip()
+    if not mother_s or not father_s:
+        return mother if mother_s else None
+    m_parts = mother_s.split()
+    f_parts = father_s.split()
+    if len(f_parts) < 2 or len(m_parts) <= len(f_parts):
+        return mother_s
+    if [p.upper() for p in m_parts[-len(f_parts) :]] != [p.upper() for p in f_parts]:
+        return mother_s
+    if not _father_name_on_own_label(father_s, text=text, ocr_blocks=ocr_blocks):
+        return mother_s
+    trimmed = " ".join(m_parts[: -len(f_parts)]).strip()
+    if (
+        not trimmed
+        or trimmed.upper() == father_s.upper()
+        or not _is_plausible_person_name(trimmed)
+    ):
+        return mother_s
+    return trimmed
+
+
 def _post_validate_passport_fields(
     fields: dict[str, Any],
     *,
@@ -4800,6 +6361,14 @@ def _post_validate_passport_fields(
 ) -> dict[str, Any]:
     """Shared final gate: strip label/passport-no bleed from names, blank spouse, DOI OCR."""
     out = dict(fields) if isinstance(fields, dict) else {}
+    if text:
+        original_text = text
+        stripped_text = strip_non_passport_comments(original_text)
+        if stripped_text != original_text:
+            ocr_blocks = _filter_ocr_blocks_after_comment_strip(
+                ocr_blocks, original_text, stripped_text
+            )
+            text = stripped_text
 
     for nk in _PASSPORT_NAME_KEYS:
         val = str(out.get(nk) or "").strip()
@@ -4816,6 +6385,27 @@ def _post_validate_passport_fields(
         else:
             out[nk] = cleaned
 
+    stripped_father = _strip_trailing_mother_from_father(
+        str(out.get("father_name") or "") or None,
+        str(out.get("mother_name") or "") or None,
+        text=text,
+        ocr_blocks=ocr_blocks,
+    )
+    if stripped_father:
+        out["father_name"] = stripped_father
+    out["mother_name"] = _strip_leading_father_portion_from_mother(
+        str(out.get("mother_name") or "") or None,
+        str(out.get("father_name") or "") or None,
+    )
+    stripped_mother = _strip_trailing_father_from_mother(
+        str(out.get("mother_name") or "") or None,
+        str(out.get("father_name") or "") or None,
+        text=text,
+        ocr_blocks=ocr_blocks,
+    )
+    if stripped_mother:
+        out["mother_name"] = stripped_mother
+
     _reject_cross_filled_holder_names(
         out, labeled=labeled, text=text, ocr_blocks=ocr_blocks
     )
@@ -4827,10 +6417,17 @@ def _post_validate_passport_fields(
             "spouse_name",
             out["spouse_name"],
             shape_ok=lambda v: (
-                not _is_blank_spouse_value(v) and _is_plausible_person_name(v)
+                not _is_blank_spouse_value(v)
+                and _is_plausible_person_name(v)
+                and not _spouse_value_is_address_like(v, str(out.get("address") or ""))
             ),
         )
         out["spouse_name"] = kept
+        if out.get("spouse_name") and _spouse_value_is_address_like(
+            str(out.get("spouse_name") or ""),
+            str(out.get("address") or ""),
+        ):
+            out["spouse_name"] = None
         if out.get("spouse_name"):
             sv = str(out["spouse_name"]).strip().upper()
             fv = str(out.get("father_name") or "").strip().upper()
@@ -4927,16 +6524,17 @@ def _post_validate_passport_fields(
         )
         current_pob = str(out.get("place_of_birth") or "")
         current_has_state = bool(
-            re.search(r"(?i)\b(?:pradesh|nadu|khand|bengal|maharashtra|kerala|gujarat)\b", current_pob)
+            re.search(
+                r"(?i)\b(?:pradesh|nadu|khand|bengal|maharashtra|kerala|gujarat|"
+                r"telangana|karnataka)\b",
+                current_pob,
+            )
         )
         if recovered_pob and (not current_pob or not current_has_state):
             out["place_of_birth"] = recovered_pob
     if not out.get("place_of_issue") and text:
-        issue_city = (
-            _issue_city_following_birth(text)
-            or _issue_city_before_garbled_label(text)
-            or _issue_city_on_garbled_label(text)
-            or _issue_city_repeated_after_birth(text, str(out.get("place_of_birth") or ""))
+        issue_city = _issue_city_before_garbled_label(text) or _issue_city_on_garbled_label(
+            text
         )
         if issue_city and _is_issuing_office_candidate(
             issue_city, surname=holder_surname, given_names=holder_given
@@ -4944,6 +6542,22 @@ def _post_validate_passport_fields(
             out["place_of_issue"] = issue_city
     if out.get("address"):
         out["address"] = _tidy_passport_address(str(out.get("address") or ""))
+    if out.get("address") and text:
+        out["address"] = _strip_stamp_locality_tail(str(out["address"]), text)
+    if out.get("spouse_name") and _name_is_notary_neighbor(
+        str(out.get("spouse_name") or ""),
+        [ln for ln in (text or "").splitlines()]
+        + [
+            _block_text(blk)
+            for blk in (ocr_blocks or [])
+            if isinstance(blk, dict)
+        ],
+    ):
+        out["spouse_name"] = None
+    if out.get("address") and text and not _value_grounded_in_text(
+        str(out["address"]), text, ocr_blocks
+    ):
+        out["address"] = None
 
     return out
 
@@ -4955,6 +6569,15 @@ def extract_passport_fields(
     ocr_mean_confidence: float | None = None,
 ) -> dict[str, Any]:
     """Return passport schema dict with confidence_scores / bounding_boxes / flags."""
+    # Notary, attestation, and true-copy stamps must not become fields and
+    # must not hide a passport page that still has biodata or an MRZ.
+    original_text = text or ""
+    stripped_text = strip_non_passport_comments(original_text)
+    if stripped_text != original_text:
+        ocr_blocks = _filter_ocr_blocks_after_comment_strip(
+            ocr_blocks, original_text, stripped_text
+        )
+        text = stripped_text
     labeled = _extract_labeled_fields(text, ocr_blocks=ocr_blocks)
     mrz_lines = extract_mrz_lines(text)
     # Supplement MRZ candidates from OCR blocks (line 2 often only in blocks).
@@ -5217,16 +6840,10 @@ def extract_passport_fields(
     ) and not _is_plausible_mrz_string(str(fields.get("mrz_string") or "")):
         fields["document_type"] = None
     if fields.get("place_of_issue") and not labeled.get("place_of_issue"):
-        if not re.search(
-            rf"(?i){_PLACE_WORD_OCR}\s*of[.\s]*{_PLACE_OF_ISSUE_OCR}",
-            text or "",
-        ):
+        if not _PLACE_OF_ISSUE_LABEL_RE.search(text or ""):
             fields["place_of_issue"] = None
     if fields.get("place_of_birth") and not labeled.get("place_of_birth"):
-        if not re.search(
-            rf"(?i){_PLACE_WORD_OCR}\s*of\s*(?:birth|blrth|birih|bith|bre\b)",
-            text or "",
-        ):
+        if not _PLACE_OF_BIRTH_LABEL_RE.search(text or ""):
             fields["place_of_birth"] = None
 
     # Value-shape only: label miss must not wipe a plausible OCR/LLM capture.
@@ -5555,21 +7172,6 @@ def extract_passport_fields(
         and not _is_ocr_junk_text_value(str(labeled["place_of_birth"]))
     ):
         fields["place_of_birth"] = labeled["place_of_birth"]
-    # Drop garbage document numbers from false MRZ line-2 matches.
-    doc_no = str(fields.get("document_number") or "")
-    if doc_no and not re.fullmatch(r"[A-Z0-9]{6,12}", doc_no):
-        fields["document_number"] = None
-    elif doc_no and re.search(r"(?i)ROOM|PIN|UNI|ADDR|SADAN", doc_no):
-        fields["document_number"] = labeled.get("document_number") or None
-    if not fields.get("document_number") and labeled.get("document_number"):
-        fields["document_number"] = labeled["document_number"]
-    # Prefer Indian passport shape when available.
-    if labeled.get("document_number") and re.fullmatch(
-        r"[A-Z]\d{7}", labeled["document_number"]
-    ):
-        fields["document_number"] = labeled["document_number"]
-        from_mrz_keys.discard("document_number")
-
     confidence_scores: dict[str, float] = {}
     for key in PASSPORT_FIELD_KEYS:
         if key in {"mrz_string", "bounding_boxes", "confidence_scores", "is_low_confidence"}:
@@ -5642,13 +7244,207 @@ def extract_passport_fields(
     }
     if mrz.get("_mrz_incomplete"):
         payload["_mrz_incomplete"] = True
-    return _apply_passport_validation_gate(payload)
+    return _apply_passport_validation_gate(
+        payload, source_text=text, ocr_blocks=ocr_blocks
+    )
 
 
-def _apply_passport_validation_gate(payload: dict[str, Any]) -> dict[str, Any]:
+def _verified_line2_authority(
+    text: str | None,
+    ocr_blocks: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """First TD3 line 2 whose ICAO check digits pass, else None."""
+    blobs = [text or ""]
+    for blk in ocr_blocks or []:
+        if isinstance(blk, dict):
+            blobs.append(_block_text(blk))
+    seen: set[str] = set()
+    for blob in blobs:
+        candidates: list[str] = []
+        for ln in extract_mrz_lines(blob):
+            candidates.append(ln)
+        for raw_line in (blob or "").splitlines():
+            candidates.append(_normalize_mrz_candidate(raw_line))
+        for cand in candidates:
+            key = (_normalize_mrz_candidate(cand) + ("<" * 44))[:44]
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            fields = _authority_fields_from_line2(cand)
+            if fields:
+                return fields
+    return None
+
+
+def _separate_cross_filled_family(out: dict[str, Any], text: str | None, ocr_blocks) -> None:
+    """Each parent stays on its own label. Spouse never copies a parent or an address."""
+    out["father_name"] = _strip_trailing_mother_from_father(
+        str(out.get("father_name") or "") or None,
+        str(out.get("mother_name") or "") or None,
+        text=text,
+        ocr_blocks=ocr_blocks,
+    )
+    out["mother_name"] = _strip_leading_father_portion_from_mother(
+        str(out.get("mother_name") or "") or None,
+        str(out.get("father_name") or "") or None,
+    )
+    out["mother_name"] = _strip_trailing_father_from_mother(
+        str(out.get("mother_name") or "") or None,
+        str(out.get("father_name") or "") or None,
+        text=text,
+        ocr_blocks=ocr_blocks,
+    )
+    spouse = str(out.get("spouse_name") or "").strip()
+    father_u = str(out.get("father_name") or "").strip().upper()
+    mother_u = str(out.get("mother_name") or "").strip().upper()
+    if (
+        not spouse
+        or _is_blank_spouse_value(spouse)
+        or not _is_plausible_person_name(spouse)
+        or _spouse_value_is_address_like(spouse, str(out.get("address") or ""))
+        or (father_u and spouse.upper() == father_u)
+        or (mother_u and spouse.upper() == mother_u)
+        or not _spouse_supported_by_label(spouse, text, ocr_blocks)
+    ):
+        out["spouse_name"] = None
+
+
+_VISUAL_PASSPORT_NO_LABEL_RE = re.compile(
+    r"(?i)passport\s*(?:no\.?|number|#)|passpon\s*no\.?|document\s*(?:no\.?|number)"
+)
+_VISUAL_SEX_LABEL_RE = re.compile(r"(?i)\b(?:sex|sexe|gender|ses)\b")
+_VISUAL_DOB_LABEL_RE = re.compile(
+    r"(?i)(?:date\s*(?:of|ot|af)\s*(?:birth|burt|birt|blrth|birih|bith)|\bdob\b)"
+)
+_VISUAL_EXPIRY_LABEL_RE = re.compile(
+    r"(?i)(?:\bexpir\w*\b|\bcepir\w*\b|\beapir\w*\b|\be\s+xpiry\b)"
+)
+_VISUAL_NATIONALITY_LABEL_RE = re.compile(
+    r"(?i)\bnationalit\w*\b|\bcitizenship\b|\bcitoyennet\w*\b"
+)
+_VISUAL_FULL_DATE_RE = re.compile(r"\b(\d{1,2}[./\-]\d{1,2}[./\-]\d{4})\b")
+_VISUAL_PASSPORT_TOKEN_RE = re.compile(r"\b([A-Z]\d{7})\b")
+
+
+def _sex_token_on_line(line: str | None) -> str | None:
+    """M or F on a sex value line. Other letters are not a sex."""
+    text = line or ""
+    match = re.search(r"(?i)(?:^|[\s/])([MF])\s*/\s*(?:INDIAN|IND)\b", text)
+    if match:
+        return match.group(1).upper()
+    match = re.search(r"(?i)\b(?:INDIAN|IND)\s+([MF])\b", text)
+    if match:
+        return match.group(1).upper()
+    match = re.search(r"(?i)\b(male|female)\b", text)
+    if match:
+        return "M" if match.group(1).lower() == "male" else "F"
+    match = re.search(r"(?i)(?:^|\s)([MF])(?:\s|$)", text)
+    if match:
+        return match.group(1).upper()
+    return None
+
+
+def _next_nonempty_line(lines: list[str], index: int) -> str:
+    for line in lines[index + 1 : index + 4]:
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _label_anchored_identity_fields(text: str | None) -> dict[str, str | None]:
+    """Passport number, DOB, sex, nationality, and expiry from their own labels.
+
+    Used only when TD3 line 2 is missing or its check digits fail. A token on a
+    neighboring field is not borrowed. Grammar: letter+7 digits, a real date,
+    sex M/F, and a nationality demonym.
+    """
+    lines = (text or "").splitlines()
+    found: dict[str, str | None] = {key: None for key in _MRZ_LINE2_AUTHORITY_KEYS}
+
+    for index, line in enumerate(lines):
+        if found["document_number"] or not _VISUAL_PASSPORT_NO_LABEL_RE.search(line):
+            continue
+        if re.search(r"(?i)old\s*pass", line):
+            continue
+        window = line
+        nxt = _next_nonempty_line(lines, index)
+        if nxt and not re.search(r"(?i)old\s*pass", nxt):
+            window = f"{line}\n{nxt}"
+        match = _VISUAL_PASSPORT_TOKEN_RE.search(window.upper())
+        if match:
+            found["document_number"] = match.group(1)
+
+    for index, line in enumerate(lines):
+        if found["sex"] or not _VISUAL_SEX_LABEL_RE.search(line):
+            continue
+        for candidate in (line, _next_nonempty_line(lines, index)):
+            sex = _sex_token_on_line(candidate)
+            if sex in {"M", "F"}:
+                found["sex"] = sex
+                break
+
+    for index, line in enumerate(lines):
+        if found["date_of_birth"] or not _VISUAL_DOB_LABEL_RE.search(line):
+            continue
+        for candidate in (line, _next_nonempty_line(lines, index)):
+            match = _VISUAL_FULL_DATE_RE.search(candidate or "")
+            if not match:
+                continue
+            parsed = _parse_flexible_date(match.group(1))
+            if parsed and not _date_only_in_old_passport_context(text or "", parsed):
+                found["date_of_birth"] = parsed
+                break
+
+    for index, line in enumerate(lines):
+        if found["date_of_expiry"] or not _VISUAL_EXPIRY_LABEL_RE.search(line):
+            continue
+        dates: list[str] = []
+        for candidate in (line, _next_nonempty_line(lines, index)):
+            for match in _VISUAL_FULL_DATE_RE.finditer(candidate or ""):
+                parsed = _parse_flexible_date(match.group(1))
+                if parsed and parsed not in dates:
+                    dates.append(parsed)
+        dates = [item for item in dates if item != found.get("date_of_birth")]
+        if not dates:
+            continue
+        if len(dates) == 1:
+            found["date_of_expiry"] = dates[0]
+            continue
+        _issue, expiry = _ordered_issue_expiry(dates[0], dates[1])
+        found["date_of_expiry"] = expiry or dates[-1]
+
+    for index, line in enumerate(lines):
+        if found["nationality"] or not _VISUAL_NATIONALITY_LABEL_RE.search(line):
+            continue
+        for candidate in (line, _next_nonempty_line(lines, index)):
+            piece = candidate or ""
+            demonym, _code = resolve_nationality(piece)
+            if not demonym:
+                glue = re.search(
+                    r"(?i)\b(?:[A-Z]{1,4}\s*/\s*)?(INDIAN|INDIA)\b",
+                    piece,
+                )
+                if glue:
+                    demonym, _code = resolve_nationality(glue.group(1))
+            if demonym:
+                found["nationality"] = demonym
+                break
+    return found
+
+
+def _apply_passport_validation_gate(
+    payload: dict[str, Any],
+    *,
+    source_text: str | None = None,
+    ocr_blocks: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Last step of the passport pipeline. A value that fails its check is null.
 
     Callers use ``run_passport_pipeline``. This gate does not guess a replacement.
+    When TD3 line 2 check digits pass, passport number, date of birth, expiry,
+    sex, and nationality come only from that line. When line 2 is missing or the
+    checks fail, those fields stay only if their own visual labels carry a
+    strict value. Date of issue is left on the visual path.
     """
     out = dict(payload)
     for key in (
@@ -5664,8 +7460,40 @@ def _apply_passport_validation_gate(payload: dict[str, Any]) -> dict[str, Any]:
         raw_val = str(out.get(key) or "").strip()
         if raw_val and _is_ocr_junk_text_value(raw_val):
             out[key] = None
-    for date_key in ("date_of_birth", "date_of_issue", "date_of_expiry"):
-        out[date_key] = _complete_passport_date(str(out.get(date_key) or "") or None)
+    if _address_is_administrative_noise(str(out.get("address") or "")):
+        out["address"] = None
+    out["date_of_issue"] = _complete_passport_date(str(out.get("date_of_issue") or "") or None)
+    authority = _verified_line2_authority(source_text, ocr_blocks)
+    if authority:
+        for key in _MRZ_LINE2_AUTHORITY_KEYS:
+            out[key] = authority.get(key)
+        if authority.get("country_code"):
+            out["country_code"] = authority["country_code"]
+    else:
+        # Line 2 absent or check digits failed. Do not rewrite the line.
+        # Keep only values that sit on their own visual labels.
+        visual = _label_anchored_identity_fields(source_text)
+        for key in _MRZ_LINE2_AUTHORITY_KEYS:
+            out[key] = visual.get(key)
+    _separate_cross_filled_family(out, source_text, ocr_blocks)
+    scores = out.get("confidence_scores")
+    if not isinstance(scores, dict):
+        scores = {}
+        out["confidence_scores"] = scores
+    for key in _MRZ_LINE2_AUTHORITY_KEYS:
+        val = out.get(key)
+        scores[key] = (
+            _confidence_for_field(key, str(val), from_mrz=True, ocr_mean=None)
+            if val
+            else 0.0
+        )
+    low = False
+    for key in _CRITICAL_KEYS:
+        conf = float(scores.get(key) or 0.0)
+        if not out.get(key) or conf < OCR_CONFIDENCE_THRESHOLD:
+            low = True
+            break
+    out["is_low_confidence"] = low
     mrz_val = str(out.get("mrz_string") or "").strip()
     if mrz_val and (
         "\n" not in mrz_val or not _is_plausible_mrz_string(mrz_val)
@@ -5899,6 +7727,165 @@ def attach_passport_to_fields(
     base["subjects"] = []
     base["marks"] = []
     return base
+
+
+# 180° page inversion. A positive score means header / MRZ reads left to right.
+_ORIENTATION_CLEAR_MARGIN = 4
+
+_ORIENT_UPRIGHT_LATIN_RES: tuple[tuple[re.Pattern[str], int], ...] = (
+    (re.compile(r"REPUBLIC"), 5),
+    (re.compile(r"PASSE?PORT"), 4),
+)
+_ORIENT_REVERSED_LATIN_RES: tuple[tuple[re.Pattern[str], int], ...] = (
+    (re.compile(r"CILBUPER"), 5),
+    (re.compile(r"TROPESSAP"), 4),
+    (re.compile(r"TROPSSAP"), 4),
+)
+_ORIENT_UPRIGHT_HINDI = ("भारत", "पासपोर्ट", "गणतंत्र")
+
+
+def _passport_orientation_latin(text: str) -> str:
+    folded = (text or "").upper().replace("0", "O").replace("1", "I").replace("|", "I")
+    return re.sub(r"[^A-Z<]", "", folded)
+
+
+def passport_orientation_signal_score(text: str | None) -> int:
+    """Higher means the probe reads a passport header or MRZ left to right."""
+    raw = str(text or "")
+    if not raw.strip():
+        return 0
+    latin = _passport_orientation_latin(raw)
+    score = 0
+    for rx, weight in _ORIENT_UPRIGHT_LATIN_RES:
+        if rx.search(latin):
+            score += weight
+    if any(tok in raw for tok in _ORIENT_UPRIGHT_HINDI):
+        score += 4
+    if re.search(r"P<[A-Z]{3}", latin):
+        score += 6
+    for rx, weight in _ORIENT_REVERSED_LATIN_RES:
+        if rx.search(latin):
+            score -= weight
+    if re.search(r"[A-Z0-9]{6,}<P", latin) and not re.search(r"P<[A-Z]{3}", latin):
+        score -= 6
+    return score
+
+
+def page_already_upright_for_orientation(probe_0: str | None) -> bool:
+    """True when the 0° probe already shows a normal passport header or MRZ."""
+    return passport_orientation_signal_score(probe_0) >= _ORIENTATION_CLEAR_MARGIN
+
+
+def choose_passport_page_rotation(probe_0: str | None, probe_180: str | None) -> int:
+    """Return 180 only when that probe is clearly more upright than 0°.
+
+    An upright header or ``P<`` MRZ at 0° stays put. Equal or weak probes stay
+    at 0° so an already-upright page is not rotated.
+    """
+    upright = passport_orientation_signal_score(probe_0)
+    flipped = passport_orientation_signal_score(probe_180)
+    if upright >= _ORIENTATION_CLEAR_MARGIN:
+        return 0
+    if (
+        flipped >= _ORIENTATION_CLEAR_MARGIN
+        and flipped >= upright + _ORIENTATION_CLEAR_MARGIN
+    ):
+        return 180
+    return 0
+
+
+_ORIENT_READABILITY_MIN = 70
+_ORIENT_READABILITY_MARGIN = 36
+_ORIENT_READABILITY_RATIO = 1.7
+
+
+def passport_orientation_readability(text: str | None) -> int:
+    """Letters in words of four or more. Higher means the probe looks readable."""
+    return sum(len(word) for word in re.findall(r"[A-Za-z]{4,}", str(text or "")))
+
+
+def _region_reads_clearly_better(winner: str | None, loser: str | None) -> bool:
+    """True when ``winner`` has clearly more readable words than ``loser``."""
+    good = passport_orientation_readability(winner)
+    bad = passport_orientation_readability(loser)
+    if good < _ORIENT_READABILITY_MIN:
+        return False
+    if good < bad + _ORIENT_READABILITY_MARGIN:
+        return False
+    if bad > 0 and good < int(bad * _ORIENT_READABILITY_RATIO):
+        return False
+    return True
+
+
+def classify_passport_region_orientation(
+    probe: str | None,
+    probe_180: str | None = None,
+) -> str:
+    """``upright``, ``inverted``, or ``none`` from one region's probe text.
+
+    ``probe`` is the region at 0°. ``probe_180`` is the same region after a
+    180° turn. A reversed header at 0° is inverted. A region with no header
+    that still reads clearly better at 180° is inverted. An upright header
+    stays upright.
+    """
+    score = passport_orientation_signal_score(probe)
+    if probe_180 is None:
+        if score >= _ORIENTATION_CLEAR_MARGIN:
+            return "upright"
+        if score <= -_ORIENTATION_CLEAR_MARGIN:
+            return "inverted"
+        return "none"
+    flipped = passport_orientation_signal_score(probe_180)
+    if score >= _ORIENTATION_CLEAR_MARGIN and flipped < score + _ORIENTATION_CLEAR_MARGIN:
+        return "upright"
+    if (
+        flipped >= _ORIENTATION_CLEAR_MARGIN
+        and flipped >= score + _ORIENTATION_CLEAR_MARGIN
+    ):
+        return "inverted"
+    if score <= -_ORIENTATION_CLEAR_MARGIN and flipped > score:
+        return "inverted"
+    if _region_reads_clearly_better(probe_180, probe) and score < _ORIENTATION_CLEAR_MARGIN:
+        return "inverted"
+    if _region_reads_clearly_better(probe, probe_180) and flipped < _ORIENTATION_CLEAR_MARGIN:
+        return "upright"
+    return "none"
+
+
+def choose_stacked_canvas_rotation(
+    top_probe: str | None,
+    bottom_probe: str | None,
+    *,
+    top_probe_180: str | None = None,
+    bottom_probe_180: str | None = None,
+) -> dict[str, Any]:
+    """Choose a whole-canvas 180° versus rotating one half of a two-page canvas.
+
+    The two probes are the two regions (top then bottom, or left then right).
+    When they disagree — one upright, one inverted — only the inverted region
+    turns. When they agree, both upright is 0° and both inverted may turn the
+    whole canvas 180°. A region that reads clearly better at 180° is inverted
+    even when the other region's signal is only an upright header, or is weak.
+    An upright region is not rotated. Both regions silent is ``undecided`` so
+    the caller can still run the whole-image 0°/180° probe.
+    """
+    top = classify_passport_region_orientation(top_probe, top_probe_180)
+    bottom = classify_passport_region_orientation(bottom_probe, bottom_probe_180)
+    if top == "upright" and bottom == "inverted":
+        return {"mode": "regional", "top": 0, "bottom": 180}
+    if top == "inverted" and bottom == "upright":
+        return {"mode": "regional", "top": 180, "bottom": 0}
+    if top == "inverted" and bottom == "inverted":
+        return {"mode": "whole", "top": 180, "bottom": 180}
+    if top == "upright" and bottom == "upright":
+        return {"mode": "whole", "top": 0, "bottom": 0}
+    if top == "inverted" and bottom == "none":
+        return {"mode": "regional", "top": 180, "bottom": 0}
+    if top == "none" and bottom == "inverted":
+        return {"mode": "regional", "top": 0, "bottom": 180}
+    if top == "upright" or bottom == "upright":
+        return {"mode": "whole", "top": 0, "bottom": 0}
+    return {"mode": "undecided", "top": 0, "bottom": 0}
 
 
 def crop_bottom_band_png(image_bytes: bytes, *, fraction: float = 0.28) -> bytes | None:

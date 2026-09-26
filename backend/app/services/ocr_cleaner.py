@@ -466,6 +466,16 @@ def _blocks_look_like_passport(blocks: list[OcrTextBlock]) -> bool:
             hits += 1
         if hits >= 2:
             return True
+    joined = "\n".join(
+        str(blk.raw_ocr_text or blk.cleaned_text or "") for blk in blocks
+    )
+    try:
+        from app.services.scanx_passport import text_has_enough_passport_evidence
+
+        if text_has_enough_passport_evidence(joined):
+            return True
+    except Exception:
+        pass
     return False
 
 
