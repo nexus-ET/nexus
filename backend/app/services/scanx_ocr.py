@@ -782,6 +782,54 @@ def _run_rapid_on_frames(
     return "\n\n".join(page_texts).strip(), all_blocks
 
 
+_ORIENT_PROBE_MAX_SIDE = 640
+
+
+def probe_page_orientation_text(image_bytes: bytes) -> str:
+    """Cheap RapidOCR of a downscaled page for a 0° / 180° orientation check.
+
+    Angle classification stays off so an inverted page is not silently
+    "fixed" inside the probe. The probe text is not the page's committed OCR.
+    """
+    if not image_bytes:
+        return ""
+    try:
+        frames = _pil_frames(image_bytes)
+    except Exception:
+        logger.debug("ScanX orientation probe decode failed", exc_info=True)
+        return ""
+    if not frames:
+        return ""
+    frame = frames[0]
+    try:
+        w, h = frame.size
+        longest = max(int(w or 0), int(h or 0))
+        if longest > _ORIENT_PROBE_MAX_SIDE:
+            scale = _ORIENT_PROBE_MAX_SIDE / float(longest)
+            from PIL import Image
+
+            resample = getattr(Image, "Resampling", Image).BILINEAR
+            frame = frame.resize(
+                (max(1, int(w * scale)), max(1, int(h * scale))),
+                resample,
+            )
+    except Exception:
+        logger.debug("ScanX orientation probe downscale failed", exc_info=True)
+    try:
+        import numpy as np
+
+        engine = get_optimized_rapidocr_engine()
+        arr = np.asarray(frame.convert("RGB"))
+        try:
+            out = engine(arr, use_cls=False)
+        except TypeError:
+            out = engine(arr)
+        return "\n".join(_texts_from_rapid_output(out))
+    except Exception:
+        logger.debug("ScanX orientation probe OCR failed", exc_info=True)
+        return ""
+
+
 def _probe_engine_import(engine_name: str) -> None:
     if engine_name == _ENGINE_PADDLE:
         _probe_paddle()

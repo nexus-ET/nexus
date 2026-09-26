@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.models.counselor_followup import CounselorFollowupLog, CounselorStatusMaster
 from app.models.lead import Lead
 from app.models.user import User
-from app.schemas.counselor_followup import CounselorFollowupCreate
+from app.schemas.counselor_followup import CounselorFollowupCreate, CounselorFollowupUpdate
 
 
 _ACTION_ITEMS_SPLIT = re.compile(r"(?i)\bAction\s+Items\s*:\s*")
@@ -296,6 +296,96 @@ def create_lead_followup(
     )
 
 
+def _latest_followup_for_lead(db: Session, lead_id: int) -> CounselorFollowupLog | None:
+    """Newest note: latest created_at, then highest id. Same row as the leads table date."""
+    return (
+        db.query(CounselorFollowupLog)
+        .filter(CounselorFollowupLog.lead_id == lead_id)
+        .order_by(CounselorFollowupLog.created_at.desc(), CounselorFollowupLog.id.desc())
+        .first()
+    )
+
+
+def update_lead_followup(
+    db: Session,
+    lead_id: int,
+    followup_id: int,
+    payload: CounselorFollowupUpdate,
+) -> dict[str, Any]:
+    """Update status, notes, action items, and next follow-up date on the latest note only."""
+    lead = db.query(Lead.id).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found.")
+
+    row = (
+        db.query(CounselorFollowupLog)
+        .options(joinedload(CounselorFollowupLog.status))
+        .filter(
+            CounselorFollowupLog.id == followup_id,
+            CounselorFollowupLog.lead_id == lead_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Note not found.")
+
+    latest = _latest_followup_for_lead(db, lead_id)
+    if latest is None or latest.id != row.id:
+        raise HTTPException(
+            status_code=400,
+            detail="Only the latest counselor note can be edited.",
+        )
+
+    status = (
+        db.query(CounselorStatusMaster)
+        .filter(CounselorStatusMaster.id == payload.status_id)
+        .first()
+    )
+    if not status or (not status.is_active and status.id != row.status_id):
+        raise HTTPException(status_code=400, detail="Select a valid follow-up status.")
+
+    points, actions = _split_notes(payload.points_discussed, payload.action_items)
+    followup_date = payload.target_completion_date
+    today = date.today()
+    existing_date = row.target_completion_date
+
+    if (
+        followup_date is not None
+        and followup_date < today
+        and followup_date != existing_date
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Next Follow-up Date cannot be in the past.",
+        )
+    if actions and followup_date is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Select a Next Follow-up Date (today or a future date) when Action Items are set.",
+        )
+
+    row.status_id = status.id
+    row.points_discussed = points
+    row.action_items = actions
+    row.target_completion_date = followup_date
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    row = (
+        db.query(CounselorFollowupLog)
+        .options(joinedload(CounselorFollowupLog.status))
+        .filter(CounselorFollowupLog.id == row.id)
+        .one()
+    )
+    names = _counselor_names_by_id(db, [row.counselor_id])
+    uid = _parse_counselor_user_id(row.counselor_id)
+    return _serialize_followup(
+        row,
+        counselor_name=names.get(uid) if uid is not None else None,
+    )
+
+
 def count_followups_for_lead_ids(db: Session, lead_ids: list[int]) -> dict[int, int]:
     if not lead_ids:
         return {}
@@ -340,3 +430,44 @@ def latest_followup_status_for_lead_ids(db: Session, lead_ids: list[int]) -> dic
         for lead_id, heading in rows
         if lead_id is not None and heading
     }
+
+
+def latest_followup_date_for_lead_ids(db: Session, lead_ids: list[int]) -> dict[int, str]:
+    """ISO date from the note the Notes page treats as the current follow-up.
+
+    Current note = newest ``created_at``, then highest id. That is the first
+    row in Counselor Notes ("Newest first") and the same row as Lead Follow-up
+    Status. The date is ``target_completion_date`` (Next Follow-up Date). If
+    that note has no date, the lead is omitted so the cell stays blank.
+    """
+    if not lead_ids:
+        return {}
+    ranked = (
+        db.query(
+            CounselorFollowupLog.lead_id.label("lead_id"),
+            CounselorFollowupLog.target_completion_date.label("target_completion_date"),
+            func.row_number()
+            .over(
+                partition_by=CounselorFollowupLog.lead_id,
+                order_by=(
+                    CounselorFollowupLog.created_at.desc(),
+                    CounselorFollowupLog.id.desc(),
+                ),
+            )
+            .label("rn"),
+        )
+        .filter(CounselorFollowupLog.lead_id.in_(lead_ids))
+        .subquery()
+    )
+    rows = (
+        db.query(ranked.c.lead_id, ranked.c.target_completion_date)
+        .filter(ranked.c.rn == 1)
+        .all()
+    )
+    result: dict[int, str] = {}
+    for lead_id, followup_date in rows:
+        if lead_id is None or followup_date is None:
+            continue
+        iso = followup_date.isoformat()
+        result[int(lead_id)] = iso[:10]
+    return result

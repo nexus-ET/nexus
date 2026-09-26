@@ -76,7 +76,9 @@ _SYSTEM = (
     "- mrz_string: full MRZ lines joined with \\n when visible (TD3).\n"
     "- Map Place of Birth / Given Name(s) / Place of Issue / File No carefully "
     "to the adjacent value — never reuse a field label as a value.\n"
-    "- Ignore CamScanner / watermark noise."
+    "- Ignore CamScanner / watermark noise.\n"
+    "- Ignore notary, attestation, advocate, true-copy, verified, and "
+    "stamp-duty comments. Do not use that text as a name, date, or address."
 )
 
 _DATE_RE = re.compile(

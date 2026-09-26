@@ -804,16 +804,18 @@ export default function HandoffsView() {
 
   return (
     <>
-    <div style={styles.workspaceContainer}>
+    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
       {actionError ? (
         <div style={styles.errorBannerOverlay}>
           <InlineErrorBanner message={actionError} onDismiss={() => setActionError(null)} />
         </div>
       ) : null}
+    <div
+      className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(320px,400px)_minmax(0,1fr)]"
+      style={styles.workspaceContainer}
+    >
       
       <style>{`
-        html, body, #root { overflow: hidden !important; }
-        
         .emoji-grid-btn { 
           background: none; 
           border: none; 
@@ -879,7 +881,10 @@ export default function HandoffsView() {
         }
       `}</style>
       
-      <div style={styles.leftSidebarPanel}>
+      <div
+        className={selectedLead ? 'hidden lg:flex' : 'flex'}
+        style={styles.leftSidebarPanel}
+      >
         <div style={styles.sidebarHeader}>
           <div style={styles.sidebarHeaderText}>
             <h2 style={styles.sidebarTitle}>Queue</h2>
@@ -1020,10 +1025,19 @@ export default function HandoffsView() {
         ) : null}
       </div>
 
-      <div style={styles.rightChatPanel}>
+      <div
+        className={selectedLead ? 'flex' : 'hidden lg:flex'}
+        style={styles.rightChatPanel}
+      >
         {selectedLead ? (
           <div style={styles.activeChatInterface}>
-            
+            <button
+              type="button"
+              className="inline-flex shrink-0 items-center gap-1 border-b border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 lg:hidden"
+              onClick={() => setSelectedLead(null)}
+            >
+              Back to queue
+            </button>
             <WhatsAppConversationHeader
               name={selectedLead.name || selectedLead.full_name || `Lead #${selectedLead.id}`}
               meta={`${selectedLead.phone || selectedLead.phone_number || 'No phone'} • ${selectedLead.email || 'No email'}`}
@@ -1262,6 +1276,7 @@ export default function HandoffsView() {
       </div>
 
     </div>
+    </div>
     <StudentJourneyPanel
       open={journeyModal !== null}
       studentId={journeyModal?.studentId ?? null}
@@ -1273,9 +1288,9 @@ export default function HandoffsView() {
 }
 
 const styles = {
-  workspaceContainer: { display: 'flex', width: '100%', height: '100%', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#f8fafc', overflow: 'hidden', boxSizing: 'border-box', fontFamily: 'system-ui, -apple-system, sans-serif' } as React.CSSProperties,
-  errorBannerOverlay: { position: 'absolute', top: 0, left: '20%', right: 0, zIndex: 30, pointerEvents: 'auto' } as React.CSSProperties,
-  leftSidebarPanel: { width: '20%', minWidth: '280px', maxWidth: '20%', height: '100%', borderRight: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', backgroundColor: '#ffffff', overflow: 'hidden', boxSizing: 'border-box' } as React.CSSProperties,
+  workspaceContainer: { display: 'grid', width: '100%', flex: 1, minHeight: 0, backgroundColor: '#f8fafc', overflow: 'hidden', boxSizing: 'border-box' } as React.CSSProperties,
+  errorBannerOverlay: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 30, pointerEvents: 'auto' } as React.CSSProperties,
+  leftSidebarPanel: { minHeight: 0, height: '100%', borderRight: '1px solid #e2e8f0', flexDirection: 'column', backgroundColor: '#ffffff', overflow: 'hidden', boxSizing: 'border-box' } as React.CSSProperties,
   sidebarHeader: { padding: '16px 20px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexShrink: 0, gap: '10px' } as React.CSSProperties,
   sidebarHeaderText: { display: 'flex', flexDirection: 'column', gap: '4px', minWidth: 0, flex: 1 } as React.CSSProperties,
   sidebarTitle: { margin: 0, fontSize: '16px', fontWeight: '700', color: '#0f172a' } as React.CSSProperties,
@@ -1356,7 +1371,7 @@ const styles = {
     cursor: 'pointer',
     lineHeight: 1.2,
   } as React.CSSProperties,
-  rightChatPanel: { flex: '1 1 80%', width: '80%', maxWidth: '80%', height: '100%', display: 'flex', flexDirection: 'column', backgroundColor: '#ece7df', overflow: 'hidden', boxSizing: 'border-box' } as React.CSSProperties,
+  rightChatPanel: { minWidth: 0, minHeight: 0, height: '100%', flexDirection: 'column', backgroundColor: '#ece7df', overflow: 'hidden', boxSizing: 'border-box' } as React.CSSProperties,
   activeChatInterface: { display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden' } as React.CSSProperties,
   chatHeaderBar: { padding: '14px 24px', backgroundColor: '#f0f2f5', borderBottom: '1px solid #e3e6e9', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', flexShrink: 0 } as React.CSSProperties,
   headerProfileName: { margin: 0, fontSize: '16px', fontWeight: '600', color: '#111b21' } as React.CSSProperties,

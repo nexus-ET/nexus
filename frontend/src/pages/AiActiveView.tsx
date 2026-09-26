@@ -1145,9 +1145,11 @@ export default function AiActiveView() {
         </div>
       ) : null}
 
-      <div style={styles.workspaceContainer}>
+      <div
+        className="grid-cols-1 lg:grid-cols-[minmax(320px,400px)_minmax(0,1fr)]"
+        style={styles.workspaceContainer}
+      >
       <style>{`
-        html, body, #root { overflow: hidden !important; }
         .ai-status-btn {
           display: flex;
           align-items: center;
@@ -1175,7 +1177,10 @@ export default function AiActiveView() {
         .ai-status-btn:hover .ai-status-btn-label { display: block; }
       `}</style>
 
-      <div style={styles.leftSidebarPanel}>
+      <div
+        className={selectedLead ? 'hidden lg:flex' : 'flex'}
+        style={styles.leftSidebarPanel}
+      >
         <div style={styles.sidebarHeader}>
           <div style={styles.sidebarHeaderText}>
             <h2 style={styles.sidebarTitle}>AI Active</h2>
@@ -1331,9 +1336,19 @@ export default function AiActiveView() {
         ) : null}
       </div>
 
-      <div style={styles.rightChatPanel}>
+      <div
+        className={selectedLead ? 'flex' : 'hidden lg:flex'}
+        style={styles.rightChatPanel}
+      >
         {selectedLead ? (
           <div style={styles.activeChatInterface}>
+            <button
+              type="button"
+              className="inline-flex shrink-0 items-center gap-1 border-b border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 lg:hidden"
+              onClick={() => setSelectedLead(null)}
+            >
+              Back to queue
+            </button>
             <WhatsAppConversationHeader
               name={selectedLead.name}
               meta={`${getLeadPhone(selectedLead) || 'No phone'} • ${selectedLead.email || 'No email'}`}
@@ -1563,12 +1578,9 @@ const styles = {
     display: 'flex',
     flexDirection: 'column' as const,
     width: '100%',
-    height: '100%',
-    position: 'absolute' as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
     backgroundColor: '#f8fafc',
   },
   whatsappLineBanner: {
@@ -1589,31 +1601,22 @@ const styles = {
     fontWeight: 600,
   },
   workspaceContainer: {
-    display: 'flex',
+    display: 'grid',
     flex: 1,
     minHeight: 0,
     width: '100%',
-    position: 'relative' as const,
-    left: 0,
-    right: 0,
-    bottom: 0,
     backgroundColor: '#f8fafc',
     overflow: 'hidden',
     boxSizing: 'border-box',
-    fontFamily: 'system-ui, -apple-system, sans-serif',
   } as React.CSSProperties,
   leftSidebarPanel: {
-    width: '28%',
-    minWidth: '320px',
-    maxWidth: '400px',
+    minHeight: 0,
     height: '100%',
     borderRight: '1px solid #e2e8f0',
-    display: 'flex',
     flexDirection: 'column',
     backgroundColor: '#ffffff',
     overflow: 'hidden',
     boxSizing: 'border-box',
-    flexShrink: 0,
   } as React.CSSProperties,
   sidebarHeader: {
     padding: '16px 20px',
@@ -1893,10 +1896,9 @@ const styles = {
     boxShadow: '0 2px 8px rgba(5, 150, 105, 0.25)',
   } as React.CSSProperties,
   rightChatPanel: {
-    flex: '1 1 auto',
     minWidth: 0,
+    minHeight: 0,
     height: '100%',
-    display: 'flex',
     flexDirection: 'column',
     backgroundColor: '#ece7df',
     overflow: 'hidden',

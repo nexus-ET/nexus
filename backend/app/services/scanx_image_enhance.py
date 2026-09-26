@@ -538,6 +538,273 @@ def deskew_image(image):
 _deskew = deskew_image
 
 
+def rotate_image_bytes_180(image_bytes: bytes) -> bytes | None:
+    """Rotate a page 180 degrees. This does not replace minor deskew."""
+    if not image_bytes:
+        return None
+    try:
+        cv2 = _cv2()
+    except ImportError:
+        return None
+    bgr = _decode_bgr(image_bytes)
+    if bgr is None:
+        return None
+    try:
+        rotated = cv2.rotate(bgr, cv2.ROTATE_180)
+        return _encode_png(rotated)
+    except Exception:
+        logger.debug("ScanX 180 rotate failed", exc_info=True)
+        return None
+
+
+def split_image_horizontal_halves(image_bytes: bytes) -> tuple[bytes, bytes] | None:
+    """Top and bottom halves of one canvas, cut at the vertical midpoint."""
+    if not image_bytes:
+        return None
+    try:
+        bgr = _decode_bgr(image_bytes)
+    except ImportError:
+        return None
+    if bgr is None:
+        return None
+    height, width = bgr.shape[:2]
+    mid = int(height) // 2
+    if width < 2 or mid < 1 or height - mid < 1:
+        return None
+    try:
+        top = _encode_png(bgr[:mid, :].copy())
+        bottom = _encode_png(bgr[mid:, :].copy())
+    except Exception:
+        logger.debug("ScanX half split failed", exc_info=True)
+        return None
+    return top, bottom
+
+
+def rotate_stacked_halves(
+    image_bytes: bytes,
+    *,
+    top_degrees: int,
+    bottom_degrees: int,
+) -> bytes | None:
+    """Rotate only the named half of one image, then stack top above bottom.
+
+    180° turns a single half. The other half is copied as it stands. This is
+    not a whole-canvas rotation.
+    """
+    if int(top_degrees) not in (0, 180) or int(bottom_degrees) not in (0, 180):
+        return None
+    try:
+        cv2 = _cv2()
+    except ImportError:
+        return None
+    bgr = _decode_bgr(image_bytes)
+    if bgr is None:
+        return None
+    height, width = bgr.shape[:2]
+    mid = int(height) // 2
+    if width < 2 or mid < 1 or height - mid < 1:
+        return None
+    try:
+        top = bgr[:mid, :].copy()
+        bottom = bgr[mid:, :].copy()
+        if int(top_degrees) == 180:
+            top = cv2.rotate(top, cv2.ROTATE_180)
+        if int(bottom_degrees) == 180:
+            bottom = cv2.rotate(bottom, cv2.ROTATE_180)
+        stacked = cv2.vconcat([top, bottom])
+        return _encode_png(stacked)
+    except Exception:
+        logger.debug("ScanX stacked half rotate failed", exc_info=True)
+        return None
+
+
+def _content_span(profile, *, floor: float = 0.008) -> tuple[int, int] | None:
+    """First and last index where a 1D ink fraction rises above the margin."""
+    np = _np()
+    hits = np.flatnonzero(profile > floor)
+    if getattr(hits, "size", 0) < 2:
+        return None
+    return int(hits[0]), int(hits[-1])
+
+
+def _gutter_index(profile, start: int, end: int) -> int | None:
+    """Index of a wide low-ink gap inside ``[start, end]``.
+
+    A page gutter is a pale band between two content blocks. A gap of a few
+    pixels between printed lines is not.
+    """
+    np = _np()
+    span = int(end) - int(start)
+    if span < 80:
+        return None
+    window = max(15, span // 40)
+    if window % 2 == 0:
+        window += 1
+    kernel = np.ones(window, dtype=np.float64) / float(window)
+    smooth = np.convolve(np.asarray(profile, dtype=np.float64), kernel, mode="same")
+    lo = int(start) + int(span * 0.30)
+    hi = int(start) + int(span * 0.70)
+    if hi <= lo + 2:
+        return None
+    segment = smooth[lo:hi]
+    cut = lo + int(np.argmin(segment))
+    gutter = float(segment[int(np.argmin(segment))])
+    content = smooth[int(start) : int(end) + 1]
+    if content.size == 0:
+        return None
+    median = float(np.median(content))
+    if median < 0.015 or gutter > 0.02 or gutter > median * 0.22:
+        return None
+    side = max(8, span // 8)
+    left_slice = smooth[int(start) : max(int(start) + 1, cut - side)]
+    right_slice = smooth[min(int(end), cut + side) : int(end) + 1]
+    if left_slice.size == 0 or right_slice.size == 0:
+        return None
+    if float(left_slice.mean()) < 0.02 or float(right_slice.mean()) < 0.02:
+        return None
+    return int(cut)
+
+
+def locate_passport_spread_cut(image_bytes: bytes) -> dict[str, Any] | None:
+    """Find the cut between two pages on one canvas.
+
+    White margins are ignored. An open passport is side by side, so the gap
+    is vertical. Two pages stacked one above the other have a horizontal gap.
+    A single page returns None. ``cut`` is a pixel index in the full image.
+    """
+    if not image_bytes:
+        return None
+    try:
+        bgr = _decode_bgr(image_bytes)
+        cv2 = _cv2()
+    except ImportError:
+        return None
+    if bgr is None:
+        return None
+    try:
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        ink = gray < 200
+        columns = ink.mean(axis=0)
+        rows = ink.mean(axis=1)
+    except Exception:
+        logger.debug("ScanX spread cut failed", exc_info=True)
+        return None
+    horizontal_bounds = _content_span(columns)
+    vertical_bounds = _content_span(rows)
+    if not horizontal_bounds or not vertical_bounds:
+        return None
+    x0, x1 = horizontal_bounds
+    y0, y1 = vertical_bounds
+    vertical_cut = _gutter_index(columns, x0, x1)
+    horizontal_cut = _gutter_index(rows, y0, y1)
+    if vertical_cut is not None and horizontal_cut is not None:
+        vertical_ink = float(columns[max(0, vertical_cut - 4) : vertical_cut + 5].mean())
+        horizontal_ink = float(rows[max(0, horizontal_cut - 4) : horizontal_cut + 5].mean())
+        if vertical_ink <= horizontal_ink:
+            return {"axis": "vertical", "cut": int(vertical_cut)}
+        return {"axis": "horizontal", "cut": int(horizontal_cut)}
+    if vertical_cut is not None:
+        return {"axis": "vertical", "cut": int(vertical_cut)}
+    if horizontal_cut is not None:
+        return {"axis": "horizontal", "cut": int(horizontal_cut)}
+    content_w = (x1 - x0) + 1
+    content_h = (y1 - y0) + 1
+    if min(content_w, content_h) < 80:
+        return None
+    # Touching pages still leave a long canvas. Cut the content box, not the
+    # white margin, so the split falls between the pages.
+    if max(content_w, content_h) / float(min(content_w, content_h)) < 1.35:
+        return None
+    if content_w >= content_h:
+        return {"axis": "vertical", "cut": int((x0 + x1) // 2)}
+    return {"axis": "horizontal", "cut": int((y0 + y1) // 2)}
+
+
+def split_spread_halves(
+    image_bytes: bytes,
+    *,
+    axis: str,
+    cut: int,
+) -> tuple[bytes, bytes] | None:
+    """Two PNG regions divided at ``cut`` (left|right or top|bottom)."""
+    if not image_bytes or axis not in {"vertical", "horizontal"}:
+        return None
+    try:
+        bgr = _decode_bgr(image_bytes)
+    except ImportError:
+        return None
+    if bgr is None:
+        return None
+    height, width = bgr.shape[:2]
+    cut_at = int(cut)
+    try:
+        if axis == "vertical":
+            if cut_at < 1 or width - cut_at < 1:
+                return None
+            first = _encode_png(bgr[:, :cut_at].copy())
+            second = _encode_png(bgr[:, cut_at:].copy())
+        else:
+            if cut_at < 1 or height - cut_at < 1:
+                return None
+            first = _encode_png(bgr[:cut_at, :].copy())
+            second = _encode_png(bgr[cut_at:, :].copy())
+    except Exception:
+        logger.debug("ScanX spread split failed", exc_info=True)
+        return None
+    return first, second
+
+
+def rotate_spread_halves(
+    image_bytes: bytes,
+    *,
+    axis: str,
+    cut: int,
+    first_degrees: int,
+    second_degrees: int,
+) -> bytes | None:
+    """Rotate one side of a two-page canvas and stitch the sides back in place.
+
+    ``first`` is the left or top region. ``second`` is the right or bottom
+    region. 180° turns that region only. This is not a whole-canvas rotation.
+    """
+    if int(first_degrees) not in (0, 180) or int(second_degrees) not in (0, 180):
+        return None
+    if axis not in {"vertical", "horizontal"}:
+        return None
+    try:
+        cv2 = _cv2()
+    except ImportError:
+        return None
+    bgr = _decode_bgr(image_bytes)
+    if bgr is None:
+        return None
+    height, width = bgr.shape[:2]
+    cut_at = int(cut)
+    try:
+        if axis == "vertical":
+            if cut_at < 1 or width - cut_at < 1:
+                return None
+            first = bgr[:, :cut_at].copy()
+            second = bgr[:, cut_at:].copy()
+        else:
+            if cut_at < 1 or height - cut_at < 1:
+                return None
+            first = bgr[:cut_at, :].copy()
+            second = bgr[cut_at:, :].copy()
+        if int(first_degrees) == 180:
+            first = cv2.rotate(first, cv2.ROTATE_180)
+        if int(second_degrees) == 180:
+            second = cv2.rotate(second, cv2.ROTATE_180)
+        if axis == "vertical":
+            stitched = cv2.hconcat([first, second])
+        else:
+            stitched = cv2.vconcat([first, second])
+        return _encode_png(stitched)
+    except Exception:
+        logger.debug("ScanX spread half rotate failed", exc_info=True)
+        return None
+
+
 def _shadow_reduce(gray):
     """Background division to flatten uneven illumination."""
     cv2 = _cv2()

@@ -6,6 +6,23 @@ import HeadlessScrollArea, {
   type HeadlessScrollAreaHandle,
 } from '../HeadlessScrollArea';
 import QueuePaginationControls from '../QueuePaginationControls';
+import {
+  emptyState,
+  listItem,
+  listItemActive,
+  listItemBadges,
+  listItemBadge,
+  listItemMeta,
+  listItemName,
+  listItemStage,
+  listItemTop,
+  listPagination,
+  listPaginationTop,
+  listPanel,
+  listScroll,
+  pageBtn,
+  pageMeta,
+} from './prospectsLayout';
 
 const ROW_HEIGHT = 76;
 
@@ -22,6 +39,8 @@ type ProspectsListPanelProps = {
   errorMessage?: string | null;
   scrollStorageKey: string;
   hidden?: boolean;
+  /** Below lg, hide the list once a lead is open so detail is the only pane. */
+  stackHidden?: boolean;
 };
 
 function formatStageLabel(stage?: string): string {
@@ -45,6 +64,7 @@ export default function ProspectsListPanel({
   errorMessage,
   scrollStorageKey,
   hidden = false,
+  stackHidden = false,
 }: ProspectsListPanelProps) {
   const scrollAreaRef = useRef<HeadlessScrollAreaHandle | null>(null);
   const restoredRef = useRef(false);
@@ -90,7 +110,11 @@ export default function ProspectsListPanel({
   const showPagination = !isLoading && !errorMessage && (filteredTotal > 0 || items.length > 0);
 
   return (
-    <aside className={`prospects-list-panel${hidden ? ' prospects-list-panel--hidden' : ''}`}>
+    <aside
+      className={
+        hidden ? 'hidden' : `${listPanel}${stackHidden ? ' max-lg:!hidden' : ''}`
+      }
+    >
       {showPagination ? (
         <QueuePaginationControls
           page={page}
@@ -98,22 +122,22 @@ export default function ProspectsListPanel({
           hasMorePages={hasMorePages}
           disabled={isLoading}
           onPageChange={onPageChange}
-          className="prospects-list-panel__pagination prospects-list-panel__pagination--top"
-          buttonClassName="prospects-list-panel__page-btn"
-          metaClassName="prospects-list-panel__page-meta"
+          className={`${listPagination} ${listPaginationTop}`}
+          buttonClassName={pageBtn}
+          metaClassName={pageMeta}
         />
       ) : null}
 
       <HeadlessScrollArea
         ref={scrollAreaRef}
-        className="prospects-list-panel__scroll"
+        className={listScroll}
       >
         {errorMessage ? (
-          <div className="prospects-empty">{errorMessage}</div>
+          <div className={emptyState}>{errorMessage}</div>
         ) : isLoading ? (
-          <div className="prospects-empty">Loading prospects...</div>
+          <div className={emptyState}>Loading prospects...</div>
         ) : items.length === 0 ? (
-          <div className="prospects-empty">No prospects match your filters.</div>
+          <div className={emptyState}>No prospects match your filters.</div>
         ) : (
           <div
             style={{
@@ -140,26 +164,26 @@ export default function ProspectsListPanel({
                 >
                   <button
                     type="button"
-                    className={`prospects-list-item${item.id === selectedLeadId ? ' is-active' : ''}`}
+                    className={`${listItem}${item.id === selectedLeadId ? ` ${listItemActive}` : ''}`}
                     onClick={() => handleSelect(item.id)}
                   >
-                    <div className="prospects-list-item__top">
-                      <span className="prospects-list-item__name">{item.full_name}</span>
-                      <div className="prospects-list-item__badges">
+                    <div className={listItemTop}>
+                      <span className={listItemName}>{item.full_name}</span>
+                      <div className={listItemBadges}>
                         {item.platform_badge ? (
                           <span
-                            className="prospects-list-item__badge"
+                            className={listItemBadge}
                             style={platformBadgeStyle(item.platform_badge)}
                           >
                             {item.platform_badge}
                           </span>
                         ) : null}
-                        <span className="prospects-list-item__stage">
+                        <span className={listItemStage}>
                           {formatStageLabel(item.stage)}
                         </span>
                       </div>
                     </div>
-                    <div className="prospects-list-item__meta">
+                    <div className={listItemMeta}>
                       <span>{formatProspectDate(item.received_at)}</span>
                     </div>
                   </button>

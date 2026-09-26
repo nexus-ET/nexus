@@ -50,7 +50,7 @@ const DigitalPresenceAdminSection: React.FC<DigitalPresenceAdminSectionProps> = 
   }
 
   return (
-    <div className="prospects-profile-grid__wide space-y-2">
+    <div className="col-span-full space-y-2 [&_p]:m-0 [&_p]:whitespace-pre-wrap [&_p]:leading-normal">
       <span>Digital Presence</span>
       <DigitalPresenceLinksList links={links} readOnly showCategoryFilter />
     </div>

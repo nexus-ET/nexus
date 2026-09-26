@@ -32,27 +32,13 @@ import {
   type ProspectDetailTab,
 } from '../utils/prospectsUrl';
 import { isTablePageSize, storeTablePageSize } from '../utils/tablePageSize';
-import './ProspectsPage.css';
+import { pageRoot, panels } from '../components/prospects/prospectsLayout';
 
 export type ProspectsPageProps = {
   pageTitle?: string;
   statusCategory?: string;
   basePath?: string;
 };
-
-function useIsCompactLayout(breakpoint = 900): boolean {
-  const [isCompact, setIsCompact] = useState(
-    typeof window !== 'undefined' ? window.innerWidth < breakpoint : false
-  );
-
-  useEffect(() => {
-    const onResize = () => setIsCompact(window.innerWidth < breakpoint);
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, [breakpoint]);
-
-  return isCompact;
-}
 
 export default function ProspectsPage({
   pageTitle = 'All Prospects',
@@ -62,8 +48,8 @@ export default function ProspectsPage({
   const navigate = useNavigate();
   const { leadId: leadIdParam } = useParams<{ leadId?: string }>();
   const [searchParams] = useSearchParams();
-  const isCompact = useIsCompactLayout();
   const [manualFocus, setManualFocus] = useState(false);
+  const [scanxReviewOpen, setScanxReviewOpen] = useState(false);
 
   const filters = useMemo(
     () => readFilters(searchParams, statusCategory),
@@ -81,7 +67,8 @@ export default function ProspectsPage({
   const docReadinessAutoSelectKeyRef = useRef<string | null>(null);
 
   const scrollStorageKey = prospectsScrollStorageKey(filters, basePath);
-  const focusMode = Boolean(selectedLeadId && (isCompact || manualFocus));
+  const focusMode = Boolean(selectedLeadId && manualFocus);
+  const hideLeadList = focusMode || scanxReviewOpen;
 
   useEffect(() => {
     const legacyLeadId = searchParams.get('leadId');
@@ -285,7 +272,6 @@ export default function ProspectsPage({
       suppressDocReadinessAutoSelectRef.current = false;
       writeLastSearchedLeadId(leadId);
     }
-    if (isCompact) setManualFocus(true);
     navigate(
       buildProspectsPath(leadId, filters, activeTab, basePath, pipelineSubprocess),
       { replace: true }
@@ -324,7 +310,7 @@ export default function ProspectsPage({
         : null;
 
   return (
-    <div className={`prospects-page${focusMode ? ' prospects-page--focus' : ''}`}>
+    <div className={pageRoot}>
       <ProspectsToolbar
         filters={filters}
         onChange={updateFilters}
@@ -340,7 +326,7 @@ export default function ProspectsPage({
         showTitleRow={!hasPipelineWorkspace(basePath)}
       />
 
-      <div className="prospects-page__panels">
+      <div className={panels}>
         <ProspectsListPanel
           items={items}
           selectedLeadId={selectedLeadId}
@@ -353,7 +339,8 @@ export default function ProspectsPage({
           filteredTotal={filteredTotal}
           errorMessage={listError}
           scrollStorageKey={scrollStorageKey}
-          hidden={focusMode}
+          hidden={hideLeadList}
+          stackHidden={selectedLeadId != null}
         />
 
         <ProspectDetailPanel
@@ -372,6 +359,9 @@ export default function ProspectsPage({
           onToggleFocus={handleToggleFocus}
           studentProfileTabs={basePath === '/students/counselling'}
           pipelinePath={hasPipelineWorkspace(basePath) ? basePath : undefined}
+          onScanxReviewOpenChange={setScanxReviewOpen}
+          scanxReviewOpen={scanxReviewOpen}
+          leadSelected={selectedLeadId != null}
         />
       </div>
     </div>

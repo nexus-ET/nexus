@@ -46,6 +46,13 @@ export interface CounselorFollowupCreatePayload {
   checklist_country_id?: number | null;
 }
 
+export interface CounselorFollowupUpdatePayload {
+  status_id: number;
+  points_discussed: string;
+  action_items?: string | null;
+  target_completion_date?: string | null;
+}
+
 function sortStatusesByHeading(
   items: CounselorStatusMasterItem[]
 ): CounselorStatusMasterItem[] {
@@ -87,6 +94,29 @@ export function useCreateLeadFollowup() {
     }) =>
       apiFetch(`leads/${leadId}/followups`, {
         method: 'POST',
+        body: JSON.stringify(payload),
+      }) as Promise<CounselorFollowupItem>,
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['lead-followups', variables.leadId] });
+      queryClient.invalidateQueries({ queryKey: ['offline-leads'] });
+    },
+  });
+}
+
+export function useUpdateLeadFollowup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      leadId,
+      followupId,
+      payload,
+    }: {
+      leadId: number;
+      followupId: number;
+      payload: CounselorFollowupUpdatePayload;
+    }) =>
+      apiFetch(`leads/${leadId}/followups/${followupId}`, {
+        method: 'PATCH',
         body: JSON.stringify(payload),
       }) as Promise<CounselorFollowupItem>,
     onSuccess: (_data, variables) => {

@@ -1,6 +1,14 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { allMainProcesses, pipelineLeadHref } from '../../utils/studentPipelineProcess';
+import {
+  processPage,
+  processPageCurrent,
+  processPager,
+  processPagerList,
+  processPageStep,
+  processPageStepDisabled,
+} from './prospectsLayout';
 
 type PipelineProcessPagerProps = {
   currentPath: string;
@@ -17,23 +25,23 @@ export default function PipelineProcessPager({ currentPath, leadId }: PipelinePr
     currentIndex >= 0 && currentIndex < processes.length - 1 ? processes[currentIndex + 1] : null;
 
   return (
-    <nav className="prospects-detail-panel__process-pager" aria-label="Jump to process">
+    <nav className={processPager} aria-label="Jump to process">
       {previous ? (
         <Link
           to={pipelineLeadHref(previous.path, { leadId, search: searchKey })}
-          className="prospects-detail-panel__process-page-step"
+          className={processPageStep}
           title={`Process ${previous.code} · ${previous.title}`}
           aria-label={`Previous process: ${previous.title}`}
         >
           <ChevronLeft size={16} strokeWidth={2.25} aria-hidden />
         </Link>
       ) : (
-        <span className="prospects-detail-panel__process-page-step is-disabled" aria-hidden>
+        <span className={`${processPageStep} ${processPageStepDisabled}`} aria-hidden>
           <ChevronLeft size={16} strokeWidth={2.25} />
         </span>
       )}
 
-      <div className="prospects-detail-panel__process-pager-list">
+      <div className={processPagerList}>
         {processes.map(process => {
           const isCurrent = process.path === currentPath;
           const label = `Process ${process.code}: ${process.title}`;
@@ -41,7 +49,7 @@ export default function PipelineProcessPager({ currentPath, leadId }: PipelinePr
             return (
               <span
                 key={process.path}
-                className="prospects-detail-panel__process-page is-current"
+                className={processPageCurrent}
                 title={label}
                 aria-current="page"
               >
@@ -53,7 +61,7 @@ export default function PipelineProcessPager({ currentPath, leadId }: PipelinePr
             <Link
               key={process.path}
               to={pipelineLeadHref(process.path, { leadId, search: searchKey })}
-              className="prospects-detail-panel__process-page"
+              className={processPage}
               title={label}
               aria-label={label}
             >
@@ -66,14 +74,14 @@ export default function PipelineProcessPager({ currentPath, leadId }: PipelinePr
       {next ? (
         <Link
           to={pipelineLeadHref(next.path, { leadId, search: searchKey })}
-          className="prospects-detail-panel__process-page-step"
+          className={processPageStep}
           title={`Process ${next.code} · ${next.title}`}
           aria-label={`Next process: ${next.title}`}
         >
           <ChevronRight size={16} strokeWidth={2.25} aria-hidden />
         </Link>
       ) : (
-        <span className="prospects-detail-panel__process-page-step is-disabled" aria-hidden>
+        <span className={`${processPageStep} ${processPageStepDisabled}`} aria-hidden>
           <ChevronRight size={16} strokeWidth={2.25} />
         </span>
       )}

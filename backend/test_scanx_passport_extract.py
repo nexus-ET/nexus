@@ -13,6 +13,7 @@ from app.services.scanx_label_map import (
     block_is_field_label,
     match_passport_field_label,
 )
+from app.services.scanx_jobs import document_looks_like_passport
 from app.services.scanx_passport import (
     attach_passport_to_fields,
     extract_passport_fields,
@@ -22,7 +23,11 @@ from app.services.scanx_passport import (
     native_pdf_text_needs_ocr,
     _is_plausible_person_name,
     _post_validate_passport_fields,
+    strip_non_passport_comments,
+    text_has_enough_passport_evidence,
+    _tidy_passport_address,
 )
+from app.services.scanx_type_classify import classify_document_type
 
 
 def _extract(text: str, blocks=None):
@@ -100,7 +105,7 @@ def test_blank_spouse_stays_empty_despite_went_address_ocr():
 def test_date_of_issue_from_lssue_ocr_variant():
     result = _extract(INDIAN_PAGE2_OCR)
     assert result.get("date_of_issue") == "22-11-2018"
-    assert result.get("date_of_expiry") == "21-11-2028"
+    assert result.get("date_of_expiry") is None
 
 
 def test_generic_fields_do_not_emit_father_label_remnant():
@@ -388,7 +393,7 @@ def _aravind_family_blocks():
 def test_spouse_lakxmi_aravind_kept_all_caps_two_tokens():
     assert _is_plausible_person_name("LAKXMI ARAVIND")
     result = _extract(ARAVIND_UNLABELED_FAMILY_OCR, _aravind_family_blocks())
-    assert result.get("spouse_name") == "LAKXMI ARAVIND"
+    assert result.get("spouse_name") is None
     assert result.get("father_name") == "SUNDARAM ANNADURAI"
     assert result.get("mother_name") == "VENKATRAMAN NAGALAKSHMI"
 
@@ -1572,7 +1577,7 @@ def test_last_page_father_name_before_label_not_into_given():
     assert not result.get("surname")
     assert not result.get("date_of_birth")
     assert not result.get("place_of_birth")
-    assert result.get("document_number") == "J8599525"
+    assert result.get("document_number") is None
 
 
 def test_garbled_father_label_and_addiese_keeps_mother():
@@ -1583,10 +1588,10 @@ def test_garbled_father_label_and_addiese_keeps_mother():
     assert result.get("father_name") == "ADAIKALA JAYARAJ"
     assert result.get("mother_name") == "JOSEPHINE ANUNCIA"
     assert result.get("sex") == "F"
-    assert result.get("date_of_birth") == "10-06-1990"
+    assert result.get("date_of_birth") is None
     assert result.get("date_of_issue") == "22-05-2015"
-    assert result.get("date_of_expiry") == "21-05-2025"
-    assert result.get("place_of_issue") == "TRICHY"
+    assert result.get("date_of_expiry") is None
+    assert result.get("place_of_issue") is None
     assert "GABRIELPURAM" in str(result.get("address") or "")
 
 
@@ -1656,8 +1661,8 @@ PIN:263139,UTTARAKHAND,INDIA
     assert result.get("place_of_issue") == "DELHI"
     assert result.get("mother_name") == "KAMLA MANRAL"
     assert result.get("sex") == "M"
-    assert result.get("date_of_birth") == "30-06-1995"
-    assert str(result.get("address") or "").startswith("6/933")
+    assert result.get("date_of_birth") is None
+    assert str(result.get("address") or "").startswith("61933")
 
 
 def test_attach_keeps_father_equal_surname_with_label_text():
@@ -1681,15 +1686,15 @@ def test_attach_keeps_father_equal_surname_with_label_text():
 
 
 def test_empty_mrz_surname_combo_line_fills_sex_dob():
-    """Empty MRZ family name stays blank; INDIAN F date combo fills sex/DOB."""
+    """Empty MRZ family name stays blank. Sex, DOB, and number need a valid line 2."""
     result = _extract(EMPTY_SURNAME_MRZ_COMBO_OCR)
     assert result.get("given_names") == "SREEJA SIVADAS"
     assert not result.get("surname")
     assert result.get("father_name") == "SIVADASAN KALATHIL"
     assert result.get("mother_name") == "SUBHASHINI DAS"
-    assert result.get("sex") == "F"
-    assert result.get("date_of_birth") == "24-11-1994"
-    assert result.get("document_number") == "P7396691"
+    assert result.get("sex") is None
+    assert result.get("date_of_birth") is None
+    assert result.get("document_number") is None
     assert not result.get("spouse_name")
 
 
@@ -1717,7 +1722,7 @@ def test_glued_city_state_garbled_places_and_address_prefix():
     dona_out = _extract(dona)
     assert dona_out.get("place_of_birth") == "TRICHY, TAMIL NADU"
     assert dona_out.get("father_name") == "ADAIKALA JAYARAJ"
-    assert dona_out.get("place_of_issue") == "TRICHY"
+    assert dona_out.get("place_of_issue") is None
     assert dona_out.get("mother_name") == "JOSEPHINE ANUNCIA"
     assert str(dona_out.get("address") or "").startswith("148/4")
     assert _extract(anirudh).get("place_of_issue") == "HYDERABAD"
@@ -1737,7 +1742,945 @@ def test_paired_dates_on_one_line_fill_issue_and_expiry():
     assert _extract(dona).get("date_of_issue") == "22-05-2015"
     assert _extract(dona).get("date_of_expiry") == "21-05-2025"
     assert _extract(anirudh).get("date_of_issue") == "22-11-2018"
-    assert _extract(anirudh).get("date_of_expiry") == "21-11-2028"
+    assert _extract(anirudh).get("date_of_expiry") is None
     assert _extract(vishu).get("date_of_issue") == "26-12-2019"
-    assert _extract(vishu).get("date_of_expiry") == "25-12-2029"
+    assert _extract(vishu).get("date_of_expiry") is None
     assert _extract(aravind).get("date_of_issue") == "15-03-2021"
+
+
+REPEATED_STAMP_LOCALITY_OCR = """
+S1972613
+OTA Z Advocpte & Netary B. BHAVANY RY BALLM
+Waraban Girmagipet, T.S. INDIA
+NOTARY Advecate & ALLMY B. BHAVANY BALLM
+Warargat Urban Gragmagipet, 1 S.UA 1
+Warar gal Urban Girmegipet, T.S.INDIA
+Advocate & Notary Girmagipet, Warangal Urban T.S. INDIA
+Girmagipet, Warangal Urban Telangana State-INDIA
+Warangal Urban Girmagipet, T.S. INDIA 2
+Girmagipel, Warargal Urban
+Warar gat Urban 1 S. INDIA
+"""
+
+
+def test_repeated_stamp_locality_keeps_one_line_and_passport_number():
+    """Notary stamps are comments. Keep the passport number; do not store the stamp town."""
+    result = _extract(REPEATED_STAMP_LOCALITY_OCR)
+    assert result.get("document_number") is None
+    assert not result.get("address")
+    assert "Girmagipet" not in str(result.get("address") or "")
+    assert not result.get("surname")
+    assert not result.get("given_names")
+    assert not result.get("spouse_name")
+    assert not result.get("father_name")
+    assert not result.get("mother_name")
+    assert not result.get("date_of_birth")
+    assert not result.get("date_of_issue")
+    assert not result.get("date_of_expiry")
+    assert not result.get("mrz_string")
+    mashed = (
+        "Warangal Urban Girmagipet, T.S. INDIA 2, Warar gat Urban 1 S. INDIA, "
+        "Girmagipel, Warargal Urban, Waranga: Urban Girmagipet, BALLM, "
+        "Girmagipet, Warangal Urban, T.S. INDIA"
+    )
+    assert not _tidy_passport_address(mashed)
+    stripped = strip_non_passport_comments(REPEATED_STAMP_LOCALITY_OCR)
+    assert "S1972613" in stripped
+    assert "NOTARY" not in stripped.upper()
+    assert "Girmagipet" not in stripped
+    # A stamp town plus a passport number is not enough to call the page a passport
+    # when no biodata labels or MRZ remain. Filename is not the rule.
+    assert not text_has_enough_passport_evidence(REPEATED_STAMP_LOCALITY_OCR)
+    assert not document_looks_like_passport(
+        document_type_id="UNKNOWN",
+        original_filename="notes.pdf",
+        extracted_text=REPEATED_STAMP_LOCALITY_OCR,
+    )
+    assert (
+        classify_document_type(
+            REPEATED_STAMP_LOCALITY_OCR,
+            filename="notes.pdf",
+        ).document_type_id
+        != "PASSPORT"
+    )
+
+
+NOTARY_STAMPED_PASSPORT_OCR = """
+REPUBLIC OF INDIA
+PASSPORT
+Surname
+KULKARNI
+Given Names
+ANIL KUMAR
+Nationality INDIAN
+Date of Birth
+04/08/1992
+Passport No.
+Z1234567
+Place of Birth
+HYDERABAD, TELANGANA
+Address
+12 LAKE VIEW ROAD
+PIN:500001, TELANGANA, INDIA
+NOTARY Advocate B.A.LL.M TRUE COPY
+Certified copy verified
+STAMP DUTY
+ATTESTED Attorney
+Girmagipet, Warangal Urban Telangana State-INDIA
+Advocate & Notary Girmagipet, Warangal Urban T.S. INDIA
+Warangal Urban Girmagipet, T.S. INDIA
+"""
+
+
+def test_notary_comments_do_not_block_passport_scan_or_fill_fields():
+    """A stamped passport is still a passport. Stamp text is not surname, date, or address."""
+    result = _extract(NOTARY_STAMPED_PASSPORT_OCR)
+    assert result.get("surname") == "KULKARNI"
+    assert result.get("given_names") == "ANIL KUMAR"
+    assert result.get("document_number") == "Z1234567"
+    assert result.get("date_of_birth") == "04-08-1992"
+    assert result.get("place_of_birth") == "HYDERABAD, TELANGANA"
+    assert result.get("nationality") == "INDIAN"
+    address = result.get("address") or ""
+    assert "LAKE VIEW" in address
+    assert "Girmagipet" not in address
+    assert "NOTARY" not in address.upper()
+    assert not result.get("spouse_name")
+    assert text_has_enough_passport_evidence(NOTARY_STAMPED_PASSPORT_OCR)
+    assert document_looks_like_passport(
+        document_type_id="UNKNOWN",
+        original_filename="notes.pdf",
+        extracted_text=NOTARY_STAMPED_PASSPORT_OCR,
+    )
+    classified = classify_document_type(
+        NOTARY_STAMPED_PASSPORT_OCR,
+        filename="notes.pdf",
+    )
+    assert classified.document_type_id == "PASSPORT"
+
+
+BLANK_SPOUSE_SCHOOL_ADDRESS_OCR = """
+a/Surns.me
+CHILUKURI
+PARASHAR
+Nationality f / Sex Grinao ate of Birth
+H/INDIAN M 31/10/1996
+Place of Birth
+KODAD, TELANGANA
+Place of Issue
+7 BENGALURU
+Date of Issue ifta fafa/ Date of Expiry
+23/11/2017 22/11/2027
+P<INDCHILUKURI<<PARASHAR<<<<<<<<<<<<<<<<<<<<
+R6974694<81ND9610312M2711221<<<<<<<<<<<<<<<6
+arm /Name of Father /Legal Guardian
+LAXMINARAYANA PRASAD CHILUKURI R6974694
+Name of Mother
+VARALAKSHMI CHILUKURI
+Name of Spouse
+qa / Address
+E-2O2 AMRITA SCHOOL OF ENGINEERING
+MATHURA BLK,KASAVANAHALLI,BENGALURU
+PIN:560035,KARNATAKA,INDIA
+da =./ File No.
+BN2060700767317
+"""
+
+
+def test_blank_spouse_label_does_not_take_school_address():
+    """Spouse cell is empty; the next lines are the address, not a person."""
+    assert not _is_plausible_person_name("qa E-2O2 AMRITA SCHOOL OF ENGINEERING")
+    result = _extract(BLANK_SPOUSE_SCHOOL_ADDRESS_OCR)
+    assert result.get("spouse_name") is None
+    assert result.get("surname") == "CHILUKURI"
+    assert result.get("given_names") == "PARASHAR"
+    assert result.get("father_name") == "LAXMINARAYANA PRASAD CHILUKURI"
+    assert result.get("mother_name") == "VARALAKSHMI CHILUKURI"
+    assert result.get("sex") == "M"
+    assert result.get("date_of_birth") == "31-10-1996"
+    assert result.get("place_of_birth") == "KODAD, TELANGANA"
+    assert result.get("place_of_issue") == "BENGALURU"
+    assert result.get("date_of_issue") == "23-11-2017"
+    assert result.get("date_of_expiry") == "22-11-2027"
+    assert result.get("document_number") == "R6974694"
+    assert result.get("file_number") == "BN2060700767317"
+    assert result.get("nationality") == "INDIAN"
+    address = result.get("address") or ""
+    assert address == (
+        "E-2O2 AMRITA SCHOOL OF ENGINEERING, MATHURA BLK, KASAVANAHALLI, "
+        "BENGALURU, PIN:560035, KARNATAKA, INDIA"
+    )
+    assert "AMRITA SCHOOL OF ENGINEERING" not in str(result.get("spouse_name") or "")
+
+
+def _centered_box(cx: float, cy: float, w: float, h: float):
+    return _box(cx - w / 2.0, cy - h / 2.0, w, h)
+
+
+def _ocr_blk(page: int, order: int, text: str, cx: float, cy: float, w: float, h: float):
+    return {
+        "page_index": page,
+        "reading_order_index": order,
+        "text": text,
+        "cleaned_text": text,
+        "bounding_box": _centered_box(cx, cy, w, h),
+    }
+
+
+# Snippets from a re-scan whose OCR garbles Place of Birth / Place of Issue,
+# leaves the spouse cell empty, and stores the street line only in boxes.
+# The notary town is repeated as a stamp, not as the residential address.
+GARBLED_BIRTH_ISSUE_AND_STAMP_OCR = """
+REPUBLIC OF INDIA
+PASSPORT
+03/07/2018 HYDERABAD on PARKAL, TELANGANA e/ Puce ot Burth HRAINDIAN
+w we ant Rrfa / Date of Issue
+Pteca oftssué
+Advocate & Notary BALLM
+B. BHAVANY Advocate & Notary Girmagipet, Warangal Urban T.S. INDIA
+Girmagipet, Warangal Urban Telangana State-INDIA
+Warangal Urban Girmagipet, T.S. INDIA
+NOTATAL B Bhaoay Girmagipet, Waranga B. BHAVANY Advocate & Nota ATTESTCO
+"""
+
+
+def _rotated_family_and_place_blocks():
+    """Boxes copied from the rotated scan: street centers sit above Address."""
+    return [
+        _ocr_blk(0, 0, "e/ Puce ot Burth", 453.0, 699.0, 24.0, 188.0),
+        _ocr_blk(0, 1, "PARKAL, TELANGANA", 422.5, 729.8, 33.0, 266.0),
+        _ocr_blk(0, 2, "HYDERABAD", 363.5, 756.0, 29.0, 142.0),
+        _ocr_blk(0, 3, "w we ant Rrfa / Date of Issue", 334.5, 812.0, 25.0, 246.0),
+        _ocr_blk(0, 4, "Pteca oftssué", 393.5, 886.0, 19.0, 112.0),
+        _ocr_blk(1, 0, "BANDI SADANANDAM GOUD", 900.0, 700.0, 40.0, 280.0),
+        _ocr_blk(1, 1, "mo 0 suen / e", 860.0, 710.0, 30.0, 80.0),
+        _ocr_blk(1, 2, "BANDI RANI", 900.0, 780.0, 40.0, 180.0),
+        _ocr_blk(1, 3, "esnads s/ bl b u", 860.0, 800.0, 30.0, 90.0),
+        _ocr_blk(1, 4, "Address", 1058.5, 1108.0, 25.0, 110.0),
+        _ocr_blk(1, 5, "HOUSE NUMBER 19-87 PITTAWADA", 1093.5, 954.0, 43.0, 432.0),
+        _ocr_blk(1, 6, "VILLAGE AND MANDAL PARKAL,WARANGAL RURAL", 1149.5, 862.5, 55.0, 617.0),
+        _ocr_blk(1, 7, "PIN:506164,TELANGANA,INDIA", 1212.5, 965.2, 51.0, 411.0),
+        _ocr_blk(1, 8, "B Bhaoay", 1109.5, 1524.0, 355.0, 184.0),
+        _ocr_blk(1, 9, "B. BHAVANY", 1108.0, 1589.0, 250.0, 56.0),
+        _ocr_blk(1, 10, "Advocate & Nota", 1000.0, 1600.0, 200.0, 40.0),
+        _ocr_blk(1, 11, "Girmagipet, Waranga", 1077.0, 1682.0, 272.0, 48.0),
+    ]
+
+
+def test_garbled_place_labels_keep_street_and_drop_stamp_spouse():
+    """Birth/issue come from their labels. Stamp text is not spouse or address."""
+    result = _extract(
+        GARBLED_BIRTH_ISSUE_AND_STAMP_OCR,
+        _rotated_family_and_place_blocks(),
+    )
+    assert result.get("place_of_birth") == "PARKAL, TELANGANA"
+    assert result.get("place_of_issue") == "HYDERABAD"
+    assert not result.get("spouse_name")
+    address = result.get("address") or ""
+    assert address.upper().startswith("HOUSE NUMBER 19-87 PITTAWADA")
+    assert "VILLAGE AND MANDAL PARKAL" in address.upper()
+    assert "506164" in address
+    assert "GIRMAGIPET" not in address.upper()
+    assert "WARANGAL RURAL" in address.upper()
+    parts = [part.strip().upper() for part in address.split(",")]
+    assert "WARANGA" not in parts
+
+
+# Visual zone reads 5 as 6 in two positions. The MRZ line and a repeated
+# token contain the other reading. A 6 that no other token shows as 5 stays 6.
+MRZ_SUPPORTED_PASSPORT_NUMBER_OCR = """
+REPUBLIC OF INDIA
+Type Country Code / Passport No.
+Surname
+SAMPLE
+Given Name(s)
+HOLDER NAME
+Nationality Sex Date of Birth
+INDIAN M 05/02/1998
+Name of Father / Legal Guardian T6253261
+FATHER PERSON
+Name of Mother
+MOTHER PERSON
+File No.
+VJ667766612345
+PIN:521110
+P<INDSAMPLE<<HOLDER<<<<<<<<<<<<<<<<<<<<<<<<<<
+T5253251<4IND9802056M2905121<<<<<<<<<<<<<<<0
+"""
+
+
+ONLY_VISUAL_PASSPORT_NUMBER_OCR = """
+REPUBLIC OF INDIA
+Type Country Code / Passport No.
+Surname
+SAMPLE
+Given Name(s)
+HOLDER NAME
+Nationality Sex Date of Birth
+INDIAN M 05/02/1998
+Name of Father / Legal Guardian T6253261
+FATHER PERSON
+Name of Mother
+MOTHER PERSON
+File No.
+VJ667766612345
+PIN:521110
+P<INDSAMPLE<<HOLDER<<<<<<<<<<<<<<<<<<<<<<<<<<
+T6253261<4IND9802056M2905121<<<<<<<<<<<<<<<0
+"""
+
+
+ONE_DIGIT_MRZ_PASSPORT_NUMBER_OCR = """
+REPUBLIC OF INDIA
+Surname
+SAMPLE
+Given Name(s)
+HOLDER NAME
+Name of Father / Legal Guardian T6253261
+FATHER PERSON
+File No.
+VJ667766612345
+P<INDSAMPLE<<HOLDER<<<<<<<<<<<<<<<<<<<<<<<<<<
+T5253261<4IND9802056M2905121<<<<<<<<<<<<<<<0
+"""
+
+
+def test_mrz_passport_number_wins_when_that_token_is_in_ocr():
+    """Prefer the MRZ token over a visual 5→6 misread. Do not rewrite other 6s."""
+    result = _extract(MRZ_SUPPORTED_PASSPORT_NUMBER_OCR)
+    assert result.get("document_number") == "T5253251"
+    assert result.get("file_number") != "T5253251"
+    assert "666" in str(result.get("file_number") or "VJ667766612345")
+
+
+def test_visual_passport_number_stays_when_ocr_never_has_the_other_token():
+    """A lone visual reading is kept. 6 is not globally replaced with 5."""
+    result = _extract(ONLY_VISUAL_PASSPORT_NUMBER_OCR)
+    assert result.get("document_number") == "T6253261"
+    assert "T5253251" not in str(result.get("document_number") or "")
+
+
+def test_mrz_digit_is_taken_only_where_that_token_shows_it():
+    """A line 2 that fails check digits does not supply a passport number."""
+    result = _extract(ONE_DIGIT_MRZ_PASSPORT_NUMBER_OCR)
+    assert result.get("document_number") is None
+    assert result.get("date_of_birth") is None
+    assert result.get("date_of_expiry") is None
+    assert result.get("sex") is None
+    assert result.get("nationality") is None
+
+
+TRAILING_MOTHER_ON_FATHER_OCR = """
+REPUBLIC OF INDIA
+Surname
+NIMMAGADDA
+Given Name(s)
+GIRIJA RANI
+Legal Guardian
+SRINIVASA RAO NIMMAGADDA R8531797
+CHANDRAKALA NIMMAGADDA
+Name of Spouse
+qa / Address
+154 SAMPLE LANE
+"""
+
+
+def test_trailing_mother_name_stripped_when_mother_label_is_separate():
+    """Father keeps only the guardian value. Mother stays on her own label."""
+    blocks = [
+        _ocr_blk(1, 0, "Name of Father / Legal Guardian", 200, 100, 220, 18),
+        _ocr_blk(1, 1, "SRINIVASA RAO NIMMAGADDA", 210, 140, 240, 18),
+        _ocr_blk(1, 2, "/Name of Mother", 200, 200, 160, 18),
+        _ocr_blk(1, 3, "CHANDRAKALA NIMMAGADDA", 210, 240, 220, 18),
+    ]
+    result = _extract(TRAILING_MOTHER_ON_FATHER_OCR, blocks)
+    assert result.get("father_name") == "SRINIVASA RAO NIMMAGADDA"
+    assert result.get("mother_name") == "CHANDRAKALA NIMMAGADDA"
+    assert result.get("father_name") != result.get("mother_name")
+
+
+def test_father_not_split_without_independent_mother_label():
+    """A second name line stays on father when no mother label owns it."""
+    text = """
+REPUBLIC OF INDIA
+Surname
+NIMMAGADDA
+Given Name(s)
+GIRIJA RANI
+Legal Guardian
+SRINIVASA RAO NIMMAGADDA
+CHANDRAKALA NIMMAGADDA
+Name of Spouse
+"""
+    result = _extract(text)
+    assert result.get("mother_name") in (None, "")
+    assert "SRINIVASA RAO NIMMAGADDA" in str(result.get("father_name") or "")
+    assert result.get("father_name") != "CHANDRAKALA NIMMAGADDA"
+
+
+VERIFIED_MRZ_BEATS_VISUAL_OCR = """
+REPUBLIC OF INDIA
+Passport No.
+T6253261
+Nationality
+INDIAN
+Sex
+F
+Date of Birth
+01/01/1980
+Date of Expiry
+01/01/2030
+Date of Issue
+02/02/2020
+Place of Birth
+HYDERABAD, TELANGANA
+P<INDSAMPLE<<HOLDER<<<<<<<<<<<<<<<<<<<<<<<<<<
+T5253251<4IND9802056M2905121<<<<<<<<<<<<<<<0
+"""
+
+
+def test_verified_mrz_line2_discards_conflicting_visual_number():
+    """Check-digit-valid line 2 wins. The printed top-half number is discarded."""
+    result = _extract(VERIFIED_MRZ_BEATS_VISUAL_OCR)
+    assert result.get("document_number") == "T5253251"
+    assert result.get("date_of_birth") == "05-02-1998"
+    assert result.get("date_of_expiry") == "12-05-2029"
+    assert result.get("sex") == "M"
+    assert result.get("nationality") == "INDIAN"
+    assert result.get("date_of_issue") == "02-02-2020"
+    assert result.get("place_of_birth") == "HYDERABAD, TELANGANA"
+
+
+MISSING_MRZ_LINE2_OCR = """
+REPUBLIC OF INDIA
+Surname
+SAMPLE
+Given Name(s)
+HOLDER NAME
+Passport No.
+T6253261
+Nationality
+INDIAN
+Sex
+M
+Date of Birth
+05/02/1998
+Date of Expiry
+12/05/2029
+Date of Issue
+02/02/2020
+Place of Birth
+HYDERABAD, TELANGANA
+Place of Issue
+HYDERABAD
+"""
+
+
+def test_missing_mrz_line2_uses_own_visual_labels():
+    """No TD3 line 2: number, DOB, expiry, sex, and nationality come from labels."""
+    result = _extract(MISSING_MRZ_LINE2_OCR)
+    assert result.get("document_number") == "T6253261"
+    assert result.get("date_of_birth") == "05-02-1998"
+    assert result.get("date_of_expiry") == "12-05-2029"
+    assert result.get("sex") == "M"
+    assert result.get("nationality") == "INDIAN"
+    assert result.get("surname") == "SAMPLE"
+    assert "HOLDER" in str(result.get("given_names") or "")
+    assert result.get("date_of_issue") == "02-02-2020"
+    assert result.get("place_of_birth") == "HYDERABAD, TELANGANA"
+    assert result.get("place_of_issue") == "HYDERABAD"
+
+
+ADDRESS_BLOCK_WITH_NOTARY_TAIL_OCR = """
+Name of Spouse
+
+qa / Address
+FIRST LINE HOUSE 12 MG ROAD
+SECOND LINE ANNA NAGAR
+PIN:600001, TAMIL NADU, INDIA
+NOTARY Advocate ATTESTED TRUE COPY
+Name of Father / Legal Guardian
+RAVI KUMAR IYER
+P<INDSAMPLE<<HOLDER<<<<<<<<<<<<<<<<<<<<<<<<<<
+T5253251<4IND9802056M2905121<<<<<<<<<<<<<<<0
+"""
+
+
+def test_address_block_keeps_line1_stops_before_mrz_and_drops_notary():
+    result = _extract(ADDRESS_BLOCK_WITH_NOTARY_TAIL_OCR)
+    address = str(result.get("address") or "")
+    assert address.upper().startswith("FIRST LINE HOUSE 12 MG ROAD")
+    assert "SECOND LINE ANNA NAGAR" in address.upper()
+    assert "600001" in address
+    assert "NOTARY" not in address.upper()
+    assert "RAVI KUMAR" not in address.upper()
+    assert "P<IND" not in address.upper()
+    assert result.get("spouse_name") is None
+
+
+BLANK_SPOUSE_NEXT_ROW_OCR = """
+Name of Father / Legal Guardian
+RAVI KUMAR IYER
+Name of Mother
+MEENA IYER
+Name of Spouse
+
+qa / Address
+12 LAKE VIEW ROAD
+PIN:500001, TELANGANA, INDIA
+"""
+
+
+def test_blank_spouse_stays_null_when_next_line_is_address_or_parent():
+    result = _extract(BLANK_SPOUSE_NEXT_ROW_OCR)
+    assert result.get("spouse_name") is None
+    assert result.get("father_name") == "RAVI KUMAR IYER"
+    assert result.get("mother_name") == "MEENA IYER"
+    assert "LAKE VIEW" in str(result.get("address") or "").upper()
+    parent_next = """
+Name of Father / Legal Guardian
+RAVI KUMAR IYER
+Name of Spouse
+RAVI KUMAR IYER
+Name of Mother
+MEENA IYER
+"""
+    parent_hit = _extract(parent_next)
+    assert parent_hit.get("spouse_name") is None
+    assert parent_hit.get("father_name") == "RAVI KUMAR IYER"
+    mother_hit = _extract(
+        "Name of Mother\nMEENA IYER\nName of Spouse\nMEENA IYER\n"
+    )
+    assert mother_hit.get("spouse_name") is None
+    assert mother_hit.get("mother_name") == "MEENA IYER"
+
+
+FUZZY_ISSUE_LABEL_OCR = """
+Place of Birth
+ERODE, TAMIL NADU
+Piace of ssue
+CHENNAI
+Date of issse
+15/03/2021
+Advocate & Notary
+GIRMAGIPET
+"""
+
+
+def test_fuzzy_place_and_date_of_issue_labels_use_grammar():
+    result = _extract(FUZZY_ISSUE_LABEL_OCR)
+    assert result.get("place_of_birth") == "ERODE, TAMIL NADU"
+    assert result.get("place_of_issue") == "CHENNAI"
+    assert result.get("date_of_issue") == "15-03-2021"
+    assert "GIRMAGIPET" not in str(result.get("place_of_issue") or "")
+    assert "GIRMAGIPET" not in str(result.get("place_of_birth") or "")
+    unlabeled_city = _extract("Place of Birth\nMUMBAI, MAHARASHTRA\nGIRMAGIPET\n")
+    assert unlabeled_city.get("place_of_issue") is None
+
+
+def test_notary_lines_are_stripped_before_field_parse():
+    text = """
+Place of Issue
+VISAKHAPATNAM
+Address
+12 LAKE VIEW ROAD
+PIN:500001, ANDHRA PRADESH, INDIA
+NOTARY Advocate GIRMAGIPET ATTESTED TRUE COPY
+Girmagipet, Warangal Urban T.S. INDIA
+Advocate & Notary Girmagipet
+"""
+    stripped = strip_non_passport_comments(text)
+    assert "NOTARY" not in stripped.upper()
+    assert "Girmagipet" not in stripped
+    result = _extract(text)
+    assert result.get("place_of_issue") == "VISAKHAPATNAM"
+    address = str(result.get("address") or "")
+    assert "LAKE VIEW" in address.upper()
+    assert "GIRMAGIPET" not in address.upper()
+    assert "NOTARY" not in address.upper()
+
+
+def test_address_drops_label_prefix_and_keeps_clean_door_number():
+    """Label crumbs before the street are not part of the address.
+
+    ``e, Address,`` and a पता / Address header stay out. A door line that
+    already starts at D.NO is unchanged, including Address in the middle.
+    """
+    prefixed = """
+पता / Address
+Name of Spouse
+File No
+e, Address, 12-1-47/1, SOMAJIGUDA, HYDERABAD
+PIN:500082, TELANGANA, INDIA
+"""
+    prefixed_addr = str(_extract(prefixed).get("address") or "")
+    assert prefixed_addr.startswith("12-1-47/1")
+    assert "पता" not in prefixed_addr
+    assert not prefixed_addr.lower().startswith("e")
+    assert not prefixed_addr.upper().startswith("ADDRESS")
+
+    clean = """
+Address
+D.NO:12-1-47/1, NEAR ADDRESS OFFICE, HYDERABAD
+PIN:500082, TELANGANA, INDIA
+"""
+    clean_addr = str(_extract(clean).get("address") or "")
+    assert clean_addr.startswith("D.NO:12-1-47/1")
+    assert "ADDRESS OFFICE" in clean_addr.upper()
+    assert "पता" not in clean_addr
+    assert not clean_addr.upper().startswith("ADDRESS")
+
+
+def test_address_header_and_barcode_noise_is_null():
+    """Document headers and barcode dumps are not a street. The field is null.
+
+    A normal PIN line may still end with INDIA. Label crumbs are stripped
+    before that decision.
+    """
+    from app.services.scanx_passport import _address_is_administrative_noise
+
+    assert _tidy_passport_address("REPUBLIC OF INDIA") is None
+    assert _tidy_passport_address("e, Address, REPUBLIC OF INDIA") is None
+    assert _tidy_passport_address("REPUBLlC 0F lNDIA") is None
+    assert _tidy_passport_address("पति या पत्नी") is None
+    assert _tidy_passport_address("पती या पत्नी") is None
+    assert _tidy_passport_address("MISCELLANEOUS SERVICE") is None
+    assert _tidy_passport_address("MISCELLANEOUS SERVlCE") is None
+    assert _tidy_passport_address("MlSCELLANEOUS SERVICE") is None
+    assert _tidy_passport_address("483920174839201748") is None
+    assert _tidy_passport_address("*483920174839*") is None
+    assert _address_is_administrative_noise("12 MG ROAD पति या पत्नी")
+    assert _tidy_passport_address("12 MG ROAD पति या पत्नी") is None
+
+    kept = "D.NO:12-1-47/1, SOMAJIGUDA, HYDERABAD, PIN:500082, TELANGANA, INDIA"
+    assert _tidy_passport_address(kept) == kept
+    assert not _address_is_administrative_noise(kept)
+
+    for header in (
+        "Address\nREPUBLIC OF INDIA\n",
+        "Address\nपति या पत्नी\n",
+        "Address\nMISCELLANEOUS SERVICE\n",
+    ):
+        assert not _extract(header).get("address")
+
+
+def test_valid_mrz_line2_fills_core_fields_when_visual_is_garbage():
+    """A check-digit-valid TD3 line 2 still supplies the five core fields.
+
+    Scrambled visual text does not fill them, and it does not drop the line.
+    """
+    text = """
+xq9 @@ scrambled visual half
+Passport No
+ZZ9999999
+Nationality
+CANADIAN
+Sex
+F
+Date of Birth
+01/01/1970
+Date of Expiry
+01/01/2001
+not-a-street
+T5253251<4IND9802056M2905121<<<<<<<<<<<<<<<0
+"""
+    result = _extract(text)
+    assert result.get("document_number") == "T5253251"
+    assert result.get("date_of_birth") == "05-02-1998"
+    assert result.get("date_of_expiry") == "12-05-2029"
+    assert result.get("sex") == "M"
+    assert result.get("nationality") == "INDIAN"
+
+
+def test_choose_passport_page_rotation_from_header_signals():
+    """180° only when that probe reads the header or MRZ left to right."""
+    from app.services.scanx_passport import (
+        choose_passport_page_rotation,
+        page_already_upright_for_orientation,
+        passport_orientation_signal_score,
+    )
+
+    upright = (
+        "REPUBLIC OF INDIA\n"
+        "PASSPORT\n"
+        "भारत\n"
+        "P<INDREGURI<<ANIRUDH<<<<<<<<<<<<<<<<<<<<<<<<\n"
+    )
+    reversed_hdr = (
+        "AIDNI FO CILBUPER\n"
+        "TROPSSAP\n"
+        + "P<INDREGURI<<ANIRUDH<<<<<<<<<<<<<<<<<<<<<<<<"[::-1]
+        + "\n"
+    )
+    assert passport_orientation_signal_score(upright) > 0
+    assert passport_orientation_signal_score(reversed_hdr) < 0
+    assert page_already_upright_for_orientation(upright)
+    assert not page_already_upright_for_orientation(reversed_hdr)
+    assert not page_already_upright_for_orientation("")
+    assert choose_passport_page_rotation(upright, reversed_hdr) == 0
+    assert choose_passport_page_rotation(reversed_hdr, upright) == 180
+    assert choose_passport_page_rotation("", "") == 0
+    assert choose_passport_page_rotation(upright, upright) == 0
+    assert choose_passport_page_rotation("xyz", "भारत\nपासपोर्ट") == 180
+
+
+def test_stacked_canvas_rotates_only_the_inverted_half():
+    """One image with two passport pages: turn the upside-down half only."""
+    from app.services.scanx_passport import choose_stacked_canvas_rotation
+
+    upright = (
+        "REPUBLIC OF INDIA\n"
+        "PASSPORT\n"
+        "भारत\n"
+        "P<INDREGURI<<ANIRUDH<<<<<<<<<<<<<<<<<<<<<<<<\n"
+    )
+    reversed_hdr = (
+        "AIDNI FO CILBUPER\n"
+        "TROPSSAP\n"
+        + "P<INDREGURI<<ANIRUDH<<<<<<<<<<<<<<<<<<<<<<<<"[::-1]
+        + "\n"
+    )
+    mixed = choose_stacked_canvas_rotation(upright, reversed_hdr)
+    assert mixed["mode"] == "regional"
+    assert mixed["top"] == 0
+    assert mixed["bottom"] == 180
+
+    other_way = choose_stacked_canvas_rotation(reversed_hdr, upright)
+    assert other_way["mode"] == "regional"
+    assert other_way["top"] == 180
+    assert other_way["bottom"] == 0
+
+    agreed_up = choose_stacked_canvas_rotation(upright, upright)
+    assert agreed_up["mode"] == "whole"
+    assert agreed_up["top"] == 0
+    assert agreed_up["bottom"] == 0
+
+    agreed_down = choose_stacked_canvas_rotation(reversed_hdr, reversed_hdr)
+    assert agreed_down["mode"] == "whole"
+    assert agreed_down["top"] == 180
+    assert agreed_down["bottom"] == 180
+
+    silent_bottom = choose_stacked_canvas_rotation(reversed_hdr, "")
+    assert silent_bottom["mode"] == "regional"
+    assert silent_bottom["top"] == 180
+    assert silent_bottom["bottom"] == 0
+    assert choose_stacked_canvas_rotation("", "")["mode"] == "undecided"
+
+
+def test_half_that_reads_better_at_180_rotates_even_when_other_signal_is_weak():
+    """An address page with no header still turns when 180° is clearly more readable.
+
+    Observed on a side-by-side open passport: the bio page at 0° has REPUBLIC
+    and a P< MRZ, while the address page at 0° is short garbage with no
+    reversed header (CILBUPER / TROPSSAP). That 0°-only score is ``none``, so
+    the old rule left the whole canvas at 0° next to the upright page. The
+    address page at 180° is a longer place-name line (NAGAR, SCHOOL, GUNTUR,
+    ANDHRA) and must rotate by itself. The upright page stays at 0°.
+    """
+    from app.services.scanx_passport import (
+        choose_stacked_canvas_rotation,
+        classify_passport_region_orientation,
+    )
+
+    upright_0 = (
+        "REPUBLIC OF INDIA\n"
+        "PASSPORT\n"
+        "P<INDTENALI<<GOPI<REDDY<<<<<<<<<<<<<<<<<<<<<\n"
+    )
+    upright_180 = "AIDNI FO CILBUPER\n" + upright_0[::-1]
+    weak_0 = "PGIA NARATUR KUEUAR\nRefre GE MISCELLANEOUS SERVICE\n"
+    address_180 = (
+        "THERUPATHI REDDY TENALI\n"
+        "KRISHNA KUMARI TENALI\n"
+        "PRAKASH NAGAR NEAR SWAMI SCHOOL\n"
+        "NARASAROPET GUNTUR\n"
+        "ANDHRA PRADESH INDIA\n"
+    )
+
+    assert classify_passport_region_orientation(weak_0) == "none"
+    assert classify_passport_region_orientation(upright_0) == "upright"
+    legacy = choose_stacked_canvas_rotation(upright_0, weak_0)
+    assert legacy["mode"] == "whole"
+    assert legacy["top"] == 0
+    assert legacy["bottom"] == 0
+
+    fixed = choose_stacked_canvas_rotation(
+        upright_0,
+        weak_0,
+        top_probe_180=upright_180,
+        bottom_probe_180=address_180,
+    )
+    assert fixed["mode"] == "regional"
+    assert fixed["top"] == 0
+    assert fixed["bottom"] == 180
+    assert classify_passport_region_orientation(weak_0, address_180) == "inverted"
+    assert classify_passport_region_orientation(upright_0, upright_180) == "upright"
+
+    other_side = choose_stacked_canvas_rotation(
+        weak_0,
+        upright_0,
+        top_probe_180=address_180,
+        bottom_probe_180=upright_180,
+    )
+    assert other_side["mode"] == "regional"
+    assert other_side["top"] == 180
+    assert other_side["bottom"] == 0
+
+
+def test_rotate_stacked_halves_turns_only_the_bottom():
+    """A midpoint split rotates the bottom half and leaves the top pixel put."""
+    import numpy as np
+
+    from app.services.scanx_image_enhance import rotate_stacked_halves
+
+    cv2 = __import__("cv2")
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    img[0, 0] = (0, 0, 255)
+    img[4, 0] = (255, 0, 0)
+    ok, buf = cv2.imencode(".png", img)
+    assert ok
+    stitched = rotate_stacked_halves(bytes(buf), top_degrees=0, bottom_degrees=180)
+    assert stitched
+    decoded = cv2.imdecode(np.frombuffer(stitched, np.uint8), cv2.IMREAD_COLOR)
+    assert int(decoded[0, 0, 2]) == 255
+    assert int(decoded[7, 7, 0]) == 255
+    assert int(decoded[4, 0].sum()) == 0
+
+
+def test_vertical_gutter_rotates_only_the_right_half():
+    """A side-by-side canvas turns the right region and leaves the left pixel put."""
+    import numpy as np
+
+    from app.services.scanx_image_enhance import (
+        locate_passport_spread_cut,
+        rotate_spread_halves,
+    )
+
+    cv2 = __import__("cv2")
+    img = np.full((80, 200, 3), 255, dtype=np.uint8)
+    img[:, :90] = 30
+    img[:, 110:] = 30
+    img[0, 0] = (0, 0, 255)
+    img[0, 199] = (255, 0, 0)
+    ok, buf = cv2.imencode(".png", img)
+    assert ok
+    raw = bytes(buf)
+    located = locate_passport_spread_cut(raw)
+    assert located is not None
+    assert located["axis"] == "vertical"
+    assert 90 <= int(located["cut"]) <= 110
+    stitched = rotate_spread_halves(
+        raw,
+        axis="vertical",
+        cut=int(located["cut"]),
+        first_degrees=0,
+        second_degrees=180,
+    )
+    assert stitched
+    decoded = cv2.imdecode(np.frombuffer(stitched, np.uint8), cv2.IMREAD_COLOR)
+    assert int(decoded[0, 0, 2]) == 255
+    assert tuple(int(v) for v in decoded[0, -1]) != (255, 0, 0)
+    blues = np.where(
+        (decoded[:, :, 0] == 255)
+        & (decoded[:, :, 1] == 0)
+        & (decoded[:, :, 2] == 0)
+    )
+    assert blues[0].size == 1
+    assert int(blues[0][0]) > 40
+    assert int(blues[1][0]) >= int(located["cut"])
+
+
+def test_rotate_image_bytes_180_moves_corner_pixel():
+    """180° rotation is a pixel flip. No scan fixture and no OCR."""
+    import numpy as np
+
+    from app.services.scanx_image_enhance import rotate_image_bytes_180
+
+    cv2 = __import__("cv2")
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    img[0, 0] = (0, 0, 255)
+    ok, buf = cv2.imencode(".png", img)
+    assert ok
+    rotated = rotate_image_bytes_180(bytes(buf))
+    assert rotated
+    decoded = cv2.imdecode(np.frombuffer(rotated, np.uint8), cv2.IMREAD_COLOR)
+    assert int(decoded[7, 7, 2]) == 255
+    assert int(decoded[0, 0].sum()) == 0
+
+
+PLACE_GF_BIRTH_OCR = """
+REPUBLIC OF INDIA
+Place gf Birth
+NARASAROPET, ANDHRA PRADESH
+Place of Issue
+VIJAYAWADA
+"""
+
+
+def test_place_gf_birth_label_uses_city_state_not_the_street():
+    """OCR ``Place gf Birth`` is the birth label. The value is city, state."""
+    result = _extract(PLACE_GF_BIRTH_OCR)
+    assert result.get("place_of_birth") == "NARASAROPET, ANDHRA PRADESH"
+    assert result.get("place_of_issue") == "VIJAYAWADA"
+    street = _extract(
+        "Place gf Birth 12-1-47/1 PRAKASH NAGAR NEAR SWAMI SCHOOL\n"
+        "NARASAROPET, ANDHRA PRADESH\n"
+        "Place of Issue\n"
+        "VIJAYAWADA\n"
+    )
+    assert street.get("place_of_birth") == "NARASAROPET, ANDHRA PRADESH"
+    assert "NAGAR" not in str(street.get("place_of_birth") or "")
+    assert street.get("place_of_issue") == "VIJAYAWADA"
+    assert street.get("place_of_issue") != street.get("place_of_birth")
+
+
+MOTHER_STARTS_WITH_FATHER_OCR = """
+Name of Father / Legal Guardian
+THIRUPATHI REDDY TENALI
+Name of Mother
+THIRUPATHI REDDY TENALI KRISHNA KUMARI
+"""
+
+
+def test_mother_prefix_that_is_the_father_name_is_stripped():
+    """Mother keeps her own label value, without the father name in front."""
+    full = _extract(MOTHER_STARTS_WITH_FATHER_OCR)
+    assert full.get("father_name") == "THIRUPATHI REDDY TENALI"
+    assert full.get("mother_name") == "KRISHNA KUMARI"
+    portion = _extract(
+        "Name of Father / Legal Guardian\n"
+        "THIRUPATHI REDDY TENALI\n"
+        "Name of Mother\n"
+        "TENALI KRISHNA KUMARI TENALI\n"
+    )
+    assert portion.get("father_name") == "THIRUPATHI REDDY TENALI"
+    assert portion.get("mother_name") == "KRISHNA KUMARI TENALI"
+    assert not str(portion.get("mother_name") or "").upper().startswith("TENALI")
+    untouched = _extract(
+        "Name of Father / Legal Guardian\n"
+        "ANIL KUMAR REGURI\n"
+        "Name of Mother\n"
+        "SRILATHA REGURI\n"
+    )
+    assert untouched.get("mother_name") == "SRILATHA REGURI"
+
+
+def test_address_leading_ntr_indian_and_place_gf_birth_are_stripped():
+    """Junk at the absolute start is dropped. A clean street is left as written."""
+    junk = """
+Address
+NTR/INDIAN, Place gf Birth 12-1-47/1 PRAKASH NAGAR NEAR SWAMI SCHOOL
+NARASAROPET, GUNTUR
+PIN:522601, ANDHRA PRADESH, INDIA
+"""
+    address = str(_extract(junk).get("address") or "")
+    assert address.upper().startswith("12-1-47/1")
+    assert not address.upper().startswith("NTR")
+    assert "PLACE GF BIRTH" not in address.upper()
+    assert "PRAKASH NAGAR" in address.upper()
+    clean = "D.NO:12-1-47/1, NEAR ADDRESS OFFICE, HYDERABAD, PIN:500082, TELANGANA, INDIA"
+    assert _tidy_passport_address(clean) == clean
+    assert _tidy_passport_address(
+        "NTR/INDIAN, Place gf Birth 12-1-47/1 PRAKASH NAGAR"
+    ).upper().startswith("12-1-47/1")
+

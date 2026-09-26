@@ -803,27 +803,12 @@ def build_uvicorn_cmd(config: DevConfig, *, reload: bool) -> list[str]:
         ]
     if reload:
         cmd.append("--reload")
+        # Watch only backend/app. Do NOT pass --reload-exclude globs on Windows:
+        # the child python.exe expands wildcards in argv (MSVC setargv), so patterns
+        # like **/*.pyc / **/.env.* become dozens of real paths and uvicorn exits
+        # with code 2: "Got unexpected extra arguments (...)".
+        # .env lives outside app/, so --reload-dir app already ignores env rewrites.
         cmd.extend(["--reload-dir", "app"])
-        # Windows WatchFiles often kills the whole reloader on .pyc / lock churn.
-        # Never reload on .env rewrites (tunnel URL updates) — that exits code 1 on Windows.
-        cmd.extend(
-            [
-                "--reload-exclude",
-                "**/__pycache__/**",
-                "--reload-exclude",
-                "**/*.pyc",
-                "--reload-exclude",
-                "**/.dev-stack.lock",
-                "--reload-exclude",
-                "**/.pytest_cache/**",
-                "--reload-exclude",
-                "**/.env",
-                "--reload-exclude",
-                "**/.env.*",
-                "--reload-exclude",
-                "**/*.tmp",
-            ]
-        )
     return cmd
 
 

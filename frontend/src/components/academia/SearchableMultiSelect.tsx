@@ -215,12 +215,12 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
           aria-multiselectable
           className={
             compact
-              ? 'offline-leads-multiselect__menu offline-leads-multiselect__menu--portal'
+              ? 'z-[140] flex flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-[0_12px_28px_rgba(15,23,42,0.14)] !fixed m-0 shadow-[0_16px_40px_rgba(15,23,42,0.22)]'
               : 'rounded-xl border border-border-subtle bg-card shadow-xl'
           }
           style={menuStyle}
         >
-          <div className={compact ? 'offline-leads-multiselect__search' : 'border-b border-border-subtle p-2'}>
+          <div className={compact ? 'shrink-0 border-b border-slate-200 p-2 [&_input]:w-full [&_input]:rounded-md [&_input]:border [&_input]:border-slate-300 [&_input]:px-2 [&_input]:py-1.5 [&_input]:text-[13px]' : 'border-b border-border-subtle p-2'}>
             <input
               id={id ? `${id}-search` : 'multiselect-search'}
               name={id ? `${id}-search` : 'multiselect-search'}
@@ -239,7 +239,7 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
           <div
             className={
               compact
-                ? 'offline-leads-multiselect__meta'
+                ? 'flex shrink-0 items-center justify-between border-b border-slate-200 px-2.5 py-1.5 text-xs text-slate-500'
                 : 'flex items-center justify-between border-b border-border-subtle px-3 py-2 text-xs'
             }
           >
@@ -259,7 +259,7 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
             ) : null}
           </div>
           <ul
-            className={compact ? 'offline-leads-multiselect__list' : 'overflow-y-auto py-1'}
+            className={compact ? 'm-0 min-h-0 flex-auto list-none overflow-y-auto py-1' : 'overflow-y-auto py-1'}
             style={{ maxHeight: listMaxHeight }}
           >
             {filteredOptions.length === 0 ? (
@@ -276,7 +276,7 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
                       onClick={() => toggleValue(option.value)}
                       className={
                         compact
-                          ? `offline-leads-multiselect__option${checked ? ' is-selected' : ''}${blocked ? ' is-disabled' : ''}`
+                          ? `flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-2.5 py-2 text-left text-[13px] text-slate-900 hover:bg-slate-50 [&.is-disabled]:cursor-not-allowed [&.is-disabled]:opacity-45 [&.is-selected]:bg-blue-50${checked ? ' is-selected' : ''}${blocked ? ' is-disabled' : ''}`
                           : `flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-bg ${
                               checked ? 'bg-accent/10 text-text-main' : 'text-text-main'
                             } ${blocked ? 'opacity-40' : ''}`
@@ -311,7 +311,7 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
   return (
     <div
       ref={containerRef}
-      className={`${compact ? 'offline-leads-multiselect' : 'block space-y-1 text-sm'} ${className || ''}`.trim()}
+      className={`${compact ? 'flex min-w-0 flex-col gap-0' : 'block space-y-1 text-sm'} ${className || ''}`.trim()}
     >
       {label && !compact ? (
         <span className="text-base font-bold text-text-main">
@@ -334,7 +334,7 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
           }}
           className={
             compact
-              ? 'offline-leads-multiselect__trigger'
+              ? 'flex min-h-[38px] w-full cursor-pointer items-center justify-between gap-2 rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-left text-[13px] text-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 [&_.is-placeholder]:text-slate-400'
               : 'flex w-full items-center justify-between rounded-xl border border-border-subtle bg-surface-bg px-3 py-2 text-left text-sm outline-none focus:border-accent disabled:opacity-50'
           }
         >
@@ -355,7 +355,7 @@ const SearchableMultiSelect: React.FC<SearchableMultiSelectProps> = ({
         </button>
       </div>
       {hint ? (
-        <p className={compact ? 'offline-leads-multiselect__hint' : 'text-xs text-text-muted'}>{hint}</p>
+        <p className={compact ? 'm-0 mt-1 text-xs text-slate-500' : 'text-xs text-text-muted'}>{hint}</p>
       ) : null}
       {menu}
     </div>

@@ -153,7 +153,9 @@ const NexusDashboard: React.FC = () => {
     currentPath === '/handoffs' ||
     currentPath === '/prospects' ||
     currentPath.startsWith('/prospects/') ||
-    currentPath.startsWith('/students/');
+    currentPath.startsWith('/students/') ||
+    currentPath === '/offline-leads' ||
+    currentPath.startsWith('/offline-leads/');
   const isFullBleedPage = isMessagingHub || isMyBookings || isLeadQueuePage;
   const canAccessCurrentRoute =
     allowedRoutes !== null && isAllowedRoute(currentPath, allowedRoutes);
